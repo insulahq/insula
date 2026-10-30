@@ -5,7 +5,7 @@
  * Also handles basic-auth user CRUD and WAF log lifecycle.
  */
 
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { eq, and, desc } from 'drizzle-orm';
 import { ingressRoutes, wafLogs, domains } from '../../db/schema.js';
 import type { WafMode } from '@insula/api-contracts';
 import { ApiError } from '../../shared/errors.js';
@@ -256,32 +256,4 @@ export async function ingestWafLog(
     sourceIp: log.sourceIp ?? null,
     matchedData: log.matchedData ?? null,
   });
-}
-
-export async function pruneWafLogs(db: Database, routeId: string, keepCount = 50): Promise<number> {
-  // Find the Nth-newest log's createdAt, then delete everything older.
-  const kept = await db
-    .select({ createdAt: wafLogs.createdAt })
-    .from(wafLogs)
-    .where(eq(wafLogs.routeId, routeId))
-    .orderBy(desc(wafLogs.createdAt))
-    .limit(1)
-    .offset(keepCount - 1);
-
-  if (kept.length === 0) {
-    // Fewer than keepCount rows — nothing to prune
-    return 0;
-  }
-
-  const cutoff = kept[0].createdAt;
-  const result = await db
-    .delete(wafLogs)
-    .where(
-      and(
-        eq(wafLogs.routeId, routeId),
-        sql`${wafLogs.createdAt} < ${cutoff}`,
-      ),
-    );
-
-  return (result as unknown as { rowCount?: number }).rowCount ?? 0;
 }

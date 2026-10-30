@@ -92,6 +92,20 @@ vi.mock('@/hooks/use-waf-rule-exclusions', async (importOriginal) => ({
 }));
 vi.mock('@/components/ui/UserLabel', () => ({ default: ({ userId }: { userId: string }) => <span>{userId}</span> }));
 
+// WAF event retention + the "would block" summary.
+const wafSummary = vi.fn(() => ok({ requests: 0, rows: [], truncated: false }));
+const summaryQueries: unknown[] = [];
+const patchRetention = vi.fn();
+const retentionSettings = vi.fn(() => ok({
+  retentionDays: 30, routeCeiling: 20_000, adminHostCeiling: 50_000, protectedRecentMinutes: 15,
+  storedEvents: 1234, oldestEventAt: '2026-10-01T00:00:00.000Z',
+}));
+vi.mock('@/hooks/use-waf-log-summary', () => ({
+  useWafEventsSummary: (query: unknown) => { summaryQueries.push(query); return wafSummary(); },
+  useWafLogSettings: () => retentionSettings(),
+  usePatchWafLogSettings: () => ({ mutate: patchRetention, isPending: false, isError: false, error: null }),
+}));
+
 import { WafEventsTab, WafExclusionsTab, WafSettingsTab } from './web-defense-tabs';
 
 function wrapper({ children }: { readonly children: React.ReactNode }) {
@@ -572,5 +586,79 @@ describe('WAF exclusions — path scope', () => {
     fireEvent.click(screen.getByTestId('whitelist-modal-use-event-path'));
     expect(screen.getByTestId('whitelist-modal-path-regex')).toHaveValue('^/lib/ajax/service\\.php$');
     expect(screen.queryByTestId('whitelist-modal-use-event-path')).toBeNull();
+  });
+});
+
+// Retention and the summary view.
+describe('WAF events — summary by rule and path', () => {
+  const rows = [
+    { hostname: 'moodle.example.test', ruleId: '920420', message: 'Request content type is not allowed by policy', path: '/lib/ajax/service.php', requests: 453, detectionOnly: 453, sourceIps: 15, firstSeenAt: '2026-10-29T18:00:00.000Z', lastSeenAt: '2026-10-30T20:00:00.000Z' },
+    { hostname: 'moodle.example.test', ruleId: '941100', message: 'XSS Attack Detected via libinjection', path: '/mod/forum/post.php', requests: 12, detectionOnly: 4, sourceIps: 3, firstSeenAt: '2026-10-29T18:00:00.000Z', lastSeenAt: '2026-10-30T19:00:00.000Z' },
+  ];
+  beforeEach(() => {
+    summaryQueries.length = 0;
+    wafSummary.mockReturnValue(ok({ requests: 470, rows, truncated: false }));
+    wafEvents.mockReturnValue({
+      ...ok({
+        events: [], truncated: false,
+        stats: { windowSeconds: 86_400, totalEvents: 0, totalEventsAdminHost: 0, totalEventsTenantRoute: 0, topRules: [], topHosts: [], mostRecentAt: null },
+        scraperStatus: { hasRunOnce: true, modsecPodFound: true, lastRunAt: null, scrapeIntervalMs: 30_000, lastCycleErrors: [] },
+      }),
+    });
+  });
+
+  it('groups the filtered events by rule and path, with what was only detected', () => {
+    render(<WafEventsTab />, { wrapper });
+    fireEvent.change(screen.getByTestId('waf-filter-host'), { target: { value: 'moodle' } });
+    fireEvent.click(screen.getByTestId('waf-view-summary'));
+    expect(screen.getByTestId('waf-summary-total')).toHaveTextContent('470 requests blocked or flagged · 2 rule × path groups');
+    expect(screen.getByTestId('waf-summary-detected-920420-/lib/ajax/service.php')).toHaveTextContent('detected, not blocked');
+    expect(screen.getByTestId('waf-summary-detected-941100-/mod/forum/post.php')).toHaveTextContent('4 not blocked');
+    // The summary asks for the same window as the list, without its page limit.
+    expect(summaryQueries.at(-1)).toMatchObject({ sinceSeconds: expect.any(Number) });
+    expect((summaryQueries.at(-1) as { limit?: number }).limit).toBeUndefined();
+    fireEvent.click(screen.getByTestId('waf-view-events'));
+    expect(screen.queryByTestId('waf-summary')).toBeNull();
+  });
+
+  it.each([
+    ['920420', '/lib/ajax/service.php', 'text_plain_as_json', '^/lib/ajax/service\\.php$'],
+    ['941100', '/mod/forum/post.php', 'args', '^/mod/forum/post\\.php$'],
+  ])('"Whitelist on this path" for %s opens the dialog with the path applied and scope %s', (rule, path, scope, regex) => {
+    render(<WafEventsTab />, { wrapper });
+    fireEvent.click(screen.getByTestId('waf-view-summary'));
+    fireEvent.click(screen.getByTestId(`waf-summary-whitelist-${rule}-${path}`));
+    expect(screen.getByTestId('whitelist-modal-rule-id')).toHaveValue(rule);
+    expect(screen.getByTestId('whitelist-modal-host-regex')).toHaveValue('^moodle\\.example\\.test$');
+    expect(screen.getByTestId('whitelist-modal-path-regex')).toHaveValue(regex);
+    expect(screen.getByTestId('whitelist-modal-scope')).toHaveValue(scope);
+    fireEvent.click(screen.getByTestId('whitelist-modal-submit'));
+    expect(createExclusionMutate.mock.calls[0]?.[0]).toMatchObject({ ruleId: rule, pathRegex: regex, scope });
+  });
+});
+
+describe('WAF Settings — event retention', () => {
+  beforeEach(() => { patchRetention.mockReset(); });
+
+  it('shows the retention, what is stored and the flood limits', () => {
+    render(<WafSettingsTab />, { wrapper });
+    expect(screen.getByTestId('waf-retention-days')).toHaveValue(30);
+    const facts = screen.getByTestId('waf-retention-facts');
+    expect(facts).toHaveTextContent('Stored now: 1,234 events');
+    expect(facts).toHaveTextContent('at most 20,000 per site and 50,000 for the platform hosts');
+    expect(facts).toHaveTextContent('younger than 15 minutes are always kept');
+  });
+
+  it('saves a new number of days, and refuses one out of range', () => {
+    render(<WafSettingsTab />, { wrapper });
+    const input = screen.getByTestId('waf-retention-days');
+    const save = screen.getByTestId('waf-retention-save');
+    expect(save).toBeDisabled();
+    fireEvent.change(input, { target: { value: '0' } });
+    expect(screen.getByTestId('waf-retention-invalid')).toBeInTheDocument();
+    expect(save).toBeDisabled();
+    fireEvent.change(input, { target: { value: '90' } });
+    fireEvent.click(save);
+    expect(patchRetention.mock.calls[0]?.[0]).toEqual({ retentionDays: 90 });
   });
 });

@@ -70,6 +70,7 @@ import {
 } from 'lucide-react';
 import { SkeletonLoader } from '@/components/ui/SkeletonLoader';
 import ErrorPanel from '@/components/ErrorPanel';
+import { WafEventsSummaryTable, WafLogRetentionCard } from './WafLogSummary';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { useRefreshWafScraper, useWafEvents } from '@/hooks/use-waf-events';
@@ -124,6 +125,7 @@ import {
   buildHostnameRegexFromEventHost,
   buildPathRegexFromEventUri,
   isWafExclusionScopeValidForRule,
+  suggestWafExclusionScope,
   WAF_CONTENT_TYPE_RULE_ID,
   wafRuleExclusionPathRegexSchema,
 } from '@insula/api-contracts';
@@ -169,6 +171,8 @@ export function WafEventsTab() {
   const [banModalPrefill, setBanModalPrefill] = useState<{ value: string; reason: string } | null>(null);
   // F4 — "Whitelist this rule for this host" prefill, same lifting reason.
   const [whitelistPrefill, setWhitelistPrefill] = useState<WhitelistPrefill | null>(null);
+  // The event list, or the same events grouped by rule and path.
+  const [view, setView] = useState<'events' | 'summary'>('events');
   // "Allowlist IP" — adds the row's source IP to CrowdSec allowlist
   // directly (no modal). One-click false-positive recovery for a
   // mistakenly-banned operator IP. Shared mutation so the button
@@ -205,6 +209,8 @@ export function WafEventsTab() {
   }, [debouncedRuleId, severity, debouncedHost, debouncedSourceIp, scope, sinceSeconds, fromTime, toTime, rangeActive]);
 
   const { data, isLoading, isError, isFetching, error, refetch } = useWafEvents(query, { live });
+  // The summary groups the same rows: same filters, no page limit.
+  const summaryQuery: WafEventsQuery = useMemo(() => ({ ...query, limit: undefined }), [query]);
   const payload: WafEventsResponse | undefined = data?.data;
 
   // Sort the CURRENT PAGE. Paging stays server-side, so this orders what the
@@ -231,7 +237,7 @@ export function WafEventsTab() {
         <p
           className="min-w-0 flex-1 text-sm text-gray-700 dark:text-gray-200"
           data-testid="waf-events-description"
-          title="Scraped from the modsec-crs pods every 30s. Admin-host events are capped at 500 cluster-wide, per-route events at 50 per route."
+          title="Scraped from the modsec-crs pods every 30s and kept for the retention set under WAF Settings."
         >
           ModSecurity / OWASP CRS rule hits across the cluster — platform hosts and tenant routes.
         </p>
@@ -412,14 +418,49 @@ export function WafEventsTab() {
         </div>
       </div>
 
-      {isLoading && <SkeletonLoader />}
-      {isError && (
+      <div className="inline-flex rounded-md border border-gray-300 dark:border-gray-600 overflow-hidden text-xs" role="tablist" aria-label="Events view">
+        {(['events', 'summary'] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            role="tab"
+            aria-selected={view === v}
+            onClick={() => setView(v)}
+            className={view === v
+              ? 'px-3 py-1.5 font-medium bg-brand-600 dark:bg-brand-700 text-white'
+              : 'px-3 py-1.5 text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700'}
+            data-testid={`waf-view-${v}`}
+          >
+            {v === 'events' ? 'Events' : 'Summary by rule and path'}
+          </button>
+        ))}
+      </div>
+
+      {view === 'summary' && (
+        <WafEventsSummaryTable
+          query={summaryQuery}
+          onWhitelist={(r) => {
+            const pathRegex = buildPathRegexFromEventUri(r.path);
+            setWhitelistPrefill({
+              ruleId: r.ruleId,
+              hostnameRegex: buildHostnameRegexFromEventHost(r.hostname),
+              pathRegex,
+              eventPathRegex: pathRegex,
+              scope: suggestWafExclusionScope(r.ruleId),
+              reason: `False positive: rule ${r.ruleId} on ${r.path} (${r.requests} requests from ${r.sourceIps} IPs)`,
+            });
+          }}
+        />
+      )}
+
+      {view === 'events' && isLoading && <SkeletonLoader />}
+      {view === 'events' && isError && (
         <div className="rounded-lg border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-4 text-sm text-red-700 dark:text-red-300">
           Failed to load WAF events: {error instanceof Error ? error.message : String(error)}
         </div>
       )}
 
-      {payload && (
+      {view === 'events' && payload && (
         <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-900 dark:text-gray-100 flex items-center justify-between">
             <span>Events ({payload.events.length}{payload.truncated ? '+' : ''})</span>
@@ -523,7 +564,7 @@ export function WafEventsTab() {
 
       {whitelistPrefill && (
         <WhitelistRuleModal
-          key={`${whitelistPrefill.ruleId}|${whitelistPrefill.hostnameRegex}`}
+          key={`${whitelistPrefill.ruleId}|${whitelistPrefill.hostnameRegex}|${whitelistPrefill.pathRegex ?? ''}`}
           prefill={whitelistPrefill}
           onClose={() => setWhitelistPrefill(null)}
         />
@@ -1670,8 +1711,12 @@ function AllowlistCard() {
 interface WhitelistPrefill {
   readonly ruleId: string;
   readonly hostnameRegex: string;
-  /** The WAF event's own path as an anchored regex — offered, never pre-applied. */
+  /** Applied as the path from the start: the summary's per-path action. */
+  readonly pathRegex?: string | null;
+  /** The WAF event's own path as an anchored regex — offered, not applied. */
   readonly eventPathRegex?: string | null;
+  /** Pre-selected scope; 'args' when absent. */
+  readonly scope?: WafRuleExclusionScope;
   readonly reason: string;
 }
 
@@ -1683,8 +1728,8 @@ const TEXT_PLAIN_AS_JSON_HELP =
 function WhitelistRuleModal({ prefill, onClose }: { prefill: WhitelistPrefill; onClose: () => void }) {
   const [ruleId, setRuleId] = useState(prefill.ruleId);
   const [hostnameRegex, setHostnameRegex] = useState(prefill.hostnameRegex);
-  const [pathRegex, setPathRegex] = useState('');
-  const [scope, setScope] = useState<WafRuleExclusionScope>('args');
+  const [pathRegex, setPathRegex] = useState(prefill.pathRegex ?? '');
+  const [scope, setScope] = useState<WafRuleExclusionScope>(prefill.scope ?? 'args');
   const [reason, setReason] = useState(prefill.reason);
   const [err, setErr] = useState<string | null>(null);
   const mut = useCreateWafRuleExclusion();
@@ -2129,6 +2174,8 @@ export function WafSettingsTab() {
   return (
     <section className="space-y-4" data-testid="waf-settings-tab">
       {status.data?.data && <CrowdsecStatusPanel status={status.data.data} />}
+
+      <WafLogRetentionCard />
 
       <CommunityBlocklistCard />
 

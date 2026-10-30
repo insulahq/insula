@@ -20,10 +20,10 @@ You manage both from **Security → Web Defense** (`super_admin`).
 
 | Tab | What it's for |
 |---|---|
-| **WAF Events** | Cluster-wide stream of WAF/CRS detections, with per-source-IP **Ban IP** and **Allowlist IP** buttons |
+| **WAF Events** | Cluster-wide stream of WAF/CRS detections, with per-source-IP **Ban IP** and **Allowlist IP** buttons, and a **Summary by rule and path** |
 | **Banned IPs** | Every address the platform is banning — your timed and permanent bans, and the auto-bans |
 | **WAF Exclusions** | Per-route CRS rule exclusions + an IP allowlist |
-| **WAF Settings** | CrowdSec status, the community blocklist, WAF auto-ban, Malicious Traffic Detection, the L4 host-firewall toggle, CrowdSec Console enrollment |
+| **WAF Settings** | CrowdSec status, WAF event retention, the community blocklist, WAF auto-ban, Malicious Traffic Detection, the L4 host-firewall toggle, CrowdSec Console enrollment |
 
 ## WAF: OWASP CRS per route
 
@@ -41,6 +41,26 @@ The WAF runs the OWASP Core Rule Set. Each route can be in one of three modes:
     The admin and tenant **panels** always have the WAF in front of them. Turn
     a tenant route on deliberately, ideally via **DETECTION_ONLY** first to find
     false positives before you block.
+
+### A detection dry run, and reading it
+
+Run a new site in **DETECTION_ONLY** against its real traffic for a week or two —
+long enough to include its less frequent work (for a school: course building and
+grading, not just a quiz day). Then open **WAF Events → Summary by rule and
+path**, filtered to the site's host. Each row is one rule on one request path:
+how many requests matched it, from how many IPs, how many were only detected, and
+when it was last seen. Scanners probing for `.env` or `.git` show up here too;
+those are the WAF doing its job, not exceptions to add. For a genuine false
+positive, **Whitelist on this path** opens the exclusion dialog with the rule,
+the host, the path and a fitting scope filled in (see below). Tenants see the
+same summary for their own site under the route's **WAF Log**.
+
+Events are kept for **30 days** by default; change it under **WAF Settings →
+WAF event retention** (1–365 days). Two flood limits apply on top: at most
+20,000 events per site and 50,000 for the platform's own hosts together — the
+oldest go first. Events younger than 15 minutes (longer if auto-ban's window is
+set longer) are never removed by those limits, so auto-ban always sees a flood
+whole.
 
 ### Tuning false positives with exclusions
 

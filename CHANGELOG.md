@@ -14,6 +14,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **WAF events are kept for 30 days, and a summary shows what to decide from them.** The WAF
+  log kept only the newest 50 events per site (500 for all platform hosts together), trimmed
+  every 30 seconds. A site in detection-only mode, the dry run before enforcing, showed its last
+  few minutes: one site logged 736 would-block requests in a day and WAF Logs showed 50. The
+  trim also deleted rows before CrowdSec auto-ban had judged them, so a flood on one site could
+  escape it.
+  - Events are now kept by age, 30 days by default, set under **WAF Settings → WAF event
+    retention** (1–365 days). A flood limit of 20,000 events per site and 50,000 for the
+    platform hosts removes the oldest first, but never events auto-ban still has to judge
+    (younger than 15 minutes, or than its window plus 10 minutes when that is longer). Pruning
+    runs every 10 minutes in batches.
+  - **WAF Events → Summary by rule and path**, and the summary at the top of a route's **WAF
+    Log** in the tenant panel, group events by rule and request path. Each row shows requests,
+    how many were only detected, distinct IPs and when it was last seen, plus a button that
+    opens the exclusion dialog with the rule, host, path and a scope that fits the rule. For
+    example, `text_plain_as_json` for 920420 and `full_disable` for header and multipart rules,
+    where `args` would change nothing.
 - **A WAF exclusion can be limited to one path.** Exclusions covered a whole host, so a rule that
   false-positived on one endpoint had to be switched off for the entire site. An exclusion now
   takes an optional path regex (matched against the request path without the query string; it

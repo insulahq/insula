@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { z } from 'zod';
-import type { CreateTenantWafRuleExclusionRequest, IngressRouteResponse, WafMode, WafRuleExclusion } from '@insula/api-contracts';
+import type { CreateTenantWafRuleExclusionRequest, IngressRouteResponse, WafLogSummaryResponse, WafMode, WafRuleExclusion } from '@insula/api-contracts';
 import { updateRedirectSettingsSchema } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
@@ -277,6 +277,18 @@ export function useRouteWafLogs(tenantId: string | undefined, routeId: string | 
     queryFn: () =>
       apiFetch<{ data: readonly WafLogEntry[] }>(
         `${routeBasePath(tenantId!, routeId!)}/waf-logs`,
+      ),
+    enabled: Boolean(tenantId && routeId),
+  });
+}
+
+/** The route's WAF events grouped by rule and path, for the last `sinceSeconds`. */
+export function useRouteWafLogSummary(tenantId: string | undefined, routeId: string | undefined, sinceSeconds: number) {
+  return useQuery({
+    queryKey: ['route-waf-log-summary', tenantId, routeId, sinceSeconds],
+    queryFn: () =>
+      apiFetch<{ data: WafLogSummaryResponse }>(
+        `${routeBasePath(tenantId!, routeId!)}/waf-logs/summary?sinceSeconds=${sinceSeconds}`,
       ),
     enabled: Boolean(tenantId && routeId),
   });

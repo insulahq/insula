@@ -6,7 +6,9 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import {
+  buildPathRegexFromEventUri,
   isWafExclusionScopeValidForRule,
+  suggestWafExclusionScope,
   WAF_CONTENT_TYPE_RULE_ID,
   wafRuleExclusionPathRegexSchema,
   type WafMode,
@@ -17,6 +19,7 @@ import { useDomains } from '@/hooks/use-domains';
 import OidcSection from '@/components/OidcSection';
 import { HostnameLink } from '@/components/HostnameLink';
 import LocalTime from '@/components/ui/LocalTime';
+import { WafLogSummary } from '@/components/routes/WafLogSummary';
 import { localZoneTitle } from '@/lib/format-timestamp';
 import { utcOffsetLabel } from '@/lib/format-traffic';
 import MtlsSection from '@/components/MtlsSection';
@@ -378,6 +381,8 @@ function SecurityTab({ tenantId, routeId, route }: {
   const [wafMode, setWafMode] = useState<WafMode>(route.wafMode ?? (route.wafEnabled ? 'enforced' : 'off'));
   const [wafDirty, setWafDirty] = useState(false);
   const [showWafLog, setShowWafLog] = useState(false);
+  // "Exclude on this path" from the summary: the exclusion dialog, pre-filled.
+  const [excludePrefill, setExcludePrefill] = useState<WafExclusionPrefill | null>(null);
   const markWafDirty = () => setWafDirty(true);
 
   /* ── IP Allowlist state ── */
@@ -574,10 +579,23 @@ function SecurityTab({ tenantId, routeId, route }: {
             data-testid="toggle-waf-log"
           >
             {showWafLog ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-            WAF Log ({wafLogs.length} events)
+            WAF Log
           </button>
           {showWafLog && (
-            <div className="mt-3">
+            <div className="mt-3 space-y-3">
+              <WafLogSummary
+                tenantId={tenantId}
+                routeId={routeId}
+                onExclude={(r) => setExcludePrefill({
+                  ruleId: r.ruleId,
+                  pathRegex: buildPathRegexFromEventUri(r.path),
+                  scope: suggestWafExclusionScope(r.ruleId),
+                  reason: `False positive: rule ${r.ruleId} on ${r.path} (${r.requests} requests from ${r.sourceIps} IPs)`,
+                })}
+              />
+              <h4 className="text-xs font-medium text-gray-700 dark:text-gray-300" data-testid="waf-log-latest-heading">
+                Latest events{wafLogs.length > 0 ? ` (${wafLogs.length})` : ''}
+              </h4>
               {wafLogsLoading ? (
                 <div className="flex items-center justify-center py-8"><Loader2 size={20} className="animate-spin text-blue-600" /></div>
               ) : wafLogs.length === 0 ? (
@@ -591,6 +609,19 @@ function SecurityTab({ tenantId, routeId, route }: {
         </form>
         )}
       </div>
+
+      {/* "Exclude on this path" from the WAF Log summary. Rendered outside the
+          WAF form above: inside it, Enter in the dialog's inputs would submit
+          that form and save a mode change the tenant had not saved. */}
+      {excludePrefill && (
+        <AddWafExclusionModal
+          tenantId={tenantId}
+          routeId={routeId}
+          hostname={route.hostname}
+          prefill={excludePrefill}
+          onClose={() => setExcludePrefill(null)}
+        />
+      )}
 
       {/* ── WAF Exclusions Card (B2) ── */}
       <WafExclusionsSection
@@ -1577,16 +1608,25 @@ function WafExclusionRow({ ex, onDelete, isDeleting }: {
   );
 }
 
-function AddWafExclusionModal({ tenantId, routeId, hostname, onClose }: {
+interface WafExclusionPrefill {
+  readonly ruleId: string;
+  readonly pathRegex: string | null;
+  readonly scope: WafRuleExclusionScope;
+  readonly reason: string;
+}
+
+function AddWafExclusionModal({ tenantId, routeId, hostname, prefill, onClose }: {
   readonly tenantId: string;
   readonly routeId: string;
   readonly hostname: string;
+  /** From the summary's "Exclude on this path"; empty fields otherwise. */
+  readonly prefill?: WafExclusionPrefill;
   readonly onClose: () => void;
 }) {
-  const [ruleId, setRuleId] = useState('');
-  const [pathRegex, setPathRegex] = useState('');
-  const [scope, setScope] = useState<WafRuleExclusionScope>('args');
-  const [reason, setReason] = useState('');
+  const [ruleId, setRuleId] = useState(prefill?.ruleId ?? '');
+  const [pathRegex, setPathRegex] = useState(prefill?.pathRegex ?? '');
+  const [scope, setScope] = useState<WafRuleExclusionScope>(prefill?.scope ?? 'args');
+  const [reason, setReason] = useState(prefill?.reason ?? '');
   const [err, setErr] = useState<string | null>(null);
   const create = useCreateRouteWafExclusion(tenantId, routeId);
 

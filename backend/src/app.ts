@@ -167,6 +167,7 @@ import { eolScannerRoutes } from './modules/eol-scanner/routes.js';
 import { tlsSettingsRoutes } from './modules/tls-settings/routes.js';
 import { dnsResolverRoutes } from './modules/dns-resolver/routes.js';
 import { ingressRouteRoutes } from './modules/ingress-routes/routes.js';
+import { wafLogRoutes } from './modules/waf-logs/routes.js';
 import { ingressAuthRoutes } from './modules/ingress-auth/routes.js';
 import { oidcProvidersRoutes } from './modules/ingress-auth/providers-routes.js';
 import { ingressMtlsRoutes } from './modules/ingress-mtls/routes.js';
@@ -821,6 +822,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(tlsSettingsRoutes, { prefix: '/api/v1' });
   await app.register(dnsResolverRoutes, { prefix: '/api/v1' });
   await app.register(ingressRouteRoutes, { prefix: '/api/v1' });
+  await app.register(wafLogRoutes, { prefix: '/api/v1' });
   await app.register(ingressAuthRoutes, { prefix: '/api/v1' });
   await app.register(oidcProvidersRoutes, { prefix: '/api/v1' });
   await app.register(ingressMtlsRoutes, { prefix: '/api/v1' });

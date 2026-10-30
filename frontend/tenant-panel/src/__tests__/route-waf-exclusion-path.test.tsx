@@ -36,9 +36,14 @@ const exclusion = (over: Record<string, unknown>) => ({
 
 let posted: unknown[] = [];
 let exclusions: unknown[] = [];
+const EMPTY_SUMMARY = { requests: 0, rows: [] as unknown[], truncated: false };
+let summary = EMPTY_SUMMARY;
+let summaryUrls: string[] = [];
 beforeEach(() => {
   posted = [];
   exclusions = [];
+  summary = EMPTY_SUMMARY;
+  summaryUrls = [];
   mockApiFetch.mockReset();
   mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
     if (url.endsWith('/waf-exclusions') && init?.method === 'POST') {
@@ -46,6 +51,7 @@ beforeEach(() => {
       posted.push(body);
       return Promise.resolve({ data: exclusion({ id: 'x-new', ...body }) }) as never;
     }
+    if (url.includes('/waf-logs/summary')) { summaryUrls.push(url); return Promise.resolve({ data: summary }) as never; }
     if (url.endsWith('/waf-logs')) return Promise.resolve({ data: [] }) as never;
     if (url.endsWith('/waf-exclusions')) return Promise.resolve({ data: { exclusions } }) as never;
     if (url.endsWith('/routes/route-1')) return Promise.resolve({ data: ROUTE }) as never;
@@ -133,5 +139,63 @@ describe('route WAF exclusions — path scope', () => {
     await user.click(screen.getByTestId('add-waf-exclusion-submit'));
     await waitFor(() => expect(posted).toHaveLength(1));
     expect(posted[0]).toMatchObject({ ruleId: '920420', scope: 'text_plain_as_json', pathRegex: '^/lib/ajax/service\\.php$' });
+  });
+});
+
+describe('route WAF log — summary by rule and path', () => {
+  const ROWS = [
+    { hostname: 'moodle.example.test', ruleId: '922130', message: 'Multipart header contains characters outside of valid range', path: '/mod/quiz/processattempt.php', requests: 95, detectionOnly: 95, sourceIps: 5, firstSeenAt: '2026-10-30T17:00:00.000Z', lastSeenAt: '2026-10-30T20:16:00.000Z' },
+    { hostname: 'moodle.example.test', ruleId: '941160', message: 'NoScript XSS InjectionChecker: HTML Injection', path: '/mod/forum/post.php', requests: 9, detectionOnly: 3, sourceIps: 2, firstSeenAt: '2026-10-30T09:00:00.000Z', lastSeenAt: '2026-10-30T15:00:00.000Z' },
+  ];
+  async function openLog() {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByTestId('tab-security'));
+    await user.click(await screen.findByTestId('waf-section'));
+    await user.click(screen.getByTestId('toggle-waf-log'));
+    return user;
+  }
+
+  it('shows what was blocked or only detected, per rule and path, for the chosen window', async () => {
+    summary = { requests: 104, rows: ROWS, truncated: false };
+    const user = await openLog();
+    expect(await screen.findByTestId('waf-summary-total')).toHaveTextContent('104 requests blocked or flagged');
+    const quiz = screen.getByTestId('waf-summary-row-922130-/mod/quiz/processattempt.php');
+    expect(quiz).toHaveTextContent('95');
+    expect(quiz).toHaveTextContent('detected, not blocked');
+    expect(screen.getByTestId('waf-summary-row-941160-/mod/forum/post.php')).toHaveTextContent('3 not blocked');
+    expect(summaryUrls.at(-1)).toContain('sinceSeconds=604800');
+    await user.selectOptions(screen.getByTestId('waf-summary-window'), '2592000');
+    await waitFor(() => expect(summaryUrls.at(-1)).toContain('sinceSeconds=2592000'));
+  });
+
+  it('"Exclude on this path" opens the exclusion dialog with rule, path and a fitting scope', async () => {
+    summary = { requests: 104, rows: ROWS, truncated: false };
+    const user = await openLog();
+    await user.click(await screen.findByTestId('waf-summary-exclude-922130-/mod/quiz/processattempt.php'));
+    const modal = screen.getByTestId('add-waf-exclusion-modal');
+    expect(within(modal).getByTestId('add-waf-exclusion-rule-id')).toHaveValue('922130');
+    expect(within(modal).getByTestId('add-waf-exclusion-path-regex')).toHaveValue('^/mod/quiz/processattempt\\.php$');
+    // 922130 reads multipart part headers, not parameters: `args` would change nothing.
+    expect(within(modal).getByTestId('add-waf-exclusion-scope')).toHaveValue('full_disable');
+    await user.click(within(modal).getByTestId('add-waf-exclusion-submit'));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0]).toMatchObject({ ruleId: '922130', pathRegex: '^/mod/quiz/processattempt\\.php$', scope: 'full_disable' });
+  });
+
+  it('Enter in the dialog does not save the WAF mode form around it', async () => {
+    summary = { requests: 104, rows: ROWS, truncated: false };
+    const user = await openLog();
+    // An unsaved mode change in the WAF form…
+    await user.click(screen.getByTestId('waf-mode-enforced'));
+    await user.click(await screen.findByTestId('waf-summary-exclude-941160-/mod/forum/post.php'));
+    await user.type(screen.getByTestId('add-waf-exclusion-path-regex'), '{Enter}');
+    // …stays unsaved: no PATCH of the route's security settings.
+    expect(mockApiFetch.mock.calls.some(([url, init]) => String(url).endsWith('/security') && (init as RequestInit | undefined)?.method === 'PATCH')).toBe(false);
+  });
+
+  it('says so when nothing was blocked', async () => {
+    await openLog();
+    expect(await screen.findByTestId('waf-summary-empty')).toHaveTextContent('Nothing blocked or flagged');
   });
 });

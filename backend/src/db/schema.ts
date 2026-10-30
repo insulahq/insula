@@ -1434,6 +1434,8 @@ export const wafLogs = pgTable('waf_logs', {
 }, (table) => [
   uniqueIndex('waf_logs_event_key_uniq').on(table.eventKey),
   index('waf_logs_route_idx').on(table.routeId),
+  // 0169: a route's rows newest-first — the retention ceiling and the tenant summary.
+  index('waf_logs_route_created_idx').on(table.routeId, table.createdAt),
   index('waf_logs_tenant_idx').on(table.tenantId),
   index('waf_logs_created_idx').on(table.createdAt),
   // Keyset cursor for the auto-ban scheduler: (created_at, id) ordering with
