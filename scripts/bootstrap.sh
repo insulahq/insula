@@ -10801,6 +10801,25 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
     fi
     log "  apply attempt ${apply_attempt}/6 hit ${race_kind} — retrying in 10s..."
     sleep 10
+    # A webhook whose owner is crash-looping needs longer than 10s: kubelet's
+    # back-off doubles per restart, so six flat retries span about a minute. A
+    # fresh install died here when longhorn-manager exited on a settings
+    # conflict during its own start (a Longhorn race, longhorn#13015/#13204)
+    # and came back Ready after its fourth restart — minutes, not seconds.
+    # Wait (bounded) for the service the error names to have a ready endpoint.
+    local wh_svc
+    # `|| true`: most retriable errors name no webhook, and a failed grep in the
+    # substitution would end bootstrap under `set -euo pipefail`.
+    wh_svc=$(grep -oE 'https://[a-z0-9-]+\.[a-z0-9-]+\.svc' <<<"$apply_err" | head -n1 | sed 's#https://##; s#\.svc$##' || true)
+    if [[ -n "$wh_svc" ]]; then
+      local wh_name="${wh_svc%%.*}" wh_ns="${wh_svc#*.}" waited=0
+      until kctl -n "$wh_ns" get endpointslices -l "kubernetes.io/service-name=${wh_name}" \
+              -o jsonpath='{.items[*].endpoints[*].conditions.ready}' 2>/dev/null | grep -q true; do
+        (( waited >= 120 )) && break
+        sleep 5; waited=$((waited + 5))
+      done
+      log "  webhook service ${wh_ns}/${wh_name}: waited ${waited}s for a ready endpoint"
+    fi
   done
   if [[ "$apply_ok" != "true" ]]; then
     echo "$apply_err" >&2

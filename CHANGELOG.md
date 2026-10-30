@@ -216,6 +216,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `FLUX_VERSION` tag now, which does not move, and a test checks the k3s, Helm and Flux
   installer pins against upstream daily and on every `bootstrap.sh` change. Existing clusters
   were not affected.
+- **A fresh install no longer gives up while Longhorn's manager restarts.** longhorn-manager 1.13
+  can exit on a settings conflict during its own start (longhorn#13015) and is Ready again after a
+  few restarts; until then its admission webhook refuses every Longhorn object, and bootstrap's
+  six 10-second retries of the platform manifests ran out first, failing the install. On a
+  webhook error bootstrap now also waits, up to two minutes per retry, for that webhook's service
+  to have a ready endpoint.
 - **Bundle re-import's file manager image fell back to a repository that does not exist**
   (`ghcr.io/insulahq/file-manager`); it uses the platform's file-manager image resolver.
 
