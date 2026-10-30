@@ -18,7 +18,7 @@ COPY cmd ./cmd
 RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o sftp-serve ./cmd/sftp-serve
 
 # Stage 3: Runtime
-FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4
 # Package fixes published after the base image was built (an image is only
 # rebuilt when its sources change): take them at build time.
 RUN apk upgrade --no-cache \
