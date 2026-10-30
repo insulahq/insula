@@ -13,7 +13,7 @@
 # `npm install` hid that by re-resolving on alpine and quietly picking the musl
 # binding — the very non-reproducibility this change removes. The RUNTIME image
 # below is untouched (nginx:alpine); only static assets cross the boundary.
-FROM node:22-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS deps
+FROM node:25-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS deps
 WORKDIR /repo
 COPY package.json package-lock.json ./
 COPY packages/api-contracts/package.json packages/api-contracts/
