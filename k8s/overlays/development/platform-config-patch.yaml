@@ -18,7 +18,7 @@ data:
   public-url: "https://admin.${DOMAIN}"
   cors-origins: "https://admin.${DOMAIN},https://tenant.${DOMAIN}"
   # Per-tenant sidecar image — pull from GHCR on real clusters.
-  file-manager-image: "ghcr.io/insulahq/insula/file-manager:73d0413@sha256:9fbcceaa4468b664155c8e42547fdc97e642dbbb7e052a4403984c75b297cf63"
+  file-manager-image: "ghcr.io/insulahq/insula/file-manager:e0f6dea@sha256:175f4f172292678f21fbeee86d4e7be6c43d0ef81c2c6d5792d4123a27269138"
   # Private Worker — clients dial in to this WSS host with their token.
   # The wildcard A record `tunnels.${DOMAIN}` must point at cluster
   # ingress (set up at install time, no per-tenant DNS work needed).
