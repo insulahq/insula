@@ -120,6 +120,14 @@ def main() -> int:
             out.append(f"| {r.get('id')} | {r.get('tier')} | "
                        f"`{r.get('pinned')}` | `{r.get('latest')}` |")
         out.append("")
+    # Say what was not compared, so "current" is never read into a gap.
+    skipped = [r for r in latest if r.get("compared") is False and not str(r.get("note", "")).startswith("watch type 'first_party'")]
+    if skipped:
+        out.append(f"<details><summary>Not compared ({len(skipped)}) — check these by hand</summary>\n")
+        for r in sorted(skipped, key=lambda r: (str(r.get("tier")), r.get("id", ""))):
+            out.append(f"- **{r.get('id')}** `{r.get('pinned')}` — {r.get('note')}")
+        out.append("\n</details>\n")
+    out.append("_First-party images are covered by the weekly image scan (`image-cve-scan.yml`)._\n")
 
     out.append("\n---\n_Process: [docs/operations/COMPONENT_WATCH.md]"
                "(../blob/main/docs/operations/COMPONENT_WATCH.md)_")

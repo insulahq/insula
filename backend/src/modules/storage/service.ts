@@ -719,7 +719,7 @@ done
           tolerations: [{ operator: 'Exists' }],
           containers: [{
             name: 'purge',
-            image: 'rancher/k3s:v1.33.10-k3s1',
+            image: 'rancher/k3s:v1.36.5-k3s1',
             command: ['sh', '-c', script],
             volumeMounts: [{
               name: 'containerd-sock',

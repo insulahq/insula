@@ -48,6 +48,24 @@ check("render has the header comment", rendered.splitlines()[0].startswith("#"))
 check("render lists every tracked id", all(i in rendered for i in ids))
 check("render of empty ledger is header only", ign.render({}).strip().startswith("#") and len(ign.render({}).strip().splitlines()) == 1)
 
+import yaml
+scoped = {"entries": [
+    {"id": "CVE-2026-9", "status": "accepted"},
+    {"id": "CVE-2025-68121", "status": "not_affected", "trivy_scope": {"paths": ["usr/bin/kustomize"]}},
+    {"id": "GHSA-cccc", "aliases": ["CVE-2026-7"], "status": "accepted",
+     "trivy_scope": {"purls": ["pkg:pypi/certifi@2026.6.17"]}},
+]}
+check("a scoped entry is not waived everywhere", ign.tracked_ids(scoped) == ["CVE-2026-9"])
+check("the plain format leaves a scoped entry out", "CVE-2025-68121" not in ign.render(scoped))
+rules = yaml.safe_load(ign.render_yaml(scoped))["vulnerabilities"]
+by_id = {r["id"]: r for r in rules}
+check("yaml keeps the unscoped id bare", by_id["CVE-2026-9"] == {"id": "CVE-2026-9"})
+check("yaml scopes the id to its paths", by_id["CVE-2025-68121"]["paths"] == ["usr/bin/kustomize"])
+check("yaml scopes id + aliases to their purls",
+      by_id["GHSA-cccc"]["purls"] == ["pkg:pypi/certifi@2026.6.17"]
+      and by_id["CVE-2026-7"]["purls"] == ["pkg:pypi/certifi@2026.6.17"])
+check("yaml of an empty ledger has no rules", yaml.safe_load(ign.render_yaml({}))["vulnerabilities"] == [])
+
 # ── trivy-scan-summary ──
 report = {"ArtifactName": "docker.io/x/y:1", "Results": [
     {"Vulnerabilities": [
@@ -79,9 +97,17 @@ with tempfile.TemporaryDirectory() as d:
     with open(os.path.join(d, "img.json"), "w") as f:
         json.dump(report, f)
     md2, code2 = summ.summarise(d)
-    check("summarise with findings → exit 1", code2 == 1)
+    check("summarise with a CRITICAL → exit 4", code2 == 4)
+    check("summarise lists the CRITICAL id", "CVE-B" in md2)
     check("summarise reports the image name", "docker.io/x/y:1" in md2)
-    check("summarise flags the row", "⚠" in md2)
+    check("summarise flags a CRITICAL row", "🛑" in md2)
+    with tempfile.TemporaryDirectory() as d2:
+        with open(os.path.join(d2, "high.json"), "w") as f:
+            json.dump({"ArtifactName": "x/high:1", "Results": [{"Vulnerabilities": [
+                {"Severity": "HIGH", "VulnerabilityID": "CVE-H"}]}]}, f)
+        md_h, code_h = summ.summarise(d2, "First-party images")
+        check("summarise with HIGH only → exit 1", code_h == 1)
+        check("summarise uses the given title", "First-party images" in md_h)
     # unreadable / non-JSON report → row marked, still gated by real findings
     with open(os.path.join(d, "broken.json"), "w") as f:
         f.write("{not json")

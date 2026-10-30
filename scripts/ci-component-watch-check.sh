@@ -17,6 +17,10 @@
 #                 another version is drift, not coverage.
 #   4. SLA      — every `open` ledger entry that is KEV or critical AND past its
 #                 tier SLA MUST carry a non-empty `mitigation`.
+#   5. UPDATER  — .github/dependabot.yml uses no cooldown key GitHub rejects for
+#                 an ecosystem (one invalid key drops the whole block), and its
+#                 docker block covers every directory with a Dockerfile, so every
+#                 digest-pinned FROM has something that keeps it fresh.
 #
 # Process + tiering rubric: docs/operations/COMPONENT_WATCH.md  (ADR-050)
 # Exits non-zero on any violation. Pure-stdlib python3 (pyyaml); no network.
@@ -205,16 +209,21 @@ for var, val in sorted(boot_pins.items()):
 # containers). The route sign-in ran oauth2-proxy v7.6.0 — published
 # authentication bypasses — while this registry said v7.15.5, because the
 # second copy lived in TypeScript where nothing looked.
+# bootstrap.sh and the host migrations write manifests and Helm values too
+# (Traefik's init containers, install-time pods): scripts/lib/script-images.py.
 import subprocess
-rt = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "lib", "runtime-images.py"), REPO],
-                    capture_output=True, text=True)
-if rt.returncode != 0:
-    err(f"runtime-images.py failed: {rt.stderr.strip()[:300]}")
+rt_out = []
+for scanner in ("runtime-images.py", "script-images.py"):
+    rt = subprocess.run([sys.executable, os.path.join(REPO, "scripts", "lib", scanner), REPO],
+                        capture_output=True, text=True)
+    if rt.returncode != 0:
+        err(f"{scanner} failed: {rt.stderr.strip()[:300]}")
+    rt_out.append(rt.stdout)
 by_repo = {}
 for c in components:
     for r in (c.get("repos") or []):
         by_repo.setdefault(norm_repo(str(r)), []).append(c)
-for line in rt.stdout.splitlines():
+for line in "".join(rt_out).splitlines():
     if "\t" not in line:
         continue
     src_file, ref = line.split("\t", 1)
@@ -228,6 +237,8 @@ for line in rt.stdout.splitlines():
     for c in owners:
         allowed.add(str(c.get("pinned", "")))
         allowed.update(str(x) for x in (c.get("also_pinned") or []))
+    # An image tag cannot hold '+': k3s v1.36.5+k3s1 is the image rancher/k3s:v1.36.5-k3s1.
+    allowed.update({a.replace("+", "-") for a in allowed})
     if tag not in allowed:
         pins = ", ".join(f"{c['id']}={c.get('pinned')} ({c.get('pin_source')})" for c in owners)
         err(f"DRIFT — runtime image '{ref}' ({src_file}) is not the registry's version [{pins}]: "
@@ -254,6 +265,12 @@ for i, e in enumerate(entries):
         err(f"{eid}: invalid status '{e.get('status')}'")
     if e.get("status") == "accepted" and not e.get("review_by"):
         err(f"{eid}: status 'accepted' requires a review_by date")
+    scope = e.get("trivy_scope")
+    if scope is not None:
+        lists = {k: v for k, v in (scope.items() if isinstance(scope, dict) else []) if k in ("paths", "purls")}
+        if (not isinstance(scope, dict) or set(scope) - {"paths", "purls"} or not lists
+                or not all(isinstance(v, list) and v and all(isinstance(x, str) and x for x in v) for v in lists.values())):
+            err(f"{eid}: trivy_scope must be {{paths: [..], purls: [..]}} with non-empty string lists")
     # SLA clock
     if e.get("status") == "open" and (e.get("kev") or e.get("severity") == "critical"):
         tier = str(by_id.get(comp, {}).get("tier", ""))
@@ -273,6 +290,41 @@ for i, e in enumerate(entries):
             # or re-triage the entry (not_affected/accepted with review_by).
             err(f"{eid}: open {('KEV' if e.get('kev') else 'critical')} on tier-{tier} "
                 f"past {days}d SLA with no mitigation")
+
+# ── 5. UPDATER: Dependabot keeps every digest-pinned base fresh ─────────────────
+# GitHub rejected `cooldown.semver-major-days` for docker + github-actions; that
+# error dropped the docker block, and the updater never ran while every FROM
+# line sat on the digest of the day it was pinned (both panels shipped a
+# critical OpenSSL CVE for months). GitHub reports such errors only in the
+# repo's Insights tab, so they are checked here.
+import fnmatch
+NO_SEMVER_COOLDOWN = {"docker", "github-actions", "docker-compose", "terraform", "gitsubmodule"}
+dep_path = os.path.join(REPO, ".github", "dependabot.yml")
+dep = yaml.safe_load(open(dep_path)) if os.path.exists(dep_path) else {}
+docker_dirs = []
+for i, u in enumerate((dep or {}).get("updates") or []):
+    eco = u.get("package-ecosystem")
+    semver_keys = [k for k in (u.get("cooldown") or {}) if str(k).startswith("semver-")]
+    if eco in NO_SEMVER_COOLDOWN and semver_keys:
+        err(f"dependabot.yml updates[{i}] ({eco}): cooldown {semver_keys} is not supported for "
+            f"{eco} — GitHub drops the whole block; use default-days only")
+    if eco == "docker":
+        docker_dirs += [u["directory"]] if u.get("directory") else []
+        docker_dirs += list(u.get("directories") or [])
+dockerfile_dirs = []
+for dp, dns, fs in os.walk(REPO):
+    # Prune on path components RELATIVE to the repo: the repo itself may live
+    # under .claude/worktrees/, and `.github` is not `.git`.
+    dns[:] = [d for d in dns if d not in ("node_modules", ".git", ".claude", "dist")]
+    if "Dockerfile" in fs:
+        dockerfile_dirs.append(os.path.relpath(dp, REPO))
+dockerfile_dirs.sort()
+if not dockerfile_dirs:
+    err("dependabot coverage: found no Dockerfile at all — the walk is broken, not the repo")
+for d in dockerfile_dirs:
+    if not any(fnmatch.fnmatch("/" + d, pat.rstrip("/")) for pat in docker_dirs):
+        err(f"dependabot.yml: no docker updater covers {d}/Dockerfile — add the directory "
+            "(its digest-pinned FROM lines would never be refreshed)")
 
 # ── report ──────────────────────────────────────────────────────────────────────
 for w in warnings:

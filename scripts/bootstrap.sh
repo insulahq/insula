@@ -2670,9 +2670,15 @@ install_rclone_if_missing() {
     *) error "install_rclone_if_missing: unsupported arch '$(uname -m)'" ;;
   esac
   # Pinned to the same line the backup-rclone-shim DaemonSet runs
-  # (rclone/rclone:1.74.4) so host-side restore and pod-side upload speak an
-  # identical rclone. Bump both together.
-  local rclone_ver="v1.74.4"
+  # (rclone/rclone:1.75.2) so host-side restore and pod-side upload speak an
+  # identical rclone. Bump both together, with the checksums from the
+  # release's SHA256SUMS.
+  local rclone_ver="v1.75.2"
+  local rclone_sha
+  case "$arch" in
+    amd64) rclone_sha="349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702" ;;
+    arm64) rclone_sha="7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10" ;;
+  esac
   local base="rclone-${rclone_ver}-linux-${arch}"
   local url="https://github.com/rclone/rclone/releases/download/${rclone_ver}/${base}.zip"
   log "  rclone package not available — installing static binary ${rclone_ver}/${arch} from upstream..."
@@ -2681,6 +2687,10 @@ install_rclone_if_missing() {
   if ! curl --retry 3 --retry-delay 2 --retry-connrefused -fsSL "$url" -o "${tmpdir}/rclone.zip" 2>/dev/null; then
     rm -rf "$tmpdir"
     error "Failed to download rclone from ${url}. Check outbound HTTPS connectivity to github.com."
+  fi
+  if ! echo "${rclone_sha}  ${tmpdir}/rclone.zip" | sha256sum -c - >/dev/null 2>&1; then
+    rm -rf "$tmpdir"
+    error "rclone ${rclone_ver} download does not match its pinned SHA-256 — refusing to install it."
   fi
   # unzip is installed by install_packages_{apt,dnf} earlier in the run.
   unzip -q "${tmpdir}/rclone.zip" -d "$tmpdir"
@@ -9128,7 +9138,7 @@ spec:
   restartPolicy: Never
   containers:
   - name: provision
-    image: alpine:3.20
+    image: alpine:3.24
     envFrom:
       - secretRef:
           name: stalwart-admin-creds
@@ -9376,7 +9386,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: configure
-      image: alpine:3.20
+      image: alpine:3.24
       envFrom:
         - secretRef:
             name: stalwart-admin-creds
@@ -10001,7 +10011,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: acme
-      image: alpine:3.20
+      image: alpine:3.24
       envFrom:
         - secretRef:
             name: stalwart-admin-creds

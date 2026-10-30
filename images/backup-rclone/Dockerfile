@@ -33,24 +33,26 @@
 #   - Works on amd64 + arm64 (multi-arch GitHub Actions build)
 #
 # RCLONE VERSION:
-#   1.74.1 — pinned. SHA256 verified against the official release
-#   manifest. Bump requires re-running scripts/rclone-shim-eval/ to
-#   confirm performance + stability profile is unchanged.
+#   1.75.2 — pinned. SHA256 verified against the official release
+#   manifest. A bump reads the changelog for `serve s3` and the S3
+#   client, then runs a tenant backup + restore through the shim on DEV
+#   while watching the shim's memory. (scripts/rclone-shim-eval/ measures
+#   the `--vfs-cache-mode off` design that never shipped.)
 
 # ---- stage 1: download + verify rclone binary ------------------------
-# alpine digest pinned (mutable :3.20 tag would let a re-tag inject a
+# alpine digest pinned (a mutable :3.24 tag would let a re-tag inject a
 # different base layer; the digest is the trust anchor).
-FROM --platform=$BUILDPLATFORM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc AS rclone-fetch
+FROM --platform=$BUILDPLATFORM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS rclone-fetch
 
 ARG TARGETARCH
-ARG RCLONE_RELEASE=1.74.1
+ARG RCLONE_RELEASE=1.75.2
 
-# Real checksums from https://downloads.rclone.org/v1.74.1/SHA256SUMS
+# Real checksums from https://downloads.rclone.org/v1.75.2/SHA256SUMS
 # DO NOT EDIT without re-pinning to the actual SHA from the upstream
 # SHA256SUMS file. ENFORCED at build time; an unexpected binary aborts
 # the build.
-ARG RCLONE_SHA256_AMD64=67df3059a6233b6e32e604bcd637654bb294ff86291b65ede77123e94818d911
-ARG RCLONE_SHA256_ARM64=c816ed0e568de4dd1bba1a4d0cd47523d3dd54337dd5fde73f1b068857ecf877
+ARG RCLONE_SHA256_AMD64=349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
+ARG RCLONE_SHA256_ARM64=7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10
 
 RUN apk add --no-cache curl unzip ca-certificates
 
@@ -84,7 +86,7 @@ RUN set -eux; \
 
 # ---- stage 2: runtime image ------------------------------------------
 # alpine pinned by digest (same trust-anchor argument as stage 1).
-FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 # Install runtime essentials. R-X19 dropped kernel-mount helpers
 # (sshfs, cifs-utils, nfs-utils, fuse3) and versitygw — all backend
@@ -97,7 +99,8 @@ FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6
 #                     ssh-agent integration for some setups
 #   - tzdata: log timestamps in local time when configured
 #   - procps: pgrep for liveness probe in the shim role
-RUN apk add --no-cache \
+RUN apk upgrade --no-cache \
+ && apk add --no-cache \
         tini \
         ca-certificates \
         zstd \
@@ -142,4 +145,4 @@ LABEL org.opencontainers.image.source="https://github.com/insulahq/insula"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.vendor="Insula"
 LABEL insula.host/role="backup-rclone-shim"
-LABEL insula.host/rclone-version="1.74.1"
+LABEL insula.host/rclone-version="1.75.2"

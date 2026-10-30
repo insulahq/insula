@@ -82,7 +82,7 @@ RUN cargo build --release --locked \
 # libm, libpthread, libdl — exactly what librocksdb-sys needs and
 # nothing else. No shell, no package manager, no shell-injection
 # surface; the binary is the only entrypoint.
-FROM gcr.io/distroless/cc-debian12@sha256:e8e7ee4b8b106d4c5fde9e422a321b2b8a2d5cca546c97adcce927f3e1d36e36 AS runtime
+FROM gcr.io/distroless/cc-debian12@sha256:e5d81ddde149641e2a9ba55be4545bc125c67de07508b03ba4c22e6eb0ded5aa AS runtime
 
 COPY --from=build /build/target/release/rocksdb-secondary-checkpoint \
                   /usr/local/bin/rocksdb-secondary-checkpoint

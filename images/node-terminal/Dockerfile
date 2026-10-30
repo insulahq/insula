@@ -18,7 +18,7 @@
 # kubelet on every node that hosts a terminal session; `IfNotPresent`
 # pull policy in pod-spec keeps subsequent opens fast.
 
-FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 # util-linux provides: nsenter, lsns, unshare, mount, etc.
 # bash + coreutils: in-container debugging (rarely used; the shell
@@ -26,7 +26,8 @@ FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6
 # tini: cleanly reaps zombies if anything spawns under PID 1 of the
 #   pause container. Defence in depth — the pod typically holds
 #   only `sleep` as PID 1.
-RUN apk add --no-cache \
+RUN apk upgrade --no-cache \
+ && apk add --no-cache \
       util-linux \
       bash \
       coreutils \

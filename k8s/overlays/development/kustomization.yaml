@@ -60,10 +60,8 @@ resources:
   # storage (Phase 3.A.5), and the existing allow-mail-to-postgres
   # netpol already covers it (`from.namespaceSelector: mail` matches
   # every pod in mail ns including roundcube). No separate netpol.
-  # Public-facing Ingress for webmail.${DOMAIN} — base ships a
-  # local-CA dev-only ingress (k8s/base/roundcube-deployment.yaml line
-  # 69-86) wired for k8s-platform.test. Staging gets its own ingress
-  # with the LE prod cluster issuer.
+  # Public-facing Ingress for webmail.${DOMAIN}. Staging gets its own
+  # ingress with the LE prod cluster issuer.
   - webmail-ingress.yaml
   # Cut 3: staging-only override of Stalwart's default
   # per-IP submission throttle (5/sec). Mail HA stress harness sends

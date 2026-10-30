@@ -108,10 +108,10 @@ export function buildHaproxyDaemonSet(): Record<string, unknown> {
           containers: [
             {
               name: 'haproxy',
-              image: 'haproxy:2.9-alpine',
+              image: 'haproxy:3.4-alpine',
               imagePullPolicy: 'IfNotPresent',
               // SECURITY: runAsUser:0 + dropALL + NET_BIND_SERVICE. The
-              // haproxy:2.9-alpine image ends with `USER haproxy` (uid 99);
+              // haproxy image ends with `USER haproxy` (uid 99);
               // K8s adds caps to bounding but NOT effective for non-root.
               // Verified on staging that uid 99 fails to bind <1024. Root
               // inside the container with dropALL gives an empty effective
@@ -146,7 +146,7 @@ export function buildHaproxyDaemonSet(): Record<string, unknown> {
               ],
               // the old probe used `socat` to query the
               // haproxy admin socket. socat isn't installed in the
-              // haproxy:2.9-alpine image, so the probe was failing
+              // haproxy image, so the probe was failing
               // from second 5 onward and kubelet was killing the pod
               // after 30s — manifesting as a stable-looking DS that
                // CrashLoopBackOffs over a 9-minute span on staging.

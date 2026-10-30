@@ -167,6 +167,11 @@ jobs:
           sarif_file: trivy-results.sarif
           category: backup-rclone
 
+      - name: Trivy gate (untracked fixable CRITICAL)
+        uses: ./.github/actions/trivy-gate
+        with:
+          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+
       # ---- step 3: sign (only after smoke + push succeed) ----
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 

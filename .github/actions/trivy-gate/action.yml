@@ -1,0 +1,29 @@
+name: Trivy gate (untracked fixable CRITICAL)
+description: >-
+  Fails the job when the image has a CRITICAL vulnerability that has a fix and
+  that security/cve-ledger.yaml does not track (ledger waivers keep their
+  trivy_scope). The SARIF scan next to it only reports: its results sat in the
+  Security tab for months, including a critical OpenSSL CVE in both panels. Run
+  it in the job the pin job needs, so a failure keeps the image off DEV.
+inputs:
+  image-ref:
+    description: Image reference to scan
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Ledger → Trivy ignore file
+      shell: bash
+      run: |
+        python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user --quiet pyyaml
+        python3 scripts/cve-ledger-trivyignore.py --yaml security/cve-ledger.yaml > "$RUNNER_TEMP/trivyignore-ledger.yaml"
+    - name: Fail on an untracked fixable CRITICAL
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+      with:
+        image-ref: ${{ inputs.image-ref }}
+        scanners: vuln
+        severity: CRITICAL
+        ignore-unfixed: true
+        format: table
+        exit-code: '1'
+        trivyignores: ${{ runner.temp }}/trivyignore-ledger.yaml

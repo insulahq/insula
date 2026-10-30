@@ -84,6 +84,12 @@ jobs:
           sarif_file: trivy-results.sarif
           category: claim-validator
 
+      - name: Trivy gate (untracked fixable CRITICAL)
+        if: github.event_name != 'pull_request'
+        uses: ./.github/actions/trivy-gate
+        with:
+          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+
   # Pin the freshly-pushed image into the development overlay's platform-config,
   # AFTER the push, from the image's OWN workflow — pinning from a different
   # workflow is what caused the 2026-06-06 pull race. The backend resolves this

@@ -46,7 +46,7 @@ spec:
     - tunnels.${DOMAIN}
   issuerRef:
     # Substituted, never literal — matches every other platform Certificate
-    # (stalwart-mail/ingress-mgmt.yaml, roundcube-deployment.yaml) and
+    # (stalwart-mail/ingress-mgmt.yaml) and
     # platform-config's cluster-issuer-name. Pinned to Let's Encrypt prod, this
     # cert could never be issued on a private apex: HTTP-01 has no route from
     # the public ACME server, so tunnels.<apex> fell back to the Traefik default

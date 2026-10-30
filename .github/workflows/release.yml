@@ -71,6 +71,25 @@ jobs:
           push: true
           tags: ${{ env.IMAGE_PREFIX }}/tenant-panel:${{ steps.version.outputs.version }}
 
+      # These three are the images production runs. A release built from the
+      # same tree as a gated DEV build can still pick up a CRITICAL published
+      # since, so they are gated here too, before anything is signed or the
+      # GitHub release exists (a rerun after the fix publishes it).
+      - name: Trivy gate (backend)
+        uses: ./.github/actions/trivy-gate
+        with:
+          image-ref: ${{ env.IMAGE_PREFIX }}/backend:${{ steps.version.outputs.version }}
+
+      - name: Trivy gate (admin-panel)
+        uses: ./.github/actions/trivy-gate
+        with:
+          image-ref: ${{ env.IMAGE_PREFIX }}/admin-panel:${{ steps.version.outputs.version }}
+
+      - name: Trivy gate (tenant-panel)
+        uses: ./.github/actions/trivy-gate
+        with:
+          image-ref: ${{ env.IMAGE_PREFIX }}/tenant-panel:${{ steps.version.outputs.version }}
+
       # platform-ops operator CLI (ADR-045 / W17): build the self-contained Node
       # SEA binary for both arches and cosign-sign each (key-based, OFFLINE — no
       # Rekor upload, matching the bootstrap verify path). Uploaded as Release

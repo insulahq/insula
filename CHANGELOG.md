@@ -46,10 +46,63 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `bootstrap.sh`; images the backend writes into pods itself (helper Jobs, init containers,
   proxies) were invisible to both. `scripts/lib/runtime-images.py` lists them, the scan includes
   them, and the registry check now requires each to be registered at the registry's version
-  (a known second version is listed with its reason). Recorded so far: mail HAProxy on the 2.9
-  branch (end of life since 2025-03-21), busybox 1.36 in tenant workloads' init container,
-  rclone 1.74.1 in two helper Jobs, an nginx 1.27 fallback and an image-purge helper on k3s
-  v1.33 — each to be moved in a release of its own.
+  (a known second version is listed with its reason). The copies it found — mail HAProxy on the
+  end-of-life 2.9 branch, busybox 1.36, rclone 1.74.1, an nginx 1.27 fallback, a k3s v1.33
+  helper, Alpine 3.20 — all move in this release (below).
+- **Every first-party image is rebuilt on current bases.** Their `FROM` lines are pinned by
+  digest, and Dependabot's docker updater, which should refresh them, never ran (see *the
+  trackers* below), so each image kept the base of the day it was pinned:
+  - both panels ran Alpine 3.21 with OpenSSL 3.3.3 (critical CVE-2026-31789) plus fixable expat,
+    libpng and brotli CVEs; they now build on `nginx:1.30-alpine`;
+  - backup-rclone, private-worker-agent, sftp-gateway and node-terminal ran Alpine 3.20, out of
+    support since April; all Alpine bases are 3.24;
+  - the Go images (firewall/host-config reconcilers, security probe, SFTP gateway, file
+    manager's SFTP server) are rebuilt on the current Go 1.26 patch release, distroless and
+    Debian bases are refreshed;
+  - Alpine and Debian final stages upgrade their packages at build time, so a fix published
+    after the base image was built is taken at the next build instead of the base's next one.
+- **rclone 1.75.2 everywhere** (the backup shim's binary, the etcd-snapshot CronJob, the speedtest
+  and streaming-store Jobs, bootstrap's fallback binary, which is now SHA-256 verified). The
+  backup image carried 1.74.1 with three critical advisories — in `rclone rcd` and the
+  `serve s3` auth proxy, neither of which the shim runs (it serves with `--auth-key`) — and the
+  1.75 releases fix a run of path-escape and header-leak issues besides. 1.75 streams multipart
+  uploads through `rclone serve s3` instead of buffering each object in memory, and bounds its
+  per-object metadata; the shim's flags are unchanged.
+- **Backend: fast-jwt 6.3.5 and handlebars 4.7.10.** fast-jwt 6.2.4 allowed RSA→HS256 algorithm
+  confusion and handlebars 4.7.9 two template-injection paths; neither applies to this platform's
+  use (sessions are HS256 with a secret; templates are strings, without
+  `allowProtoMethodsByDefault`), but both are critical advisories in the shipped image.
+- **Upstream images with critical advisories moved:** `alpine/k8s` 1.33.13 → 1.36.5 (the cluster's
+  k3s minor) for the backup / GC / plugin-guard CronJobs, Reloader v1.4.0 → v1.4.22, the WAF test
+  backend `traefik/whoami` → v1.12.0. The two criticals left in `alpine/k8s` sit in a bundled
+  `kustomize` no job runs and in aws-cli's certifi (it still trusts a root with compromised
+  intermediates, as does every Alpine CA bundle until Mozilla's distrust ships); both are
+  ledger entries scoped to that file / package version. Traefik's two init containers still run
+  `alpine/k8s` 1.33.13: they are Helm values, and changing them rolls Traefik on every node, so
+  they move with the next Traefik values change (their criticals are unreachable there and are
+  ledger entries scoped to that image's packages). The image scan and the registry now also read
+  the images `bootstrap.sh` and the host migrations write, where these had been invisible.
+- **Mail HAProxy 2.9 → 3.4 (LTS, supported to 2031).** Same configuration; the config now says
+  `uid 0` / `gid 0` explicitly (the DaemonSet binds the mail ports as root with only
+  `NET_BIND_SERVICE`), which 3.x otherwise warns about at every start.
+- **The mail standby's rsync server runs the platform's `tenant-backup-tools` image** (rsync
+  3.5.0, the same rsync the standby pulls with). `instrumentisto/rsync-ssh` stopped publishing
+  builds, leaving its rsync on known CVEs.
+- **The trackers fail and report instead of only recording:**
+  - each first-party image build (and the release build of backend and both panels) fails on a
+    CRITICAL that has a fix and no ledger entry (`.github/actions/trivy-gate`), before the
+    image is pinned to development or the release is published;
+  - the weekly image scan covers the first-party images production pins as well as the upstream
+    ones, counts only findings with a fix, fails on a CRITICAL, and keeps a rolling issue
+    (*Image scan — fixable HIGH/CRITICAL*) instead of a run summary nobody opened;
+  - Dependabot's docker block is valid again (GitHub rejects `semver-major-days` for docker and
+    github-actions and dropped the block), and `ci-component-watch-check.sh` fails on that key
+    and on a Dockerfile directory no updater covers;
+  - a ledger waiver can be scoped to file paths or package URLs (`trivy_scope`), so waiving a
+    CVE for one unused binary no longer hides it in every image;
+  - the component watch's *behind upstream* list compares stable tags shaped like the pin (a Helm
+    chart version is no longer read as behind its app, a pre-release is never an upgrade) and
+    lists what it could not compare.
 
 ### Fixed
 
@@ -100,6 +153,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **Upgrading restarts the mail server once and rolls the mail HAProxy DaemonSet:** the Stalwart
+  pod's rsync sidecar changes image, and HAProxy changes version and configuration. On a
+  single-server installation mail connections drop for the length of a Stalwart restart.
+- **busybox is one tag (1.37) everywhere,** including the init container of catalog apps and
+  custom containers. A changed init image reaches each app at its next save or redeploy — the
+  upgrade itself restarts no tenant app.
+- **Removed the unused `k8s/base/roundcube-deployment.yaml`** (nothing applied it; the Flux-managed
+  `k8s/base/roundcube/` is the webmail). It still counted in the image scan with 26 criticals.
 - **Route sign-in settings that never applied are gone:** the provider's *Authentication Method*
   and *Response Type* (oauth2-proxy detects the first and supports only the code flow) and the
   per-route scopes (one sign-in service holds one scope list; the provider's scopes apply).

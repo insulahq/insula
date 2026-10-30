@@ -8,6 +8,10 @@ FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf
 
 WORKDIR /app
 
+# Package fixes published after the base image was built (an image is only
+# rebuilt when its sources change): take them at build time.
+RUN apk upgrade --no-cache
+
 COPY server.mjs ./server.mjs
 
 # Run as non-root. uid/gid 65532 matches the distroless / oauth2-proxy

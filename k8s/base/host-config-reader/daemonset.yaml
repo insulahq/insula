@@ -61,7 +61,7 @@ spec:
           # cheapest way to close the only realistic compromise vector (a
           # malicious image layer) for an otherwise no-network, no-caps pod.
           # Bump the digest with the tag when busybox is rev'd (CVE-watch).
-          image: busybox:1.37@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+          image: busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
           imagePullPolicy: IfNotPresent
           # Write (and keep fresh) the scoped kubeconfig on the host. The
           # projected SA token is kubelet-rotated; re-render every 10 min so the

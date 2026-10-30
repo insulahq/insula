@@ -509,6 +509,6 @@ describe('generateTenantManifests', () => {
 
     const dep = yaml.load(depFiles[0].content) as Record<string, unknown>;
     const containers = (dep as any).spec.template.spec.containers;
-    expect(containers[0].image).toBe('nginx:1.27-alpine');
+    expect(containers[0].image).toBe('nginx:1.31-alpine');
   });
 });

@@ -16,11 +16,13 @@ ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 # Plus the images platform-api creates at runtime — string literals in the
 # backend that no manifest shows (scripts/lib/runtime-images.py): the route
 # sign-in ran an oauth2-proxy with published authentication bypasses that this
-# scan never saw.
+# scan never saw — and the ones bootstrap.sh and the host migrations write into
+# manifests and Helm values (scripts/lib/script-images.py).
 {
   grep -rhoE 'image:[[:space:]]*"?[^"[:space:]]+' "$ROOT/k8s/base" 2>/dev/null \
     | sed -E 's/^image:[[:space:]]*"?//'
   python3 "$ROOT/scripts/lib/runtime-images.py" "$ROOT" | cut -f2
+  python3 "$ROOT/scripts/lib/script-images.py" "$ROOT" | cut -f2
 } \
   | grep -E '[:@]' \
   | grep -vE '^ghcr\.io/insulahq/' \
