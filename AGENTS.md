@@ -83,6 +83,25 @@ The hard-won rules. Violating these is how past sessions broke things.
   name, admin password) to `example.test` / `<apex>` in commits, PRs, and comments.
 - No hardcoded secrets — env vars or the secret manager only. Validate required secrets at startup.
 
+### Keeping components current (standing rule)
+Version bumps are routine work, not a separate project. The trackers find what is due; they do
+not bump the pins in manifests, `bootstrap.sh` or the backend — the session does.
+- **At the start of every work session, and before any release cut**, read the two rolling
+  issues: *🔭 Component watch — open items* (label `component-watch`) and *🛡 Image scan —
+  fixable HIGH/CRITICAL* (label `image-scan`). For a current view run
+  `GITHUB_TOKEN=$(gh auth token) scripts/component-watch.sh --latest`.
+- **Fold in every component that is `←behind`** (out of its soak, not held) as part of the
+  session's work: read the upstream tag diff, not only the notes; give a `bootstrap.sh` pin its
+  host migration (`scripts/new-host-migration.sh`); test on DEV, and on staging for host
+  migrations; write the CHANGELOG entry; update `security/components.yaml`.
+- **Respect the soak and the holds.** A release younger than 7 days (14 for a new major) waits
+  unless it fixes a security advisory that affects us. A `watch.hold` keeps its version until its
+  reason no longer holds — check the reason, lift the hold in the same change.
+- **A fixable CRITICAL in the image scan** is upgraded away, or triaged in
+  `security/cve-ledger.yaml` with the reachability check behind the verdict, scoped
+  (`trivy_scope`) to the image it was checked for.
+- Cutting the release that ships the bumps still needs the operator's OK.
+
 ### Build & local-dev gotchas
 - `packages/api-contracts` rebuild needs **`tsc --build --force`** — a plain `npm run build` honors
   a stale `tsbuildinfo` and emits **0 files**.
