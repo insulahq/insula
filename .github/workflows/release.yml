@@ -71,6 +71,54 @@ jobs:
           push: true
           tags: ${{ env.IMAGE_PREFIX }}/tenant-panel:${{ steps.version.outputs.version }}
 
+      # These three are the images production runs. A release built from the
+      # same tree as a gated DEV build can still pick up a CRITICAL published
+      # since, so they are gated here too, before anything is signed or the
+      # GitHub release exists (a rerun after the fix publishes it).
+      - name: Trivy gate (backend)
+        uses: ./.github/actions/trivy-gate
+        with:
+          image-ref: ${{ env.IMAGE_PREFIX }}/backend:${{ steps.version.outputs.version }}
+
+      - name: Trivy gate (admin-panel)
+        uses: ./.github/actions/trivy-gate
+        with:
+          image-ref: ${{ env.IMAGE_PREFIX }}/admin-panel:${{ steps.version.outputs.version }}
+
+      - name: Trivy gate (tenant-panel)
+        uses: ./.github/actions/trivy-gate
+        with:
+          image-ref: ${{ env.IMAGE_PREFIX }}/tenant-panel:${{ steps.version.outputs.version }}
+
+      # The private-worker agent: the one platform image that runs OUTSIDE the
+      # cluster, on tenants' own hardware, from a snippet that names `:latest`.
+      # Built here from the tag (amd64 + arm64 — home boxes), gated, and only
+      # then — on a stable release — moved to `latest`. development pushes
+      # `edge` (ci-private-worker-agent.yml); `latest` used to follow every
+      # development build, so tenants ran unreleased agents.
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: images/private-worker-agent
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE_PREFIX }}/private-worker-agent:${{ steps.version.outputs.version }}
+
+      - name: Trivy gate (private-worker-agent)
+        uses: ./.github/actions/trivy-gate
+        with:
+          image-ref: ${{ env.IMAGE_PREFIX }}/private-worker-agent:${{ steps.version.outputs.version }}
+
+      - name: Move private-worker-agent:latest to this release (stable only)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: |
+          docker buildx imagetools create \
+            -t "${IMAGE_PREFIX}/private-worker-agent:latest" \
+            "${IMAGE_PREFIX}/private-worker-agent:${{ steps.version.outputs.version }}"
+
       # platform-ops operator CLI (ADR-045 / W17): build the self-contained Node
       # SEA binary for both arches and cosign-sign each (key-based, OFFLINE — no
       # Rekor upload, matching the bootstrap verify path). Uploaded as Release

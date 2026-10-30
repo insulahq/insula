@@ -120,47 +120,8 @@ PY
     ;;
 
   --latest)
-    python3 - <<'PY'
-import os, yaml, json, urllib.request
-REPO=os.environ["REPO_ROOT"]
-reg=yaml.safe_load(open(f"{REPO}/security/components.yaml"))
-tok=os.environ.get("GITHUB_TOKEN","")
-def latest(repo):
-    url=f"https://api.github.com/repos/{repo}/releases/latest"
-    req=urllib.request.Request(url, headers={"Accept":"application/vnd.github+json",
-        **({"Authorization":f"Bearer {tok}"} if tok else {})})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            return json.load(r).get("tag_name")
-    except Exception:
-        # fall back to tags (some projects don't cut "releases")
-        try:
-            url=f"https://api.github.com/repos/{repo}/tags"
-            req=urllib.request.Request(url, headers={"Accept":"application/vnd.github+json",
-                **({"Authorization":f"Bearer {tok}"} if tok else {})})
-            with urllib.request.urlopen(req, timeout=15) as r:
-                t=json.load(r); return t[0]["name"] if t else None
-        except Exception as e:
-            return f"(error: {e})"
-rows=[]
-for c in reg.get("components") or []:
-    w=c.get("watch") or {}
-    if w.get("type")!="github_releases": continue
-    repo=w.get("repo");
-    if not repo: continue
-    up=latest(repo); pin=str(c.get("pinned",""))
-    behind = up and not str(up).lstrip("v").startswith(pin.lstrip("v").split("-")[0]) and "error" not in str(up)
-    rows.append({"id":c["id"],"tier":c["tier"],"repo":repo,"pinned":pin,"latest":up,"behind":bool(behind)})
-if os.environ.get("CW_JSON"):
-    print(json.dumps(rows, indent=2)); raise SystemExit
-print(f"{'COMPONENT':<28} {'PINNED':<26} {'UPSTREAM':<26} ")
-print("-"*82)
-for r in sorted(rows, key=lambda r:(not r["behind"], r["tier"], r["id"])):
-    mark="←behind" if r["behind"] else ""
-    print(f"{r['id']:<28} {str(r['pinned'])[:25]:<26} {str(r['latest'])[:25]:<26} {mark}")
-print(f"\n{sum(1 for r in rows if r['behind'])}/{len(rows)} component(s) behind upstream "
-      f"({'authenticated' if tok else 'unauthenticated — set GITHUB_TOKEN to avoid rate limits'})")
-PY
+    # Pin-shaped, stable-only comparison: scripts/lib/component-latest.py.
+    python3 "$REPO_ROOT/scripts/lib/component-latest.py" "$REPO_ROOT" ${CW_JSON:+--json}
     ;;
 
   --changelog)

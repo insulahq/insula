@@ -49,7 +49,7 @@ spec:
         # Stalwart. DinD-only, drops in production where the public
         # DNS works in-cluster.
         - name: dev-stalwart-bridge
-          image: alpine/socat:1.8.0.0
+          image: alpine/socat:1.8.1.3
           args:
             - "-d"
             - "TCP-LISTEN:2011,fork,reuseaddr,bind=127.0.0.1"

@@ -70,6 +70,8 @@ function fakeBatch(
      *  every existing cluster was in before the reconciler converged them. */
     jobTemplateLabels?: boolean;
   priorityClass?: false;
+    /** The live `rclone` container's image. */
+    rcloneImage?: string;
   } = {},
 ) {
   const reconcileAnno =
@@ -113,7 +115,7 @@ function fakeBatch(
         : { priorityClassName: 'platform-maintenance' };
       if (opts.prefixEnv !== undefined) {
         podSpec.containers = [
-          { name: 'rclone', env: [{ name: 'SHIM_PREFIX', value: opts.prefixEnv }] },
+          { name: 'rclone', image: opts.rcloneImage ?? 'rclone/rclone:1.75.2', env: [{ name: 'SHIM_PREFIX', value: opts.prefixEnv }] },
         ];
       }
       if (Object.keys(podSpec).length > 0) {
@@ -264,6 +266,16 @@ describe('reconcileEtcdCronJob', () => {
   // platform-critical, alone among the eight. Asserting the OP here, not just
   // the helper that computes it, because a value the reconciler never patches
   // in is a value that never reaches the cluster.
+  it('never patches the image, even when it differs (platform-api-workload-scope would 403 the whole patch)', async () => {
+    const db = fakeDb([{ enabled: 1 }], 'cid-123');
+    const batch = fakeBatch({ live: false, prefixEnv: 'etcd/cid-123', rcloneImage: 'rclone/rclone:1.74.4', priorityClass: false });
+    const r = await reconcileEtcdCronJob(db, { batch } as never, silentLog());
+
+    expect(r.patched).toBe(true);
+    const body = (batch.patchNamespacedCronJob.mock.calls[0][0] as { body: Array<{ path: string }> }).body;
+    expect(body.map((o) => o.path)).toEqual(['/spec/jobTemplate/spec/template/spec/priorityClassName']);
+  });
+
   it('writes the maintenance priority class onto a cluster that still lacks it', async () => {
     const db = fakeDb([{ enabled: 1 }], 'cid-123');
     const batch = fakeBatch({ live: false, prefixEnv: 'etcd/cid-123', priorityClass: false });

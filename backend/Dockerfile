@@ -105,7 +105,10 @@ FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf
 # It's the same rclone the shim uses, but run one-shot against a single
 # rendered target so CIFS/SMB sources are readable (the native S3/SSH stores
 # can't do SMB). Config is passed via RCLONE_CONFIG_* env, never a file.
-RUN apk add --no-cache openssl age postgresql18-client restic openssh-client rclone
+# Package fixes published after the base image was built (an image is only
+# rebuilt when its sources change): take them at build time.
+RUN apk upgrade --no-cache \
+ && apk add --no-cache openssl age postgresql18-client restic openssh-client rclone
 
 WORKDIR /app
 

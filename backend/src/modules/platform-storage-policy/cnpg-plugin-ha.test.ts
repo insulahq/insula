@@ -46,7 +46,7 @@ describe('CNPG plugin HA', () => {
     // so this test proves the kustomize patch is load-bearing rather than
     // passing vacuously against a manifest that never had the field.
     const vendored = readFileSync(
-      resolve(cnpgDir, 'plugin-barman-cloud-v0.13.0.yaml'),
+      resolve(cnpgDir, 'plugin-barman-cloud-v0.15.1.yaml'),
       'utf8',
     );
     expect(vendored).toMatch(/^\s*replicas:\s*1\s*$/m);

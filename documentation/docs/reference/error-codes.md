@@ -62,6 +62,11 @@ a field the endpoint does not accept.
 | `PROVISION_QUOTA_EXCEEDED` | — | The tenant's plan quota is exhausted |
 | `PROVISION_OVER_CAPACITY` | — | The cluster can't fit the workload right now |
 | `CERT_RATE_LIMITED` | — | Let's Encrypt rate limit hit — wait before retrying ([troubleshooting](../operator/troubleshooting.md)) |
+| `OIDC_GATE_NOT_READY` | 409 | A route's sign-in settings are saved but its sign-in service did not start; the message says why (issuer, certificate, reachability). The route answers with an error until it starts |
+| `OIDC_PROVIDER_CONFLICT` | 409 | Another protected route of the tenant signs in with a different provider; all of a tenant's protected routes use the same one |
+| `OIDC_WILDCARD_ROUTE` | 422 | Sign-in cannot protect a wildcard route — add a route per host |
+| `PROVIDER_IN_USE` | 409 | The OIDC provider is still used by routes; remove their sign-in first |
+| `CLIENT_ACCESS_DENIED` | 403 | A tenant token named another tenant's id in the URL |
 | `CERT_DNS_PROPAGATION` | — | Certificate waiting on DNS propagation |
 
 ## Cluster operations

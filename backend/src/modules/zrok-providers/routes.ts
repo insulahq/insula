@@ -1,15 +1,18 @@
 /**
  * HTTP routes for zrok provider CRUD.
  *
- *   GET    /api/v1/tenants/:cid/zrok-providers
- *   POST   /api/v1/tenants/:cid/zrok-providers
- *   PATCH  /api/v1/tenants/:cid/zrok-providers/:pid
- *   DELETE /api/v1/tenants/:cid/zrok-providers/:pid
- *   POST   /api/v1/tenants/:cid/zrok-providers/:pid/test
+ *   GET    /api/v1/tenants/:tenantId/zrok-providers
+ *   POST   /api/v1/tenants/:tenantId/zrok-providers
+ *   PATCH  /api/v1/tenants/:tenantId/zrok-providers/:pid
+ *   DELETE /api/v1/tenants/:tenantId/zrok-providers/:pid
+ *   POST   /api/v1/tenants/:tenantId/zrok-providers/:pid/test
+ *
+ * Auth: tenant_admin / super_admin / admin; a tenant token reaches its own
+ * tenant only (requireTenantAccess), and handlers scope rows by that id.
  */
 
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
 import { zrokProviderInputSchema } from '@insula/api-contracts';
@@ -34,40 +37,43 @@ export async function zrokProvidersRoutes(app: FastifyInstance): Promise<void> {
 
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin', 'tenant_admin'));
+  // The caller's own tenant only: a tenant token naming another tenant's id
+  // in the path is refused before any handler runs.
+  app.addHook('onRequest', requireTenantAccess());
 
-  app.get('/tenants/:cid/zrok-providers', async (request) => {
-    const { cid } = request.params as { cid: string };
-    const rows = await listProviders(app.db, cid);
+  app.get('/tenants/:tenantId/zrok-providers', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const rows = await listProviders(app.db, tenantId);
     return success(rows);
   });
 
-  app.post('/tenants/:cid/zrok-providers', async (request) => {
-    const { cid } = request.params as { cid: string };
+  app.post('/tenants/:tenantId/zrok-providers', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
     const parsed = zrokProviderInputSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
-    const created = await createProvider(app.db, encryptionKey, cid, parsed.data);
+    const created = await createProvider(app.db, encryptionKey, tenantId, parsed.data);
     return success(created);
   });
 
-  app.patch('/tenants/:cid/zrok-providers/:pid', async (request) => {
-    const { cid, pid } = request.params as { cid: string; pid: string };
+  app.patch('/tenants/:tenantId/zrok-providers/:pid', async (request) => {
+    const { tenantId, pid } = request.params as { tenantId: string; pid: string };
     const parsed = zrokProviderInputSchema.partial().safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
-    const updated = await updateProvider(app.db, encryptionKey, cid, pid, parsed.data);
+    const updated = await updateProvider(app.db, encryptionKey, tenantId, pid, parsed.data);
     return success(updated);
   });
 
-  app.delete('/tenants/:cid/zrok-providers/:pid', async (request) => {
-    const { cid, pid } = request.params as { cid: string; pid: string };
-    await deleteProvider(app.db, cid, pid);
+  app.delete('/tenants/:tenantId/zrok-providers/:pid', async (request) => {
+    const { tenantId, pid } = request.params as { tenantId: string; pid: string };
+    await deleteProvider(app.db, tenantId, pid);
     return success({ deleted: true });
   });
 
-  app.post('/tenants/:cid/zrok-providers/:pid/test', async (request) => {
+  app.post('/tenants/:tenantId/zrok-providers/:pid/test', async (request) => {
     const body = request.body as { controllerUrl?: string } | null;
     const url = body?.controllerUrl;
     if (!url) {

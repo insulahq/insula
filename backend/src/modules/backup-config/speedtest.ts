@@ -24,7 +24,7 @@ import { requireWritableTarget } from './writable-guard.js';
 import { rcloneObscure } from '../storage-lifecycle/rclone-obscure.js';
 import type { SpeedtestResult } from '@insula/api-contracts';
 
-const RCLONE_IMAGE = 'rclone/rclone:1.74.1';
+const RCLONE_IMAGE = 'rclone/rclone:1.75.2';
 const DEFAULT_PAYLOAD_BYTES = 100 * 1024 * 1024; // 100 MB
 const SPEEDTEST_JOB_TIMEOUT_MS = 30 * 60 * 1000; // 30 min hard cap
 const PLATFORM_NAMESPACE = process.env.PLATFORM_NAMESPACE ?? 'platform';
@@ -506,7 +506,7 @@ function buildRcloneEnv(
  * (or `SPEEDTEST_FAILED=<reason>`) which the platform-api parses out
  * of the pod log.
  *
- * Runs under busybox `sh` inside `rclone/rclone:1.74.1`. Two non-obvious
+ * Runs under busybox `sh` inside `rclone/rclone:1.75.2`. Two non-obvious
  * busybox constraints drive the shape of this script:
  *
  * 1. `date +%s%N` drops `%N` silently and emits only whole seconds —

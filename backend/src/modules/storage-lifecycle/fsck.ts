@@ -88,7 +88,7 @@ export interface FsckResult {
 // busybox ships only the `fsck` stub. Alpine is small + the cluster
 // pulls Alpine for several other tools; `apk add xfsprogs e2fsprogs`
 // is fast.
-const DEFAULT_JOB_IMAGE = 'alpine:3.20';
+const DEFAULT_JOB_IMAGE = 'alpine:3.24';
 const DEFAULT_JOB_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 

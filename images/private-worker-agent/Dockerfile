@@ -12,9 +12,7 @@
 #   https://github.com/fatedier/frp/releases/download/v0.71.1/frp_sha256_checksums.txt
 # Bump FRP_VERSION + matching SHA-256s together when upgrading.
 
-ARG ALPINE_VERSION=3.20
-
-FROM alpine:${ALPINE_VERSION} AS frpc-fetch
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS frpc-fetch
 
 ARG TARGETARCH
 ARG FRP_VERSION=0.71.1
@@ -44,7 +42,7 @@ RUN set -eu; \
 # ---------------------------------------------------------------------------
 # Runtime image
 # ---------------------------------------------------------------------------
-FROM alpine:${ALPINE_VERSION}
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 # bash         - entrypoint shell (uses set -euo pipefail, arrays)
 # coreutils    - GNU base64 (Alpine's busybox base64 lacks reliable padding handling)
@@ -52,7 +50,10 @@ FROM alpine:${ALPINE_VERSION}
 # tini         - PID 1 / signal forwarding so SIGTERM reaches frpc cleanly
 # jq           - safe JSON parsing (no shell-eval of token blob)
 # curl         - optional, useful for in-container debugging (small)
-RUN apk add --no-cache \
+# Package fixes published after the base image was built (an image is only
+# rebuilt when its sources change): take them at build time.
+RUN apk upgrade --no-cache \
+ && apk add --no-cache \
       bash \
       coreutils \
       ca-certificates \

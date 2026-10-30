@@ -104,6 +104,26 @@ if [[ -d "$HM_ROOT" ]]; then
     elif [[ "$(printf '%s\n%s\n' "$DESCRIPTION_REQUIRED_FROM" "$version" | sort -V | head -n1)" == "$DESCRIPTION_REQUIRED_FROM" ]]; then
       fail "$rel: missing '# description: <one line for the upgrade review>' (required from ${DESCRIPTION_REQUIRED_FROM}, ADR-064)"
     fi
+    # `# superseded-images: <image>… (<version>/<NNNN> …)` — a shipped script
+    # whose image a LATER migration replaces (the body is frozen, so the old
+    # reference stays). scripts/lib/script-images.py leaves those images out of
+    # the scan and the registry; the header must name images the body really
+    # writes and a migration that exists, or it would hide a live image.
+    while IFS= read -r line; do
+      sup="${line#\# superseded-images:}"
+      ref=$(grep -oE '\(([0-9]+\.[0-9]+\.[0-9]+)/([0-9]{4})' <<<"$sup" | head -1 | tr -d '(')
+      if [[ -z "$ref" ]] || ! compgen -G "$HM_ROOT/${ref}-*.sh" >/dev/null; then
+        fail "$rel: '# superseded-images:' must name an existing migration as (<version>/<NNNN>), got: ${sup}"
+      fi
+      for img in ${sup%%(*}; do
+        grep -v '^[[:space:]]*#' "$f" | grep -qF -- "$img" \
+          || fail "$rel: '# superseded-images:' lists $img, which the script does not write"
+        # …and the named migration really replaces it: it must not write it too.
+        if [[ -n "$ref" ]] && cat "$HM_ROOT/${ref}"-*.sh 2>/dev/null | grep -v '^[[:space:]]*#' | grep -qF -- "$img"; then
+          fail "$rel: '# superseded-images:' says ${ref} replaces $img, but ${ref} writes it as well"
+        fi
+      done
+    done < <(grep '^# superseded-images:' "$f")
     if command -v shellcheck >/dev/null 2>&1; then
       shellcheck -S warning "$f" || fail "$rel: shellcheck reported issues"
     fi

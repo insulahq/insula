@@ -38,6 +38,7 @@ import { readArchiveMeta, ArchiveMetaError } from './import-archive-meta.js';
 import { buildImportPreflight, type ImportScope } from './import-preflight.js';
 import { runBundleImport, buildImportLabel, type ImportRunnerDeps } from './import-orchestrator.js';
 import { sweepAbandonedImportUploads, type FileManagerGateway } from './import-reaper.js';
+import { getFileManagerImage as resolveFileManagerImage } from '../file-manager/image.js';
 
 /** Resolve a provisioned tenant's namespace, or fail with a legible error. */
 async function resolveTenantNamespace(app: FastifyInstance, tenantId: string): Promise<string> {
@@ -49,10 +50,12 @@ async function resolveTenantNamespace(app: FastifyInstance, tenantId: string): P
   return tenant.kubernetesNamespace;
 }
 
+// The config value first, then the platform's one resolver. This used to end in a
+// literal of its own naming insulahq/file-manager, a repository that does not
+// exist (the image lives under insulahq/insula/).
 function getFileManagerImage(app: FastifyInstance): string {
   return ((app.config as Record<string, unknown>).FILE_MANAGER_IMAGE as string | undefined)
-    ?? process.env.FILE_MANAGER_IMAGE
-    ?? 'ghcr.io/insulahq/file-manager:latest';
+    ?? resolveFileManagerImage();
 }
 
 function kubeconfigPathOf(app: FastifyInstance): string | undefined {

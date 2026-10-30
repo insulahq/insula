@@ -1,9 +1,10 @@
-# Stakater Reloader v1.4.0
+# Stakater Reloader v1.4.22
 #
 # Watches Secrets and ConfigMaps for changes and triggers rolling restarts
 # of annotated Deployments, StatefulSets, and DaemonSets.
 #
-# Sourced from:
+# Sourced from (the manifest; the image is v1.4.22, whose upstream RBAC adds
+# batch Jobs/CronJobs — left out here, see --ignored-workload-types below):
 #   https://raw.githubusercontent.com/stakater/Reloader/v1.4.0/deployments/kubernetes/reloader.yaml
 #
 # Patched for this platform:
@@ -124,7 +125,7 @@ spec:
           value: "true"
           effect: NoSchedule
       containers:
-        - image: ghcr.io/stakater/reloader:v1.4.0
+        - image: ghcr.io/stakater/reloader:v1.4.22
           imagePullPolicy: IfNotPresent
           name: reloader-reloader
           args:
@@ -132,6 +133,10 @@ spec:
             # Without this flag, Reloader would watch every Secret and
             # trigger on any change, which is too broad for a shared cluster.
             - "--reload-strategy=annotations"
+            # The ClusterRole above grants no batch access, and nothing here
+            # asks Reloader to restart a Job or CronJob: say so, or every
+            # change logs a permission error for those kinds.
+            - "--ignored-workload-types=jobs,cronjobs"
           ports:
             - name: http
               containerPort: 9090

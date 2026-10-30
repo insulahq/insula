@@ -86,8 +86,11 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     if (tenant?.kubernetesNamespace) {
       try {
         await reconcileIngress(app.db, k8s, tenantId, tenant.kubernetesNamespace);
-      } catch {
-        // Non-blocking
+      } catch (err) {
+        // Non-blocking — the route is saved and the next reconcile retries —
+        // but never silent: a swallowed failure here is a site that 404s
+        // with nothing in any log.
+        app.log.warn({ err, tenantId }, 'ingress-routes: ingress reconcile failed (non-blocking)');
       }
     }
   };

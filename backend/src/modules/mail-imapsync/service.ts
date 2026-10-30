@@ -51,7 +51,7 @@ import {
 // manifest digests), so this pin changed no behaviour — it only made the
 // behaviour reproducible. Bump deliberately after checking upstream release
 // notes; imapsync moves fast and talks to tenant mailboxes.
-export const DEFAULT_IMAPSYNC_IMAGE = 'gilleslamiral/imapsync:2.319';
+export const DEFAULT_IMAPSYNC_IMAGE = 'gilleslamiral/imapsync:2.326';
 
 // Stalwart's master principal password, as stored by bootstrap.sh in the
 // `mail` namespace. The imapsync Job runs in that same namespace, so it

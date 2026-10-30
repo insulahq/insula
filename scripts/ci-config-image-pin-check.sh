@@ -51,7 +51,7 @@ PINNED=(
 # to PINNED once it has. Listing them here rather than in PINNED keeps CI honest
 # in the gap instead of red for a reason nobody can act on.
 declare -A PENDING=(
-  [private-worker-agent-image]="NOT in-cluster — this string is interpolated into the docker run / compose snippet TENANTS run on their own hardware (private-workers/service.ts). Digest-pinning it pins what we hand out: tenants would never pick up a fix without re-copying, and a registry GC would strand them. Product decision, not hygiene."
+  [private-worker-agent-image]="NOT in-cluster — this string is interpolated into the docker run / compose snippet TENANTS run on their own hardware (private-workers/service.ts). Digest-pinning it pins what we hand out: tenants would never pick up a fix without re-copying, and a registry GC would strand them. Product decision, not hygiene. The moving tag is :latest = the newest STABLE release (release.yml builds the agent at the tag and moves it); development builds publish :edge."
   [private-worker-frps-image]="THIRD-PARTY upstream (fatedier/frps), version-pinned not digest-pinned. We do not build it, so a digest means a manual bump on every upstream release with no CI to produce it — a different trade-off from our own images. Revisit with the Dependabot docker ecosystem."
 )
 

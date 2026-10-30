@@ -60,6 +60,11 @@ data:
       log stdout format raw local0
       maxconn 4096
       stats socket /tmp/haproxy.sock mode 600 level admin
+      # Root on purpose (haproxy-builder.ts): uid 99 cannot bind the mail
+      # ports under hostNetwork, and the container keeps only
+      # NET_BIND_SERVICE. Saying so stops 3.x warning at every start.
+      uid 0
+      gid 0
 
     defaults
       log global

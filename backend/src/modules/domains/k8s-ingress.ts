@@ -770,6 +770,7 @@ export async function reconcileIngress(
   await gcOrphanMiddlewares(db, k8s, tenantId, namespace, expectedMiddlewareNames);
 
   await reconcileSites(db, k8s, tenantId, namespace);
+  await reconcileSignInGate(db, k8s, tenantId);
 }
 
 /**
@@ -790,6 +791,29 @@ async function reconcileSites(db: Database, k8s: K8sClients, tenantId: string, n
     await reconcileTenantSites(db, { core: k8s.core, apps: k8s.apps }, tenantId, namespace, process.env.KUBECONFIG_PATH);
   } catch (err) {
     console.warn('[ingress-reconcile] multihost site reconcile failed (non-blocking)', err);
+  }
+}
+
+/**
+ * The tenant's sign-in gate (ingress-auth/reconciler.ts), for the same reason
+ * as site config: a protected route deleted, renamed, given a www redirect or
+ * pointed elsewhere, and a tenant archived or deleted, all reach this
+ * function, and the gate's hosts, policy and existence follow its routes. The
+ * gate's own `/oauth2` router is part of the route's IngressRoute already;
+ * this keeps the proxy in step (and removes it with the last protected route).
+ *
+ * Non-blocking, like reconcileSites: the routers above are already applied,
+ * and the gate is reconciled again on the next change and every startup.
+ */
+async function reconcileSignInGate(db: Database, k8s: K8sClients, tenantId: string): Promise<void> {
+  const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY;
+  if (!encryptionKey) return;
+  try {
+    const { reconcileTenant } = await import('../ingress-auth/reconciler.js');
+    const out = await reconcileTenant({ db, k8s, encryptionKey }, tenantId);
+    if (out.error) console.warn(`[ingress-reconcile] sign-in gate for tenant ${tenantId}: ${out.error}`);
+  } catch (err) {
+    console.warn('[ingress-reconcile] sign-in gate reconcile failed (non-blocking)', err);
   }
 }
 
@@ -820,6 +844,7 @@ async function removeTenantIngress(
   await gcOrphanMtls(k8s, namespace, new Set(), new Set());
   await gcOrphanMiddlewares(db, k8s, tenantId, namespace, new Set());
   await reconcileSites(db, k8s, tenantId, namespace);
+  await reconcileSignInGate(db, k8s, tenantId);
 }
 
 // ─── Force-HTTPS HTTP-entrypoint routes ────────────────────────────────────

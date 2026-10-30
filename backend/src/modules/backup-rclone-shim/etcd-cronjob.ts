@@ -108,6 +108,13 @@ const JOB_TEMPLATE_ANNOTATIONS: Readonly<Record<string, string>> = {
 export const ETCD_CRONJOB_PRIORITY_CLASS = 'platform-maintenance';
 const PRIORITY_CLASS_POINTER = '/spec/jobTemplate/spec/template/spec/priorityClassName';
 
+// The IMAGE is the one seed-then-disown field this reconciler must not converge:
+// ValidatingAdmissionPolicy platform-api-workload-scope forbids platform-api to
+// change a system workload's image (by design — a stolen API token must not swap
+// one), and a JSON patch is atomic, so an image op here would 403 every other op
+// with it. A release that moves this CronJob's image ships a host migration that
+// sets it with the node's admin kubeconfig (2026.10.23/0001 for rclone 1.75.2).
+
 /**
  * The priority class to write, or null when the live object already carries it.
  */

@@ -70,7 +70,7 @@ spec:
       # the traefik namespace (key `bouncer-key`). The plugin supports
       # loading from a file via this special path.
       crowdsecLapiKeyFile: /var/run/secrets/crowdsec/bouncer-key
-      # Use stream mode (NOT the v1.6.0 default `live`). Live mode
+      # Use stream mode (NOT the plugin default `live`). Live mode
       # queries LAPI per-request when an IP isn't cached — fine for a
       # small allowlist but unusable with the community blocklist (~6M
       # IPs) because every cache miss is a round-trip. Stream mode

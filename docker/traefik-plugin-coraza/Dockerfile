@@ -25,7 +25,7 @@
 # Update: bump TRAEFIK_PLUGIN_CORAZA_IMAGE + CORAZA_WASM_VERSION in scripts/bootstrap.sh.
 
 # ─── Builder: download + verify WASM binary ──────────────────────────
-FROM alpine:3.19@sha256:6baf43584bcb78f2e5847d1de515f23499913ac9f12bdf834811a3145eb11ca1 AS download
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS download
 ARG CORAZA_WASM_VERSION=v0.3.0
 RUN apk add --no-cache curl unzip
 WORKDIR /staging
@@ -37,7 +37,7 @@ RUN curl -fsSL "https://github.com/corazawaf/coraza-http-wasm/releases/download/
  && ls -la coraza-http-wasm.wasm
 
 # ─── Runtime: busybox + WASM payload ─────────────────────────────────
-FROM busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+FROM busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
 
 # Stage the plugin tree at the path Traefik expects to find local
 # plugins (/plugins-local/src/<moduleName>/). The same path appears

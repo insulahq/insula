@@ -4,6 +4,7 @@
 #             strategic merge keyed on that name, so re-applying is a no-op.
 # allow-paths: (none — cluster-only change via kube-API, touches no host file)
 # blocks-on-failure: no    # ADR-056: nothing later depends on this. A node that
+# superseded-images: alpine/k8s:1.33.13 (2026.10.23/0004 moves these init containers to curlimages/curl; a node replaying this script runs that one after it)
 #                          # misses it keeps the old behaviour plus the
 #                          # traefik-plugin-guard CronJob backstop.
 set -euo pipefail

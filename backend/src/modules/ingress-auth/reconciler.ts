@@ -1,75 +1,68 @@
 /**
- * Per-tenant oauth2-proxy + claim-validator reconciler.
+ * The tenant's sign-in gate: one oauth2-proxy per tenant namespace, with the
+ * route-gate sidecar (images/claim-validator) in the same pod.
  *
- * Lifecycle:
- *   - First ingress in a tenant namespace gets `enabled=true` →
- *     ensureTenantProxy() materialises a Deployment (oauth2-proxy +
- *     claim-validator sidecar), Service, ConfigMap, Secret in that
- *     namespace, and updates the ConfigMap with the per-route OIDC
- *     config + claim rules.
- *   - Subsequent ingresses just update the ConfigMap; the Deployment
- *     is unchanged. ConfigMap reload is picked up by:
- *       * oauth2-proxy via SIGHUP / mounted-config refresh
- *       * claim-validator via fs.watch
- *   - Last ingress disables → tearDownTenantProxy() deletes the four
- *     resources cleanly.
+ *   Traefik ForwardAuth (per protected route)
+ *     → gate :4181/auth?route=<route id>   applies the route's policy
+ *       → oauth2-proxy :4180/               static://202 upstream: 202 when
+ *                                           signed in, else 302 to the IdP
+ *   Traefik child route Host(<host>) && PathPrefix(/oauth2)
+ *     → oauth2-proxy :4180                  /oauth2/start, /callback, /sign_out
  *
- * Idempotent: every resource write is a server-side apply via
- * replace-or-create. Failures on individual sub-resources do NOT
- * leave the cluster in a broken state — the next reconciler tick
- * re-runs the same operations.
+ * The child route is built with the route itself (annotation-sync.ts), inside
+ * the route's own IngressRoute, so it carries the route's TLS options (mTLS),
+ * WAF, CrowdSec and allow-list Middlewares and disappears with the route.
  *
- * NOTE on the K8s tenant API style: we call `replaceNamespacedX` /
- * `createNamespacedX` from `@kubernetes/client-node` v1, which
- * requires the args to be passed as an object literal (not positional)
- * and the body cast as an unknown type — the library's signatures
- * are defined for runtime flexibility, not for compile-time safety.
+ * Everything that configures the proxy (client credentials, cookie secret,
+ * policy, extra CA) is hashed onto the pod template, so any change rolls the
+ * pod; oauth2-proxy reads its configuration only at startup. Credentials live
+ * in a Secret read as OAUTH2_PROXY_* environment variables; every other setting
+ * is a command-line argument (an array, so no value can inject another option).
  */
 
-import * as k8s from '@kubernetes/client-node';
-import { eq, sql } from 'drizzle-orm';
+import crypto from 'node:crypto';
+import { eq, inArray } from 'drizzle-orm';
+import type * as k8s from '@kubernetes/client-node';
 import {
-  tenantOauth2ProxyState,
-  tenants,
   ingressAuthConfigs,
-  ingressRoutes,
-  domains,
+  tenants,
+  tenantOauth2ProxyState,
 } from '../../db/schema.js';
 import {
   getOrCreateTenantCookieSecret,
-  listEnabledForTenant as listEnabledForTenantJoined,
+  listEnabledForTenant,
+  splitList,
   type EnabledIngressAuthRow,
 } from './service.js';
 import { decryptProviderSecret } from './providers-service.js';
-import { hostAndPathMatch } from '../ingress-routes/traefik-types.js';
 import type { Database } from '../../db/index.js';
-import type { IngressAuthConfig, IngressClaimRule } from '../../db/schema.js';
 import { resolvePlatformImage } from '../../shared/platform-images.js';
 import { loadTenantPodPlacement, platformPodPlacement, type TenantPodPlacement } from '../tenant-placement/pod-placement.js';
 import { carryQuiesceHold } from '../../shared/scale-deployment.js';
+import { DEFAULT_OAUTH2_PROXY_IMAGE } from '../oidc/panel-proxy.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
+import { canProtectHost } from './hosts.js';
 
-const PROXY_NAME = 'oauth2-proxy';
-const PROXY_PORT = 4180;
-const VALIDATOR_PORT = 4181;
+export const GATE_NAME = 'oauth2-proxy';
+export const PROXY_PORT = 4180;
+export const GATE_PORT = 4181;
 const CONFIGMAP_NAME = 'oauth2-proxy-config';
 const SECRET_NAME = 'oauth2-proxy-secrets';
+/** Removed: the `/oauth2/*` route now lives in the route's own IngressRoute. */
+const LEGACY_PASSTHROUGH_NAME = 'oauth2-proxy-passthrough';
+const CONFIG_HASH_ANNOTATION = 'insula.host/config-hash';
+const APP_LABEL = { 'app.kubernetes.io/name': 'oauth2-proxy' };
+const COOKIE_NAME = '_insula_gate';
+const CA_DIR = '/etc/oauth2-proxy/ca';
+const POLICY_DIR = '/etc/route-gate';
+/** bootstrap.sh --trust-ca writes this; platform-api trusts it too (NODE_EXTRA_CA_CERTS). */
+const EXTRA_CA_SECRET = 'platform-extra-ca-trust';
+const EXTRA_CA_KEY = 'ca-bundle.crt';
+const PLATFORM_NAMESPACE = process.env.PLATFORM_NAMESPACE ?? 'platform';
 
-// Sibling Ingress that exposes /oauth2/* without the auth_request gate.
-// Required because the tenant Ingress carries `auth-url`/`auth-signin`
-// annotations that gate every path on the host — including the
-// /oauth2/start redirect target itself, which would otherwise loop.
-// NGINX Ingress merges Ingresses by host into separate location blocks,
-// each inheriting its OWN Ingress's annotations, so the path=/oauth2
-// rule on this passthrough Ingress is not gated by auth_request.
-const PASSTHROUGH_INGRESS_NAME = 'oauth2-proxy-passthrough';
-
-// Image tags. The claim-validator image is built+pushed by the GHA
-// workflow at .github/workflows/ci-claim-validator.yml. The
-// oauth2-proxy image is the upstream community release used elsewhere
-// in this codebase for the platform-side admin gate.
-const OAUTH2_PROXY_IMAGE = process.env.OAUTH2_PROXY_IMAGE
-  ?? 'quay.io/oauth2-proxy/oauth2-proxy:v7.6.0';
-const CLAIM_VALIDATOR_IMAGE = resolvePlatformImage('claim-validator');
+/** Same release as the panels' gate (oidc/panel-proxy.ts), which a test ties to k8s/base. */
+const OAUTH2_PROXY_IMAGE = process.env.OAUTH2_PROXY_IMAGE ?? DEFAULT_OAUTH2_PROXY_IMAGE;
+const GATE_IMAGE = resolvePlatformImage('claim-validator');
 
 export interface IngressAuthTenants {
   readonly core: k8s.CoreV1Api;
@@ -82,568 +75,583 @@ export interface ReconcileDeps {
   readonly db: Database;
   readonly k8s: IngressAuthTenants;
   readonly encryptionKey: string;
+  /** Serialises reconciles of one tenant across replicas; tests pass a plain call. */
+  readonly lock?: <T>(tenantId: string, fn: () => Promise<T>) => Promise<T>;
 }
 
 /**
- * Top-level entry point: reconcile a single tenant's oauth2-proxy
- * resources to match the current set of enabled ingress_auth_configs.
- *
- * Returns an outcome that the caller can log / surface in lastError
- * back to the UI. Never throws — all errors are captured into the
- * outcome.
+ * One reconcile of a tenant's gate at a time, cluster-wide: a reconcile that
+ * read "no protected route" must not tear down a gate a concurrent save just
+ * built. A run lock on the scheduler-lease table; waits for the holder.
  */
+async function tenantGateLock<T>(db: Database, tenantId: string, fn: () => Promise<T>): Promise<T> {
+  const deadline = Date.now() + 120_000;
+  for (;;) {
+    const out = await withSchedulerLease(db, `sign-in-gate:${tenantId}`, 180_000, fn, { release: true });
+    if (out.ran) return out.value;
+    if (Date.now() >= deadline) throw new Error('another change to this tenant\'s sign-in is still being applied; try again');
+    await new Promise((r) => setTimeout(r, 1_000));
+  }
+}
+
 export interface ReconcileOutcome {
   readonly tenantId: string;
   readonly namespace: string;
-  readonly action: 'provisioned' | 'updated' | 'torn_down' | 'noop';
+  readonly action: 'provisioned' | 'updated' | 'unchanged' | 'torn_down' | 'noop';
   readonly enabledIngresses: number;
+  /** Why the gate is not serving, in words the tenant can act on. */
   readonly error: string | null;
+  /** The proxy's last log lines when it failed to start. */
+  readonly proxyLog?: string;
 }
 
-export async function reconcileTenant(
-  deps: ReconcileDeps,
-  tenantId: string,
-): Promise<ReconcileOutcome> {
-  const namespace = await getTenantNamespace(deps.db, tenantId);
-  if (!namespace) {
-    return {
-      tenantId,
-      namespace: '',
-      action: 'noop',
-      enabledIngresses: 0,
-      error: 'tenant not found',
+// ─── Pure builders (exported for tests) ──────────────────────────────────────
+
+/** Groups may contain spaces ("Domain Admins"): split on commas, semicolons and newlines only. */
+export function splitGroups(value: string | null | undefined): string[] {
+  return (value ?? '').split(/[,;\n]+/).map((s) => s.trim()).filter(Boolean);
+}
+
+/** The gate's policy file: one entry per protected route, keyed by the route id the Middleware sends. */
+export function buildGatePolicy(rows: ReadonlyArray<EnabledIngressAuthRow>): string {
+  const out: Record<string, unknown> = {};
+  for (const { cfg } of rows) {
+    out[cfg.ingressRouteId] = {
+      emails: splitList(cfg.allowedEmails),
+      emailDomains: splitList(cfg.allowedEmailDomains),
+      groups: splitGroups(cfg.allowedGroups),
+      claimRules: cfg.claimRules ?? [],
+      redirect: cfg.postLoginRedirectUrl ?? null,
+      headers: {
+        user: cfg.passUserHeaders,
+        groups: cfg.setXauthrequest,
+        accessToken: cfg.passAccessToken,
+        idToken: cfg.passIdToken,
+        authorization: cfg.passAuthorizationHeader,
+      },
     };
-  }
-
-  const enabled = await listEnabledForTenantJoined(deps.db, tenantId);
-  try {
-    if (enabled.length === 0) {
-      const wasProvisioned = await tearDownTenantProxy(deps, tenantId, namespace);
-      return {
-        tenantId,
-        namespace,
-        action: wasProvisioned ? 'torn_down' : 'noop',
-        enabledIngresses: 0,
-        error: null,
-      };
-    }
-    const action = await ensureTenantProxy(deps, tenantId, namespace, enabled);
-    return {
-      tenantId,
-      namespace,
-      action,
-      enabledIngresses: enabled.length,
-      error: null,
-    };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await markStateError(deps.db, tenantId, msg);
-    return {
-      tenantId,
-      namespace,
-      action: 'noop',
-      enabledIngresses: enabled.length,
-      error: msg,
-    };
-  }
-}
-
-// Backward-compat re-export for callers that only need the list.
-export { listEnabledForTenantJoined as listEnabledForTenant };
-
-async function getTenantNamespace(
-  db: Database,
-  tenantId: string,
-): Promise<string | null> {
-  const [row] = await db
-    .select({ ns: tenants.kubernetesNamespace })
-    .from(tenants)
-    .where(eq(tenants.id, tenantId));
-  return row?.ns ?? null;
-}
-
-async function markStateError(
-  db: Database,
-  tenantId: string,
-  error: string,
-): Promise<void> {
-  await db
-    .update(tenantOauth2ProxyState)
-    .set({ lastError: error })
-    .where(eq(tenantOauth2ProxyState.tenantId, tenantId));
-}
-
-/** Build the single oauth2_proxy.cfg ConfigMap key from the enabled
- *  ingress set. oauth2-proxy supports multiple --upstream lines and
- *  one set of OIDC settings per process; for a per-CLIENT proxy we
- *  serve all of that client's ingresses with the SAME OIDC config
- *  (the FIRST enabled ingress's row).
- *
- *  This is a pragmatic constraint of the per-tenant architecture —
- *  if a client wants different OIDC providers per ingress, they can
- *  request a per-ingress proxy in v2. Documented in the contract
- *  doc so the UI can show a warning when a second ingress under the
- *  same tenant uses a different issuer URL.
- */
-function buildOauth2ProxyConfig(
-  primary: EnabledIngressAuthRow,
-  cookieSecret: string,
-  clientSecret: string,
-): string {
-  // oauth2-proxy reads TOML. Booleans MUST be unquoted, strings MUST
-  // be quoted. Durations are strings (`"3600s"`).
-  const { cfg, provider, hostname } = primary;
-  const lines: string[] = [];
-  // Strip trailing slash from issuer URL — many IdPs (Zitadel,
-  // Keycloak) return the bare hostname without a trailing slash in
-  // discovery, and oauth2-proxy refuses to start on mismatch.
-  const normalisedIssuer = provider.issuerUrl.replace(/\/+$/, '');
-  lines.push(`provider="oidc"`);
-  lines.push(`oidc_issuer_url="${normalisedIssuer}"`);
-  lines.push(`client_id="${provider.oauthClientId}"`);
-  lines.push(`client_secret="${clientSecret}"`);
-  if (provider.usePkce) {
-    lines.push(`code_challenge_method="S256"`);
-  }
-  // Scopes: ingress override wins; fall back to provider's default.
-  const scopes = cfg.scopesOverride ?? provider.defaultScopes;
-  lines.push(`scope="${scopes}"`);
-  lines.push(`cookie_secret="${cookieSecret}"`);
-  lines.push(`cookie_secure=true`);
-  lines.push(`cookie_httponly=true`);
-  lines.push(`cookie_samesite="lax"`);
-  lines.push(`cookie_expire="${cfg.cookieExpireSeconds}s"`);
-  lines.push(`cookie_refresh="${cfg.cookieRefreshSeconds}s"`);
-  if (cfg.cookieDomain) {
-    lines.push(`cookie_domains=["${cfg.cookieDomain}"]`);
-  }
-  lines.push(`pass_authorization_header=${cfg.passAuthorizationHeader}`);
-  lines.push(`pass_access_token=${cfg.passAccessToken}`);
-  lines.push(`set_authorization_header=${cfg.passAuthorizationHeader}`);
-  lines.push(`set_xauthrequest=${cfg.setXauthrequest}`);
-  lines.push(`pass_user_headers=${cfg.passUserHeaders}`);
-  lines.push(`reverse_proxy=true`);
-  lines.push(`whitelist_domains=["${hostname}"]`);
-  lines.push(`email_domains=["*"]`);
-  return lines.join('\n') + '\n';
-}
-
-function buildClaimRulesJson(
-  configs: ReadonlyArray<EnabledIngressAuthRow>,
-): string {
-  const out: Record<string, ReadonlyArray<IngressClaimRule>> = {};
-  for (const { cfg } of configs) {
-    if (cfg.claimRules && cfg.claimRules.length > 0) {
-      out[cfg.id] = cfg.claimRules;
-    }
   }
   return JSON.stringify(out, null, 2);
 }
 
 /**
- * True when at least one enabled auth config under the tenant has a
- * non-empty claimRules array. Drives whether the claim-validator
- * sidecar is deployed: when false, the sidecar is omitted from the
- * Deployment and the auth-url annotation bypasses it (points at
- * oauth2-proxy:4180/oauth2/auth directly). See annotation-sync.ts.
+ * Session settings are the proxy's, shared by every route: the strictest of
+ * the routes' values applies (shortest expiry; shortest non-zero refresh, kept
+ * below the expiry, which oauth2-proxy requires).
  */
-export function tenantNeedsClaimValidator(
-  configs: ReadonlyArray<EnabledIngressAuthRow>,
-): boolean {
-  return configs.some(({ cfg }) => cfg.claimRules && cfg.claimRules.length > 0);
+export function sessionSettings(rows: ReadonlyArray<EnabledIngressAuthRow>): { expire: number; refresh: number } {
+  const expire = Math.min(...rows.map((r) => r.cfg.cookieExpireSeconds));
+  const refreshes = rows.map((r) => r.cfg.cookieRefreshSeconds).filter((s) => s > 0);
+  const refresh = refreshes.length > 0 ? Math.min(...refreshes) : 0;
+  return { expire, refresh: refresh >= expire ? 0 : refresh };
 }
 
-async function ensureTenantProxy(
+const unique = (xs: ReadonlyArray<string>): string[] => [...new Set(xs)];
+
+export interface GateArgsOptions {
+  readonly withExtraCa: boolean;
+}
+
+/** oauth2-proxy's command line. Pure. */
+export function buildGateArgs(rows: ReadonlyArray<EnabledIngressAuthRow>, opts: GateArgsOptions): string[] {
+  const provider = rows[0]!.provider;
+  const hosts = unique(rows.map((r) => r.host));
+  // URL.host keeps a non-default port, which --whitelist-domain must name too.
+  // One unparseable legacy value must not take the tenant's whole gate down.
+  const redirectHosts = rows
+    .map((r) => {
+      try {
+        return r.cfg.postLoginRedirectUrl ? new URL(r.cfg.postLoginRedirectUrl).host : null;
+      } catch {
+        return null;
+      }
+    })
+    .filter((h): h is string => !!h);
+  // A cookie domain on any route: name one for every host, or a host without
+  // one would get the shortest listed domain — one it does not belong to.
+  const cookieDomains = rows.some((r) => r.cfg.cookieDomain)
+    ? unique(rows.map((r) => r.cfg.cookieDomain?.replace(/^\./, '') ?? r.host)).sort((a, b) => b.length - a.length)
+    : [];
+  const { expire, refresh } = sessionSettings(rows);
+  return [
+    `--http-address=0.0.0.0:${PROXY_PORT}`,
+    // A signed-in request to `/` answers 202 — what the gate sidecar asks.
+    '--upstream=static://202',
+    '--provider=oidc',
+    `--scope=${provider.defaultScopes}`,
+    // Who may pass is each route's policy, applied by the gate sidecar.
+    '--email-domain=*',
+    // Straight to the identity provider, no "Sign in with OpenID Connect" page.
+    '--skip-provider-button=true',
+    // The default `force` makes the IdP ask for consent on every sign-in.
+    '--approval-prompt=auto',
+    // Callback and post-login URL come from the forwarded host: one proxy, many hosts.
+    '--reverse-proxy=true',
+    '--set-xauthrequest=true',
+    '--pass-access-token=true',
+    // Authorization: Bearer <ID token> in the answer — the gate reads claims from it.
+    '--set-authorization-header=true',
+    `--cookie-name=${COOKIE_NAME}`,
+    '--cookie-secure=true',
+    '--cookie-samesite=lax',
+    `--cookie-expire=${expire}s`,
+    `--cookie-refresh=${refresh}s`,
+    ...unique([...hosts, ...redirectHosts]).map((h) => `--whitelist-domain=${h}`),
+    ...cookieDomains.map((d) => `--cookie-domain=${d}`),
+    ...(provider.usePkce ? ['--code-challenge-method=S256'] : []),
+    ...(opts.withExtraCa
+      ? [`--provider-ca-file=${CA_DIR}/${EXTRA_CA_KEY}`, '--use-system-trust-store=true']
+      : []),
+    '--silence-ping-logging=true',
+  ];
+}
+
+/** The Secret's data: what oauth2-proxy reads from OAUTH2_PROXY_* variables. Pure. */
+export function buildGateSecretData(
+  rows: ReadonlyArray<EnabledIngressAuthRow>,
+  clientSecret: string,
+  cookieSecret: string,
+): Record<string, string> {
+  const provider = rows[0]!.provider;
+  return {
+    OAUTH2_PROXY_OIDC_ISSUER_URL: provider.issuerUrl,
+    OAUTH2_PROXY_CLIENT_ID: provider.oauthClientId,
+    OAUTH2_PROXY_CLIENT_SECRET: clientSecret,
+    OAUTH2_PROXY_COOKIE_SECRET: cookieSecret,
+  };
+}
+
+export interface GateMaterial {
+  readonly secretData: Record<string, string>;
+  readonly configMapData: Record<string, string>;
+  readonly args: string[];
+}
+
+/** Everything whose change must restart the pod. Pure. */
+export function gateConfigHash(m: GateMaterial): string {
+  return crypto.createHash('sha256')
+    .update(JSON.stringify([m.secretData, m.configMapData, m.args, OAUTH2_PROXY_IMAGE, GATE_IMAGE]))
+    .digest('hex').slice(0, 32);
+}
+
+/** Pure — exported for tests. */
+export function buildGateDeployment(
+  namespace: string,
+  m: GateMaterial,
+  placement: TenantPodPlacement,
+): k8s.V1Deployment {
+  const withCa = EXTRA_CA_KEY in m.configMapData;
+  const hardened: k8s.V1SecurityContext = {
+    allowPrivilegeEscalation: false,
+    readOnlyRootFilesystem: true,
+    capabilities: { drop: ['ALL'] },
+  };
+  return {
+    apiVersion: 'apps/v1',
+    kind: 'Deployment',
+    metadata: { name: GATE_NAME, namespace, labels: { ...APP_LABEL, 'app.kubernetes.io/managed-by': 'platform-api' } },
+    spec: {
+      replicas: 1,
+      selector: { matchLabels: APP_LABEL },
+      template: {
+        metadata: { labels: APP_LABEL, annotations: { [CONFIG_HASH_ANNOTATION]: gateConfigHash(m) } },
+        spec: {
+          // The tenant's pin and the overhead class: neither charged to the
+          // tenant's quota nor making it look drifted (tenant-placement).
+          ...platformPodPlacement(placement),
+          automountServiceAccountToken: false,
+          securityContext: {
+            runAsNonRoot: true,
+            runAsUser: 65532,
+            runAsGroup: 65532,
+            seccompProfile: { type: 'RuntimeDefault' },
+          },
+          volumes: [
+            // The whole directory, not a subPath: a subPath never sees an update.
+            { name: 'policy', configMap: { name: CONFIGMAP_NAME, items: [{ key: 'policy.json', path: 'policy.json' }] } },
+            ...(withCa
+              ? [{ name: 'ca', configMap: { name: CONFIGMAP_NAME, items: [{ key: EXTRA_CA_KEY, path: EXTRA_CA_KEY }] } }]
+              : []),
+          ],
+          containers: [
+            {
+              name: 'oauth2-proxy',
+              image: OAUTH2_PROXY_IMAGE,
+              args: m.args,
+              envFrom: [{ secretRef: { name: SECRET_NAME } }],
+              ports: [{ containerPort: PROXY_PORT, name: 'proxy' }],
+              ...(withCa ? { volumeMounts: [{ name: 'ca', mountPath: CA_DIR, readOnly: true }] } : {}),
+              resources: { requests: { cpu: '10m', memory: '32Mi' }, limits: { memory: '128Mi' } },
+              readinessProbe: { httpGet: { path: '/ping', port: PROXY_PORT }, initialDelaySeconds: 2, periodSeconds: 5 },
+              livenessProbe: { httpGet: { path: '/ping', port: PROXY_PORT }, initialDelaySeconds: 10, periodSeconds: 30 },
+              securityContext: hardened,
+            },
+            {
+              name: 'route-gate',
+              image: GATE_IMAGE,
+              env: [
+                { name: 'PORT', value: String(GATE_PORT) },
+                { name: 'OAUTH2_PROXY_HOST', value: '127.0.0.1' },
+                { name: 'OAUTH2_PROXY_PORT', value: String(PROXY_PORT) },
+                { name: 'POLICY_PATH', value: `${POLICY_DIR}/policy.json` },
+              ],
+              ports: [{ containerPort: GATE_PORT, name: 'gate' }],
+              volumeMounts: [{ name: 'policy', mountPath: POLICY_DIR, readOnly: true }],
+              resources: { requests: { cpu: '5m', memory: '24Mi' }, limits: { memory: '96Mi' } },
+              // /ready fails while no policy is loaded: every request would be refused.
+              readinessProbe: { httpGet: { path: '/ready', port: GATE_PORT }, initialDelaySeconds: 1, periodSeconds: 5 },
+              livenessProbe: { httpGet: { path: '/ping', port: GATE_PORT }, initialDelaySeconds: 5, periodSeconds: 30 },
+              securityContext: hardened,
+            },
+          ],
+        },
+      },
+    },
+  };
+}
+
+// ─── Reconcile ───────────────────────────────────────────────────────────────
+
+async function tenantNamespace(db: Database, tenantId: string): Promise<string | null> {
+  const [row] = await db.select({ ns: tenants.kubernetesNamespace }).from(tenants).where(eq(tenants.id, tenantId));
+  return row?.ns ?? null;
+}
+
+/** The platform's extra trusted root CAs, when bootstrap installed some. */
+async function platformExtraCa(core: k8s.CoreV1Api): Promise<string | null> {
+  try {
+    const s = await core.readNamespacedSecret({ name: EXTRA_CA_SECRET, namespace: PLATFORM_NAMESPACE });
+    const b64 = s.data?.[EXTRA_CA_KEY];
+    const pem = b64 ? Buffer.from(b64, 'base64').toString('utf8').trim() : '';
+    return pem.includes('BEGIN CERTIFICATE') ? `${pem}\n` : null;
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
+}
+
+/** Record the gate's state on every config of the tenant, so each route's form shows it. */
+async function recordOutcome(db: Database, tenantId: string, routeConfigIds: ReadonlyArray<string>, error: string | null): Promise<void> {
+  await db.update(tenantOauth2ProxyState)
+    .set(error ? { lastError: error } : { provisioned: true, lastProvisionedAt: new Date(), lastError: null })
+    .where(eq(tenantOauth2ProxyState.tenantId, tenantId));
+  if (routeConfigIds.length === 0) return;
+  await db.update(ingressAuthConfigs)
+    .set(error ? { lastError: error } : { lastError: null, lastReconciledAt: new Date() })
+    .where(inArray(ingressAuthConfigs.id, [...routeConfigIds]));
+}
+
+/**
+ * Bring the tenant's gate in line with its enabled route configs: create or
+ * update it, or remove it when none is left. With `wait`, also wait for the
+ * new pod to be Ready (oauth2-proxy exits when the issuer's discovery fails)
+ * and report why it is not. Never throws.
+ */
+/**
+ * Which enabled routes the gate serves. It holds ONE provider — the first
+ * protected route's — and cannot serve a wildcard host; a route the gate does
+ * not serve stays closed (the gate refuses an unknown route) and its form says
+ * why. Pure.
+ */
+export function partitionServable(rows: ReadonlyArray<EnabledIngressAuthRow>): {
+  serve: EnabledIngressAuthRow[];
+  refused: Array<{ row: EnabledIngressAuthRow; reason: string }>;
+} {
+  const serve: EnabledIngressAuthRow[] = [];
+  const refused: Array<{ row: EnabledIngressAuthRow; reason: string }> = [];
+  for (const row of rows) {
+    if (!canProtectHost(row.hostname)) {
+      refused.push({ row, reason: `Sign-in cannot protect the wildcard route ${row.hostname}; this route stays closed. Remove its sign-in, or add a route per host.` });
+      continue;
+    }
+    const primary = serve[0]?.provider;
+    if (primary && row.provider.id !== primary.id) {
+      refused.push({
+        row,
+        reason: `This route signs in with "${row.provider.name}", but this tenant's protected routes use "${primary.name}" (one sign-in service per tenant); this route stays closed until it uses "${primary.name}".`,
+      });
+      continue;
+    }
+    serve.push(row);
+  }
+  return { serve, refused };
+}
+
+export async function reconcileTenant(
+  deps: ReconcileDeps,
+  tenantId: string,
+  opts: { wait?: boolean; waitTimeoutMs?: number } = {},
+): Promise<ReconcileOutcome> {
+  const lock = deps.lock ?? (<T>(id: string, fn: () => Promise<T>) => tenantGateLock(deps.db, id, fn));
+  try {
+    return await lock(tenantId, () => reconcileTenantLocked(deps, tenantId, opts));
+  } catch (err) {
+    return { tenantId, namespace: '', action: 'noop', enabledIngresses: 0, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function reconcileTenantLocked(
+  deps: ReconcileDeps,
+  tenantId: string,
+  opts: { wait?: boolean; waitTimeoutMs?: number },
+): Promise<ReconcileOutcome> {
+  const namespace = await tenantNamespace(deps.db, tenantId);
+  if (!namespace) {
+    return { tenantId, namespace: '', action: 'noop', enabledIngresses: 0, error: 'tenant not found' };
+  }
+  const { serve: enabled, refused } = partitionServable(await listEnabledForTenant(deps.db, tenantId));
+  for (const { row, reason } of refused) {
+    await deps.db.update(ingressAuthConfigs).set({ lastError: reason }).where(eq(ingressAuthConfigs.id, row.cfg.id));
+  }
+  const ids = enabled.map((r) => r.cfg.id);
+  try {
+    if (enabled.length === 0) {
+      const removed = await tearDownGate(deps, tenantId, namespace);
+      return { tenantId, namespace, action: removed ? 'torn_down' : 'noop', enabledIngresses: 0, error: null };
+    }
+    const { action, hash } = await ensureGate(deps, tenantId, namespace, enabled);
+    // Waiting: until the new pod is Ready or failing. Not waiting: one look,
+    // so a crashing pod is still reported — and a pod still starting leaves
+    // the recorded state alone rather than claiming success.
+    const state = await gateState(deps.k8s, namespace, hash, opts.wait ? (opts.waitTimeoutMs ?? 90_000) : 0);
+    if (state === 'starting') {
+      return { tenantId, namespace, action, enabledIngresses: enabled.length, error: null };
+    }
+    if (state !== 'ready') {
+      await recordOutcome(deps.db, tenantId, ids, state.error);
+      return { tenantId, namespace, action, enabledIngresses: enabled.length, ...state };
+    }
+    await recordOutcome(deps.db, tenantId, ids, null);
+    return { tenantId, namespace, action, enabledIngresses: enabled.length, error: null };
+  } catch (err) {
+    const msg = `The sign-in service could not be set up: ${err instanceof Error ? err.message : String(err)}`;
+    await recordOutcome(deps.db, tenantId, ids, msg).catch(() => undefined);
+    return { tenantId, namespace, action: 'noop', enabledIngresses: enabled.length, error: msg };
+  }
+}
+
+async function ensureGate(
   deps: ReconcileDeps,
   tenantId: string,
   namespace: string,
   enabled: ReadonlyArray<EnabledIngressAuthRow>,
-): Promise<'provisioned' | 'updated'> {
-  const cookieSecret = await getOrCreateTenantCookieSecret(
-    deps.db,
-    deps.encryptionKey,
-    tenantId,
-  );
-  const primary = enabled[0]!;
-  const clientSecret = decryptProviderSecret(primary.provider, deps.encryptionKey);
-  const oauth2ProxyCfg = buildOauth2ProxyConfig(primary, cookieSecret, clientSecret);
-  const needsValidator = tenantNeedsClaimValidator(enabled);
-  const claimRulesJson = buildClaimRulesJson(enabled);
+): Promise<{ action: 'provisioned' | 'updated' | 'unchanged'; hash: string }> {
+  const cookieSecret = await getOrCreateTenantCookieSecret(deps.db, deps.encryptionKey, tenantId);
+  // Mark first: whatever is created from here on, teardown will look for it.
+  await deps.db.update(tenantOauth2ProxyState).set({ provisioned: true }).where(eq(tenantOauth2ProxyState.tenantId, tenantId));
 
-  // ConfigMap — always carries oauth2_proxy.cfg. rules.json is only
-  // included when the claim-validator sidecar is deployed; when no
-  // route has claim rules we skip both the sidecar AND the rules.json
-  // key so the ConfigMap reflects what's actually mounted.
-  const configMapData: Record<string, string> = { 'oauth2_proxy.cfg': oauth2ProxyCfg };
-  if (needsValidator) {
-    configMapData['rules.json'] = claimRulesJson;
-  }
+  const clientSecret = decryptProviderSecret(enabled[0]!.provider, deps.encryptionKey);
+  const ca = await platformExtraCa(deps.k8s.core);
+  const configMapData: Record<string, string> = { 'policy.json': buildGatePolicy(enabled) };
+  if (ca) configMapData[EXTRA_CA_KEY] = ca;
+  const material: GateMaterial = {
+    secretData: buildGateSecretData(enabled, clientSecret, cookieSecret),
+    configMapData,
+    args: buildGateArgs(enabled, { withExtraCa: !!ca }),
+  };
+  const hash = gateConfigHash(material);
+
+  await upsertSecret(deps.k8s.core, namespace, material.secretData);
   await upsertConfigMap(deps.k8s.core, namespace, configMapData);
-
-  // Secret — currently empty (config inlines secrets via ConfigMap
-  // for v1). When we add Secret-volume mounting in v2 we'll move
-  // client_secret + cookie_secret here for K8s-side encryption-at-rest.
-  await upsertSecret(deps.k8s.core, namespace);
-
-  // NetworkPolicy — limit oauth2-proxy egress to OIDC issuer host +
-  // intra-namespace upstreams. Permissive in v1 (no policy); add in v2.
-
-  // Service — exposes :4180 (oauth2-proxy) always; :4181 (validator)
-  // only when the claim-validator sidecar is present.
-  await upsertService(deps.k8s.core, namespace, needsValidator);
-
-  // Deployment — main container oauth2-proxy; claim-validator sidecar
-  // is added only when at least one route has claim rules.
-  const wasNew = await upsertDeployment(
-    deps.k8s.apps, namespace, needsValidator, await loadTenantPodPlacement(deps.db, tenantId),
-  );
-
-  // Passthrough Ingress — exposes /oauth2/* on every protected host
-  // without the auth_request gate, breaking the redirect loop where
-  // /oauth2/start would otherwise be gated by oauth2-proxy itself.
-  const hostnames = Array.from(new Set(enabled.map((e) => e.hostname)));
-  await upsertPassthroughIngress(deps.k8s.custom, namespace, hostnames);
-
-  // Mark provisioned in DB.
-  await deps.db
-    .update(tenantOauth2ProxyState)
-    .set({ provisioned: true, lastProvisionedAt: new Date(), lastError: null })
-    .where(eq(tenantOauth2ProxyState.tenantId, tenantId));
-
-  // Update last_reconciled_at on every config row so the UI shows a
-  // recent timestamp even when nothing about the row changed.
-  for (const { cfg } of enabled) {
-    // eslint-disable-next-line no-await-in-loop
-    await deps.db
-      .update(ingressAuthConfigs)
-      .set({ lastReconciledAt: new Date(), lastError: null })
-      .where(eq(ingressAuthConfigs.id, cfg.id));
-  }
-
-  return wasNew ? 'provisioned' : 'updated';
+  await upsertService(deps.k8s.core, namespace);
+  const placement = await loadTenantPodPlacement(deps.db, tenantId);
+  const action = await upsertDeployment(deps.k8s.apps, namespace, buildGateDeployment(namespace, material, placement), hash);
+  await deleteLegacyPassthrough(deps.k8s.custom, namespace);
+  return { action, hash };
 }
 
-async function tearDownTenantProxy(
-  deps: ReconcileDeps,
-  tenantId: string,
-  namespace: string,
-): Promise<boolean> {
-  const [state] = await deps.db
-    .select()
-    .from(tenantOauth2ProxyState)
+/**
+ * Remove everything the gate may have created. The state row is written before
+ * the first object (ensureGate) and deleted only here, so "a state row exists"
+ * is exactly "something may be left to remove" — a half-finished setup
+ * included. The next enable starts with a new cookie secret, which only
+ * invalidates sessions of a gate that no longer exists.
+ */
+async function tearDownGate(deps: ReconcileDeps, tenantId: string, namespace: string): Promise<boolean> {
+  const [state] = await deps.db.select({ tenantId: tenantOauth2ProxyState.tenantId }).from(tenantOauth2ProxyState)
     .where(eq(tenantOauth2ProxyState.tenantId, tenantId));
-  if (!state?.provisioned) return false;
-
-  await deleteAuthIngressRoute(deps.k8s.custom, namespace, PASSTHROUGH_INGRESS_NAME);
-  await deleteIfExists(() =>
-    deps.k8s.apps.deleteNamespacedDeployment({
-      name: PROXY_NAME,
-      namespace,
-    } as unknown as Parameters<typeof deps.k8s.apps.deleteNamespacedDeployment>[0]),
-  );
-  await deleteIfExists(() =>
-    deps.k8s.core.deleteNamespacedService({
-      name: PROXY_NAME,
-      namespace,
-    } as unknown as Parameters<typeof deps.k8s.core.deleteNamespacedService>[0]),
-  );
-  await deleteIfExists(() =>
-    deps.k8s.core.deleteNamespacedConfigMap({
-      name: CONFIGMAP_NAME,
-      namespace,
-    } as unknown as Parameters<typeof deps.k8s.core.deleteNamespacedConfigMap>[0]),
-  );
-  await deleteIfExists(() =>
-    deps.k8s.core.deleteNamespacedSecret({
-      name: SECRET_NAME,
-      namespace,
-    } as unknown as Parameters<typeof deps.k8s.core.deleteNamespacedSecret>[0]),
-  );
-
-  await deps.db
-    .update(tenantOauth2ProxyState)
-    .set({ provisioned: false, lastError: null })
-    .where(eq(tenantOauth2ProxyState.tenantId, tenantId));
-
+  if (!state) return false;
+  await deleteLegacyPassthrough(deps.k8s.custom, namespace);
+  await ignoreNotFound(() => deps.k8s.apps.deleteNamespacedDeployment({ name: GATE_NAME, namespace }));
+  await ignoreNotFound(() => deps.k8s.core.deleteNamespacedService({ name: GATE_NAME, namespace }));
+  await ignoreNotFound(() => deps.k8s.core.deleteNamespacedConfigMap({ name: CONFIGMAP_NAME, namespace }));
+  await ignoreNotFound(() => deps.k8s.core.deleteNamespacedSecret({ name: SECRET_NAME, namespace }));
+  await deps.db.delete(tenantOauth2ProxyState).where(eq(tenantOauth2ProxyState.tenantId, tenantId));
   return true;
 }
 
-// ─── K8s helpers (idempotent upsert + 404-tolerant delete) ──────────────────
+// ─── Readiness ───────────────────────────────────────────────────────────────
 
-async function upsertConfigMap(
-  core: k8s.CoreV1Api,
+const FATAL_WAITING = new Set(['CrashLoopBackOff', 'ErrImagePull', 'ImagePullBackOff', 'InvalidImageName', 'CreateContainerConfigError']);
+
+/** First container of the pods failing in a way waiting will not fix. Pure. */
+export function fatalGateProblem(pods: ReadonlyArray<k8s.V1Pod>): { pod: string; container: string; reason: string } | null {
+  for (const pod of pods) {
+    for (const cs of pod.status?.containerStatuses ?? []) {
+      const waiting = cs.state?.waiting?.reason;
+      if ((waiting && FATAL_WAITING.has(waiting)) || (cs.restartCount ?? 0) > 0) {
+        return { pod: pod.metadata?.name ?? '?', container: cs.name, reason: waiting ?? cs.lastState?.terminated?.reason ?? 'restarted' };
+      }
+    }
+  }
+  return null;
+}
+
+async function logTail(core: k8s.CoreV1Api, namespace: string, pod: string, container: string): Promise<string> {
+  for (const previous of [true, false]) {
+    try {
+      const log = await core.readNamespacedPodLog({ name: pod, namespace, container, tailLines: 8, previous });
+      const text = String(log).trim();
+      if (text) return text;
+    } catch { /* try the other */ }
+  }
+  return '';
+}
+
+/** Explain the commonest oauth2-proxy start failures in the tenant's terms. Pure. */
+export function explainProxyLog(log: string): string {
+  if (/issuer did not match|oidc: issuer/i.test(log)) {
+    return 'the issuer URL does not match the one your provider publishes (check for a trailing slash)';
+  }
+  if (/x509|certificate signed by unknown authority|tls:/i.test(log)) {
+    return 'the provider\'s TLS certificate is not trusted';
+  }
+  if (/no such host|dial tcp|i\/o timeout|connection refused/i.test(log)) {
+    return 'the provider could not be reached from the cluster';
+  }
+  if (/404|well-known/i.test(log)) {
+    return 'the provider has no OpenID configuration at that issuer URL';
+  }
+  return 'it exited at startup';
+}
+
+/**
+ * The pods of the CURRENT template (during a change the previous pod keeps
+ * serving and proves nothing about the new configuration): 'ready', failing
+ * (with why), or still 'starting' when `timeoutMs` ran out — 0 means one look.
+ */
+async function gateState(
+  k8sc: IngressAuthTenants,
   namespace: string,
-  data: Record<string, string>,
-): Promise<void> {
-  const body: k8s.V1ConfigMap = {
-    apiVersion: 'v1',
-    kind: 'ConfigMap',
-    metadata: {
-      name: CONFIGMAP_NAME,
-      namespace,
-      labels: {
-        'app.kubernetes.io/name': 'oauth2-proxy',
-        'app.kubernetes.io/managed-by': 'platform-api',
-      },
-    },
-    data,
-  };
-  try {
-    await core.replaceNamespacedConfigMap({ name: CONFIGMAP_NAME, namespace, body } as never);
-  } catch (err) {
-    if (!isNotFound(err)) throw err;
-    await core.createNamespacedConfigMap({ namespace, body } as never);
+  hash: string,
+  timeoutMs: number,
+): Promise<'ready' | 'starting' | { error: string; proxyLog?: string }> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const pods = await k8sc.core.listNamespacedPod({ namespace, labelSelector: 'app.kubernetes.io/name=oauth2-proxy' });
+    const live = pods.items.filter((p) => !p.metadata?.deletionTimestamp);
+    const current = live.filter((p) => p.metadata?.annotations?.[CONFIG_HASH_ANNOTATION] === hash);
+    const currentReady = current.some((p) => (p.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True'));
+    // Ready once the new pod serves AND the previous one is on its way out:
+    // until then a request can still reach the old configuration (a route
+    // protected a moment ago would answer "no sign-in policy").
+    const previousServing = live.some((p) => p.metadata?.annotations?.[CONFIG_HASH_ANNOTATION] !== hash);
+    if (currentReady && (!previousServing || Date.now() >= deadline)) return 'ready';
+    const problem = fatalGateProblem(current);
+    if (problem) {
+      const log = await logTail(k8sc.core, namespace, problem.pod, problem.container);
+      const why = problem.container === 'oauth2-proxy' ? explainProxyLog(log) : `its ${problem.container} container ${problem.reason}`;
+      return { error: `The sign-in service did not start: ${why}. The route stays closed until it does.`, ...(log ? { proxyLog: log } : {}) };
+    }
+    if (Date.now() >= deadline) {
+      if (timeoutMs > 0 && !currentReady) {
+        return { error: 'The sign-in service did not become ready in time. The route stays closed until it does.' };
+      }
+      return currentReady ? 'ready' : 'starting';
+    }
+    await new Promise((r) => setTimeout(r, 2_000));
   }
 }
 
-async function upsertSecret(core: k8s.CoreV1Api, namespace: string): Promise<void> {
+// ─── K8s helpers ─────────────────────────────────────────────────────────────
+
+async function upsertSecret(core: k8s.CoreV1Api, namespace: string, stringData: Record<string, string>): Promise<void> {
   const body: k8s.V1Secret = {
     apiVersion: 'v1',
     kind: 'Secret',
-    metadata: {
-      name: SECRET_NAME,
-      namespace,
-      labels: {
-        'app.kubernetes.io/name': 'oauth2-proxy',
-        'app.kubernetes.io/managed-by': 'platform-api',
-      },
-    },
+    metadata: { name: SECRET_NAME, namespace, labels: { ...APP_LABEL, 'app.kubernetes.io/managed-by': 'platform-api' } },
     type: 'Opaque',
-    stringData: {
-      // Reserved for v2 — Secret-volume mount of client_secret +
-      // cookie_secret. v1 inlines them in oauth2_proxy.cfg via the
-      // ConfigMap (acceptable because the ConfigMap is namespace-
-      // scoped and access is restricted by RBAC).
-      placeholder: 'reserved',
-    },
+    stringData,
   };
   try {
-    await core.replaceNamespacedSecret({ name: SECRET_NAME, namespace, body } as never);
+    await core.replaceNamespacedSecret({ name: SECRET_NAME, namespace, body });
   } catch (err) {
     if (!isNotFound(err)) throw err;
     // backup-coverage: excluded:reconciler-rebuilds-from-config-tables
-    // (ingress-auth Secret holds session/cookie keys generated from
-    // protected_directories DB rows. config-tables component captures
-    // those rows; reconciler regenerates the Secret on restore.)
-    await core.createNamespacedSecret({ namespace, body } as never);
+    // (the gate's client and cookie secrets come from tenant_oidc_providers and
+    // tenant_oauth2_proxy_state; the reconciler regenerates the Secret.)
+    await core.createNamespacedSecret({ namespace, body });
   }
 }
 
-async function upsertService(
-  core: k8s.CoreV1Api,
-  namespace: string,
-  withValidatorPort: boolean,
-): Promise<void> {
-  const ports: k8s.V1ServicePort[] = [
-    { name: 'proxy', port: PROXY_PORT, targetPort: PROXY_PORT, protocol: 'TCP' },
-  ];
-  if (withValidatorPort) {
-    ports.push({ name: 'validator', port: VALIDATOR_PORT, targetPort: VALIDATOR_PORT, protocol: 'TCP' });
+async function upsertConfigMap(core: k8s.CoreV1Api, namespace: string, data: Record<string, string>): Promise<void> {
+  const body: k8s.V1ConfigMap = {
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: { name: CONFIGMAP_NAME, namespace, labels: { ...APP_LABEL, 'app.kubernetes.io/managed-by': 'platform-api' } },
+    data,
+  };
+  try {
+    await core.replaceNamespacedConfigMap({ name: CONFIGMAP_NAME, namespace, body });
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+    await core.createNamespacedConfigMap({ namespace, body });
   }
+}
+
+async function upsertService(core: k8s.CoreV1Api, namespace: string): Promise<void> {
   const body: k8s.V1Service = {
     apiVersion: 'v1',
     kind: 'Service',
-    metadata: {
-      name: PROXY_NAME,
-      namespace,
-      labels: { 'app.kubernetes.io/name': 'oauth2-proxy' },
-    },
+    metadata: { name: GATE_NAME, namespace, labels: APP_LABEL },
     spec: {
-      selector: { 'app.kubernetes.io/name': 'oauth2-proxy' },
-      ports,
+      selector: APP_LABEL,
+      ports: [
+        { name: 'proxy', port: PROXY_PORT, targetPort: PROXY_PORT, protocol: 'TCP' },
+        { name: 'gate', port: GATE_PORT, targetPort: GATE_PORT, protocol: 'TCP' },
+      ],
     },
   };
   try {
-    // Service replace requires preserving clusterIP — fall back to read+set
-    // to avoid 422 ("clusterIP is immutable"). On 404 we create fresh.
-    const existing = await core.readNamespacedService({ name: PROXY_NAME, namespace } as never);
+    // clusterIP is immutable: carry it over.
+    const existing = await core.readNamespacedService({ name: GATE_NAME, namespace });
     body.spec!.clusterIP = existing.spec?.clusterIP;
     body.metadata!.resourceVersion = existing.metadata?.resourceVersion;
-    await core.replaceNamespacedService({ name: PROXY_NAME, namespace, body } as never);
+    await core.replaceNamespacedService({ name: GATE_NAME, namespace, body });
   } catch (err) {
     if (!isNotFound(err)) throw err;
-    await core.createNamespacedService({ namespace, body } as never);
+    await core.createNamespacedService({ namespace, body });
   }
 }
 
 async function upsertDeployment(
   apps: k8s.AppsV1Api,
   namespace: string,
-  withClaimValidator: boolean,
-  placement: TenantPodPlacement,
-): Promise<boolean> {
-  const oauth2ProxyContainer: k8s.V1Container = {
-    name: 'oauth2-proxy',
-    image: OAUTH2_PROXY_IMAGE,
-    args: ['--config=/etc/oauth2-proxy/oauth2_proxy.cfg', `--http-address=0.0.0.0:${PROXY_PORT}`],
-    ports: [{ containerPort: PROXY_PORT, name: 'proxy' }],
-    volumeMounts: [
-      {
-        name: 'config',
-        mountPath: '/etc/oauth2-proxy/oauth2_proxy.cfg',
-        subPath: 'oauth2_proxy.cfg',
-        readOnly: true,
-      },
-    ],
-    resources: {
-      requests: { cpu: '10m', memory: '32Mi' },
-      limits: { cpu: '100m', memory: '128Mi' },
-    },
-    livenessProbe: { httpGet: { path: '/ping', port: PROXY_PORT } },
-    readinessProbe: { httpGet: { path: '/ping', port: PROXY_PORT } },
-  };
-  const claimValidatorContainer: k8s.V1Container = {
-    name: 'claim-validator',
-    image: CLAIM_VALIDATOR_IMAGE,
-    env: [
-      { name: 'PORT', value: String(VALIDATOR_PORT) },
-      { name: 'OAUTH2_PROXY_HOST', value: '127.0.0.1' },
-      { name: 'OAUTH2_PROXY_PORT', value: String(PROXY_PORT) },
-      { name: 'RULES_PATH', value: '/etc/claim-rules/rules.json' },
-    ],
-    ports: [{ containerPort: VALIDATOR_PORT, name: 'validator' }],
-    volumeMounts: [
-      {
-        name: 'config',
-        mountPath: '/etc/claim-rules/rules.json',
-        subPath: 'rules.json',
-        readOnly: true,
-      },
-    ],
-    resources: {
-      requests: { cpu: '5m', memory: '16Mi' },
-      limits: { cpu: '50m', memory: '64Mi' },
-    },
-    livenessProbe: { httpGet: { path: '/ping', port: VALIDATOR_PORT } },
-    readinessProbe: { httpGet: { path: '/ping', port: VALIDATOR_PORT } },
-  };
-  const containers: k8s.V1Container[] = withClaimValidator
-    ? [oauth2ProxyContainer, claimValidatorContainer]
-    : [oauth2ProxyContainer];
-  const body: k8s.V1Deployment = {
-    apiVersion: 'apps/v1',
-    kind: 'Deployment',
-    metadata: {
-      name: PROXY_NAME,
-      namespace,
-      labels: { 'app.kubernetes.io/name': 'oauth2-proxy' },
-    },
-    spec: {
-      replicas: 1,
-      selector: { matchLabels: { 'app.kubernetes.io/name': 'oauth2-proxy' } },
-      template: {
-        metadata: { labels: { 'app.kubernetes.io/name': 'oauth2-proxy' } },
-        spec: {
-          // The tenant's pin, and the overhead class — a platform pod is
-          // neither charged to the tenant's quota nor allowed to make the
-          // tenant look drifted (tenant-placement/pod-placement.ts).
-          ...platformPodPlacement(placement),
-          // oauth2-proxy mounts the ConfigMap's `oauth2_proxy.cfg`
-          // subPath; the claim-validator sidecar (when present) mounts
-          // `rules.json` from the same ConfigMap.
-          volumes: [
-            {
-              name: 'config',
-              configMap: { name: CONFIGMAP_NAME },
-            },
-          ],
-          containers,
-        },
-      },
-    },
-  };
+  body: k8s.V1Deployment,
+  hash: string,
+): Promise<'provisioned' | 'updated' | 'unchanged'> {
+  let existing: k8s.V1Deployment;
   try {
-    const existing = await apps.readNamespacedDeployment({ name: PROXY_NAME, namespace } as never);
-    body.metadata!.resourceVersion = existing.metadata?.resourceVersion;
-    await apps.replaceNamespacedDeployment({ name: PROXY_NAME, namespace, body: carryQuiesceHold(existing, body) } as never);
-    return false; // existed
+    existing = await apps.readNamespacedDeployment({ name: GATE_NAME, namespace });
   } catch (err) {
     if (!isNotFound(err)) throw err;
-    await apps.createNamespacedDeployment({ namespace, body } as never);
-    return true;
+    await apps.createNamespacedDeployment({ namespace, body });
+    return 'provisioned';
   }
+  const unchanged = existing.spec?.template?.metadata?.annotations?.[CONFIG_HASH_ANNOTATION] === hash
+    && JSON.stringify(existing.spec?.template?.spec?.containers?.map((c) => [c.image, c.args])) ===
+      JSON.stringify(body.spec?.template?.spec?.containers?.map((c) => [c.image, c.args]));
+  body.metadata!.resourceVersion = existing.metadata?.resourceVersion;
+  await apps.replaceNamespacedDeployment({ name: GATE_NAME, namespace, body: carryQuiesceHold(existing, body) });
+  return unchanged ? 'unchanged' : 'updated';
 }
 
-/**
- * Build/update the sibling IngressRoute that exposes `/oauth2/*` without
- * the per-route OIDC ForwardAuth Middleware. The main tenant IngressRoute
- * (built by domains/k8s-ingress.ts) attaches a ForwardAuth Middleware
- * to every route, which gates `/anything` behind oauth2-proxy. That
- * same gate would 302-loop on `/oauth2/start` (oauth2-proxy's own
- * redirect-to-IdP endpoint), so we carve `/oauth2/*` out into a
- * higher-priority companion IngressRoute that routes straight to
- * oauth2-proxy WITHOUT the auth Middleware.
- *
- * TLS: not declared here. Traefik's TLSStore is keyed by SNI hostname;
- * any IngressRoute for the same host that DOES carry tls.secretName
- * loads the cert into the store and this IngressRoute serves on the
- * same EntryPoint with the same cert via SNI matching.
- */
-async function upsertPassthroughIngress(
-  custom: k8s.CustomObjectsApi,
-  namespace: string,
-  hostnames: ReadonlyArray<string>,
-): Promise<void> {
-  if (hostnames.length === 0) {
-    // Nothing to gate → nothing to passthrough. Best-effort delete.
-    await deleteAuthIngressRoute(custom, namespace, PASSTHROUGH_INGRESS_NAME);
-    return;
-  }
-
-  // hostAndPathMatch runs the hostname through encodeMatchLiteral —
-  // a backtick in `host` (which Traefik uses as the match-rule
-  // delimiter) would let an attacker break out of the literal and
-  // inject arbitrary match-rule fragments. DB hostname validation
-  // already rejects backticks today, but defence-in-depth keeps the
-  // guard local to the match-rule builder so any future validation
-  // gap doesn't reach Traefik.
-  const routes = hostnames.map((host) => ({
-    match: hostAndPathMatch(host, '/oauth2'),
-    kind: 'Rule' as const,
-    priority: 100,
-    services: [{ name: PROXY_NAME, port: PROXY_PORT }],
-  }));
-
-  const body = {
-    apiVersion: 'traefik.io/v1alpha1',
-    kind: 'IngressRoute',
-    metadata: {
-      name: PASSTHROUGH_INGRESS_NAME,
-      namespace,
-      labels: {
-        'app.kubernetes.io/name': 'oauth2-proxy',
-        'app.kubernetes.io/managed-by': 'platform-api',
-      },
-    },
-    spec: {
-      entryPoints: ['websecure'],
-      routes,
-    },
-  };
-
-  await applyAuthIngressRoute(custom, body);
-}
-
-async function applyAuthIngressRoute(
-  custom: k8s.CustomObjectsApi,
-  body: Record<string, unknown>,
-): Promise<void> {
-  const { applyIngressRoute } = await import('../ingress-routes/traefik-apply.js');
-  // applyIngressRoute expects the proper IngressRouteBody shape; cast
-  // here to keep the local body free of structural-type churn.
-  await applyIngressRoute(custom, body as unknown as Parameters<typeof applyIngressRoute>[1]);
-}
-
-async function deleteAuthIngressRoute(
-  custom: k8s.CustomObjectsApi,
-  namespace: string,
-  name: string,
-): Promise<void> {
+async function deleteLegacyPassthrough(custom: k8s.CustomObjectsApi, namespace: string): Promise<void> {
   const { deleteIngressRoute } = await import('../ingress-routes/traefik-apply.js');
-  await deleteIngressRoute(custom, namespace, name);
+  await deleteIngressRoute(custom, namespace, LEGACY_PASSTHROUGH_NAME);
 }
 
-async function deleteIfExists(op: () => Promise<unknown>): Promise<void> {
+async function ignoreNotFound(op: () => Promise<unknown>): Promise<void> {
   try {
     await op();
   } catch (err) {
@@ -655,6 +663,5 @@ function isNotFound(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false;
   const e = err as { statusCode?: number; code?: number; message?: string };
   if (e.statusCode === 404 || e.code === 404) return true;
-  if (typeof e.message === 'string' && /HTTP-Code:\s*404/.test(e.message)) return true;
-  return false;
+  return typeof e.message === 'string' && /HTTP-Code:\s*404/.test(e.message);
 }

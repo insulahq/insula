@@ -12,6 +12,252 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **A tenant can no longer read or change another tenant's route sign-in, mTLS, network-access,
+  Ziti or zrok settings.** Six API modules (route OIDC, OIDC providers, route mTLS, deployment
+  network access, Ziti providers, zrok providers) checked that the caller was a tenant
+  administrator but not *which* tenant: their tenant path parameter was named `:cid`, and the
+  shared tenant check reads only `:tenantId` / `:id`. Any tenant administrator could list another
+  tenant's identity providers, or turn off its sign-in gate or client-certificate requirement and
+  expose its site, by putting that tenant's id in the URL. Every route of those modules now refuses
+  another tenant's id with 403 `CLIENT_ACCESS_DENIED` before it runs. So does
+  `GET /tenants/:tenantId/resource-quota`, which let any signed-in tenant read another's CPU and
+  memory limits. The CI guard `ci-tenant-scope-check.sh` only looked for `:tenantId` routes and
+  passed any file that mentioned the tenant check; it now covers every tenant parameter, fails on
+  any name the shared check cannot see, and checks each route on its own. The API paths are
+  unchanged. To check an installation for past use, look in the audit log for writes to these
+  paths whose tenant id differs from the acting user's tenant; reads are not audited.
+- **A route's sign-in now admits only who it says.** The allow lists (emails, email domains,
+  groups) and the post-login page were saved but never applied: oauth2-proxy ran with
+  `email_domains=["*"]`, so anyone who could sign in at the provider passed — with Google, any
+  Google account. Claim rules were skipped too: oauth2-proxy answers 202 for a valid session and
+  the policy sidecar only checked for 200, and its rules were keyed by an id the requests never
+  carried. A visitor now passes when every list is empty or any entry matches, and every claim
+  rule holds; anyone else sees *Access denied* with a sign-out link. A malformed rule refuses
+  instead of passing, a multi-`@` address never matches a domain, and the identity headers can
+  no longer be forged by the visitor (every `X-Auth-Request-*` name is replaced).
+- **The route sign-in runs oauth2-proxy v7.15.5, not v7.6.0.** v7.6.0 is affected by published
+  authentication-bypass advisories. It was pinned in TypeScript, where the image scan and the
+  component registry (both read `k8s/base`) never saw it; it now uses the panels' gate's
+  constant, which a test keeps equal to the manifest.
+- **The image scan and the component registry see the images platform-api creates at
+  runtime.** The weekly Trivy scan and `ci-component-watch-check.sh` covered only `k8s/` and
+  `bootstrap.sh`; images the backend writes into pods itself (helper Jobs, init containers,
+  proxies) were invisible to both. `scripts/lib/runtime-images.py` lists them, the scan includes
+  them, and the registry check now requires each to be registered at the registry's version
+  (a known second version is listed with its reason). The copies it found — mail HAProxy on the
+  end-of-life 2.9 branch, busybox 1.36, rclone 1.74.1, an nginx 1.27 fallback, a k3s v1.33
+  helper, Alpine 3.20 — all move in this release (below).
+- **Every first-party image is rebuilt on current bases.** Their `FROM` lines are pinned by
+  digest, and Dependabot's docker updater, which should refresh them, never ran (see *the
+  trackers* below), so each image kept the base of the day it was pinned:
+  - both panels ran Alpine 3.21 with OpenSSL 3.3.3 (critical CVE-2026-31789) plus fixable expat,
+    libpng and brotli CVEs; they now build on `nginx:1.30-alpine`;
+  - backup-rclone, private-worker-agent, sftp-gateway and node-terminal ran Alpine 3.20, out of
+    support since April; all Alpine bases are 3.24;
+  - the Go images (firewall/host-config reconcilers, security probe, SFTP gateway, file
+    manager's SFTP server) are rebuilt on the current Go 1.26 patch release, distroless and
+    Debian bases are refreshed;
+  - Alpine and Debian final stages upgrade their packages at build time, so a fix published
+    after the base image was built is taken at the next build instead of the base's next one.
+- **rclone 1.75.2 everywhere** (the backup shim's binary, the etcd-snapshot CronJob, the speedtest
+  and streaming-store Jobs, bootstrap's fallback binary, which is now SHA-256 verified). The
+  etcd-snapshot CronJob is created once by Flux and then owned by platform-api, and platform-api
+  may not change a system workload's image (`platform-api-workload-scope`), so a new image in its
+  manifest reached fresh installs only: host migration 2026.10.23/0001 sets rclone 1.75.2 on
+  existing clusters (control-plane nodes, through the node's admin kubeconfig). The
+  backup image carried 1.74.1 with three critical advisories — in `rclone rcd` and the
+  `serve s3` auth proxy, neither of which the shim runs (it serves with `--auth-key`) — and the
+  1.75 releases fix a run of path-escape and header-leak issues besides. 1.75 streams multipart
+  uploads through `rclone serve s3` instead of buffering each object in memory, and bounds its
+  per-object metadata; the shim's flags are unchanged.
+- **Backend: fast-jwt 6.3.5 and handlebars 4.7.10.** fast-jwt 6.2.4 allowed RSA→HS256 algorithm
+  confusion and handlebars 4.7.9 two template-injection paths; neither applies to this platform's
+  use (sessions are HS256 with a secret; templates are strings, without
+  `allowProtoMethodsByDefault`), but both are critical advisories in the shipped image.
+- **Upstream images with critical advisories moved:** `alpine/k8s` 1.33.13 → 1.36.5 (the cluster's
+  k3s minor) for the backup / GC / plugin-guard CronJobs, Reloader v1.4.0 → v1.4.22, the WAF test
+  backend `traefik/whoami` → v1.12.0. The two criticals left in `alpine/k8s` sit in a bundled
+  `kustomize` no job runs and in aws-cli's certifi (it still trusts a root with compromised
+  intermediates, as does every Alpine CA bundle until Mozilla's distrust ships); both are
+  ledger entries scoped to that file / package version. The image scan and the registry now
+  also read the images `bootstrap.sh` and the host migrations write, where these had been
+  invisible.
+- **Mail HAProxy 2.9 → 3.4 (LTS, supported to 2031).** Same configuration; the config now says
+  `uid 0` / `gid 0` explicitly (the DaemonSet binds the mail ports as root with only
+  `NET_BIND_SERVICE`), which 3.x otherwise warns about at every start.
+- **The mail standby's rsync server runs the platform's `tenant-backup-tools` image** (rsync
+  3.5.0, the same rsync the standby pulls with). `instrumentisto/rsync-ssh` stopped publishing
+  builds, leaving its rsync on known CVEs.
+- **The trackers fail and report instead of only recording:**
+  - each first-party image build (and the release build of backend and both panels) fails on a
+    CRITICAL that has a fix and no ledger entry (`.github/actions/trivy-gate`), before the
+    image is pinned to development or the release is published;
+  - the weekly image scan covers the first-party images production pins as well as the upstream
+    ones, counts only findings with a fix, fails on a CRITICAL, and keeps a rolling issue
+    (*Image scan — fixable HIGH/CRITICAL*) instead of a run summary nobody opened;
+  - Dependabot's docker block is valid again (GitHub rejects `semver-major-days` for docker and
+    github-actions and dropped the block), and `ci-component-watch-check.sh` fails on that key
+    and on a Dockerfile directory no updater covers;
+  - a ledger waiver can be scoped to file paths or package URLs (`trivy_scope`), so waiving a
+    CVE for one unused binary no longer hides it in every image;
+  - the component watch's *behind upstream* list compares stable tags shaped like the pin (a Helm
+    chart version is no longer read as behind its app, a pre-release is never an upgrade) and
+    lists what it could not compare.
+
+- **The platform database moves to PostgreSQL 18.6** (from 18.3). 18.4 and 18.6 fix server
+  crashes and memory-disclosure / code-execution bugs reachable by a signed-in database user
+  (CVE-2026-16239, CVE-2026-14669, a regexp buffer overrun, startup-packet recursion), and the
+  18.3 image carried 14 fixable critical OS CVEs (Perl, GnuTLS). The Cluster now names CNPG's
+  **immutable** build tag: the rolling `18.x-minimal-trixie` tag moves weekly, so each node ran
+  whichever build it pulled first. No dump/restore; the release's post-upgrade notes (logical
+  decoding output plugins, pgcrypto PGP ciphers, GIN reltuples, btree_gist/ltree) concern
+  features the platform database does not use. **The database restarts once on upgrade** (see
+  *Changed*).
+- **The Postgres backup plugin moves to barman-cloud v0.15.1** (from v0.13.0). The sidecar it
+  injects into every Postgres pod carried a critical PyJWT CVE, and the plugin a gRPC one.
+- **Traefik's init containers no longer run `alpine/k8s` 1.33.13**, whose OpenSSL, Python,
+  brotli and grpc-go carried critical CVEs for two shell lines (a `chown` and a curl loop). They
+  run `curlimages/curl` 8.23.0, which is exactly those tools. The same change moves the CrowdSec
+  bouncer plugin v1.6.0 → v1.8.1: in stream mode a stream's deletions are now applied before its
+  new decisions, so a replaced ban is no longer dropped. Existing clusters get both from host
+  migration 2026.10.23/0004 in one Traefik roll; it rolls back by itself if any Traefik pod
+  reports its plugins disabled.
+- **The snapshot-controller runs v8.7.0.** Upstream's manifest at a release tag names the
+  *previous* release's image, so clusters on the v8.6.0 pin ran v8.5.0, with a critical grpc-go
+  CVE. bootstrap.sh and host migration 2026.10.23/0003 now set the image to the pinned version,
+  and install the VolumeGroupSnapshot CRDs v8.7.0 expects (without them it waits and logs errors
+  at every start).
+- **cert-manager v1.21.3** (Go security fixes, including distrust of the compromised eMudhra
+  intermediates; host migration 2026.10.23/0002).
+- **Bulwark webmail 1.17.1 → 1.18.0**, inside the 7-day soak for its security fixes: a re-opened
+  draft could run another client's markup in the webmail (GHSA-g35q-3gpc-x2rr), a stale stored
+  credential was retried until Stalwart banned the webmail's address for every user
+  (GHSA-g6c7-r7wq-xrm2), and more mixed-account actions could hit another account's message.
+  Bulwark signs admin sessions out once. Roundcube's 1.7.5 image moves to its rebuild (brotli).
+- **The system-upgrade-controller's node-drain Jobs used kubectl v1.30.3** (upstream's default:
+  six minors behind the cluster, a critical crypto/tls CVE). They use v1.36.2; the controller
+  is v0.20.2.
+- **zrok 1.1.13, ziti-edge-tunnel 1.20.0, imapsync 2.326, curlimages/curl 8.23.0.** zrok's
+  remaining criticals are in controller-side modules every zrok release still ships (zrok 2.0.8
+  included); the frontdoor runs only `zrok enable`. They are ledger entries scoped to that image.
+- **The private-worker panel's compose hint named an image nobody publishes:**
+  `ghcr.io/k8s-hosting/private-worker-agent:latest`, an unclaimed registry namespace — whoever
+  registered it would have had tenants run their image, with the worker's token, on their own
+  hardware. The hint now names the image the API hands out (the new `agentImage` field). **If you
+  copied the compose hint from a worker's details, change its `image:` line** to the one in the
+  create/rotate snippet. `ci-image-org-check.sh` now checks image references in the backend and
+  panel source too.
+- **The private-worker agent's `:latest` is the newest stable release.** It moved with every
+  development build, so tenants who pulled `:latest` ran unreleased code. The release workflow
+  now builds the agent at the tag (amd64 and arm64), scans it, tags it `:<version>` and, for a
+  stable release, moves `:latest`; development builds publish `:edge`.
+- **The image scan sees every image the platform runs.** Besides `image:` fields it now lists
+  the CNPG `imageName` (the database), `*_IMAGE` ConfigMap and Secret values (the backup
+  sidecar, the drain kubectl), the cluster components `bootstrap.sh` installs from charts and
+  manifests at their pinned versions (Traefik, cert-manager, Longhorn, Calico, Flux, CNPG,
+  sealed-secrets, snapshot-controller, k3s's own images), and the Official Catalog's tenant
+  images. A ledger waiver can be scoped to an image repository (`trivy_scope.images`), so a
+  reachability verdict for one image no longer hides the same CVE in another. The first scan
+  found Longhorn 1.13.0's expat, Flux's kustomize-controller's brotli and Calico's trust store:
+  none reachable in those images, none fixed upstream yet; they are scoped ledger entries.
+
+### Fixed
+
+- **Requiring a sign-in on a route works.** A signed-out visitor got a bare `Unauthorized`: the
+  route asked oauth2-proxy's `/oauth2/auth`, which only answers 401 (the NGINX-era sign-in
+  redirect had no Traefik equivalent). The route's gate now asks oauth2-proxy's proxy endpoint,
+  which sends the visitor straight to the identity provider, back to the page asked for after
+  signing in. `/oauth2/*` is served inside the route's own router, so it keeps the route's
+  client-certificate requirement, WAF, CrowdSec and allow list (a separate router dropped them —
+  and turned an mTLS route's certificate requirement off), and it goes away with the route
+  instead of outliving it. On a route with a www redirect, the sign-in lives on the host the site
+  is served on.
+- **Entering a provider on the route's form works.** The form sent `clientId` / `clientSecret`,
+  the API read `tenantId` / `tenantSecret` (left over from a rename), and refused every inline
+  provider as missing its credentials. Inline credentials now always create a new provider, never
+  edit one other routes share.
+- **The redirect URI to register is shown where it is needed:** first in the route's form with a
+  copy button and the Google steps, and on each provider with the URIs of the routes using it.
+- **Sign-in changes take effect.** oauth2-proxy reads its settings once, at start, and nothing
+  restarted it, so a rotated client secret, a new protected host or changed rules never reached
+  it; saving a provider did not even try. Every change now restarts the sign-in service, and the
+  save waits until it runs: when it does not start, the form says why (issuer mismatch,
+  untrusted certificate, unreachable provider), with the service's log, and the route answers
+  with an error instead of opening up. Every API start and a pass every 10 minutes bring each
+  tenant's sign-in service onto the current settings, and remove it once its last protected route,
+  domain or the tenant is gone.
+- **One provider per tenant, said out loud.** All of a tenant's protected routes share one
+  sign-in service, which used the first route's provider for all of them; a second provider is
+  now refused with `OIDC_PROVIDER_CONFLICT`. Wildcard routes are refused (`OIDC_WILDCARD_ROUTE`),
+  a cookie domain must cover the route's host, cookie refresh must be shorter than expiry, and
+  scopes must include `openid`.
+- **Password-protected folders on a route with a www redirect ask for the password again.** The
+  folder's router matched the host that only redirects, so on the served host the folder opened
+  without one.
+- **"Test issuer" checks the issuer as the provider publishes it** and saving uses that form, so a
+  trailing-slash difference no longer crash-loops the sign-in service. It goes through the
+  platform's guarded fetch: an internal address is not probed from platform-api.
+- **The sign-in trusts the platform's extra root CAs** (`bootstrap.sh --trust-ca`), so an
+  identity provider behind a private CA works.
+- **A partial provider update keeps what it does not name.** `PATCH` applied the create
+  defaults, so rotating only the secret reset PKCE and the scopes.
+- **Tenant bundles restore route sign-in**: the providers are restored before the route
+  settings that reference them (the restore failed on the foreign key).
+- **The route form and the providers page show every failure** through the standard error panel,
+  including a refused read and a failed removal, have dark-mode variants throughout, keep
+  commas in an `in` / `not_in` claim rule while typing, and follow the saved state after a
+  removal.
+
+- **Fresh installs completed again: they stopped at installing Flux.** `bootstrap.sh` fetched
+  Flux's installer from `fluxcd.io/install.sh`, which follows Flux's main branch; a comment fix
+  there changed its checksum, and the pinned-checksum check refused it. It is fetched at the
+  `FLUX_VERSION` tag now, which does not move, and a test checks the k3s, Helm and Flux
+  installer pins against upstream daily and on every `bootstrap.sh` change. Existing clusters
+  were not affected.
+- **A fresh install no longer gives up while Longhorn's manager restarts.** longhorn-manager 1.13
+  can exit on a settings conflict during its own start (longhorn#13015) and is Ready again after a
+  few restarts; until then its admission webhook refuses every Longhorn object, and bootstrap's
+  six 10-second retries of the platform manifests ran out first, failing the install. On a
+  webhook error bootstrap now also waits, up to two minutes per retry, for that webhook's service
+  to have a ready endpoint.
+- **Bundle re-import's file manager image fell back to a repository that does not exist**
+  (`ghcr.io/insulahq/file-manager`); it uses the platform's file-manager image resolver.
+
+### Changed
+
+- **Upgrading restarts the platform database once** (PostgreSQL 18.6 and the backup plugin's new
+  sidecar; with one instance that is a short API outage, with three a switchover), **rolls
+  Traefik once** (host migration 2026.10.23/0004 — ingress on each node blips while its pod
+  restarts), and rolls cert-manager and the snapshot-controller.
+- **`component-watch.sh --latest` says what to take now.** A release younger than 7 days (14
+  for a new major) is shown as in soak until its date, matching Dependabot's cooldown, and a
+  component can carry a deliberate ceiling with its reason (`watch.hold`): k3s stays on 1.36
+  while cert-manager, Flux and Longhorn do not support 1.37; Stalwart stays on 0.16 because 1.0
+  is a data migration; BusyBox's 1.38 is labelled unstable. The weekly sweep lists both.
+- **age v1.3.2** for hosts whose distribution has no age package, now SHA-256 verified like
+  rclone. Valkey's pin (not deployed) moves to 9.1.3, Dex (dev/staging) to v2.46.1.
+
+- **Upgrading restarts the mail server once and rolls the mail HAProxy DaemonSet:** the Stalwart
+  pod's rsync sidecar changes image, and HAProxy changes version and configuration. On a
+  single-server installation mail connections drop for the length of a Stalwart restart.
+- **busybox is one tag (1.37) everywhere,** including the init container of catalog apps and
+  custom containers. A changed init image reaches each app at its next save or redeploy — the
+  upgrade itself restarts no tenant app.
+- **Removed the unused `k8s/base/roundcube-deployment.yaml`** (nothing applied it; the Flux-managed
+  `k8s/base/roundcube/` is the webmail). It still counted in the image scan with 26 criticals.
+- **Route sign-in settings that never applied are gone:** the provider's *Authentication Method*
+  and *Response Type* (oauth2-proxy detects the first and supports only the code flow) and the
+  per-route scopes (one sign-in service holds one scope list; the provider's scopes apply).
+  Migration 0167 drops their columns. During the upgrade, until the old API pods are replaced,
+  route sign-in and provider reads on those pods fail for a few minutes.
+- **New route sign-ins pass less to the app by default:** the access token, the ID token and the
+  `Authorization: Bearer` header are off, and a session is not re-checked before its cookie
+  expires (Google issues no refresh token by default, so a re-check signed visitors out every
+  hour). Existing routes keep their settings. Turn `Authorization: Bearer` off for apps with their
+  own login (Immich, Nextcloud, Gitea): they reject every call with it.
+
 ## [2026.10.22] - 2026-10-29
 
 ### BREAKING

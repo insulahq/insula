@@ -60,10 +60,8 @@ resources:
   # storage (Phase 3.A.5), and the existing allow-mail-to-postgres
   # netpol already covers it (`from.namespaceSelector: mail` matches
   # every pod in mail ns including roundcube). No separate netpol.
-  # Public-facing Ingress for webmail.${DOMAIN} — base ships a
-  # local-CA dev-only ingress (k8s/base/roundcube-deployment.yaml line
-  # 69-86) wired for k8s-platform.test. Staging gets its own ingress
-  # with the LE prod cluster issuer.
+  # Public-facing Ingress for webmail.${DOMAIN}. Staging gets its own
+  # ingress with the LE prod cluster issuer.
   - webmail-ingress.yaml
   # Cut 3: staging-only override of Stalwart's default
   # per-IP submission throttle (5/sec). Mail HA stress harness sends
@@ -210,11 +208,11 @@ patches:
 
 images:
   - name: ghcr.io/insulahq/insula/backend
-    newTag: "20261029133508-bb10d83" # {"$imagepolicy": "flux-system:backend:tag"}
+    newTag: "20261030193449-cf3c15b" # {"$imagepolicy": "flux-system:backend:tag"}
   - name: ghcr.io/insulahq/insula/admin-panel
-    newTag: "20261029133509-bb10d83" # {"$imagepolicy": "flux-system:admin-panel:tag"}
+    newTag: "20261030193445-cf3c15b" # {"$imagepolicy": "flux-system:admin-panel:tag"}
   - name: ghcr.io/insulahq/insula/tenant-panel
-    newTag: "20261029133509-bb10d83" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
+    newTag: "20261030193442-cf3c15b" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
   # Internal DaemonSet/sidecar images — pinned to an immutable <timestamp>-<sha>
   # tag by each image's OWN build workflow (.github/workflows/ci-*.yml →
   # .github/scripts/pin-image-tag.sh) AFTER the push completes, so Flux only
@@ -223,14 +221,14 @@ images:
   # "latest" here is the pre-first-pin placeholder (matches the base tag); the
   # next build of each image rewrites it.
   - name: ghcr.io/insulahq/insula/security-probe
-    newTag: "20261008182327-c3ab1db"
+    newTag: "20261030110516-e0f6dea"
   - name: ghcr.io/insulahq/insula/firewall-reconciler
-    newTag: "20261016093212-0ae35bd"
+    newTag: "20261030110725-e0f6dea"
   - name: ghcr.io/insulahq/insula/host-config-reconciler
-    newTag: "20261018190410-12b3699"
+    newTag: "20261030110505-e0f6dea"
   - name: ghcr.io/insulahq/insula/backup-rclone
-    newTag: "20260926013729-aa51607"
+    newTag: "20261030110416-e0f6dea"
   - name: ghcr.io/insulahq/insula/sftp-gateway
-    newTag: "20260926013638-aa51607"
+    newTag: "20261030110359-e0f6dea"
   - name: ghcr.io/insulahq/insula/tenant-backup-tools
-    newTag: "20261022190436-84aa7a9"
+    newTag: "20261030110333-e0f6dea"
