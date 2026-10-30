@@ -63,6 +63,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     after the base image was built is taken at the next build instead of the base's next one.
 - **rclone 1.75.2 everywhere** (the backup shim's binary, the etcd-snapshot CronJob, the speedtest
   and streaming-store Jobs, bootstrap's fallback binary, which is now SHA-256 verified). The
+  etcd-snapshot CronJob is created once by Flux and then owned by platform-api, so a new image in
+  its manifest reached fresh installs only; the API now converges its rclone image on existing
+  clusters too. The
   backup image carried 1.74.1 with three critical advisories — in `rclone rcd` and the
   `serve s3` auth proxy, neither of which the shim runs (it serves with `--auth-key`) — and the
   1.75 releases fix a run of path-escape and header-leak issues besides. 1.75 streams multipart
