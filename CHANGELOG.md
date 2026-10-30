@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.23-rc.1] - 2026-10-30
+
 ### Security
 
 - **A tenant can no longer read or change another tenant's route sign-in, mTLS, network-access,
