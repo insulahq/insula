@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { UpgradeRun } from '@insula/api-contracts';
 import type { UpgradeProgressData } from '@/hooks/use-platform-upgrade';
-import { runPercent, servicesPercentOf } from '@/components/platform/UpgradeRunSection';
+import { neverBackwards, runPercent, servicesPercentOf } from '@/components/platform/UpgradeRunSection';
 
 /**
  * How far the upgrade page's bar is, while the services roll. Seen on a
@@ -66,5 +66,31 @@ describe('how far the services\' roll of a run has come', () => {
   ])('knows nothing when %s — the bar then stays at the start of the step', (_why, prog) => {
     expect(servicesPercentOf(run(), prog)).toBeNull();
     expect(runPercent(run(), servicesPercentOf(run(), prog))).toBe(33);
+  });
+});
+
+// Seen on staging, rc.1 → rc.2: 33% → 56% → 67% → 33% → 100%. The services' share
+// was unknown for a moment while the API that reports it was being replaced.
+describe('neverBackwards — what the bar shows', () => {
+  it('holds the highest value of a run when a later frame computes less', () => {
+    let shown = neverBackwards(null, 'r1', 33);
+    for (const computed of [56, 67, 33, 33]) shown = neverBackwards(shown, 'r1', computed);
+    expect(shown.percent).toBe(67);
+    expect(neverBackwards(shown, 'r1', 100).percent).toBe(100);
+  });
+
+  it('a different run starts from its own value', () => {
+    const shown = neverBackwards(neverBackwards(null, 'r1', 90), 'r2', 5);
+    expect(shown).toEqual({ runId: 'r2', percent: 5 });
+  });
+
+  it('the staging sequence, frame by frame', () => {
+    const frames: number[] = [];
+    let shown: ReturnType<typeof neverBackwards> | null = null;
+    for (const computed of [0, 11, 22, 33, 56, 67, 33, 33, 100]) {
+      shown = neverBackwards(shown, 'run', computed);
+      frames.push(shown.percent);
+    }
+    expect(frames).toEqual([0, 11, 22, 33, 56, 67, 67, 67, 100]);
   });
 });
