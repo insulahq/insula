@@ -189,6 +189,9 @@ spec:
       default_toast_compression: lz4
       max_connections: "200"
       track_io_timing: "on"
+    # pg_basebackup in the pod (backup_cost) connects over the local socket; CNPG's default
+    # pg_hba has no local replication entry
+    pg_hba: ["local replication postgres peer"]
   bootstrap:
     initdb:
       database: stalwart
@@ -602,8 +605,10 @@ backup_cost() {  # <variant> — the cost of a full copy of the store, as the ba
   printf '{"variant":"%s","kind":"tar-pvc","bytes":%s,"seconds":%s}\n' "$v" "$bytes" "$(since "$t0")" >> "$OUT/backups.jsonl"
   if [[ $v == v1-pg* ]]; then
     t0=$EPOCHREALTIME
-    bytes=$(kx exec lt-pg-1 -c postgres -- sh -c 'pg_basebackup -U postgres -D - -Ft -X none 2>/dev/null | wc -c')
-    printf '{"variant":"%s","kind":"pg_basebackup","bytes":%s,"seconds":%s}\n' "$v" "$bytes" "$(since "$t0")" >> "$OUT/backups.jsonl"
+    bytes=$(kx exec lt-pg-1 -c postgres -- sh -c 'pg_basebackup -U postgres -D - -Ft -X none | wc -c' 2> "$OUT/$v/pg_basebackup.err")
+    # a refused connection streams nothing: report it instead of recording a 0-byte backup
+    (( ${bytes:-0} > 0 )) || log "$v: pg_basebackup failed: $(head -c 300 "$OUT/$v/pg_basebackup.err")"
+    printf '{"variant":"%s","kind":"pg_basebackup","bytes":%s,"seconds":%s}\n' "$v" "${bytes:-0}" "$(since "$t0")" >> "$OUT/backups.jsonl"
   fi
   if [[ $v == v1-pg-s3 ]]; then
     local sp; sp=$(pv_path lt-s3); t0=$EPOCHREALTIME
