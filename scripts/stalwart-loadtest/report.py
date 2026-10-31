@@ -14,8 +14,9 @@ import sys
 from collections import defaultdict
 
 GROUPS = {"stalwart": "stalwart", "postgres": "postgres", "rclone": "s3", "valkey": "valkey",
-          "migrate": "migrate", "loadgen": "loadgen"}
-VARIANTS = ["v016-rocks", "v1-rocks", "v1-pg", "v1-pg-fs", "v1-pg-s3", "v1-pg-s3remote",
+          "meilisearch": "search", "migrate": "migrate", "loadgen": "loadgen"}
+STORES = ("postgres", "s3", "valkey", "search")  # what a variant runs besides Stalwart itself
+VARIANTS = ["v016-rocks", "v1-rocks", "v1-pg", "v1-pg-fs", "v1-pg-meili", "v1-pg-s3", "v1-pg-s3remote",
             "v1-pg-cluster"]
 GIB = 2 ** 30
 
@@ -134,6 +135,8 @@ def store_bytes(s):
         total += s["pg"].get("pvc_bytes") or s["pg"].get("db_bytes") or 0
     if s.get("s3"):
         total += s["s3"].get("bytes") or 0
+    if s.get("search"):
+        total += s["search"].get("bytes") or 0
     return total
 
 
@@ -150,7 +153,7 @@ def main():
     for v in vs:
         a, s = r.phase(v, "append"), r.phase(v, "smtp")
         ua = r.usage(v, "append")
-        cpu = sum(c for g, (c, _) in ua.items() if g in ("stalwart", "postgres", "s3", "valkey"))
+        cpu = sum(c for g, (c, _) in ua.items() if g == "stalwart" or g in STORES)
         n = (a or {}).get("messages") or 0
         rows.append([v, (a or {}).get("msg_per_s"), (a or {}).get("mb_per_s"), lat(a, "append", "p50"),
                      lat(a, "append"), round(cpu / n * 1000, 1) if n else None,
@@ -175,11 +178,13 @@ def main():
             u, w = r.usage(v, f"{kind}-read"), r.windows.get((v, f"{kind}-read"))
             n = (d.get("ops_per_s") or 0) * (d.get("duration_s") or 0)
             cpu_ms = round(u["stalwart"][0] / n * 1000, 2) if n and "stalwart" in u else None
+            store_ms = round(sum(u[g][0] for g in STORES if g in u) / n * 1000, 2) if n else None
             gen = round(u["loadgen"][0] / (w[1] - w[0]), 2) if w and None not in w and "loadgen" in u else None
-            rows.append([v, d.get("ops_per_s"), cpu_ms, gen]
+            rows.append([v, d.get("ops_per_s"), cpu_ms, store_ms, gen]
                         + [f"{fmt(lat(d, o, 'p50'), 2)} / {fmt(lat(d, o), 2)}" for o in ops] + [errs])
         out += [f"## {kind.upper()} reads (ms, p50 / p95)", "",
-                table(["variant", "ops/s", "Stalwart CPU-ms / op", "load generator cores"] + ops + ["errors"],
+                table(["variant", "ops/s", "Stalwart CPU-ms / op", "stores CPU-ms / op", "load generator cores"]
+                      + ops + ["errors"],
                       rows), ""]
 
     ops = ["select_cold", "fetch_all_flags", "search_body_rare", "search_subject", "jmap_query_total",

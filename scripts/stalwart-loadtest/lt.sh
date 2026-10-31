@@ -11,15 +11,17 @@
 #                                incl. a live copy under load, final run, verify, rollback
 #   ./lt.sh migrate-gentle       init, then the RocksDB migration again with fewer write and blob
 #                                slots in the live runs (MIG_LIVE_ARGS), under the same load
+#   ./lt.sh followup             init, variant v1-pg-meili, migrate-gentle, report
 #   ./lt.sh cluster              v1 on PostgreSQL + Valkey, two pods
 #   ./lt.sh all                  everything above, in order
 #   ./lt.sh teardown             delete the namespace (results stay in $OUT)
 #
-# Variants: v016-rocks  v1-rocks  v1-pg  v1-pg-fs  v1-pg-s3  v1-pg-s3remote
+# Variants: v016-rocks  v1-rocks  v1-pg  v1-pg-fs  v1-pg-meili  v1-pg-s3  v1-pg-s3remote
 #   v016-rocks  today's production shape (0.16.27, RocksDB, blobs inside)
 #   v1-rocks    the same on v1
 #   v1-pg       v1, PostgreSQL data store (dedicated CNPG cluster), blobs and search in PostgreSQL
 #   v1-pg-fs    v1, PostgreSQL data store, blobs on a FileSystem volume
+#   v1-pg-meili v1-pg-fs with the full-text index in Meilisearch instead of PostgreSQL
 #   v1-pg-s3    v1, PostgreSQL data store, blobs in S3 (rclone serve s3 on a local volume —
 #               an on-cluster S3, so network latency to a remote provider is NOT included)
 #   v1-pg-s3remote  the same with an S3 on another machine: S3R_ENDPOINT, S3R_BUCKET,
@@ -45,10 +47,13 @@ IMG_PG=ghcr.io/cloudnative-pg/postgresql:18.6-202610260820-minimal-trixie  # = k
 IMG_PY=docker.io/library/python:3.15.2-slim-trixie
 IMG_RCLONE=docker.io/rclone/rclone:1.75.2               # = the platform's rclone pin
 IMG_VALKEY=docker.io/valkey/valkey:9.1.3-alpine         # = k8s/base/valkey
+IMG_MEILI=docker.io/getmeili/meilisearch:v1.56.0
 STALWART_CPU=${STALWART_CPU:-1000m}
 STALWART_MEM=${STALWART_MEM:-2Gi}
 PG_CPU=${PG_CPU:-1000m}
 PG_MEM=${PG_MEM:-2Gi}
+MEILI_CPU=${MEILI_CPU:-1000m}  # PostgreSQL's budget again, on top of it: the report counts both per op
+MEILI_MEM=${MEILI_MEM:-2Gi}
 ACCOUNTS=${ACCOUNTS:-50}
 PER_ACCOUNT=${PER_ACCOUNT:-600}
 BIG=${BIG:-25000}
@@ -413,6 +418,74 @@ restart_pods() {  # <deploy> — delete the pods (never `rollout restart`), prin
   wait_ready "$d"
 }
 
+meili_up() {  # a fresh, empty Meilisearch for one variant (development mode: no key, namespace-internal)
+  meili_down
+  pvc lt-meili
+  kx apply -f - >/dev/null <<YAML
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: lt-meili}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: lt-meili}}
+  template:
+    metadata: {labels: {app: lt-meili}}
+    spec:
+      containers:
+        - name: meilisearch
+          image: $IMG_MEILI
+          env:
+            - {name: MEILI_ENV, value: development}
+            - {name: MEILI_NO_ANALYTICS, value: "true"}
+            - {name: MEILI_DB_PATH, value: /meili_data/data.ms}
+          ports: [{containerPort: 7700}]
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "$MEILI_CPU", memory: $MEILI_MEM}
+          volumeMounts: [{name: data, mountPath: /meili_data}]
+      volumes: [{name: data, persistentVolumeClaim: {claimName: lt-meili}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: lt-meili}
+spec:
+  selector: {app: lt-meili}
+  ports: [{name: http, port: 7700}]
+YAML
+  kx rollout status deploy/lt-meili --timeout=300s >/dev/null || die "lt-meili not ready"
+}
+meili_exact() {
+  # v1 creates its indexes with Meilisearch's default typo tolerance, so a search for an invoice
+  # number also returns its neighbours (in DinD, zq197x matched 1 message exactly and 22 with one
+  # letter off). A deployment has to switch it off; v1 leaves the setting alone after that,
+  # across restarts and new mail. Runs once the indexes exist (after setup).
+  kx exec -i lt-loadgen -- python3 - <<'PY' > "$OUT/$1/meili-typo.json" || die "$1: typo tolerance not switched off"
+import json, time, urllib.request
+base = "http://lt-meili:7700"
+def call(path, body=None, method="GET"):
+    req = urllib.request.Request(base + path, method=method, headers={"Content-Type": "application/json"},
+                                 data=None if body is None else json.dumps(body).encode())
+    return json.load(urllib.request.urlopen(req, timeout=30))
+out = {}
+for idx in [i["uid"] for i in call("/indexes?limit=100")["results"]]:
+    task = call(f"/indexes/{idx}/settings/typo-tolerance", {"enabled": False}, "PATCH")["taskUid"]
+    for _ in range(120):
+        st = call(f"/tasks/{task}")["status"]
+        if st in ("succeeded", "failed", "canceled"):
+            break
+        time.sleep(0.5)
+    out[idx] = {"task": st, "enabled": call(f"/indexes/{idx}/settings/typo-tolerance")["enabled"]}
+print(json.dumps(out))
+if not out or any(v["task"] != "succeeded" or v["enabled"] for v in out.values()):
+    raise SystemExit(1)
+PY
+  log "$1: Meilisearch typo tolerance off ($(cat "$OUT/$1/meili-typo.json"))"
+}
+meili_down() {
+  kx delete deploy lt-meili --ignore-not-found --wait=true >/dev/null
+  kx delete pvc lt-meili --ignore-not-found --wait=true >/dev/null
+}
 variant_stores() {
   local pg ak sk
   case $1 in
@@ -423,6 +496,7 @@ variant_stores() {
       case $1 in
         v1-pg) echo '{"dataStore":'"$data"'}' ;;
         v1-pg-fs) echo '{"dataStore":'"$data"',"blobStore":{"@type":"FileSystem","path":"/var/lib/stalwart/blobs","depth":2}}' ;;
+        v1-pg-meili) echo '{"dataStore":'"$data"',"blobStore":{"@type":"FileSystem","path":"/var/lib/stalwart/blobs","depth":2},"searchStore":{"@type":"Meilisearch","url":"http://lt-meili:7700"}}' ;;
         v1-pg-s3)
           ak=$(secret s3ak); sk=$(secret s3sk)
           echo '{"dataStore":'"$data"',"blobStore":{"@type":"S3","bucket":"stalwart","region":{"@type":"Custom","region":"us-east-1","url":"http://lt-s3:9000"},"accessKeyId":{"@type":"Value","value":"'"$ak"'"},"secretKey":{"@type":"Value","secret":"'"$sk"'"}}}' ;;
@@ -442,6 +516,7 @@ stalwart_up() {
   [[ $v == v1-pg-s3 ]] && { cmd_s3_up; s3_reset; }
   [[ $v == v1-pg-s3remote ]] && s3r_reset
   [[ $v == v1-pg-cluster ]] && cmd_valkey_up
+  [[ $v == v1-pg-meili ]] && meili_up
   pvc lt-data
   stalwart_deploy lt-stalwart "$image" lt-data /var/lib/stalwart /etc/stalwart 1
   s=$(wait_ready lt-stalwart) || die "$v: not ready in bootstrap mode"
@@ -458,6 +533,7 @@ stalwart_up() {
       lg admin > "$OUT/$v/setup-coordinator.json" || die "$v: coordinator: $(cat "$OUT/$v/setup-coordinator.json")"
   fi
   s=$(restart_pods lt-stalwart) || die "$v: not ready after configure"
+  [[ $v == v1-pg-meili ]] && meili_exact "$v"
   if (( replicas > 1 )); then
     kx scale deploy lt-stalwart --replicas="$replicas" >/dev/null
     s=$(wait_ready lt-stalwart) || die "$v: $replicas replicas not ready"
@@ -469,6 +545,7 @@ stalwart_down() {  # also whatever a failed migration left (its pods carry app=l
   kx delete deploy lt-stalwart lt-stalwart-v1 --ignore-not-found --wait=true >/dev/null
   kx delete pod lt-rb016 lt-migrate --ignore-not-found --wait=true >/dev/null
   kx delete pvc lt-data lt-mig-target lt-mig-state --ignore-not-found --wait=true >/dev/null
+  meili_down
 }
 
 # sizes <variant> <label> — every store this variant writes to
@@ -501,8 +578,12 @@ sizes() {
   if [[ $v == v1-pg-s3remote ]]; then  # rclone size --json → {"count":…,"bytes":…}
     s3j=$(s3r size --json "r:$S3R_BUCKET" 2>/dev/null | grep '^{') || s3j='null'
   fi
-  printf '{"variant":"%s","label":"%s","t":%s,"data_bytes":%s,"data_files":%s,"blob_bytes":%s,"blob_files":%s,"pg":%s,"s3":%s}\n' \
-    "$v" "$label" "$(date +%s)" "${dd:-0}" "$fd" "${db:-0}" "$fb" "$pgj" "$s3j" >> "$OUT/sizes.jsonl"
+  local searchj='null' mp
+  if [[ $v == v1-pg-meili ]] && mp=$(pv_path lt-meili); then
+    searchj="{\"bytes\":$(du -sb "$mp" | cut -f1)}"
+  fi
+  printf '{"variant":"%s","label":"%s","t":%s,"data_bytes":%s,"data_files":%s,"blob_bytes":%s,"blob_files":%s,"pg":%s,"s3":%s,"search":%s}\n' \
+    "$v" "$label" "$(date +%s)" "${dd:-0}" "$fd" "${db:-0}" "$fb" "$pgj" "$s3j" "$searchj" >> "$OUT/sizes.jsonl"
   log "$v: sizes@$label data=$(numfmt --to=iec "${dd:-0}") blobs=$(numfmt --to=iec "${db:-0}") ($fb files) pg=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("%.2fGiB wal=%.2fGiB" % (d["db_bytes"] / 2**30, d["wal_bytes"] / 2**30) if d else "-")' "$pgj" 2>/dev/null)"
 }
 
@@ -851,6 +932,12 @@ case "${1:-}" in
   variant) cmd_variant "${2:?variant}" ;;
   migrate-suite) cmd_migrate_suite ;;
   migrate-gentle) cmd_init; cmd_migrate_gentle ;;
+  followup)  # what the first DEV run raised: search outside PostgreSQL, a gentler live copy
+    cmd_init
+    ( cmd_variant v1-pg-meili ) || log "variant v1-pg-meili failed — continuing"
+    ( cmd_migrate_gentle ) || log "migrate-gentle failed — continuing"
+    python3 "$HERE/report.py" "$OUT" > "$OUT/report.md" 2>> "$OUT/lt.log"
+    log "=== followup done — results in $OUT ===" ;;
   cluster) cmd_cluster ;;
   pg-up) cmd_pg_up ;;
   all) cmd_all ;;
