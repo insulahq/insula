@@ -597,23 +597,25 @@ admin_task() {
 
 since() { python3 -c "import sys; print(round($EPOCHREALTIME - float(sys.argv[1]), 1))" "$1"; }
 
+pg_basebackup_cost() {  # <variant> — a full base backup of the test cluster, streamed and counted
+  local v=$1 t0 bytes
+  t0=$EPOCHREALTIME
+  # --checkpoint=fast: the default spread checkpoint first waits up to checkpoint_completion_target
+  # × checkpoint_timeout (13.5 min here; 832 MB took 503 s on DEV) — a delay before the copy, which
+  # CNPG's backups also take by default (immediateCheckpoint: false), not the copy's cost
+  bytes=$(kx exec lt-pg-1 -c postgres -- sh -c 'pg_basebackup -U postgres -D - -Ft -X none --checkpoint=fast | wc -c' \
+    2> "$OUT/$v/pg_basebackup.err")
+  # a refused connection streams nothing: report it instead of recording a 0-byte backup
+  (( ${bytes:-0} > 0 )) || log "$v: pg_basebackup failed: $(head -c 300 "$OUT/$v/pg_basebackup.err")"
+  printf '{"variant":"%s","kind":"pg_basebackup","bytes":%s,"seconds":%s}\n' "$v" "${bytes:-0}" "$(since "$t0")" >> "$OUT/backups.jsonl"
+}
 backup_cost() {  # <variant> — the cost of a full copy of the store, as the backups make one
   local v=$1 p t0 bytes
   p=$(pv_path lt-data)
   t0=$EPOCHREALTIME
   bytes=$(tar -cf - -C "$p" data blobs 2>/dev/null | wc -c)
   printf '{"variant":"%s","kind":"tar-pvc","bytes":%s,"seconds":%s}\n' "$v" "$bytes" "$(since "$t0")" >> "$OUT/backups.jsonl"
-  if [[ $v == v1-pg* ]]; then
-    t0=$EPOCHREALTIME
-    # --checkpoint=fast: the default spread checkpoint first waits up to checkpoint_completion_target
-    # × checkpoint_timeout (13.5 min here; 832 MB took 503 s on DEV) — a delay before the copy, which
-    # CNPG's backups also take by default (immediateCheckpoint: false), not the copy's cost
-    bytes=$(kx exec lt-pg-1 -c postgres -- sh -c 'pg_basebackup -U postgres -D - -Ft -X none --checkpoint=fast | wc -c' \
-      2> "$OUT/$v/pg_basebackup.err")
-    # a refused connection streams nothing: report it instead of recording a 0-byte backup
-    (( ${bytes:-0} > 0 )) || log "$v: pg_basebackup failed: $(head -c 300 "$OUT/$v/pg_basebackup.err")"
-    printf '{"variant":"%s","kind":"pg_basebackup","bytes":%s,"seconds":%s}\n' "$v" "${bytes:-0}" "$(since "$t0")" >> "$OUT/backups.jsonl"
-  fi
+  [[ $v == v1-pg* ]] && pg_basebackup_cost "$v"
   if [[ $v == v1-pg-s3 ]]; then
     local sp; sp=$(pv_path lt-s3); t0=$EPOCHREALTIME
     bytes=$(tar -cf - -C "$sp" . | wc -c)
@@ -818,6 +820,8 @@ migrate_to() {
     printf '{"variant":"%s","step":"analyze","seconds":%s,"rc":0}\n' "$MV" "$(( SECONDS - ta ))" >> "$OUT/migrations.jsonl"
     log "$MV: ANALYZE in $(( SECONDS - ta ))s"
     phase "$MV" jmap-read-analyzed jmap-read --accounts "$ACCOUNTS" --duration 120 --workers 16
+    pg_basebackup_cost "$MV"  # every byte of mail in one database: option B's base backup
+    log "$MV: backup cost recorded ($(tail -n 1 "$OUT/backups.jsonl"))"
   fi
   phase "$MV" big big
   [[ $kind == rocks ]] && rollback_after_cutover
