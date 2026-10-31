@@ -497,7 +497,7 @@ sizes() {
   fi
   printf '{"variant":"%s","label":"%s","t":%s,"data_bytes":%s,"data_files":%s,"blob_bytes":%s,"blob_files":%s,"pg":%s,"s3":%s}\n' \
     "$v" "$label" "$(date +%s)" "${dd:-0}" "$fd" "${db:-0}" "$fb" "$pgj" "$s3j" >> "$OUT/sizes.jsonl"
-  log "$v: sizes@$label data=$(numfmt --to=iec "${dd:-0}") blobs=$(numfmt --to=iec "${db:-0}") ($fb files) pg=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("-" if not d else f"{d[\"db_bytes\"]/2**30:.2f}GiB wal={d[\"wal_bytes\"]/2**30:.2f}GiB")' "$pgj" 2>/dev/null)"
+  log "$v: sizes@$label data=$(numfmt --to=iec "${dd:-0}") blobs=$(numfmt --to=iec "${db:-0}") ($fb files) pg=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("%.2fGiB wal=%.2fGiB" % (d["db_bytes"] / 2**30, d["wal_bytes"] / 2**30) if d else "-")' "$pgj" 2>/dev/null)"
 }
 
 # admin_task <maintenanceType> — enqueue a StoreMaintenance task
