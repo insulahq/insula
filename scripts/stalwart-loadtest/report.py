@@ -184,19 +184,20 @@ def main():
                                 "store_flag", "login"]),
                       ("jmap", ["list_mailbox", "open_email", "search_text", "thread", "set_keyword"])):
         rows = []
-        for v in vs + migs:
-            d = r.phase(v, f"{kind}-read")
+        for v, p in [(v, p) for v in vs + migs for p in (f"{kind}-read", f"{kind}-read-analyzed")]:
+            d = r.phase(v, p)
             if not d:
                 continue
             errs = sum(d.get("errors", {}).values())
             # ops/s alone ranks the load generator once it saturates (one Python process ≈ one
             # core), so the server's CPU per operation is the comparable figure
-            u, w = r.usage(v, f"{kind}-read"), r.windows.get((v, f"{kind}-read"))
+            u, w = r.usage(v, p), r.windows.get((v, p))
             n = (d.get("ops_per_s") or 0) * (d.get("duration_s") or 0)
             cpu_ms = round(u["stalwart"][0] / n * 1000, 2) if n and "stalwart" in u else None
             store_ms = round(sum(u[g][0] for g in stores_of(v) if g in u) / n * 1000, 2) if n else None
             gen = round(u["loadgen"][0] / (w[1] - w[0]), 2) if w and None not in w and "loadgen" in u else None
-            rows.append([v, d.get("ops_per_s"), cpu_ms, store_ms, gen]
+            rows.append([v + (" (after ANALYZE)" if p.endswith("-analyzed") else ""), d.get("ops_per_s"), cpu_ms,
+                         store_ms, gen]
                         + [f"{fmt(lat(d, o, 'p50'), 2)} / {fmt(lat(d, o), 2)}" for o in ops] + [errs])
         out += [f"## {kind.upper()} reads (ms, p50 / p95)", "",
                 table(["variant", "ops/s", "Stalwart CPU-ms / op", "stores CPU-ms / op", "load generator cores"]

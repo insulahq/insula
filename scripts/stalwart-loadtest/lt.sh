@@ -9,8 +9,8 @@
 #   ./lt.sh variant <v>          full run of one store variant (see VARIANTS), then removes it
 #   ./lt.sh migrate-suite        0.16.27 store → stalwart-migrate → v1 RocksDB and v1 PostgreSQL,
 #                                incl. a live copy under load, final run, verify, rollback
-#   ./lt.sh migrate-gentle       init, then the RocksDB migration again with fewer write and blob
-#                                slots in the live runs (MIG_LIVE_ARGS), under the same load
+#   ./lt.sh migrate-gentle       init, then the PostgreSQL migration again with fewer write and
+#                                blob slots in the live runs (MIG_LIVE_ARGS), under the same load
 #   ./lt.sh followup             init, variant v1-pg-meili, migrate-gentle, report
 #   ./lt.sh cluster              v1 on PostgreSQL + Valkey, two pods
 #   ./lt.sh all                  everything above, in order
@@ -797,6 +797,19 @@ migrate_to() {
   log "$MV: search index rebuilt in $(( SECONDS - t0 ))s (queue left: $q)"
   phase "$MV" imap-read imap-read --accounts "$ACCOUNTS" --duration 120 --workers 16
   phase "$MV" jmap-read jmap-read --accounts "$ACCOUNTS" --duration 120 --workers 16
+  if [[ $kind == pg ]]; then
+    # On the first DEV run, JMAP text search on the freshly migrated PostgreSQL store took 1.8 s
+    # p95 against 41 ms on a store filled by mail: the index tables were bulk-written by the
+    # rebuild just before. Record their planner statistics, ANALYZE, and read again.
+    psql_pg -d stalwart_mig -c "SELECT json_agg(t) FROM (SELECT relname, n_live_tup, n_mod_since_analyze,
+      last_analyze, last_autoanalyze FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC
+      LIMIT 12) t" > "$OUT/$MV/table-stats-before-analyze.json" 2>&1
+    local ta=$SECONDS
+    psql_pg -d stalwart_mig -c "ANALYZE" >/dev/null
+    printf '{"variant":"%s","step":"analyze","seconds":%s,"rc":0}\n' "$MV" "$(( SECONDS - ta ))" >> "$OUT/migrations.jsonl"
+    log "$MV: ANALYZE in $(( SECONDS - ta ))s"
+    phase "$MV" jmap-read-analyzed jmap-read --accounts "$ACCOUNTS" --duration 120 --workers 16
+  fi
   phase "$MV" big big
   [[ $kind == rocks ]] && rollback_after_cutover
   kx delete deploy lt-stalwart-v1 --ignore-not-found --wait=true >/dev/null
@@ -874,7 +887,7 @@ cmd_migrate_gentle() {  # what the live copy costs clients when it copies fewer 
   phase "$v" smtp smtp --accounts "$ACCOUNTS" --count 5000 --workers 10
   sizes "$v" after-smtp
   phase "$v" mixed mixed --accounts "$ACCOUNTS" --duration "$MIXED_SECONDS" --smtp-rate 5
-  migrate_to rocks
+  migrate_to pg  # the proposed target (ADR-065 option B); compares with mig-pg of the first run
   stalwart_down
   log "=== migrate-gentle done ==="
 }
