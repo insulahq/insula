@@ -356,6 +356,8 @@ def cmd_setup_configure(a):
         25: {"name": "lt-smtp", "bind": {"[::]:25": True}, "protocol": "smtp", tls_key: False},
         587: {"name": "lt-submission", "bind": {"[::]:587": True}, "protocol": "smtp", tls_key: False},
         143: {"name": "lt-imap", "bind": {"[::]:143": True}, "protocol": "imap", tls_key: False},
+        # the platform's backup and restore tools speak IMAPS only (images/tenant-backup-tools)
+        993: {"name": "lt-imaps", "bind": {"[::]:993": True}, "protocol": "imap", tls_key: True},
     }
     create = {v["name"]: v for port, v in want_nl.items() if port not in bound}
     if create:
@@ -385,13 +387,19 @@ def cmd_setup_configure(a):
     imap_key = "maxConcurrentConnections" if v1 else "maxConcurrent"
     admin_call(j, "x:Imap/set", {"update": {"singleton": {"maxRequestSize": 104857600, imap_key: 64,
                                                           rate_key: None}}})
-    admin_call(j, "x:Jmap/set", {"update": {"singleton": {
-        "maxUploadSize": 104857600, "maxConcurrentUploads": 128, "maxConcurrentRequests": 128,
-        "maxMethodCalls": 256}}})
+    jmap = {"maxUploadSize": 104857600, "maxConcurrentUploads": 128, "maxConcurrentRequests": 128,
+            "maxMethodCalls": 256}
+    if v1:
+        # v1 counts uploaded blobs not yet imported against a per-account quota (uploadQuota 50 MB,
+        # maxUploadCount 1000, held for uploadTtl 1 h); the JMAP restore engine uploads ahead of its
+        # imports and got HTTP 429 on every mailbox above that (DEV smoke, 2026-10-31). Raised here so
+        # its speed can be measured; a platform that keeps the JMAP engine has to raise it too.
+        jmap.update({"uploadQuota": 4_000_000_000, "maxUploadCount": 200_000})
+    admin_call(j, "x:Jmap/set", {"update": {"singleton": jmap}})
 
     existing = {x.get("name") for x in admin_call(j, "x:Account/get",
                                                    {"ids": None, "properties": ["id", "name"]})["list"]}
-    names = account_names(a.accounts) + [BIG_ACCOUNT]
+    names = account_names(a.accounts) + [BIG_ACCOUNT] + RESTORE_TARGETS
     todo = [n for n in names if n not in existing]
     for i in range(0, len(todo), 50):
         batch = {n: {"@type": "User", "name": n, "domainId": dom_id,
@@ -399,7 +407,163 @@ def cmd_setup_configure(a):
                  for n in todo[i:i + 50]}
         admin_call(j, "x:Account/set", {"create": batch})
     out["accounts_created"] = len(todo)
+    # The master account the backup and restore tools sign in through (`<addr>%<master>`), as
+    # scripts/bootstrap.sh provision_stalwart_master_user() creates it: a User with the Admin role.
+    if MASTER_ACCOUNT not in existing:
+        admin_call(j, "x:Account/set", {"create": {"m": {
+            "@type": "User", "name": MASTER_ACCOUNT, "domainId": dom_id, "roles": {"@type": "Admin"},
+            "credentials": {"0": {"@type": "Password", "secret": os.environ["LT_ADMIN_PASSWORD"]}}}}})
     return out
+
+
+MASTER_ACCOUNT = "master"
+# Restore targets: one per engine and source mailbox, so a restore always lands in an empty account
+RESTORE_SOURCES = ["big", "u001", "u002", "u003", "u004", "u005", "u006", "u007", "u008", "u009", "u010"]
+RESTORE_TARGETS = [f"r{engine}-{s}" for engine in ("imap", "jmap") for s in RESTORE_SOURCES]
+
+
+def utf7_imap(name):
+    """RFC 3501 modified UTF-7, for a mailbox name with non-ASCII characters."""
+    out, buf = [], ""
+    for ch in name + "\0":
+        if ch != "\0" and (ord(ch) < 0x20 or ord(ch) > 0x7e):
+            buf += ch
+            continue
+        if buf:
+            enc = base64.b64encode(buf.encode("utf-16-be")).decode().rstrip("=").replace("/", ",")
+            out.append(f"&{enc}-")
+            buf = ""
+        if ch == "&":
+            out.append("&-")
+        elif ch != "\0":
+            out.append(ch)
+    return "".join(out)
+
+
+def cmd_fixtures(a):
+    """What ADR-044 saw the JMAP engine lose: a UTF-8 folder and custom keywords, in u001…u003."""
+    out = {}
+    for name in ("u001", "u002", "u003"):
+        m = imap_login(name)
+        folder = '"' + utf7_imap("Entwürfe Ä/Rechnungen 2026") + '"'
+        m.create('"' + utf7_imap("Entwürfe Ä") + '"')
+        m.create(folder)
+        m.select("INBOX")
+        m.copy("1:40", folder)
+        m.store("1:30", "+FLAGS", "($Label1 Projekt-X \\Flagged)")
+        m.store("31:60", "+FLAGS", "(\\Answered $Forwarded)")
+        out[name] = {"folder": folder, "copied": 40, "keywords_on": 30}
+        m.logout()
+    return out
+
+
+def _decode_utf7(name):
+    def repl(part):
+        if part == "":
+            return "&"
+        b = part.replace(",", "/")
+        b += "=" * (-len(b) % 4)
+        return base64.b64decode(b).decode("utf-16-be")
+    out, i = [], 0
+    while i < len(name):
+        if name[i] == "&":
+            j = name.index("-", i)
+            out.append(repl(name[i + 1:j]))
+            i = j + 1
+        else:
+            out.append(name[i])
+            i += 1
+    return "".join(out)
+
+
+def cmd_digest(a):
+    """Per account: every folder with its message count and a hash over (Message-ID, flags,
+    INTERNALDATE, size) of its messages — what a restore must reproduce, independent of UIDs."""
+    out = {}
+    for name in a.names.split(","):
+        m = imap_login(name)
+        folders = {}
+        for mbox in mailbox_names(m):
+            typ, data = m.select(mbox, readonly=True)
+            n = int(data[0])
+            rows = []
+            if n:
+                typ, data = m.fetch("1:*", "(FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+                for item in data:
+                    if not isinstance(item, tuple):
+                        continue
+                    meta = item[0].decode()
+                    flags = sorted(f for f in meta.split("FLAGS (", 1)[1].split(")", 1)[0].split()
+                                   if f.lower() not in ("\\recent",))
+                    idate = meta.split('INTERNALDATE "', 1)[1].split('"', 1)[0]
+                    size = meta.split("RFC822.SIZE ", 1)[1].split(" ", 1)[0].rstrip(")")
+                    mid = item[1].decode(errors="replace").strip()
+                    rows.append(f"{mid}|{' '.join(flags)}|{idate}|{size}")
+            rows.sort()
+            folders[_decode_utf7(mbox.strip('"'))] = {
+                "messages": n, "hash": hashlib.sha256("\n".join(rows).encode()).hexdigest()[:16],
+                "flagged": sum("\\Flagged" in r for r in rows), "keywords": sum("$Label1" in r for r in rows)}
+        out[name] = folders
+        m.logout()
+    return out
+
+
+def account_ids(j):
+    """{account name: id} for every account on the server."""
+    rows = admin_call(j, "x:Account/get", {"ids": None, "properties": ["id", "name"]})["list"]
+    return {r.get("name"): r["id"] for r in rows}
+
+
+def cmd_samples(a):
+    """v1 spam-classifier training samples: the total and how many each account holds. With
+    --release-account-id, destroys that account's samples (what the platform would do when it deletes
+    a mailbox: Stalwart's account deletion leaves them, and with them the mail's blobs)."""
+    j = admin()
+    names = {v: k for k, v in account_ids(j).items()}
+    ids, pos = [], 0
+    while True:
+        page = admin_call(j, "x:SpamTrainingSample/query", {"position": pos, "limit": 1000}).get("ids") or []
+        ids += page
+        pos += len(page)
+        if len(page) < 1000:
+            break
+    rows = [s for i in range(0, len(ids), 500)
+            for s in admin_call(j, "x:SpamTrainingSample/get",
+                                {"ids": ids[i:i + 500], "properties": ["id", "accountId"]})["list"]]
+    if a.release_account_id:
+        mine = [s["id"] for s in rows if s.get("accountId") == a.release_account_id]
+        for i in range(0, len(mine), 500):
+            admin_call(j, "x:SpamTrainingSample/set", {"destroy": mine[i:i + 500]})
+        return {"released": len(mine), "account_id": a.release_account_id, "total_before": len(ids)}
+    per = {}
+    for s in rows:
+        key = names.get(s.get("accountId"), s.get("accountId") or "-")
+        per[key] = per.get(key, 0) + 1
+    return {"total": len(ids), "per_account": per}
+    ids, pos = [], 0
+    while True:
+        page = admin_call(j, "x:SpamTrainingSample/query", {"position": pos, "limit": 1000}).get("ids") or []
+        ids += page
+        pos += len(page)
+        if len(page) < 1000:
+            break
+    per = {}
+    for i in range(0, len(ids), 500):
+        for s in admin_call(j, "x:SpamTrainingSample/get", {"ids": ids[i:i + 500],
+                                                             "properties": ["accountId", "isSpam"]})["list"]:
+            key = names.get(s.get("accountId"), s.get("accountId") or "-")
+            per[key] = per.get(key, 0) + 1
+    return {"total": len(ids), "per_account": per}
+
+
+def cmd_destroy_account(a):
+    """Destroy one account the way the platform deletes a mailbox (x:Account/set destroy)."""
+    j = admin()
+    acc_id = account_ids(j).get(a.name)
+    if acc_id is None:
+        raise SystemExit(f"no account {a.name}")
+    res = admin_call(j, "x:Account/set", {"destroy": [acc_id]})
+    return {"name": a.name, "id": acc_id, "destroyed": res.get("destroyed")}
 
 
 def cmd_admin(a):
@@ -842,6 +1006,73 @@ def cmd_sample(a):
         return dict(ex.map(one, names))
 
 
+def cmd_verify_bodies(a):
+    """Every stored message of the corpus accounts against the bytes it was made from: a message the
+    server lists but whose body is missing, empty or different is lost mail (the durability check after
+    a power cut). APPENDed messages must be byte-identical; delivered ones end with the original bytes
+    (the server prepends its Received/authentication headers)."""
+    names = account_names(a.accounts) + ([BIG_ACCOUNT] if a.big else [])
+    stats = {"checked": 0, "identical": 0, "delivered_suffix": 0, "empty": 0, "different": 0,
+             "fetch_errors": 0, "examples": []}
+    lock = threading.Lock()
+
+    def one(name):
+        local = {k: 0 for k in ("checked", "identical", "delivered_suffix", "empty", "different", "fetch_errors")}
+        bad = []
+        m = imap_login(name)
+        try:
+            for mbox in mailbox_names(m):
+                exists = int(m.select(mbox, readonly=True)[1][0])
+                for lo in range(1, exists + 1, 100):
+                    hi = min(exists, lo + 99)
+                    try:
+                        typ, data = m.fetch(f"{lo}:{hi}", "(RFC822.SIZE BODY.PEEK[])")
+                    except Exception as exc:  # noqa: BLE001
+                        local["fetch_errors"] += hi - lo + 1
+                        bad.append(f"{name}/{mbox} {lo}:{hi}: {exc}"[:160])
+                        m = imap_login(name)
+                        m.select(mbox, readonly=True)
+                        continue
+                    for item in data:
+                        if not isinstance(item, tuple):
+                            continue
+                        local["checked"] += 1
+                        body = item[1] or b""
+                        if not body.strip():
+                            local["empty"] += 1
+                            bad.append(f"{name}/{mbox}: empty body ({item[0][:60]!r})")
+                            continue
+                        mid = body.split(b"Message-ID: <", 1)[-1].split(b">", 1)[0]
+                        try:
+                            g = int(mid.split(b".", 1)[0])
+                        except ValueError:
+                            local["different"] += 1
+                            continue
+                        want, _, _ = message(g, address(name))
+                        if body == want:
+                            local["identical"] += 1
+                        elif body.endswith(want):
+                            local["delivered_suffix"] += 1
+                        else:
+                            local["different"] += 1
+                            bad.append(f"{name}/{mbox}: message {g} differs ({len(body)} vs {len(want)} bytes)")
+        finally:
+            try:
+                m.logout()
+            except Exception:  # noqa: BLE001
+                pass
+        with lock:
+            for k, n in local.items():
+                stats[k] += n
+            stats["examples"] += bad[:5]
+
+    with ThreadPoolExecutor(8) as ex:
+        list(ex.map(one, names))
+    stats["examples"] = stats["examples"][:40]
+    stats["ok"] = stats["empty"] == 0 and stats["different"] == 0 and stats["fetch_errors"] == 0
+    return stats
+
+
 def cmd_compare(a):
     src, dst = json.load(open(a.source)), json.load(open(a.target))
     diffs = []
@@ -925,6 +1156,11 @@ def main():
         ("counts", []),
         ("idle-probe", [("--via", str, ""), ("--watch", str, ""), ("--count", int, 20),
                         ("--offset", int, 3_000_000), ("--timeout", int, 30)]),
+        ("fixtures", []),
+        ("digest", [("--names", str, "")]),
+        ("samples", [("--release-account-id", str, "")]),
+        ("destroy-account", [("--name", str, "")]),
+        ("verify-bodies", [("--big", int, 1)]),
     ]:
         sp = sub.add_parser(name, parents=[common])
         for flag, typ, default in extra:

@@ -52,6 +52,15 @@ STALWART_CPU=${STALWART_CPU:-1000m}
 STALWART_MEM=${STALWART_MEM:-2Gi}
 PG_CPU=${PG_CPU:-1000m}
 PG_MEM=${PG_MEM:-2Gi}
+PG_SHARED_BUFFERS=${PG_SHARED_BUFFERS:-512MB}
+PG_INSTANCES=${PG_INSTANCES:-1}     # > 1: streaming replicas (CNPG HA), each with a full copy
+PG_SYNC=${PG_SYNC:-off}             # on: one synchronous standby (ANY 1) — no committed mail lost on failover
+PG_ANTI_AFFINITY=${PG_ANTI_AFFINITY:-false}  # true on a multi-node cluster: one instance per node
+PG_SC=${PG_SC:-local-path}
+# BLOB_SC: the blob directory of a FileSystem variant on its own volume of this storage class
+# (empty: a subPath of the data volume); BLOB_ACCESS ReadWriteMany for a volume several pods share
+BLOB_SC=${BLOB_SC:-}
+BLOB_ACCESS=${BLOB_ACCESS:-ReadWriteOnce}
 MEILI_CPU=${MEILI_CPU:-1000m}  # PostgreSQL's budget again, on top of it: the report counts both per op
 MEILI_MEM=${MEILI_MEM:-2Gi}
 ACCOUNTS=${ACCOUNTS:-50}
@@ -164,21 +173,27 @@ YAML
 
 cmd_pg_up() {
   kx get cluster lt-pg >/dev/null 2>&1 && return 0
+  local sync="" plugins=""
+  [[ $PG_SYNC == on ]] && sync=$'\n    synchronous: {method: any, number: 1, dataDurability: required}'
+  # WAL archiving through the barman-cloud plugin, as the platform's system-db does (r2.sh objstore_up)
+  [[ ${PG_WAL_ARCHIVE:-off} == on ]] &&
+    plugins=$'\n  plugins:\n    - {name: barman-cloud.cloudnative-pg.io, isWALArchiver: true, parameters: {barmanObjectName: lt-objstore}}'
   kx apply -f - >/dev/null <<YAML
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: lt-pg
 spec:
-  instances: 1
+  instances: $PG_INSTANCES
   imageName: $IMG_PG
-  storage: {size: 60Gi, storageClass: local-path}
+  affinity: {enablePodAntiAffinity: $PG_ANTI_AFFINITY, topologyKey: kubernetes.io/hostname, podAntiAffinityType: required}${plugins}
+  storage: {size: 60Gi, storageClass: $PG_SC}
   resources:
-    requests: {cpu: 500m, memory: 1Gi}
+    requests: {cpu: 500m, memory: 512Mi}
     limits: {cpu: "$PG_CPU", memory: $PG_MEM}
-  postgresql:
+  postgresql:${sync}
     parameters:
-      shared_buffers: 512MB
+      shared_buffers: $PG_SHARED_BUFFERS
       effective_cache_size: 1536MB
       maintenance_work_mem: 128MB
       work_mem: 16MB
@@ -199,15 +214,16 @@ spec:
       secret: {name: lt-pg-app}
 YAML
   local _
-  for _ in $(seq 1 90); do
-    [[ "$(kx get cluster lt-pg -o jsonpath='{.status.readyInstances}' 2>/dev/null)" == 1 ]] && break
+  for _ in $(seq 1 180); do
+    [[ "$(kx get cluster lt-pg -o jsonpath='{.status.readyInstances}' 2>/dev/null)" == "$PG_INSTANCES" ]] && break
     sleep 5
   done
-  [[ "$(kx get cluster lt-pg -o jsonpath='{.status.readyInstances}')" == 1 ]] || die "lt-pg not ready"
-  log "postgres: lt-pg ready"
+  [[ "$(kx get cluster lt-pg -o jsonpath='{.status.readyInstances}')" == "$PG_INSTANCES" ]] || die "lt-pg not ready"
+  log "postgres: lt-pg ready ($PG_INSTANCES instance(s), synchronous standby: $PG_SYNC)"
 }
 
-psql_pg() { kx exec -i lt-pg-1 -c postgres -- psql -U postgres -v ON_ERROR_STOP=1 -At "$@"; }
+pg_primary() { kx get cluster lt-pg -o jsonpath='{.status.currentPrimary}' 2>/dev/null || echo lt-pg-1; }
+psql_pg() { kx exec -i "$(pg_primary)" -c postgres -- psql -U postgres -v ON_ERROR_STOP=1 -At "$@"; }
 
 pg_reset_db() {
   local db=${1:-stalwart}
@@ -307,18 +323,269 @@ YAML
   kx rollout status deploy/lt-valkey --timeout=300s >/dev/null || die "lt-valkey not ready"
 }
 
+# Valkey with Sentinel, the shape of the platform's dormant k8s/base/valkey (3 pods, each a valkey
+# and a sentinel container, quorum 2, platform sizing: valkey 64 MB maxmemory / 96 Mi limit,
+# sentinel 48 Mi), without its password (namespace-internal test). Option C's in-memory store and
+# coordinator.
+VALKEY_NODES=${VALKEY_NODES:-3}
+sentinel_store() {
+  local i urls=""
+  for i in $(seq 0 $(( VALKEY_NODES - 1 ))); do urls+="\"redis://lt-valkey-ha-$i.lt-valkey-hl.$NS.svc.cluster.local:26379\":true,"; done
+  echo '{"@type":"RedisSentinel","urls":{'"${urls%,}"'},"serviceName":"mymaster"}'
+}
+valkey_ha_up() {
+  kx get sts lt-valkey-ha >/dev/null 2>&1 && return 0
+  kx apply -f - >/dev/null <<YAML
+apiVersion: v1
+kind: Service
+metadata: {name: lt-valkey-hl}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: {app: lt-valkey-ha}
+  ports: [{name: redis, port: 6379}, {name: sentinel, port: 26379}]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: lt-valkey-ha}
+spec:
+  serviceName: lt-valkey-hl
+  replicas: $VALKEY_NODES
+  podManagementPolicy: Parallel
+  selector: {matchLabels: {app: lt-valkey-ha}}
+  template:
+    metadata: {labels: {app: lt-valkey-ha}}
+    spec:
+      topologySpreadConstraints:
+        - {maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {app: lt-valkey-ha}}}
+      initContainers:
+        - name: config
+          image: $IMG_VALKEY
+          command:
+            - sh
+            - -c
+            - |
+              me=\$(hostname).lt-valkey-hl.$NS.svc.cluster.local
+              primary=lt-valkey-ha-0.lt-valkey-hl.$NS.svc.cluster.local
+              cat > /etc/valkey/valkey.conf <<EOF
+              port 6379
+              maxmemory 64mb
+              maxmemory-policy allkeys-lru
+              save ""
+              appendonly no
+              repl-timeout 60
+              replica-read-only yes
+              replica-announce-ip \$me
+              EOF
+              [ "\$(hostname)" = lt-valkey-ha-0 ] || echo "replicaof \$primary 6379" >> /etc/valkey/valkey.conf
+              cat > /etc/valkey/sentinel.conf <<EOF
+              port 26379
+              sentinel resolve-hostnames yes
+              sentinel announce-hostnames yes
+              sentinel announce-ip \$me
+              sentinel monitor mymaster \$primary 6379 2
+              sentinel down-after-milliseconds mymaster 5000
+              sentinel failover-timeout mymaster 30000
+              sentinel parallel-syncs mymaster 1
+              EOF
+              sed -i 's/^ *//' /etc/valkey/valkey.conf /etc/valkey/sentinel.conf
+          volumeMounts: [{name: conf, mountPath: /etc/valkey}]
+      containers:
+        - name: valkey
+          image: $IMG_VALKEY
+          args: [/etc/valkey/valkey.conf]
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 96Mi}
+          volumeMounts: [{name: conf, mountPath: /etc/valkey}]
+        - name: sentinel
+          image: $IMG_VALKEY
+          command: [sh, -c, "until getent hosts lt-valkey-ha-0.lt-valkey-hl.$NS.svc.cluster.local; do sleep 1; done; exec valkey-sentinel /etc/valkey/sentinel.conf"]
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 48Mi}
+          volumeMounts: [{name: conf, mountPath: /etc/valkey}]
+      volumes: [{name: conf, emptyDir: {}}]
+YAML
+  kx rollout status sts/lt-valkey-ha --timeout=300s >/dev/null || die "lt-valkey-ha not ready"
+  local _ q
+  for _ in $(seq 1 30); do
+    q=$(kx exec lt-valkey-ha-0 -c sentinel -- valkey-cli -p 26379 sentinel ckquorum mymaster 2>/dev/null)
+    [[ $q == OK* ]] && break; sleep 2
+  done
+  log "valkey-ha: $VALKEY_NODES nodes, sentinel: ${q:-no answer}"
+}
+valkey_ha_down() { kx delete sts lt-valkey-ha --ignore-not-found --wait=true >/dev/null; kx delete svc lt-valkey-hl --ignore-not-found >/dev/null; }
+
+# Garage (garagehq.deuxfleurs.fr, AGPL), an S3 for small self-hosted clusters: GARAGE_NODES pods,
+# each object stored on min(3, nodes) of them (replication_factor). The multi-node path for blobs
+# that no single node holds alone.
+IMG_GARAGE=docker.io/dxflrs/garage:v2.5.0
+GARAGE_NODES=${GARAGE_NODES:-1}
+GARAGE_SC=${GARAGE_SC:-local-path}
+garage_up() {
+  garage_down
+  local rf=$(( GARAGE_NODES < 3 ? GARAGE_NODES : 3 ))
+  kx create secret generic lt-garage --from-literal=rpc="$(openssl rand -hex 32)" \
+    --from-literal=admin="$(openssl rand -hex 24)" --dry-run=client -o yaml | kx apply -f - >/dev/null
+  kx apply -f - >/dev/null <<YAML
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: lt-garage}
+data:
+  garage.toml: |
+    metadata_dir = "/data/meta"
+    data_dir = "/data/blocks"
+    db_engine = "lmdb"
+    replication_factor = $rf
+    consistency_mode = "consistent"
+    compression_level = "none"
+    rpc_bind_addr = "[::]:3901"
+    bootstrap_peers = []
+    [kubernetes_discovery]
+    namespace = "$NS"
+    service_name = "lt-garage"
+    skip_crd = false
+    [s3_api]
+    s3_region = "garage"
+    api_bind_addr = "[::]:3900"
+    [admin]
+    api_bind_addr = "[::]:3903"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: lt-garage}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: lt-garage}
+rules:
+  - {apiGroups: [deuxfleurs.fr], resources: [garagenodes], verbs: [get, list, watch, create, update, patch, delete]}
+  - {apiGroups: [apiextensions.k8s.io], resources: [customresourcedefinitions], verbs: [get, list, watch, create, update, patch]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: lt-garage}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: lt-garage}
+subjects: [{kind: ServiceAccount, name: lt-garage, namespace: $NS}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: lt-garage}
+spec:
+  selector: {app: lt-garage}
+  ports: [{name: s3, port: 3900}, {name: admin, port: 3903}]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: lt-garage}
+spec:
+  serviceName: lt-garage
+  replicas: $GARAGE_NODES
+  podManagementPolicy: Parallel
+  selector: {matchLabels: {app: lt-garage}}
+  template:
+    metadata: {labels: {app: lt-garage}}
+    spec:
+      serviceAccountName: lt-garage
+      topologySpreadConstraints:
+        - {maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: DoNotSchedule, labelSelector: {matchLabels: {app: lt-garage}}}
+      containers:
+        - name: garage
+          image: $IMG_GARAGE
+          env:
+            - {name: GARAGE_RPC_SECRET, valueFrom: {secretKeyRef: {name: lt-garage, key: rpc}}}
+            - {name: GARAGE_ADMIN_TOKEN, valueFrom: {secretKeyRef: {name: lt-garage, key: admin}}}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: conf, mountPath: /etc/garage.toml, subPath: garage.toml}
+      volumes: [{name: conf, configMap: {name: lt-garage}}]
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: $GARAGE_SC
+        resources: {requests: {storage: 60Gi}}
+YAML
+  kx rollout status sts/lt-garage --timeout=600s >/dev/null || die "lt-garage not ready"
+  local g="kx exec lt-garage-0 -- /garage" ids id _ n
+  for _ in $(seq 1 60); do
+    n=$($g status 2>/dev/null | grep -c -E '^[0-9a-f]{16}')
+    (( n >= GARAGE_NODES )) && break; sleep 3
+  done
+  ids=$($g status 2>/dev/null | grep -o -E '^[0-9a-f]{16}')
+  for id in $ids; do $g layout assign -z dc1 -c 50G "$id" >/dev/null || die "garage: layout assign $id"; done
+  $g layout apply --version 1 >/dev/null || die "garage: layout apply"
+  $g bucket create stalwart >/dev/null || die "garage: bucket"
+  local key; key=$($g key create lt-stalwart 2>&1)
+  local kid ksec
+  kid=$(grep -o -E 'GK[0-9a-f]{24}' <<<"$key" | head -1)
+  ksec=$(grep -i -E 'secret' <<<"$key" | grep -o -E '[0-9a-f]{64}' | head -1)
+  [[ -n $kid && -n $ksec ]] || die "garage: key not parsed: $(head -c 300 <<<"$key" | tr -d '0-9a-f' | head -c 120)"
+  $g bucket allow --read --write --owner stalwart --key lt-stalwart >/dev/null || die "garage: bucket allow"
+  kx create secret generic lt-garage-key --from-literal=id="$kid" --from-literal=secret="$ksec" \
+    --dry-run=client -o yaml | kx apply -f - >/dev/null
+  log "garage: $GARAGE_NODES node(s), replication factor $rf, bucket ready"
+}
+garage_down() {
+  kx delete sts lt-garage --ignore-not-found --wait=true >/dev/null
+  local i; for i in $(seq 0 4); do kx delete pvc "data-lt-garage-$i" --ignore-not-found --wait=false >/dev/null; done
+  kx delete garagenodes.deuxfleurs.fr --all --ignore-not-found >/dev/null 2>&1
+}
+
+# retention_apply <variant> — RETENTION_JSON: {"spam": {SpamClassifier fields}, "data": {DataRetention
+# fields}} written before the restart that applies them (ADR-065: deleted mail retained as briefly as
+# possible, operator 2026-10-31)
+retention_apply() {
+  local v=$1 calls
+  calls=$(python3 -c 'import json,sys; r=json.loads(sys.argv[1]); c=[]
+if r.get("spam"): c.append(["x:SpamClassifier/set",{"update":{"singleton":r["spam"]}},"s"])
+if r.get("data"): c.append(["x:DataRetention/set",{"update":{"singleton":r["data"]}},"d"])
+print(json.dumps(c))' "$RETENTION_JSON") || die "$v: RETENTION_JSON is not JSON"
+  echo "$calls" | lg admin > "$OUT/$v/setup-retention.json" || die "$v: retention: $(head -c 400 "$OUT/$v/setup-retention.json")"
+  grep -q '"notUpdated"' "$OUT/$v/setup-retention.json" && die "$v: retention refused: $(head -c 600 "$OUT/$v/setup-retention.json")"
+  log "$v: retention settings applied ($RETENTION_JSON)"
+}
+
 # ── Stalwart instances ─────────────────────────────────────────────────────────────
 
-# pvc <name> — a fresh local-path volume
+# pvc <name> [storage class] [access mode] — a fresh volume (local-path, ReadWriteOnce by default)
 pvc() {
   kx apply -f - >/dev/null <<YAML
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata: {name: $1}
 spec:
-  accessModes: [ReadWriteOnce]
-  storageClassName: local-path
+  accessModes: [${3:-ReadWriteOnce}]
+  storageClassName: ${2:-local-path}
   resources: {requests: {storage: 60Gi}}
+YAML
+}
+
+# lt-longhorn: a Longhorn class for the blob-volume tests, with LONGHORN_REPLICAS copies of every
+# block (1 on single-node DEV; 3 on the staging cluster, one per node). RWX volumes are served by a
+# share-manager pod over NFSv4.
+LONGHORN_REPLICAS=${LONGHORN_REPLICAS:-1}
+longhorn_sc() {
+  $K apply -f - >/dev/null <<YAML
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: lt-longhorn
+  labels: {app.kubernetes.io/part-of: stalwart-loadtest}
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "$LONGHORN_REPLICAS"
+  staleReplicaTimeout: "30"
+  fsType: ext4
+  dataLocality: disabled
+  nfsOptions: "vers=4.1,noresvport,softerr,timeo=600,retrans=5"
 YAML
 }
 
@@ -327,6 +594,13 @@ YAML
 # is the config directory. The launcher is production's (THP off, capability-free copy).
 stalwart_deploy() {
   local name=$1 image=$2 claim=$3 root=$4 etc=$5 replicas=${6:-1}
+  # the blob directory: a subPath of the store volume, or its own volume (BLOB_SC)
+  local blob_mount="{name: store, mountPath: $root/blobs, subPath: blobs}" blob_vol="" init_blobs=""
+  if [[ -n $BLOB_SC ]]; then
+    blob_mount="{name: blobs, mountPath: $root/blobs}"
+    blob_vol="- {name: blobs, persistentVolumeClaim: {claimName: lt-blobs}}"
+    init_blobs=", {name: blobs, mountPath: /blobs}"
+  fi
   kx apply -f - >/dev/null <<YAML
 apiVersion: apps/v1
 kind: Deployment
@@ -341,12 +615,14 @@ spec:
       terminationGracePeriodSeconds: 60
       securityContext:
         sysctls: [{name: net.ipv4.ip_unprivileged_port_start, value: "0"}]
+      topologySpreadConstraints:  # one pod per node where there are several (staging)
+        - {maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {lt-instance: $name}}}
       initContainers:
         - name: dirs
           image: $image
           securityContext: {runAsUser: 0}
-          command: [sh, -c, "mkdir -p /pvc/data /pvc/blobs /pvc/etc && chown 2000:2000 /pvc/data /pvc/blobs /pvc/etc"]
-          volumeMounts: [{name: store, mountPath: /pvc}]
+          command: [sh, -c, "mkdir -p /pvc/data /pvc/blobs /pvc/etc && chown 2000:2000 /pvc/data /pvc/blobs /pvc/etc && if [ -d /blobs ]; then chown 2000:2000 /blobs; fi"]
+          volumeMounts: [{name: store, mountPath: /pvc}$init_blobs]
         - name: stalwart-binary
           image: $image
           command: [sh, -c, "cp /usr/local/bin/stalwart /opt/stalwart-bin/stalwart && chmod 0555 /opt/stalwart-bin/stalwart"]
@@ -371,6 +647,7 @@ spec:
             - {name: smtp, containerPort: 25}
             - {name: submission, containerPort: 587}
             - {name: imap, containerPort: 143}
+            - {name: imaps, containerPort: 993}
             - {name: http, containerPort: 8080}
           resources:
             requests: {cpu: 250m, memory: 512Mi}
@@ -382,11 +659,12 @@ spec:
           volumeMounts:
             - {name: bin, mountPath: /opt/stalwart-bin, readOnly: true}
             - {name: store, mountPath: $root/data, subPath: data}
-            - {name: store, mountPath: $root/blobs, subPath: blobs}
+            - $blob_mount
             - {name: store, mountPath: $etc, subPath: etc}
       volumes:
         - {name: bin, emptyDir: {}}
         - {name: store, persistentVolumeClaim: {claimName: $claim}}
+        $blob_vol
 ---
 apiVersion: v1
 kind: Service
@@ -397,6 +675,7 @@ spec:
     - {name: smtp, port: 25}
     - {name: submission, port: 587}
     - {name: imap, port: 143}
+    - {name: imaps, port: 993}
     - {name: http, port: 8080}
 YAML
 }
@@ -489,38 +768,53 @@ meili_down() {
   kx delete deploy lt-meili --ignore-not-found --wait=true >/dev/null
   kx delete pvc lt-meili --ignore-not-found --wait=true >/dev/null
 }
+# A variant name may carry a +tag (v1-pg-fs+lhrwx): the same store shape on another volume or
+# cluster layout, with its own results directory. The shape is the part before the +.
+base_of() { echo "${1%%+*}"; }
+
 variant_stores() {
-  local pg ak sk
-  case $1 in
+  local pg ak sk b; b=$(base_of "$1")
+  local fs='"blobStore":{"@type":"FileSystem","path":"/var/lib/stalwart/blobs","depth":2}'
+  case $b in
     v016-rocks|v1-rocks) echo '{"dataStore":{"@type":"RocksDb","path":"/var/lib/stalwart/data"}}' ;;
     v1-pg*)
       pg=$(secret pg)
       local data='{"@type":"PostgreSql","host":"lt-pg-rw","port":5432,"database":"stalwart","authUsername":"stalwart","authSecret":{"@type":"Value","secret":"'"$pg"'"},"useTls":false}'
-      case $1 in
+      case $b in
         v1-pg) echo '{"dataStore":'"$data"'}' ;;
-        v1-pg-fs) echo '{"dataStore":'"$data"',"blobStore":{"@type":"FileSystem","path":"/var/lib/stalwart/blobs","depth":2}}' ;;
-        v1-pg-meili) echo '{"dataStore":'"$data"',"blobStore":{"@type":"FileSystem","path":"/var/lib/stalwart/blobs","depth":2},"searchStore":{"@type":"Meilisearch","url":"http://lt-meili:7700"}}' ;;
+        v1-pg-fs) echo '{"dataStore":'"$data"','"$fs"'}' ;;
+        v1-pg-meili) echo '{"dataStore":'"$data"','"$fs"',"searchStore":{"@type":"Meilisearch","url":"http://lt-meili:7700"}}' ;;
         v1-pg-s3)
           ak=$(secret s3ak); sk=$(secret s3sk)
           echo '{"dataStore":'"$data"',"blobStore":{"@type":"S3","bucket":"stalwart","region":{"@type":"Custom","region":"us-east-1","url":"http://lt-s3:9000"},"accessKeyId":{"@type":"Value","value":"'"$ak"'"},"secretKey":{"@type":"Value","secret":"'"$sk"'"}}}' ;;
         v1-pg-s3remote)
           echo '{"dataStore":'"$data"',"blobStore":{"@type":"S3","bucket":"'"$S3R_BUCKET"'","region":{"@type":"Custom","region":"us-east-1","url":"'"$S3R_ENDPOINT"'"},"accessKeyId":{"@type":"Value","value":"'"$S3R_ACCESS_KEY"'"},"secretKey":{"@type":"Value","secret":"'"$S3R_SECRET_KEY"'"}}}' ;;
+        v1-pg-garage)  # Garage, an S3 that replicates every object over GARAGE_NODES nodes
+          echo '{"dataStore":'"$data"',"blobStore":{"@type":"S3","bucket":"stalwart","region":{"@type":"Custom","region":"garage","url":"http://lt-garage:3900"},"accessKeyId":{"@type":"Value","value":"'"$(kx get secret lt-garage-key -o jsonpath='{.data.id}' | base64 -d)"'"},"secretKey":{"@type":"Value","secret":"'"$(kx get secret lt-garage-key -o jsonpath='{.data.secret}' | base64 -d)"'"}}}' ;;
         v1-pg-cluster) echo '{"dataStore":'"$data"',"inMemoryStore":{"@type":"Redis","url":"redis://lt-valkey:6379"}}' ;;
+        v1-pg-cluster-ha)  # FS blobs on a shared volume (BLOB_SC/BLOB_ACCESS), Valkey with Sentinel
+          echo '{"dataStore":'"$data"','"$fs"',"inMemoryStore":'"$(sentinel_store)"'}' ;;
       esac ;;
   esac
 }
 
 # stalwart_up <variant> [replicas] — fresh store, bootstrap, configure, accounts
 stalwart_up() {
-  local v=$1 replicas=${2:-1} ver=1 image=$IMG_V1 t0=$SECONDS s
-  [[ $v == v016* ]] && { ver=0.16; image=$IMG_016; }
+  local v=$1 replicas=${2:-1} ver=1 image=$IMG_V1 t0=$SECONDS s b; b=$(base_of "$1")
+  [[ $b == v016* ]] && { ver=0.16; image=$IMG_016; }
   stalwart_down  # a failed earlier variant must not leave its store behind
-  [[ $v == v1-pg* ]] && { cmd_pg_up; pg_reset_db stalwart; }
-  [[ $v == v1-pg-s3 ]] && { cmd_s3_up; s3_reset; }
-  [[ $v == v1-pg-s3remote ]] && s3r_reset
-  [[ $v == v1-pg-cluster ]] && cmd_valkey_up
-  [[ $v == v1-pg-meili ]] && meili_up
-  pvc lt-data
+  [[ $b == v1-pg* ]] && { cmd_pg_up; pg_reset_db stalwart; }
+  [[ $b == v1-pg-s3 ]] && { cmd_s3_up; s3_reset; }
+  [[ $b == v1-pg-s3remote ]] && s3r_reset
+  [[ $b == v1-pg-cluster ]] && cmd_valkey_up
+  [[ $b == v1-pg-cluster-ha ]] && valkey_ha_up
+  [[ $b == v1-pg-garage ]] && garage_up
+  [[ $b == v1-pg-meili ]] && meili_up
+  [[ ${DATA_SC:-} == lt-longhorn || $BLOB_SC == lt-longhorn ]] && longhorn_sc
+  # DATA_SC/DATA_ACCESS: the volume with the config (and RocksDB) — ReadWriteMany when pods on several
+  # nodes share it (staging); BLOB_SC: the blob directory on its own volume
+  pvc lt-data "${DATA_SC:-local-path}" "${DATA_ACCESS:-ReadWriteOnce}"
+  [[ -n $BLOB_SC ]] && pvc lt-blobs "$BLOB_SC" "$BLOB_ACCESS"
   stalwart_deploy lt-stalwart "$image" lt-data /var/lib/stalwart /etc/stalwart 1
   s=$(wait_ready lt-stalwart) || die "$v: not ready in bootstrap mode"
   log "$v: bootstrap mode ready in ${s}s"
@@ -531,12 +825,18 @@ stalwart_up() {
   log "$v: normal mode ready in ${s}s"
   lg setup-configure --version "$ver" --accounts "$ACCOUNTS" > "$OUT/$v/setup-configure.json" ||
     die "$v: configure failed: $(cat "$OUT/$v/setup-configure.json")"
-  if [[ $v == v1-pg-cluster ]]; then
+  if [[ $b == v1-pg-cluster ]]; then
     echo '[["x:Coordinator/set",{"update":{"singleton":{"@type":"Default"}}},"c0"]]' |
       lg admin > "$OUT/$v/setup-coordinator.json" || die "$v: coordinator: $(cat "$OUT/$v/setup-coordinator.json")"
   fi
+  if [[ $b == v1-pg-cluster-ha ]]; then
+    echo '[["x:Coordinator/set",{"update":{"singleton":'"$(sentinel_store)"'}},"c0"]]' |
+      lg admin > "$OUT/$v/setup-coordinator.json" || die "$v: coordinator: $(cat "$OUT/$v/setup-coordinator.json")"
+    grep -q '"updated"' "$OUT/$v/setup-coordinator.json" || die "$v: coordinator not set: $(head -c 400 "$OUT/$v/setup-coordinator.json")"
+  fi
+  [[ -n ${RETENTION_JSON:-} ]] && retention_apply "$v"
   s=$(restart_pods lt-stalwart) || die "$v: not ready after configure"
-  [[ $v == v1-pg-meili ]] && meili_exact "$v"
+  [[ $b == v1-pg-meili ]] && meili_exact "$v"
   if (( replicas > 1 )); then
     kx scale deploy lt-stalwart --replicas="$replicas" >/dev/null
     s=$(wait_ready lt-stalwart) || die "$v: $replicas replicas not ready"
@@ -547,7 +847,7 @@ stalwart_up() {
 stalwart_down() {  # also whatever a failed migration left (its pods carry app=lt-stalwart too)
   kx delete deploy lt-stalwart lt-stalwart-v1 --ignore-not-found --wait=true >/dev/null
   kx delete pod lt-rb016 lt-migrate --ignore-not-found --wait=true >/dev/null
-  kx delete pvc lt-data lt-mig-target lt-mig-state --ignore-not-found --wait=true >/dev/null
+  kx delete pvc lt-data lt-blobs lt-mig-target lt-mig-state --ignore-not-found --wait=true >/dev/null
   meili_down
 }
 
@@ -560,7 +860,7 @@ sizes() {
     dd=$(du -sb "$p/data" 2>/dev/null | cut -f1); fd=$(find "$p/data" -type f 2>/dev/null | wc -l)
     db=$(du -sb "$p/blobs" 2>/dev/null | cut -f1); fb=$(find "$p/blobs" -type f 2>/dev/null | wc -l)
   fi
-  if [[ $v == v1-pg* || $v == mig-pg* ]] && kx get pod lt-pg-1 >/dev/null 2>&1; then
+  if [[ $v == v1-pg* || $v == mig-pg* ]] && kx get pod "$(pg_primary)" >/dev/null 2>&1; then
     local db_name=stalwart; [[ $v == mig-pg* ]] && db_name=stalwart_mig
     pgj=$(psql_pg -d "$db_name" -c "SELECT json_build_object(
       'db_bytes', pg_database_size(current_database()),
@@ -570,23 +870,47 @@ sizes() {
                  pg_relation_size(relid) AS heap, n_live_tup, n_dead_tup,
                  last_autovacuum IS NOT NULL AS autovacuumed
                  FROM pg_stat_user_tables ORDER BY 2 DESC LIMIT 12) t))" 2>/dev/null) || pgj='null'
-    local pgp; pgp=$(pv_path lt-pg-1) &&
+    local pgp; pgp=$(pv_path "$(pg_primary)") &&
       pgj=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["pvc_bytes"]=int(sys.argv[2]); d["pg_wal_dir_bytes"]=int(sys.argv[3]); print(json.dumps(d))' \
         "$pgj" "$(du -sb "$pgp" | cut -f1)" "$(du -sb "$pgp"/pgdata/pg_wal 2>/dev/null | cut -f1 || echo 0)")
+    # every instance's volume, allocated blocks (what the disk loses), pg_wal apart
+    local i ip inst='['
+    for i in $(seq 1 "$PG_INSTANCES"); do
+      ip=$(pv_path "lt-pg-$i") || continue
+      inst+="{\"name\":\"lt-pg-$i\",\"alloc\":$(du -s -B1 "$ip" | cut -f1),\"wal_alloc\":$(du -s -B1 "$ip"/pgdata/pg_wal 2>/dev/null | cut -f1 || echo 0)},"
+    done
+    inst="${inst%,}]"
+    pgj=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["instances"]=json.loads(sys.argv[2]); print(json.dumps(d))' "$pgj" "$inst" 2>/dev/null || echo "$pgj")
   fi
-  if [[ $v == v1-pg-s3 ]]; then
+  # allocated bytes of the Stalwart volumes: a small file still takes a whole 4 KiB block
+  local da=0 ba=0 bp
+  [[ -n "$p" ]] && { da=$(du -s -B1 "$p/data" 2>/dev/null | cut -f1); ba=$(du -s -B1 "$p/blobs" 2>/dev/null | cut -f1); }
+  if [[ -n $BLOB_SC ]] && bp=$(pv_path lt-blobs) && [[ -n $bp ]]; then  # a separate blob volume on a hostPath class
+    db=$(du -sb "$bp" | cut -f1); ba=$(du -s -B1 "$bp" | cut -f1); fb=$(find "$bp" -type f | wc -l)
+  elif [[ -n $BLOB_SC ]]; then  # Longhorn: measure inside the pod
+    read -r db ba fb < <(kx exec deploy/lt-stalwart -c stalwart -- sh -c 'echo $(du -sb /var/lib/stalwart/blobs | cut -f1) $(du -s -B1 /var/lib/stalwart/blobs | cut -f1) $(find /var/lib/stalwart/blobs -type f | wc -l)' 2>/dev/null) || true
+  fi
+  if [[ $(base_of "$v") == v1-pg-s3 ]]; then
     local sp; sp=$(pv_path lt-s3) &&
       s3j="{\"bytes\":$(du -sb "$sp" | cut -f1),\"files\":$(find "$sp" -type f | wc -l)}"
   fi
-  if [[ $v == v1-pg-s3remote ]]; then  # rclone size --json → {"count":…,"bytes":…}
+  if [[ $(base_of "$v") == v1-pg-s3remote ]]; then  # rclone size --json → {"count":…,"bytes":…}
     s3j=$(s3r size --json "r:$S3R_BUCKET" 2>/dev/null | grep '^{') || s3j='null'
   fi
   local searchj='null' mp
-  if [[ $v == v1-pg-meili ]] && mp=$(pv_path lt-meili); then
+  if [[ $(base_of "$v") == v1-pg-meili ]] && mp=$(pv_path lt-meili); then
     searchj="{\"bytes\":$(du -sb "$mp" | cut -f1)}"
   fi
-  printf '{"variant":"%s","label":"%s","t":%s,"data_bytes":%s,"data_files":%s,"blob_bytes":%s,"blob_files":%s,"pg":%s,"s3":%s,"search":%s}\n' \
-    "$v" "$label" "$(date +%s)" "${dd:-0}" "$fd" "${db:-0}" "$fb" "$pgj" "$s3j" "$searchj" >> "$OUT/sizes.jsonl"
+  if [[ $(base_of "$v") == v1-pg-garage ]]; then  # every Garage node's data volume (the replicas of each blob)
+    local gi gp g='{"nodes":['
+    for gi in $(seq 0 $(( GARAGE_NODES - 1 ))); do
+      gp=$(pv_path "data-lt-garage-$gi") || continue
+      g+="{\"node\":$gi,\"bytes\":$(du -sb "$gp" | cut -f1),\"alloc\":$(du -s -B1 "$gp" | cut -f1)},"
+    done
+    s3j="${g%,}]}"
+  fi
+  printf '{"variant":"%s","label":"%s","t":%s,"data_bytes":%s,"data_files":%s,"blob_bytes":%s,"blob_files":%s,"data_alloc":%s,"blob_alloc":%s,"pg":%s,"s3":%s,"search":%s}\n' \
+    "$v" "$label" "$(date +%s)" "${dd:-0}" "$fd" "${db:-0}" "$fb" "${da:-0}" "${ba:-0}" "$pgj" "$s3j" "$searchj" >> "$OUT/sizes.jsonl"
   log "$v: sizes@$label data=$(numfmt --to=iec "${dd:-0}") blobs=$(numfmt --to=iec "${db:-0}") ($fb files) pg=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("%.2fGiB wal=%.2fGiB" % (d["db_bytes"] / 2**30, d["wal_bytes"] / 2**30) if d else "-")' "$pgj" 2>/dev/null)"
 }
 
@@ -628,7 +952,7 @@ backup_cost() {  # <variant> — the cost of a full copy of the store, as the ba
   bytes=$(tar -cf - -C "$p" data blobs 2>/dev/null | wc -c)
   printf '{"variant":"%s","kind":"tar-pvc","bytes":%s,"seconds":%s}\n' "$v" "$bytes" "$(since "$t0")" >> "$OUT/backups.jsonl"
   [[ $v == v1-pg* ]] && pg_basebackup_cost "$v"
-  if [[ $v == v1-pg-s3 ]]; then
+  if [[ $(base_of "$v") == v1-pg-s3 ]]; then
     local sp; sp=$(pv_path lt-s3); t0=$EPOCHREALTIME
     bytes=$(tar -cf - -C "$sp" . | wc -c)
     printf '{"variant":"%s","kind":"tar-s3","bytes":%s,"seconds":%s}\n' "$v" "$bytes" "$(since "$t0")" >> "$OUT/backups.jsonl"
@@ -994,6 +1318,8 @@ cmd_all() {  # each stage in a subshell: a stage that dies does not stop the oth
   python3 "$HERE/report.py" "$OUT" > "$OUT/report.md" 2>> "$OUT/lt.log"
   log "=== all done — results in $OUT ==="
 }
+
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0  # sourced by r2.sh: the functions only
 
 case "${1:-}" in
   init) cmd_init ;;

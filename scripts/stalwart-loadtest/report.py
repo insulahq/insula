@@ -50,6 +50,15 @@ def jsonl(path):
     return out
 
 
+def samples(d):
+    """samples.jsonl, plus samples-<node>.jsonl from one sampler per node (multi-node runs)."""
+    out = jsonl(f"{d}/samples.jsonl")
+    for f in sorted(os.listdir(d)):
+        if f.startswith("samples-") and f.endswith(".jsonl"):
+            out += jsonl(f"{d}/{f}")
+    return out
+
+
 class Run:
     def __init__(self, d):
         self.d = d
@@ -59,7 +68,7 @@ class Run:
             w = self.windows.setdefault(key, [None, None])
             w[0 if e["event"] == "start" else 1] = e["t"]
         self.samples = defaultdict(list)  # (pod, container) → [(t, cpu_ns, ws, rss)]
-        for s in jsonl(f"{d}/samples.jsonl"):
+        for s in samples(d):
             if "pod" in s and s.get("cpu_ns") is not None:
                 self.samples[(s["pod"], s["container"])].append((s["t"], s["cpu_ns"], s.get("ws") or 0,
                                                                   s.get("rss") or 0))
