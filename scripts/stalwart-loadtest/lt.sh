@@ -425,6 +425,7 @@ variant_stores() {
 stalwart_up() {
   local v=$1 replicas=${2:-1} ver=1 image=$IMG_V1 t0=$SECONDS s
   [[ $v == v016* ]] && { ver=0.16; image=$IMG_016; }
+  stalwart_down  # a failed earlier variant must not leave its store behind
   [[ $v == v1-pg* ]] && { cmd_pg_up; pg_reset_db stalwart; }
   [[ $v == v1-pg-s3 ]] && { cmd_s3_up; s3_reset; }
   [[ $v == v1-pg-s3remote ]] && s3r_reset
@@ -452,9 +453,10 @@ stalwart_up() {
   log "$v: configured, $replicas replica(s), setup took $(( SECONDS - t0 ))s"
 }
 
-stalwart_down() {
-  kx delete deploy lt-stalwart --ignore-not-found --wait=true >/dev/null
-  kx delete pvc lt-data --ignore-not-found --wait=true >/dev/null
+stalwart_down() {  # also whatever a failed migration left (its pods carry app=lt-stalwart too)
+  kx delete deploy lt-stalwart lt-stalwart-v1 --ignore-not-found --wait=true >/dev/null
+  kx delete pod lt-rb016 lt-migrate --ignore-not-found --wait=true >/dev/null
+  kx delete pvc lt-data lt-mig-target lt-mig-state --ignore-not-found --wait=true >/dev/null
 }
 
 # sizes <variant> <label> — every store this variant writes to
@@ -804,13 +806,14 @@ cmd_teardown() {
   log "teardown: namespace $NS deleted; results in $OUT"
 }
 
-cmd_all() {
+cmd_all() {  # each stage in a subshell: a stage that dies does not stop the others
   cmd_init
-  cmd_migrate_suite
+  ( cmd_migrate_suite ) || log "migrate-suite failed — continuing"
   local v
-  for v in v1-rocks v1-pg v1-pg-fs v1-pg-s3; do cmd_variant "$v"; done
-  [[ -n "${S3R_ENDPOINT:-}" ]] && cmd_variant v1-pg-s3remote
-  cmd_cluster
+  for v in v1-rocks v1-pg v1-pg-fs v1-pg-s3; do ( cmd_variant "$v" ) || log "variant $v failed — continuing"; done
+  if [[ -n "${S3R_ENDPOINT:-}" ]]; then ( cmd_variant v1-pg-s3remote ) || log "variant v1-pg-s3remote failed — continuing"; fi
+  ( cmd_cluster ) || log "cluster failed — continuing"
+  python3 "$HERE/report.py" "$OUT" > "$OUT/report.md" 2>> "$OUT/lt.log"
   log "=== all done — results in $OUT ==="
 }
 
