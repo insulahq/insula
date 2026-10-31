@@ -19,7 +19,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   same pill sits top right on the route's own page. The pill says the state in words and colour,
   green **Active** or grey **Inactive**, and clicking it switches the route. Switching off asks
   first, because the site goes offline; switching on does not. While a route is inactive its
-  hostname gets no router, so visitors get an error instead of the site. Everything else is
+  hostname gets no router: visitors get Traefik's `404 page not found`, and over HTTPS the
+  browser first warns about the certificate (no certificate is presented for an unserved
+  hostname). Everything else is
   kept and stays editable: redirects, security and WAF settings, protected folders, sign-in,
   mTLS, its DNS records and its certificate, which cert-manager keeps renewing. Switching it back
   on rebuilds the same router. The route page says when a route is inactive, the tenant
