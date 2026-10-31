@@ -251,8 +251,8 @@ def main():
             "Store total = data dir + blob dir + PG database + S3 + search index; the pg_wal directory is a "
             "fixed allowance on top (up to max_wal_size).", ""]
 
-    labels = ["before-delete", "after-delete", "after-purge", "after-purge-10min", "after-vacuum",
-              "after-reappend", "after-vacuum-full"]
+    labels = ["before-delete", "after-delete", "after-purge", "after-purge-10min", "after-sample-release",
+              "after-vacuum", "after-reappend", "after-vacuum-full"]
     rows = []
     for v in vs:
         d = r.phase(v, "delete")

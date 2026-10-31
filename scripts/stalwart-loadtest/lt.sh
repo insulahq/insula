@@ -594,6 +594,18 @@ sizes() {
 admin_task() {
   echo '[["x:Task/set",{"create":{"t":{"@type":"StoreMaintenance","maintenanceType":"'"$1"'"}}},"c0"]]' | lg admin
 }
+tasks_left() {  # <task type> — how many tasks of that type the server still holds (v1 x:Task)
+  echo '[["x:Task/get",{"ids":null},"c0"]]' | lg admin 2>/dev/null |
+    python3 -c 'import json,sys; print(sum(1 for t in json.load(sys.stdin)[0][1].get("list", []) if t.get("@type") == sys.argv[1]))' "$1" 2>/dev/null || echo '?'
+}
+await_tasks() {  # <variant> <task type> <label> — wait (≤ 20 min) until no task of that type is left
+  local t0=$SECONDS n
+  while (( SECONDS - t0 < 1200 )); do
+    n=$(tasks_left "$2"); [[ $n == 0 ]] && break; sleep 10
+  done
+  printf '{"variant":"%s","step":"%s","seconds":%s,"left":"%s"}\n' "$1" "$3" "$(( SECONDS - t0 ))" "$n" >> "$OUT/reclaim.jsonl"
+  log "$1: $3 — $2 tasks drained in $(( SECONDS - t0 ))s (left: $n)"
+}
 
 since() { python3 -c "import sys; print(round($EPOCHREALTIME - float(sys.argv[1]), 1))" "$1"; }
 
@@ -643,19 +655,47 @@ load_and_read() {
 }
 
 # delete_and_reclaim <variant> — delete half of every mailbox, then follow the space
+release_samples() {  # <variant> — what the store frees once the spam classifier lets go
+  # v1 keeps the blob of every unencrypted message appended into INBOX (and of every message a user
+  # marks Junk / not Junk, replies, address-book senders) as a spam-classifier training sample for
+  # SpamClassifier.holdSamplesFor, 180 days by default — after the message is deleted, too. On DEV
+  # the corpus left 47,500 samples, and deleting half the mail freed nothing. Destroying the samples
+  # stands in for their expiry; a shorter hold takes effect for new samples after a restart.
+  local v=$1 t0=$SECONDS n=0 ids total
+  total=$(echo '[["x:SpamTrainingSample/query",{"limit":1,"calculateTotal":true},"c0"]]' | lg admin 2>/dev/null |
+          python3 -c 'import json,sys; print(json.load(sys.stdin)[0][1].get("total", 0))' 2>/dev/null) || total='?'
+  while :; do
+    ids=$(echo '[["x:SpamTrainingSample/query",{"limit":500},"c0"]]' | lg admin 2>/dev/null |
+          python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)[0][1].get("ids", [])))' 2>/dev/null) || break
+    [[ $ids == "[]" ]] && break
+    echo '[["x:SpamTrainingSample/set",{"destroy":'"$ids"'},"c0"]]' | lg admin > /dev/null 2>&1 || break
+    n=$(( n + 1 )); (( n > 400 )) && break  # 500 per call: JMAP caps objects per set
+  done
+  admin_task purgeBlob > "$OUT/$v/purge-blob-samples.json"; sleep 15
+  await_tasks "$v" StoreMaintenance blob-purge-after-samples
+  printf '{"variant":"%s","step":"release-samples","samples":"%s","seconds":%s}\n' "$v" "$total" "$(( SECONDS - t0 ))" >> "$OUT/reclaim.jsonl"
+  sizes "$v" after-sample-release
+  log "$v: $total training samples released and blobs purged in $(( SECONDS - t0 ))s"
+}
 delete_and_reclaim() {
   local v=$1
   sizes "$v" before-delete
   echo '[["x:SpamTrainingSample/query",{"limit":1,"calculateTotal":true},"c0"]]' | lg admin > "$OUT/$v/spam-samples.json" 2>&1
   phase "$v" delete delete --accounts "$ACCOUNTS" --fraction 0.5
   sizes "$v" after-delete
-  admin_task purgeAccounts > "$OUT/$v/purge-accounts.json"; sleep 60
-  admin_task purgeBlob > "$OUT/$v/purge-blob-1.json"; sleep 120
-  admin_task purgeBlob > "$OUT/$v/purge-blob-2.json"; sleep 60
+  # v1 frees a deleted message in three steps: the index queue processes the deletion, a per-account
+  # purge drops the message and its blob link, and only then can a blob purge delete the blob. On the
+  # first DEV run both blob purges ran while 46 account purges were still pending, and nothing was
+  # freed. Without a manual purge the blob cleanup runs daily at 04:00 (blobCleanupSchedule).
+  admin_task purgeAccounts > "$OUT/$v/purge-accounts.json"
+  if [[ $v == v1* ]]; then sleep 15; await_tasks "$v" AccountMaintenance account-purge; else sleep 60; fi
+  admin_task purgeBlob > "$OUT/$v/purge-blob-1.json"
+  if [[ $v == v1* ]]; then sleep 15; await_tasks "$v" StoreMaintenance blob-purge; else sleep 120; fi
   admin_task purgeData > "$OUT/$v/purge-data.json"; sleep 120
   sizes "$v" after-purge
   sleep 600
   sizes "$v" after-purge-10min
+  [[ $v == v1* ]] && release_samples "$v"
   if [[ $v == v1-pg* ]]; then
     local t0=$SECONDS
     psql_pg -d stalwart -c "VACUUM (ANALYZE)" >/dev/null
