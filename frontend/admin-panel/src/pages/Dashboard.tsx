@@ -29,7 +29,7 @@ import {
   AlertBand, HoverCard, MatrixTile, RefreshButton, SectionFallback, Tile, TileSkeleton, TriadBar,
   type MatrixCell,
 } from '@/components/console/ConsoleTiles';
-import NodeName from '@/components/nodes/NodeName';
+import FailoverLine from '@/components/console/FailoverLine';
 import { useNodeLabel } from '@/hooks/use-node-labels';
 import { CACHE_BAND, triadFigures } from '@/lib/resource-triad';
 import { formatBytes } from '@/lib/format-bytes';
@@ -170,28 +170,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      {l?.cluster.data ? (
-        <div className={`mt-3 rounded-xl border p-3 text-sm ${
-          l.cluster.data.survivesSingleNodeLoss
-            ? 'border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800'
-            : 'border-amber-500 bg-amber-50 dark:bg-amber-950/40'
-        }`}>
-          <span className="mr-2 font-mono text-[11px] uppercase tracking-wider text-gray-500 dark:text-gray-400">Failover</span>
-          {l.cluster.data.nodeCount <= 1 ? (
-            <span className="text-gray-700 dark:text-gray-300">
-              <b>No redundancy.</b> A single node carries every workload — losing it is a full outage.
-            </span>
-          ) : l.cluster.data.survivesSingleNodeLoss ? (
-            <span className="text-gray-700 dark:text-gray-300">
-              <b>Survives losing any one node.</b> Worst case is <NodeName name={l.cluster.data.worstNode} />.
-            </span>
-          ) : (
-            <span className="text-amber-800 dark:text-amber-200">
-              <b>Would not survive losing <NodeName name={l.cluster.data.worstNode} />.</b> Its requests do not fit on the rest.
-            </span>
-          )}
-        </div>
-      ) : null}
+      {l?.cluster.data ? <FailoverLine cluster={l.cluster.data} /> : null}
 
       {/* ── nodes ──────────────────────────────────────────────────── */}
       <SectionHead title="Nodes" />

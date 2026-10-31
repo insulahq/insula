@@ -11,6 +11,7 @@ import {
 import { readCpuReservation, buildCpuReservationAlert, buildCpuReservationNotice } from './cpu-reservation.js';
 import { buildBackupClasses } from './backup-classes.js';
 import { buildWebDefence } from './web-defence.js';
+import { loadNodeLossFacts, worstNodeLoss } from './node-loss.js';
 import { readNodeMemoryStats, type NodeMemoryStats } from '../node-health/kubelet-disk.js';
 
 interface Logger { warn?(...a: unknown[]): void }
@@ -429,6 +430,20 @@ export async function buildAdminLive(
 
   const cluster = await collect('cluster', async () => {
     const nodes = nodesSection.data ?? [];
+    // The capacity test below removes the largest node; what a loss would
+    // affect is judged separately, from what depends on each node. Started now,
+    // read at the end, so it runs alongside the Longhorn reads.
+    const nodeLossPending = nodes.length > 1
+      ? loadNodeLossFacts(db, k8s, nodes.map((n) => ({ name: n.name, cpuTotal: n.cpu.total })))
+        .then(worstNodeLoss)
+        .catch((err: unknown) => {
+          logger?.warn?.(
+            { err: err instanceof Error ? err.message : String(err) },
+            'dashboard: tenant or mail placement unreadable — the failover line will not name a worst case',
+          );
+          return null;
+        })
+      : Promise.resolve(null);
 
     // Storage comes from Longhorn, which is the only thing that knows what a
     // volume actually holds. Left at zeros it rendered "0.0 GB in use of 0.0",
@@ -540,6 +555,7 @@ export async function buildAdminLive(
     const biggest = nodes.reduce<AdminNode | null>(
       (a, b) => (a === null || b.cpu.total > a.cpu.total ? b : a), null);
     const mem = clusterMemoryUsage(nodes);
+    const nodeLoss = await nodeLossPending;
     return {
       cpu: {
         inUse: sumUsage((n) => n.cpu.inUse), committed: cpuReq,
@@ -559,6 +575,7 @@ export async function buildAdminLive(
       survivesSingleNodeLoss: nodes.length > 1
         && (cpuTotal - (biggest?.cpu.total ?? 0)) >= cpuReq,
       worstNode: biggest?.name ?? null,
+      worstNodeLoss: nodeLoss,
     };
   }, { logger });
 

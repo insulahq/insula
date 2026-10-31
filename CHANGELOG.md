@@ -12,6 +12,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **The dashboard's Failover line names the node whose loss would do the most harm.** It named
+  the node with the most CPU as the worst case — on one cluster a node that had just joined,
+  which no tenant and no part of mail used, while another held most tenants and the mail
+  secondary. It now says what depends on the node: "Worst case is sv3 (23 tenants + mail
+  secondary would be affected)". A tenant on local storage counts on every node with its
+  workloads or data; an HA tenant only where it runs. Mail that could not fail over ranks
+  first, as "all mail (no failover)". Whether the cluster survives is still the capacity test,
+  and a warning still names the largest node.
+
 ## [2026.10.23] - 2026-10-31
 
 ### Added

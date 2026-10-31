@@ -165,6 +165,29 @@ export const adminNodeSchema = z.object({
 });
 export type AdminNode = z.infer<typeof adminNodeSchema>;
 
+/**
+ * What losing one node would affect.
+ *
+ * `tenants`: active customer tenants that depend on the node. One on local
+ * storage with workloads, volumes or data there stays down until the node is
+ * back; one on HA storage counts where it runs or has its volume attached,
+ * and restarts on another node.
+ * `mail`: the node's part in mail. `active` is where mail runs now;
+ * `secondary`/`tertiary` are failover targets; `standby` holds a standby copy
+ * without being one (the primary, while mail runs on a failover node).
+ * `staysDown`: losing the node leaves mail down until it is back — mail runs
+ * there and cannot fail over (automatic failover off, or no usable target).
+ */
+export const nodeLossSchema = z.object({
+  node: z.string(),
+  tenants: z.number().int(),
+  mail: z.object({
+    role: z.enum(['active', 'secondary', 'tertiary', 'standby']),
+    staysDown: z.boolean(),
+  }).nullable(),
+});
+export type NodeLoss = z.infer<typeof nodeLossSchema>;
+
 export const adminDashboardSummarySchema = z.object({
   generatedAt: z.string(),
   alerts: section(z.array(dashboardAlertSchema)),
@@ -253,8 +276,15 @@ export const adminDashboardLiveSchema = z.object({
       imagesAndOther: z.number(),
     }).nullable(),
     nodeCount: z.number(),
+    /** Whether the other nodes have room for the requests of the largest one. */
     survivesSingleNodeLoss: z.boolean(),
+    /** The largest node by CPU: the one the capacity test removes. */
     worstNode: z.string().nullable(),
+    /**
+     * The node whose loss would affect the most, judged by what depends on it
+     * rather than by its size. Null when that could not be read.
+     */
+    worstNodeLoss: nodeLossSchema.nullable(),
   })),
   nodes: section(z.array(adminNodeSchema)),
   mail: section(z.object({
