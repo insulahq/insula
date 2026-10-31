@@ -58,7 +58,7 @@ export async function buildSecurityHardeningSnapshot(
       buildFirewallPosture(deps.custom, { publicPortsPerNode }, 'set', aggregatedConntrack),
       fetchRecentSecurityEvents(deps.db, 50),
       fetchReservedHostnameCollisions(deps.db, 25),
-      fetchExpiringCerts(deps.custom, 30, now),
+      fetchExpiringCerts(deps.custom, now),
       fetchBackupTargetHealth(deps.db, now),
       buildAuditLogHealth(deps.db, now),
       buildK8sPosture(deps.core),

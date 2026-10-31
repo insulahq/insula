@@ -101,7 +101,7 @@ vi.mock('@/hooks/use-health', () => ({
 const MOCK_ALERTS = [
   { ruleId: 'api-error-rate', state: 'firing', severity: 'critical', since: new Date().toISOString(), lastValue: 12, lastNotifiedAt: null, lastEvaluatedAt: null },
   { ruleId: 'disk-pressure', state: 'firing', severity: 'warning', since: new Date().toISOString(), lastValue: 82, lastNotifiedAt: null, lastEvaluatedAt: null },
-  { ruleId: 'cert-expiry', state: 'resolved', severity: 'warning', since: new Date(Date.now() - 86_400_000).toISOString(), lastValue: 0, lastNotifiedAt: null, lastEvaluatedAt: null },
+  { ruleId: 'cert-renewal-overdue', state: 'resolved', severity: 'warning', since: new Date(Date.now() - 86_400_000).toISOString(), lastValue: 0, lastNotifiedAt: null, lastEvaluatedAt: null },
 ];
 
 vi.mock('@/hooks/use-monitoring-alerts', async () => {
@@ -207,7 +207,7 @@ describe('Monitoring page', () => {
 
     expect(screen.getByTestId('tab-alert-history')).toHaveClass('border-brand-500');
     // Resolved RULES, not old audit rows.
-    expect(screen.getByTestId('alert-row-cert-expiry')).toBeInTheDocument();
+    expect(screen.getByTestId('alert-row-cert-renewal-overdue')).toBeInTheDocument();
   });
 
   it('shows only non-firing rules under Alert History', async () => {
@@ -216,7 +216,7 @@ describe('Monitoring page', () => {
 
     await user.click(screen.getByTestId('tab-alert-history'));
 
-    expect(screen.getByTestId('alert-row-cert-expiry')).toBeInTheDocument();
+    expect(screen.getByTestId('alert-row-cert-renewal-overdue')).toBeInTheDocument();
     expect(screen.queryByTestId('alert-row-api-error-rate')).not.toBeInTheDocument();
   });
 

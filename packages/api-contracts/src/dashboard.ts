@@ -233,6 +233,8 @@ export const adminDashboardSummarySchema = z.object({
   certificates: section(z.object({
     issued: z.number(), wildcards: z.number(),
     nearestExpiryDays: z.number().nullable(), failing: z.number(),
+    /** Certificates whose renewal is overdue by the renewal policy (half the renewal window gone, or expired). */
+    overdue: z.number(),
   })),
   database: section(z.object({
     archivingHealthy: z.boolean(), walBytes: z.number().nullable(),
@@ -359,6 +361,7 @@ export const tenantDashboardSummarySchema = z.object({
   })),
   domains: section(z.object({
     domains: z.number(), verified: z.number(),
+    /** Days until the earliest scheduled renewal (a third of the lifetime before expiry), 0 when due. */
     certificates: z.number(), nearestRenewalDays: z.number().nullable(),
   })),
   backups: section(z.object({

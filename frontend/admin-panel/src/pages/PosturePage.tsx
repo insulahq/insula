@@ -339,10 +339,10 @@ function OverviewTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
         )}
         <Phase2Card
           icon={ShieldAlert}
-          title="TLS certs expiring < 30d"
+          title="TLS certs overdue for renewal"
           ok={snapshot.certExpiries.length === 0}
           metric={`${snapshot.certExpiries.length} certs`}
-          note={snapshot.certExpiries.length > 0 ? `Soonest: ${snapshot.certExpiries[0].name} (${snapshot.certExpiries[0].daysRemaining}d)` : 'No urgent renewals'}
+          note={snapshot.certExpiries.length > 0 ? `Soonest: ${snapshot.certExpiries[0].name} (${snapshot.certExpiries[0].daysRemaining}d)` : 'Every certificate is renewing on schedule'}
         />
         <Phase2Card
           icon={HardDrive}

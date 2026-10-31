@@ -130,7 +130,8 @@ metadata:
 spec:
   secretName: platform-suspended-page-tls
   duration: 2160h    # 90d (Let's Encrypt max)
-  renewBefore: 720h  # 30d before expiry
+  # A third of the ISSUED lifetime, whatever the CA chose (backend certificates/renewal-policy.ts).
+  renewBeforePercentage: 33
   privateKey:
     algorithm: ECDSA
     size: 256

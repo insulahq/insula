@@ -50,6 +50,7 @@ import {
   deleteMiddleware,
   isK8sNotFound,
 } from '../ingress-routes/traefik-apply.js';
+import { RENEW_BEFORE_PERCENTAGE } from '../certificates/renewal-policy.js';
 
 const FRPS_DEPLOYMENT_NAME = 'private-worker-server';
 const FRPS_CONFIGMAP_NAME = 'private-worker-server-config';
@@ -837,7 +838,8 @@ async function upsertTunnelIngress(
     spec: {
       secretName: tlsSecret,
       duration: '2160h',
-      renewBefore: '720h',
+      // A third of the issued lifetime — certificates/renewal-policy.ts.
+      renewBeforePercentage: RENEW_BEFORE_PERCENTAGE,
       privateKey: {
         algorithm: 'ECDSA',
         size: 256,

@@ -5,6 +5,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collect } from './section.js';
 import { describeChange } from './admin-service.js';
 import { buildTenantAlerts } from './alerts.js';
+import { autoRenewedSql, renewalAtSql } from '../certificates/renewal-policy-sql.js';
 
 interface Logger { warn?(...a: unknown[]): void }
 
@@ -116,8 +117,12 @@ export async function buildTenantSummary(
           (SELECT COUNT(*)::int FROM domains WHERE tenant_id = ${tenantId} AND status::text = 'active') AS verified,
           (SELECT COUNT(*)::int FROM ssl_certificates WHERE tenant_id = ${tenantId}
              AND COALESCE(status,'') <> 'revoked') AS certs,
-          (SELECT MIN(EXTRACT(DAY FROM (expires_at - NOW())))::int FROM ssl_certificates
-            WHERE tenant_id = ${tenantId} AND expires_at IS NOT NULL) AS nearest
+          -- Days until the earliest scheduled RENEWAL (a third of the
+          -- lifetime before expiry), not until expiry: "Renews in" said 45
+          -- days for a certificate due to renew in 15.
+          (SELECT GREATEST(0, MIN(EXTRACT(DAY FROM (${renewalAtSql('c', autoRenewedSql('c', 'cd'))} - NOW()))))::int
+             FROM ssl_certificates c LEFT JOIN domains cd ON cd.id = c.domain_id
+            WHERE c.tenant_id = ${tenantId} AND c.expires_at IS NOT NULL) AS nearest
       `);
       const x = (r.rows ?? [])[0] ?? {};
       return {

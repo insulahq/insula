@@ -2527,6 +2527,9 @@ export const sslCertificates = pgTable('ssl_certificates', {
   caBundle: text('ca_bundle'),
   issuer: varchar('issuer', { length: 500 }),
   subject: varchar('subject', { length: 500 }),
+  // Migration 0171 — the current certificate's notBefore. With expiresAt it
+  // gives the lifetime that certificates/renewal-policy.ts measures against.
+  notBefore: timestamp('not_before'),
   expiresAt: timestamp('expires_at'),
   // ── Issuance state (0082) ──
   // Presence of a TLS Secret used to be the ONLY signal, so a

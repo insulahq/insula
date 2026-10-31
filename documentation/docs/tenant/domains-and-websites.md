@@ -401,6 +401,16 @@ By default the platform gets and **renews certificates for you automatically**
 (via Let's Encrypt) once your domain is verified — you don't have to do
 anything. The **TLS Mode** badge shows **Automatic**.
 
+A certificate is renewed when about a third of its lifetime is left — around
+30 days before expiry for today's 90-day certificates, and proportionally
+sooner as certificate authorities move to shorter lifetimes. The **Domains**
+list shows the certificate's remaining days; it turns **amber** only when a
+renewal is overdue (half of that renewal window has passed without a new
+certificate), so a healthy certificate never shows amber. If you see amber, the
+**SSL/TLS** tab says why the renewal is failing. A certificate you uploaded
+yourself is not renewed automatically and turns amber 30 days before it
+expires, as a reminder to upload its successor.
+
 ### Wildcard certificates and `*` routes
 
 A **wildcard** route answers for every subdomain at one level:

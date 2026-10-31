@@ -530,14 +530,17 @@ function CertificatesTile({ summary }: { summary: Summary | undefined }) {
     <MatrixTile title="Certificates" to="/tenants/domains" cells={[
       { k: 'Issued', v: String(c.issued) },
       { k: 'Wildcards', v: String(c.wildcards), tone: 'ok' },
+      // Red only when a renewal is overdue: a healthy certificate passes
+      // every fixed day count on each cycle, and lifetimes keep shrinking.
       { k: 'Nearest expiry', v: c.nearestExpiryDays == null ? '—' : `${c.nearestExpiryDays}d`,
-        tone: c.nearestExpiryDays != null && c.nearestExpiryDays < 14 ? 'crit' : undefined },
+        tone: c.overdue > 0 ? 'crit' : undefined },
       { k: 'Failing', v: String(c.failing), tone: c.failing > 0 ? 'crit' : 'ok' },
     ]} card={(
       <HoverCard title="TLS" rows={[
         ['Certificates', String(c.issued)],
         ['With a wildcard SAN', String(c.wildcards)],
         ['Nearest expiry', c.nearestExpiryDays == null ? '—' : `${c.nearestExpiryDays} days`],
+        ['Overdue for renewal', String(c.overdue)],
         ['Renewal failures', String(c.failing)],
       ]} note="Wildcards cover webmail and autodiscover on tenant domains at no extra cost." />
     )} />

@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   rewriteHostInMatch,
   extractHostFromMatch,
   isValidPlatformHostname,
+  reconcileCertificateDnsName,
 } from './traefik-host-reconcile.js';
 
 describe('rewriteHostInMatch', () => {
@@ -55,5 +56,39 @@ describe('isValidPlatformHostname', () => {
     for (const h of ['', 'localhost', 'bad_underscore.test', 'x`)||Host(`evil.com', 'has space.test']) {
       expect(isValidPlatformHostname(h)).toBe(false);
     }
+  });
+});
+
+describe('reconcileCertificateDnsName — renewal schedule', () => {
+  // The Certificates this reconciles come from `reconcile: disabled` seed
+  // manifests, so Flux never moves an existing one off `renewBefore: 720h`.
+  const log = { info: vi.fn(), warn: vi.fn() };
+  const certWith = (spec: Record<string, unknown>) => {
+    const patch = vi.fn(async () => ({}));
+    const custom = {
+      getNamespacedCustomObject: vi.fn(async () => ({
+        metadata: { annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' } },
+        spec: { dnsNames: ['suspended.example.test'], ...spec },
+      })),
+      patchNamespacedCustomObject: patch,
+    };
+    return { custom: custom as never, patch };
+  };
+  const ref = { namespace: 'platform', name: 'platform-suspended-page' };
+
+  it('moves a certificate on a fixed renewBefore to the policy share, removing renewBefore', async () => {
+    const { custom, patch } = certWith({ renewBefore: '720h' });
+    const r = await reconcileCertificateDnsName(custom, ref, 'suspended.example.test', log);
+    expect(r?.patched).toBe(true);
+    const body = (patch.mock.calls[0] as unknown as [{ body: { spec: Record<string, unknown> } }])[0].body;
+    // null deletes the field in a merge patch: cert-manager refuses both at once.
+    expect(body.spec).toEqual({ dnsNames: ['suspended.example.test'], renewBefore: null, renewBeforePercentage: 33 });
+  });
+
+  it('leaves a certificate already on the policy alone', async () => {
+    const { custom, patch } = certWith({ renewBeforePercentage: 33 });
+    const r = await reconcileCertificateDnsName(custom, ref, 'suspended.example.test', log);
+    expect(r?.patched).toBe(false);
+    expect(patch).not.toHaveBeenCalled();
   });
 });

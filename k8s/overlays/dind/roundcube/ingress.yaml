@@ -35,7 +35,8 @@ metadata:
 spec:
   secretName: platform-webmail-dev-tls
   duration: 8760h
-  renewBefore: 720h
+  # A third of the ISSUED lifetime, whatever the CA chose (backend certificates/renewal-policy.ts).
+  renewBeforePercentage: 33
   privateKey:
     algorithm: ECDSA
     size: 256

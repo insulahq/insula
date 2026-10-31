@@ -18,8 +18,7 @@ import type { Database } from '../../db/index.js';
 import type { CreateDomainInput, UpdateDomainInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
 import type { VerificationResult } from './verification.js';
-
-const EXPIRING_THRESHOLD_DAYS = 30;
+import { certificateExpiryState, MANAGED_CERT_PLACEHOLDER } from '../certificates/renewal-policy.js';
 
 // ─── Verification Status Helpers ─────────────────────────────────────────────
 
@@ -133,7 +132,11 @@ async function enrichWithCertInfo(
       domainId: sslCertificates.domainId,
       issuer: sslCertificates.issuer,
       subject: sslCertificates.subject,
+      notBefore: sslCertificates.notBefore,
       expiresAt: sslCertificates.expiresAt,
+      // An uploaded certificate is renewed by nobody, whatever the domain's
+      // auto-renew flag says (the upload does not clear it).
+      managed: sql<boolean>`${sslCertificates.privateKeyEncrypted} = ${MANAGED_CERT_PLACEHOLDER}`,
       status: sslCertificates.status,
       lastError: sslCertificates.lastError,
       lastErrorAt: sslCertificates.lastErrorAt,
@@ -146,7 +149,6 @@ async function enrichWithCertInfo(
 
   const certMap = new Map(certs.map((c) => [c.domainId, c]));
   const now = new Date();
-  const expiringThreshold = new Date(now.getTime() + EXPIRING_THRESHOLD_DAYS * 24 * 60 * 60 * 1000);
 
   return rows.map((row) => {
     const cert = certMap.get(row.id);
@@ -163,8 +165,16 @@ async function enrichWithCertInfo(
         tlsCertFallbackActive: false,
       };
     }
-    const expired = cert.expiresAt ? cert.expiresAt < now : false;
-    const expiring = cert.expiresAt ? !expired && cert.expiresAt < expiringThreshold : false;
+    // Judged against the certificate's own lifetime and renewal schedule
+    // (certificates/renewal-policy.ts): an auto-renewed certificate is
+    // "expiring" only once renewal is overdue, never while it is merely
+    // inside its renewal window.
+    const expiry = certificateExpiryState(
+      { notBefore: cert.notBefore, notAfter: cert.expiresAt },
+      { autoRenewed: row.sslAutoRenew === 1 && cert.managed === true, now },
+    );
+    const expired = expiry === 'expired';
+    const expiring = expiry === 'expiring';
     const isWildcard = cert.isWildcard === 1 || (cert.subject?.startsWith('*.') ?? false);
 
     // Issuance state comes FIRST: a domain whose order is failing has no

@@ -280,7 +280,7 @@ function SiteStrip({ sites, loading }: { sites: readonly TenantSite[]; loading: 
                 ['Attacks blocked · 7 days', site.blocked7d.toLocaleString()],
                 ['Scheduled tasks', String(site.cronJobs)],
                 ['Certificate', site.tlsState === 'valid' && site.tlsDaysRemaining != null
-                  ? `valid, renews in ${site.tlsDaysRemaining} days` : site.tlsState],
+                  ? `valid for ${site.tlsDaysRemaining} more days, renews automatically` : site.tlsState],
               ]}
               note={sev === 'ok'
                 ? 'Serving normally. Open Applications to deploy, restart or view logs.'
@@ -339,7 +339,7 @@ function DomainsTile({ summary }: { summary: Summary | undefined }) {
         ['Verified', `${d.verified} of ${d.domains}`],
         ['Certificates', String(d.certificates)],
         ['Earliest renewal', d.nearestRenewalDays == null ? '—' : `${d.nearestRenewalDays} days`],
-      ]} note="Certificates renew automatically about 30 days before they expire." />
+      ]} note="Certificates renew automatically with about a third of their lifetime left." />
     )} />
   );
 }

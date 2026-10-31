@@ -44,6 +44,37 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A healthy certificate no longer shows an amber "expiring" warning.** Tenant certificates
+  renewed 15 days before expiry (`renewBefore: 360h`) while the panels turned a certificate
+  amber at 30 days left, so every certificate sat amber for half a month of each cycle — one
+  tenant had several at once. Renewal and the warning are now both shares of the certificate's
+  own lifetime, so they stay right as certificate authorities shorten lifetimes (Let's Encrypt:
+  90 → 64 days on 2027-02-10, 45 days on 2028-02-16; 6-day certificates already exist).
+  - Every Certificate the platform obtains from Let's Encrypt renews with
+    `renewBeforePercentage: 33`, a third of the issued lifetime left (~30 days today), as Let's
+    Encrypt advises. This covers tenant domains, the platform's own hostnames, the
+    suspended page, private-worker tunnels, the webmail and Stalwart admin ingresses, and the
+    dev overlays. Existing Certificates move on the next reconcile. The ones from
+    `reconcile: disabled` seed manifests are patched by the reconciler that keeps their
+    hostnames. A certificate that already has less than a third left renews right away, once.
+  - "Expiring" (amber on the Domains lists, the admin "certificate expiring" notification
+    and dashboard alert, the admin dashboard's red nearest-expiry, the posture card,
+    platform URL health) now means renewal is overdue: less than half of the renewal window
+    is left. A certificate someone uploaded, which nobody renews, still turns amber 30 days
+    ahead, even on a domain still flagged auto-renew. Migration 0171 stores each
+    certificate's notBefore to measure its lifetime.
+  - The monitoring rule `cert-expiry` (14 days left) is replaced by `cert-renewal-overdue`:
+    time to expiry over cert-manager's own renewal lead, firing below 0.5. cert-manager's
+    renewal-time metric is now scraped and kept (it was dropped as unused); a new test fails
+    when a scrape job drops a metric family a rule reads. Migration 0172 moves an operator's
+    on/off choice to the new rule (a seconds threshold cannot be a ratio, so it is dropped)
+    and removes the retired rule's alert rows.
+  - The tenant dashboard's **Renews in** counts to the renewal, not to expiry.
+  - The rule lives in one module (`certificates/renewal-policy.ts`, with an SQL form for the
+    dashboards). The new CI guard `ci-cert-renewal-window-check.sh` (Backend and
+    Infrastructure CI) fails any absolute `renewBefore` in backend code, manifests or
+    scripts, and any percentage that differs from the policy.
+
 - **The dashboard's Failover line names the node whose loss would do the most harm.** It named
   the node with the most CPU as the worst case — on one cluster a node that had just joined,
   which no tenant and no part of mail used, while another held most tenants and the mail

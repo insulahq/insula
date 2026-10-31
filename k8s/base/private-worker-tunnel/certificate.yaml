@@ -15,8 +15,9 @@
 # whichever DNS-01 ClusterIssuer matches their setup) — see
 # k8s/base/cert-manager/clusterissuer-letsencrypt-dns01-*.yaml.
 #
-# duration / renewBefore match the platform default (90d cert,
-# renew at 30d remaining) used by other Let's Encrypt certificates.
+# duration / renewBeforePercentage match the platform default used by the
+# other Let's Encrypt certificates: renew with a third of the issued lifetime
+# left, whatever lifetime the CA chose.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -33,7 +34,8 @@ metadata:
 spec:
   secretName: tunnels-platform-domain-tls
   duration: 2160h    # 90d (Let's Encrypt max)
-  renewBefore: 720h  # 30d before expiry
+  # A third of the ISSUED lifetime, whatever the CA chose (backend certificates/renewal-policy.ts).
+  renewBeforePercentage: 33
   privateKey:
     algorithm: ECDSA
     size: 256

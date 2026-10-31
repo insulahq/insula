@@ -30,6 +30,7 @@ import { certCoversHostname } from '@insula/api-contracts';
 import { domains, sslCertificates, tenants } from '../../db/schema.js';
 import { tlsSecretNameFor } from './service.js';
 import { listCertificateHealth, shouldFallBack } from './status.js';
+import { certificateExpiryState, MANAGED_CERT_PLACEHOLDER } from './renewal-policy.js';
 import type { CertificateHealth } from './status.js';
 import {
   notifyAdminCertCheckResumed,
@@ -127,8 +128,8 @@ async function recordCertificateState(
       id: crypto.randomUUID(),
       domainId: d.domainId,
       tenantId: d.tenantId,
-      certificate: '# Managed by cert-manager',
-      privateKeyEncrypted: '# Managed by cert-manager',
+      certificate: MANAGED_CERT_PLACEHOLDER,
+      privateKeyEncrypted: MANAGED_CERT_PLACEHOLDER,
       subject: health.wildcard ? `*.${d.domainName}` : d.domainName,
       createdAt: now,
       ...stateFields,
@@ -549,6 +550,7 @@ export async function reconcileCertificateStatuses(
       let issuer = 'Unknown';
       let subject = d.domainName;
       let expiresAt: Date | null = null;
+      let notBefore: Date | null = null;
 
       try {
         const x509 = new crypto.X509Certificate(pem);
@@ -563,6 +565,7 @@ export async function reconcileCertificateStatuses(
             .find((l) => l.startsWith('CN='))
             ?.replace('CN=', '') ?? d.domainName;
         expiresAt = new Date(x509.validTo);
+        notBefore = new Date(x509.validFrom);
       } catch {
         // PEM parsing failed — still write the row with defaults
       }
@@ -581,6 +584,7 @@ export async function reconcileCertificateStatuses(
           .set({
             issuer,
             subject: isWildcard ? `*.${d.domainName}` : subject,
+            notBefore,
             expiresAt,
             updatedAt: now,
             // Don't overwrite certificate/privateKeyEncrypted — those are
@@ -593,10 +597,11 @@ export async function reconcileCertificateStatuses(
           domainId: d.domainId,
           tenantId: d.tenantId,
           // Store a placeholder — the actual cert is in the K8s Secret
-          certificate: '# Managed by cert-manager',
-          privateKeyEncrypted: '# Managed by cert-manager',
+          certificate: MANAGED_CERT_PLACEHOLDER,
+          privateKeyEncrypted: MANAGED_CERT_PLACEHOLDER,
           issuer,
           subject: isWildcard ? `*.${d.domainName}` : subject,
+          notBefore,
           expiresAt,
           createdAt: now,
           updatedAt: now,
@@ -604,14 +609,16 @@ export async function reconcileCertificateStatuses(
       }
       synced++;
 
-      // Phase 6A: emit `admin.cert_expiring` when this cert is within
-      // 15 days of expiry. The dispatcher's dedupeKey suppresses
-      // re-fires within the 30-day audit window, so the reconciler
-      // ticking every N minutes only sends each operator one warning
-      // per (cert, expiry-date).
+      // Phase 6A: emit `admin.cert_expiring` once the certificate is
+      // "expiring" by the renewal policy — half its renewal window gone
+      // with no new certificate, so only when renewal is failing. (It used
+      // to fire at 15 days left, the very moment cert-manager renewed, so a
+      // healthy certificate could warn on every cycle.) The dispatcher's
+      // dedupeKey suppresses re-fires within the 30-day audit window, so the
+      // reconciler ticking every N minutes only sends each operator one
+      // warning per (cert, expiry-date).
       if (expiresAt) {
-        const daysUntilExpiry = Math.floor((expiresAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
-        if (daysUntilExpiry <= 15) {
+        if (certificateExpiryState({ notBefore, notAfter: expiresAt }, { autoRenewed: true, now }) === 'expiring') {
           const dedupeKey = `cert-expiring:${d.domainName}:${expiresAt.toISOString().slice(0, 10)}`;
           await notifyAdminCertExpiring(db, {
             certSubject: isWildcard ? `*.${d.domainName}` : (subject ?? d.domainName),

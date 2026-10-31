@@ -8,6 +8,7 @@ import { episodePastGraceSql, isHealable, type HealReason } from '../storage-lif
 import type { Database } from '../../db/index.js';
 import { aliasNodeNames, type NodeLabels } from '../nodes/labels.js';
 import type { Section } from './section.js';
+import { autoRenewedSql, renewalOverdueSql } from '../certificates/renewal-policy-sql.js';
 
 /**
  * The alert band, derived from notification categories.
@@ -86,8 +87,7 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
            MIN(d.tenant_id) AS tenant_id
       FROM ssl_certificates c
       LEFT JOIN domains d ON d.id = c.domain_id
-     WHERE c.expires_at IS NOT NULL
-       AND c.expires_at < NOW() + INTERVAL '14 days'
+     WHERE ${renewalOverdueSql('c', autoRenewedSql('c', 'd'))}
        AND COALESCE(c.status, '') <> 'revoked'
   `);
   const cert = (certs.rows ?? [])[0];
@@ -105,7 +105,10 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       href: Number(cert.n) === 1 && cert.tenant_id && cert.domain_id
         ? `/tenants/${cert.tenant_id}/domains/${cert.domain_id}`
         : '/tenants/domains',
-      detail: [['Expiring within 14 days', String(cert.n)],
+      // Overdue by the renewal policy — half the renewal window gone without
+      // a new certificate — not a fixed 14 days, which a short-lived
+      // certificate passes on every cycle.
+      detail: [['Renewal overdue', String(cert.n)],
                ['Soonest', `${soonest} days`]],
       note: 'A certificate that fails to renew keeps serving until it expires — this is the last warning.',
     }));

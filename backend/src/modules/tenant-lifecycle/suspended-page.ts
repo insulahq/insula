@@ -38,6 +38,7 @@ import {
   CERTIFICATE_PLURAL,
 } from '../ingress-routes/traefik-types.js';
 import { isK8sNotFound } from '../ingress-routes/traefik-apply.js';
+import { RENEW_BEFORE_PERCENTAGE } from '../certificates/renewal-policy.js';
 
 export const SUSPENDED_PAGE_IR_NAME = 'platform-suspended-page';
 export const SUSPENDED_PAGE_CERT_NAME = 'platform-suspended-page';
@@ -108,7 +109,8 @@ export function suspendedPageCertificate(host: string, clusterIssuerName: string
     spec: {
       secretName: PAGE_TLS_SECRET,
       duration: '2160h',
-      renewBefore: '720h',
+      // A third of the issued lifetime — certificates/renewal-policy.ts.
+      renewBeforePercentage: RENEW_BEFORE_PERCENTAGE,
       privateKey: { algorithm: 'ECDSA', size: 256, rotationPolicy: 'Always' },
       usages: ['digital signature', 'key encipherment', 'server auth'],
       dnsNames: [host],

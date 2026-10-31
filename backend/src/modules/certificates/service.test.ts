@@ -221,6 +221,41 @@ describe('ensureDomainCertificate', () => {
     expect(call.body.metadata?.resourceVersion).toBe('12345');
   });
 
+  it('renews at a share of the issued lifetime, never at a fixed duration', async () => {
+    // renewal-policy.ts: a fixed renewBefore cannot fit every lifetime, and
+    // 15 days (360h) sat inside the panels' old 30-day warning.
+    selectResults = [[domain], [tenant]];
+    const db = createMockDb();
+    const k8s = createMockK8s();
+    await service.ensureDomainCertificate(db as never, k8s, 'd1', makeLogger());
+    const spec = (k8s._createCustom as ReturnType<typeof vi.fn>).mock.calls[0][0].body.spec as Record<string, unknown>;
+    expect(spec.renewBeforePercentage).toBe(33);
+    expect(spec).not.toHaveProperty('renewBefore');
+  });
+
+  it('moves an existing Certificate off a fixed renewBefore by replacing its spec', async () => {
+    selectResults = [[domain], [tenant]];
+    const db = createMockDb();
+    const k8s = createMockK8s();
+    (k8s._createCustom as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error('Conflict'), { statusCode: 409 }),
+    );
+    (k8s._getCustom as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      const desired = (k8s._createCustom as ReturnType<typeof vi.fn>).mock.calls[0][0].body as {
+        metadata: { labels: Record<string, string> };
+        spec: Record<string, unknown>;
+      };
+      const { renewBeforePercentage: _pct, ...rest } = desired.spec;
+      return { metadata: { resourceVersion: '9', labels: desired.metadata.labels }, spec: { ...rest, renewBefore: '360h' } };
+    });
+    await service.ensureDomainCertificate(db as never, k8s, 'd1', makeLogger());
+    expect(k8s._replaceCustom).toHaveBeenCalledOnce();
+    const body = (k8s._replaceCustom as ReturnType<typeof vi.fn>).mock.calls[0][0].body as { spec: Record<string, unknown> };
+    // A full replace: the old field is gone, so cert-manager never sees both.
+    expect(body.spec.renewBeforePercentage).toBe(33);
+    expect(body.spec).not.toHaveProperty('renewBefore');
+  });
+
   it('leaves an existing Certificate alone when it already carries the desired spec + labels', async () => {
     // Every reconcile re-applies the same cert. A no-op PUT is one more
     // chance to lose the race with cert-manager, which writes to a

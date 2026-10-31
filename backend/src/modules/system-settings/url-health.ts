@@ -18,6 +18,7 @@
 
 import * as k8s from '@kubernetes/client-node';
 import * as dnsPromises from 'node:dns/promises';
+import { certificateExpiryState } from '../certificates/renewal-policy.js';
 
 export type DnsStatus =
   | 'resolved'
@@ -59,6 +60,8 @@ export interface UrlHealthReport {
 export interface CertificateInfo {
   readonly status: SslStatus;
   readonly reason: string | null;
+  /** When the current certificate's validity started; with notAfter, its lifetime. */
+  readonly notBefore?: string | null;
   readonly notAfter: string | null;
   readonly secretName: string;
 }
@@ -74,8 +77,6 @@ export interface ProbeInput {
   readonly certSecretName: string;
   readonly certNamespace: string;
 }
-
-const EXPIRY_WARN_DAYS = 30;
 
 /** Pure probe. Callers inject mock deps in tests; the default wires DNS + k8s. */
 export async function probeUrlHealth(
@@ -142,10 +143,20 @@ export async function probeUrlHealth(
     if (certInfo.notAfter) {
       const ms = new Date(certInfo.notAfter).getTime() - deps.now().getTime();
       const days = Math.floor(ms / (24 * 60 * 60 * 1000));
+      // A cert-manager Certificate renews itself: "expiring soon" only once
+      // its renewal is overdue by the renewal policy, measured against its
+      // own lifetime — not at a fixed day count it passes on every cycle.
+      const state = certificateExpiryState(
+        {
+          notBefore: certInfo.notBefore ? new Date(certInfo.notBefore) : null,
+          notAfter: new Date(certInfo.notAfter),
+        },
+        { autoRenewed: true, now: deps.now() },
+      );
       return {
         ...base,
         daysUntilExpiry: days,
-        expiringSoon: days <= EXPIRY_WARN_DAYS,
+        expiringSoon: state === 'expiring' || state === 'expired',
       };
     }
     return base;
@@ -236,7 +247,7 @@ export function createDefaultUrlHealthDeps(opts: DefaultDepsOptions = {}): UrlHe
       const items = (certs.items ?? []) as Array<{
         metadata?: { name?: string };
         spec?: { secretName?: string; dnsNames?: string[] };
-        status?: { conditions?: Array<{ type: string; status: string; reason?: string; message?: string }>; notAfter?: string };
+        status?: { conditions?: Array<{ type: string; status: string; reason?: string; message?: string }>; notBefore?: string; notAfter?: string };
       }>;
 
       const cert = items.find(
@@ -261,6 +272,7 @@ export function createDefaultUrlHealthDeps(opts: DefaultDepsOptions = {}): UrlHe
       return {
         status,
         reason: readyCondition?.message ?? readyCondition?.reason ?? null,
+        notBefore: cert.status?.notBefore ?? null,
         notAfter: cert.status?.notAfter ?? null,
         secretName: cert.spec?.secretName ?? secretName,
       };

@@ -29,6 +29,7 @@ import {
   type PssLevel,
 } from '@insula/api-contracts';
 import { auditLogs } from '../../db/schema.js';
+import { certificateExpiryState } from '../certificates/renewal-policy.js';
 
 // Process-wide baseline for the audit-log row-count monotonicity
 // check. Captured on the first buildAuditLogHealth() invocation so we
@@ -116,6 +117,7 @@ interface CertCr {
   readonly metadata?: { readonly name?: string; readonly namespace?: string };
   readonly status?: {
     readonly conditions?: ReadonlyArray<{ readonly type?: string; readonly status?: string }>;
+    readonly notBefore?: string;
     readonly notAfter?: string;
   };
 }
@@ -124,9 +126,15 @@ interface CertList {
   readonly items?: ReadonlyArray<CertCr>;
 }
 
+/**
+ * Certificates whose renewal is overdue: "expiring" by the renewal policy
+ * (half the renewal window gone without a new certificate, measured against
+ * the certificate's own lifetime) or already expired. A fixed "< 30 days"
+ * listed every healthy certificate for the hours before cert-manager renewed
+ * it, and cannot fit shorter lifetimes at all.
+ */
 export async function fetchExpiringCerts(
   custom: CustomObjectsApi,
-  withinDays = 30,
   now: () => Date = () => new Date(),
 ): Promise<CertExpiry[]> {
   const list = await custom
@@ -137,26 +145,35 @@ export async function fetchExpiringCerts(
     })
     .then((r) => r as CertList)
     .catch(() => ({ items: [] }) as CertList);
-  const cutoff = new Date(now().getTime() + withinDays * ONE_DAY_MS);
+  const at = now();
   const out: CertExpiry[] = [];
   for (const item of list.items ?? []) {
-    const notAfterStr = item.status?.notAfter;
-    if (!notAfterStr) continue;
-    const notAfter = new Date(notAfterStr);
-    if (Number.isNaN(notAfter.getTime())) continue;
-    if (notAfter > cutoff) continue;
+    const notAfter = parseDate(item.status?.notAfter);
+    if (!notAfter) continue;
+    // Every cert-manager Certificate is renewed automatically by definition.
+    const state = certificateExpiryState(
+      { notBefore: parseDate(item.status?.notBefore), notAfter },
+      { autoRenewed: true, now: at },
+    );
+    if (state === 'valid' || state === null) continue;
     const ready =
       item.status?.conditions?.some((c) => c.type === 'Ready' && c.status === 'True') ?? false;
     out.push({
       name: item.metadata?.name ?? '',
       namespace: item.metadata?.namespace ?? '',
       expiresAt: notAfter.toISOString(),
-      daysRemaining: Math.floor((notAfter.getTime() - now().getTime()) / ONE_DAY_MS),
+      daysRemaining: Math.floor((notAfter.getTime() - at.getTime()) / ONE_DAY_MS),
       ready,
     });
   }
   out.sort((a, b) => a.daysRemaining - b.daysRemaining);
   return out;
+}
+
+function parseDate(value: string | undefined): Date | null {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 // ─── Backup target health (Phase 2.5.4) ─────────────────────────────────
