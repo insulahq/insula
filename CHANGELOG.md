@@ -12,6 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **A tenant can no longer list, change or delete another tenant's ingress routes.** The route
+  list, update and delete handlers under `/tenants/:tenantId/domains/:domainId/routes` checked
+  the tenant id in the URL against the caller but took the domain and route ids on trust (only
+  create checked the domain). Anyone who knew another tenant's domain or route id could list
+  that domain's routes, retarget, re-folder or delete a route, or point their own route at
+  another tenant's deployment. All three now check that the domain belongs to the tenant and
+  the route to that domain, and an update checks that a new deployment target belongs to the
+  tenant too; each answers 404 otherwise. The ids are random UUIDs that the panels never show to
+  another tenant, which limited the exposure. To look for past use, check the audit log for
+  `PATCH` or `DELETE` on `…/domains/:domainId/routes/:routeId` whose tenant id does not own the
+  domain in the path.
+
 ### Fixed
 
 - **The dashboard's Failover line names the node whose loss would do the most harm.** It named

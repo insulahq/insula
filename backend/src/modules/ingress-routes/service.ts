@@ -572,10 +572,11 @@ export async function updateRoute(
     siteFolder?: string | null;
     appRoot?: string | null;
   },
-  // Required when privateWorkerId is being set — we re-verify the worker
-  // belongs to this tenant to defend against route-id enumeration that
-  // would otherwise let tenant A repoint tenant B's route at A's worker.
-  tenantId?: string,
+  // The tenant the caller acts for. A new target (worker or deployment) must
+  // belong to it — the ids arrive in the request body, and a target from
+  // another tenant would put that tenant's deployment behind this hostname in
+  // its site config. The route's own ownership is the handler's check.
+  tenantId: string,
 ) {
   const [route] = await db.select().from(ingressRoutes).where(eq(ingressRoutes.id, routeId));
   if (!route) {
@@ -598,13 +599,6 @@ export async function updateRoute(
   // target a worker in A's namespace. We re-verify ownership here using
   // the same shape as createRoute.
   if (input.privateWorkerId) {
-    if (!tenantId) {
-      throw new ApiError(
-        'VALIDATION_ERROR',
-        'tenantId is required when setting private_worker_id on an ingress route',
-        400,
-      );
-    }
     const [pw] = await db
       .select({ id: privateWorkers.id, status: privateWorkers.status })
       .from(privateWorkers)
@@ -622,6 +616,15 @@ export async function updateRoute(
         'Cannot point an ingress route at a revoked private worker',
         400,
       );
+    }
+  }
+  if (input.deploymentId) {
+    const [dep] = await db
+      .select({ id: deployments.id })
+      .from(deployments)
+      .where(and(eq(deployments.id, input.deploymentId), eq(deployments.tenantId, tenantId)));
+    if (!dep) {
+      throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment '${input.deploymentId}' not found`, 404);
     }
   }
 
