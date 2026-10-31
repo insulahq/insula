@@ -16,6 +16,21 @@ from collections import defaultdict
 GROUPS = {"stalwart": "stalwart", "postgres": "postgres", "rclone": "s3", "valkey": "valkey",
           "meilisearch": "search", "migrate": "migrate", "loadgen": "loadgen"}
 STORES = ("postgres", "s3", "valkey", "search")  # what a variant runs besides Stalwart itself
+
+
+def stores_of(v):
+    """The store containers variant v runs on: PostgreSQL stays up between variants, and its idle
+    CPU and memory must not be charged to a RocksDB variant."""
+    s = set()
+    if v.startswith(("v1-pg", "mig-pg")):
+        s.add("postgres")
+    if v == "v1-pg-s3":  # v1-pg-s3remote's S3 runs on another machine, outside the samples
+        s.add("s3")
+    if v == "v1-pg-cluster":
+        s.add("valkey")
+    if v == "v1-pg-meili":
+        s.add("search")
+    return s
 VARIANTS = ["v016-rocks", "v1-rocks", "v1-pg", "v1-pg-fs", "v1-pg-meili", "v1-pg-s3", "v1-pg-s3remote",
             "v1-pg-cluster"]
 GIB = 2 ** 30
@@ -153,13 +168,14 @@ def main():
     for v in vs:
         a, s = r.phase(v, "append"), r.phase(v, "smtp")
         ua = r.usage(v, "append")
-        cpu = sum(c for g, (c, _) in ua.items() if g == "stalwart" or g in STORES)
+        cpu = sum(c for g, (c, _) in ua.items() if g == "stalwart" or g in stores_of(v))
         n = (a or {}).get("messages") or 0
         rows.append([v, (a or {}).get("msg_per_s"), (a or {}).get("mb_per_s"), lat(a, "append", "p50"),
                      lat(a, "append"), round(cpu / n * 1000, 1) if n else None,
                      (s or {}).get("accept_msg_per_s"), (s or {}).get("stored_msg_per_s"),
                      lat(s, "deliver", "p50"), lat(s, "deliver"),
-                     gib(ua.get("stalwart", (0, None))[1]), gib(ua.get("postgres", (0, None))[1])])
+                     gib(ua.get("stalwart", (0, None))[1]),
+                     gib(ua.get("postgres", (0, None))[1]) if "postgres" in stores_of(v) else "–"])
     out += ["## Ingest", "", table(["variant", "APPEND msg/s", "MB/s", "p50 ms", "p95 ms",
                                     "CPU-s / 1k msgs", "SMTP accepted msg/s", "stored msg/s",
                                     "deliver p50 ms", "p95 ms", "Stalwart peak GiB", "PG peak GiB"], rows), ""]
@@ -178,7 +194,7 @@ def main():
             u, w = r.usage(v, f"{kind}-read"), r.windows.get((v, f"{kind}-read"))
             n = (d.get("ops_per_s") or 0) * (d.get("duration_s") or 0)
             cpu_ms = round(u["stalwart"][0] / n * 1000, 2) if n and "stalwart" in u else None
-            store_ms = round(sum(u[g][0] for g in STORES if g in u) / n * 1000, 2) if n else None
+            store_ms = round(sum(u[g][0] for g in stores_of(v) if g in u) / n * 1000, 2) if n else None
             gen = round(u["loadgen"][0] / (w[1] - w[0]), 2) if w and None not in w and "loadgen" in u else None
             rows.append([v, d.get("ops_per_s"), cpu_ms, store_ms, gen]
                         + [f"{fmt(lat(d, o, 'p50'), 2)} / {fmt(lat(d, o), 2)}" for o in ops] + [errs])
