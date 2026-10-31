@@ -411,6 +411,37 @@ cmd_retention_min() {
   log "=== r2 retention-min done ==="
 }
 
+cmd_restore_again() {  # <variant> — backup and restore once more with the JMAP upload quota raised
+  # (r1031e: on 0.16 the JMAP engine's restores failed on the default quota, HTTP 429), on the
+  # mailboxes backup_restore uses: the large one and u001…u005
+  local v=$1+uploadquota
+  export LT_RAISE_UPLOAD_QUOTA=1
+  log "=== r2 restore-again $v ==="
+  stalwart_up "$v"
+  ACCOUNTS=6 ingest "$v"
+  lg fixtures > "$OUT/$v/fixtures.json" 2>&1 || log "$v: fixtures failed"
+  settle "$v"
+  backup_restore "$v"
+  tools_down
+  stalwart_down
+  log "=== r2 restore-again $v done ==="
+}
+
+cmd_pg_backup_again() {  # <variant> — the CNPG base backup and recovery alone (r1031e: the one of v1-pg
+  # failed when the lab S3's disk ran full of archived WAL)
+  local v=$1+backup
+  log "=== r2 pg-backup-again $v ==="
+  pg_fresh
+  stalwart_up "$v"
+  # a third of the corpus: the lab S3 (30 GB disk) holds the archived WAL and the base backup, and
+  # blobs in PostgreSQL write ~1.9 GB of WAL per GB of mail — the result is a rate
+  ACCOUNTS=20 PER_ACCOUNT=300 BIG=8000 ingest "$v"
+  settle "$v"
+  pg_backup_restore "$v"
+  stalwart_down
+  log "=== r2 pg-backup-again $v done ==="
+}
+
 cmd_dev_all() {
   cmd_init
   [[ -f "$HERE/s3r.env" ]] && source "$HERE/s3r.env"
@@ -486,8 +517,8 @@ cmd_stg_after() {  # <variant> — after the cut: what was stored, intact, and h
 cmd_stg_down() {  # <variant>
   local v=$1
   stalwart_down
-  [[ $(base_of "$v") == v1-pg-cluster-ha ]] && valkey_ha_down
-  [[ $(base_of "$v") == v1-pg-garage ]] && garage_down
+  [[ $(base_of "$v") == v1-pg-cluster-* ]] && valkey_ha_down
+  [[ $(base_of "$v") == *garage ]] && garage_down
   pg_reset_db stalwart
 }
 
@@ -498,6 +529,8 @@ case "${1:-}" in
   store) cmd_store "${2:?variant}" ;;
   shape) cmd_shape "${2:?variant}" "${3:-1}" ;;
   retention-min) cmd_retention_min ;;
+  restore-again) cmd_restore_again "${2:?variant}" ;;
+  pg-backup-again) cmd_pg_backup_again "${2:?variant}" ;;
   dev-all) cmd_dev_all ;;
   backup-restore) backup_restore "${2:?variant}" ;;
   store-backup) store_backup "${2:?variant}" ;;

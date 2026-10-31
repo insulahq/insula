@@ -93,7 +93,7 @@ pv_path() {
 }
 
 # lg <loadgen args…> — run the load generator in its pod (LT_HOST selects the server).
-lg() { kx exec -i lt-loadgen -- env LT_HOST="${LT_HOST:-lt-stalwart}" python3 /opt/lt/loadgen.py "$@"; }
+lg() { kx exec -i lt-loadgen -- env LT_HOST="${LT_HOST:-lt-stalwart}" LT_RAISE_UPLOAD_QUOTA="${LT_RAISE_UPLOAD_QUOTA:-0}" python3 /opt/lt/loadgen.py "$@"; }
 
 # phase <variant> <name> <loadgen args…> — one measured step; JSON to $OUT/<variant>/<name>.json.
 phase() {
@@ -141,7 +141,8 @@ metadata:
   name: lt-loadgen
   labels: {app: lt-loadgen}
 spec:
-  terminationGracePeriodSeconds: 1
+  terminationGracePeriodSeconds: 1${LOADGEN_NODE:+
+  nodeSelector: {kubernetes.io/hostname: $LOADGEN_NODE\}}
   containers:
     - name: loadgen
       image: $IMG_PY
@@ -530,6 +531,9 @@ YAML
     --dry-run=client -o yaml | kx apply -f - >/dev/null
   log "garage: $GARAGE_NODES node(s), replication factor $rf, bucket ready"
 }
+garage_blob_store() {
+  echo '"blobStore":{"@type":"S3","bucket":"stalwart","region":{"@type":"Custom","region":"garage","url":"http://lt-garage:3900"},"accessKeyId":{"@type":"Value","value":"'"$(kx get secret lt-garage-key -o jsonpath='{.data.id}' | base64 -d)"'"},"secretKey":{"@type":"Value","secret":"'"$(kx get secret lt-garage-key -o jsonpath='{.data.secret}' | base64 -d)"'"}}'
+}
 garage_down() {
   kx delete sts lt-garage --ignore-not-found --wait=true >/dev/null
   local i; for i in $(seq 0 4); do kx delete pvc "data-lt-garage-$i" --ignore-not-found --wait=false >/dev/null; done
@@ -552,7 +556,8 @@ print(json.dumps(c))' "$RETENTION_JSON") || die "$v: RETENTION_JSON is not JSON"
 
 # ── Stalwart instances ─────────────────────────────────────────────────────────────
 
-# pvc <name> [storage class] [access mode] — a fresh volume (local-path, ReadWriteOnce by default)
+# pvc <name> [storage class] [access mode] [size] — a fresh volume (local-path, ReadWriteOnce, 60Gi by
+# default; local-path does not enforce the size, Longhorn reserves it: 60Gi did not fit on DEV's disk)
 pvc() {
   kx apply -f - >/dev/null <<YAML
 apiVersion: v1
@@ -561,7 +566,7 @@ metadata: {name: $1}
 spec:
   accessModes: [${3:-ReadWriteOnce}]
   storageClassName: ${2:-local-path}
-  resources: {requests: {storage: 60Gi}}
+  resources: {requests: {storage: ${4:-60Gi}}}
 YAML
 }
 
@@ -616,7 +621,8 @@ spec:
       securityContext:
         sysctls: [{name: net.ipv4.ip_unprivileged_port_start, value: "0"}]
       topologySpreadConstraints:  # one pod per node where there are several (staging)
-        - {maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {lt-instance: $name}}}
+        - {maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {lt-instance: $name}}}${STALWART_NODE:+
+      nodeSelector: {kubernetes.io/hostname: $STALWART_NODE\}}
       initContainers:
         - name: dirs
           image: $image
@@ -790,7 +796,9 @@ variant_stores() {
         v1-pg-s3remote)
           echo '{"dataStore":'"$data"',"blobStore":{"@type":"S3","bucket":"'"$S3R_BUCKET"'","region":{"@type":"Custom","region":"us-east-1","url":"'"$S3R_ENDPOINT"'"},"accessKeyId":{"@type":"Value","value":"'"$S3R_ACCESS_KEY"'"},"secretKey":{"@type":"Value","secret":"'"$S3R_SECRET_KEY"'"}}}' ;;
         v1-pg-garage)  # Garage, an S3 that replicates every object over GARAGE_NODES nodes
-          echo '{"dataStore":'"$data"',"blobStore":{"@type":"S3","bucket":"stalwart","region":{"@type":"Custom","region":"garage","url":"http://lt-garage:3900"},"accessKeyId":{"@type":"Value","value":"'"$(kx get secret lt-garage-key -o jsonpath='{.data.id}' | base64 -d)"'"},"secretKey":{"@type":"Value","secret":"'"$(kx get secret lt-garage-key -o jsonpath='{.data.secret}' | base64 -d)"'"}}}' ;;
+          echo '{"dataStore":'"$data"','"$(garage_blob_store)"'}' ;;
+        v1-pg-cluster-garage)  # option C with Garage for the blobs: nothing on any one node's disk
+          echo '{"dataStore":'"$data"','"$(garage_blob_store)"',"inMemoryStore":'"$(sentinel_store)"'}' ;;
         v1-pg-cluster) echo '{"dataStore":'"$data"',"inMemoryStore":{"@type":"Redis","url":"redis://lt-valkey:6379"}}' ;;
         v1-pg-cluster-ha)  # FS blobs on a shared volume (BLOB_SC/BLOB_ACCESS), Valkey with Sentinel
           echo '{"dataStore":'"$data"','"$fs"',"inMemoryStore":'"$(sentinel_store)"'}' ;;
@@ -807,14 +815,14 @@ stalwart_up() {
   [[ $b == v1-pg-s3 ]] && { cmd_s3_up; s3_reset; }
   [[ $b == v1-pg-s3remote ]] && s3r_reset
   [[ $b == v1-pg-cluster ]] && cmd_valkey_up
-  [[ $b == v1-pg-cluster-ha ]] && valkey_ha_up
-  [[ $b == v1-pg-garage ]] && garage_up
+  [[ $b == v1-pg-cluster-ha || $b == v1-pg-cluster-garage ]] && valkey_ha_up
+  [[ $b == v1-pg-garage || $b == v1-pg-cluster-garage ]] && garage_up
   [[ $b == v1-pg-meili ]] && meili_up
   [[ ${DATA_SC:-} == lt-longhorn || $BLOB_SC == lt-longhorn ]] && longhorn_sc
   # DATA_SC/DATA_ACCESS: the volume with the config (and RocksDB) — ReadWriteMany when pods on several
   # nodes share it (staging); BLOB_SC: the blob directory on its own volume
-  pvc lt-data "${DATA_SC:-local-path}" "${DATA_ACCESS:-ReadWriteOnce}"
-  [[ -n $BLOB_SC ]] && pvc lt-blobs "$BLOB_SC" "$BLOB_ACCESS"
+  pvc lt-data "${DATA_SC:-local-path}" "${DATA_ACCESS:-ReadWriteOnce}" "${DATA_SIZE:-60Gi}"
+  [[ -n $BLOB_SC ]] && pvc lt-blobs "$BLOB_SC" "$BLOB_ACCESS" "${BLOB_SIZE:-15Gi}"
   stalwart_deploy lt-stalwart "$image" lt-data /var/lib/stalwart /etc/stalwart 1
   s=$(wait_ready lt-stalwart) || die "$v: not ready in bootstrap mode"
   log "$v: bootstrap mode ready in ${s}s"
@@ -829,7 +837,7 @@ stalwart_up() {
     echo '[["x:Coordinator/set",{"update":{"singleton":{"@type":"Default"}}},"c0"]]' |
       lg admin > "$OUT/$v/setup-coordinator.json" || die "$v: coordinator: $(cat "$OUT/$v/setup-coordinator.json")"
   fi
-  if [[ $b == v1-pg-cluster-ha ]]; then
+  if [[ $b == v1-pg-cluster-ha || $b == v1-pg-cluster-garage ]]; then
     echo '[["x:Coordinator/set",{"update":{"singleton":'"$(sentinel_store)"'}},"c0"]]' |
       lg admin > "$OUT/$v/setup-coordinator.json" || die "$v: coordinator: $(cat "$OUT/$v/setup-coordinator.json")"
     grep -q '"updated"' "$OUT/$v/setup-coordinator.json" || die "$v: coordinator not set: $(head -c 400 "$OUT/$v/setup-coordinator.json")"
@@ -901,7 +909,7 @@ sizes() {
   if [[ $(base_of "$v") == v1-pg-meili ]] && mp=$(pv_path lt-meili); then
     searchj="{\"bytes\":$(du -sb "$mp" | cut -f1)}"
   fi
-  if [[ $(base_of "$v") == v1-pg-garage ]]; then  # every Garage node's data volume (the replicas of each blob)
+  if [[ $(base_of "$v") == v1-pg*garage ]]; then  # every Garage node's data volume (the replicas of each blob)
     local gi gp g='{"nodes":['
     for gi in $(seq 0 $(( GARAGE_NODES - 1 ))); do
       gp=$(pv_path "data-lt-garage-$gi") || continue

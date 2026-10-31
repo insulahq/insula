@@ -389,11 +389,12 @@ def cmd_setup_configure(a):
                                                           rate_key: None}}})
     jmap = {"maxUploadSize": 104857600, "maxConcurrentUploads": 128, "maxConcurrentRequests": 128,
             "maxMethodCalls": 256}
-    if v1:
-        # v1 counts uploaded blobs not yet imported against a per-account quota (uploadQuota 50 MB,
-        # maxUploadCount 1000, held for uploadTtl 1 h); the JMAP restore engine uploads ahead of its
-        # imports and got HTTP 429 on every mailbox above that (DEV smoke, 2026-10-31). Raised here so
-        # its speed can be measured; a platform that keeps the JMAP engine has to raise it too.
+    if v1 or os.environ.get("LT_RAISE_UPLOAD_QUOTA") == "1":
+        # Both versions count uploaded blobs not yet imported against a per-account quota (uploadQuota
+        # 50 MB, maxUploadCount 1000, held for uploadTtl 1 h); the JMAP restore engine uploads ahead of
+        # its imports and got HTTP 429 on every mailbox above that (DEV, 2026-10-31: v1 in the smoke,
+        # 0.16 in r1031e). Raised here so its speed can be measured; a platform that keeps the JMAP
+        # engine has to raise it too. 0.16 only when asked, so the r1031e baseline shows the default.
         jmap.update({"uploadQuota": 4_000_000_000, "maxUploadCount": 200_000})
     admin_call(j, "x:Jmap/set", {"update": {"singleton": jmap}})
 
