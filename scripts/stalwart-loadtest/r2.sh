@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # r2.sh — second round of the Stalwart v1 store evaluation (ADR-065), on the questions the first
-# round left open (operator, 2026-10-31): the memory of every component including HA replicas, the
+# round left open: the memory of every component including HA replicas, the
 # total storage of each shape against today's RocksDB, backup and restore with the platform's own
 # tools (IMAP and JMAP engines), what deleting mail and whole accounts frees, and blob storage that
 # several nodes can share. Reuses lt.sh (sourced) and runs the same way, on a lab node as root:

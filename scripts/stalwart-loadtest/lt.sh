@@ -541,8 +541,8 @@ garage_down() {
 }
 
 # retention_apply <variant> — RETENTION_JSON: {"spam": {SpamClassifier fields}, "data": {DataRetention
-# fields}} written before the restart that applies them (ADR-065: deleted mail retained as briefly as
-# possible, operator 2026-10-31)
+# fields}} written before the restart that applies them (ADR-065 Decision 7: deleted mail retained as
+# briefly as possible)
 retention_apply() {
   local v=$1 calls
   calls=$(python3 -c 'import json,sys; r=json.loads(sys.argv[1]); c=[]

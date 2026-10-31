@@ -112,7 +112,7 @@ def storage_section(run, vs, prod_bytes):
                      f"{len(inst)} × {gib(pg_wal / len(inst))}" if inst else "–",
                      gib(garage) if garage else "–", gib(scalable + pg_wal),
                      round(scalable / raw, 2) if raw else None, prod])
-    note = (f"Production's raw mail = its 0.16 store on disk ({prod_bytes / 1e9:.1f} GB, 2026-10-31) ÷ 0.16's "
+    note = (f"Production's raw mail = its 0.16 store on disk ({prod_bytes / 1e9:.1f} GB, as measured for ADR-065) ÷ 0.16's "
             f"store/raw ratio here ({ref:.3f}) = {prod_raw / 1e9:.1f} GB." if prod_raw else "")
     return ["## Total storage, store at rest (GiB allocated on disk)", "",
             table(["shape", "raw mail", "data dir", "blob dir", "blob files", "PostgreSQL data per instance",
@@ -204,7 +204,7 @@ def retention_section(run, vs):
 
 def main():
     d = sys.argv[1]
-    prod = int(sys.argv[2]) if len(sys.argv) > 2 else 51_505_609_616  # production 0.16 store, 2026-10-31
+    prod = int(sys.argv[2]) if len(sys.argv) > 2 else 51_505_609_616  # production's 0.16 store on disk (ADR-065, round 2)
     run = Run(d)
     vs = variants(d)
     out = [f"# Stalwart store evaluation, round 2 — run {os.path.basename(d.rstrip('/'))}", ""]
