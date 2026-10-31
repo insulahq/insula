@@ -396,6 +396,22 @@ flip_engine() {
   # Give the webmail-router reconciler time to flip the IngressRoute +
   # scale pods so subsequent SSO traffic doesn't hit a stale upstream.
   sleep "$ENGINE_FLIP_SETTLE_S"
+  # …then wait until the engine actually answers. The engine that is not the
+  # default runs 0 replicas, so a flip TO it starts a pod, and Roundcube takes
+  # ~25 s to become ready. A fixed settle was a coin toss: staging's run on
+  # v2026.10.23-rc.2 followed the 30-second webmail link while the pod still
+  # started and got 503. The link expires too fast to retry, so wait here,
+  # before it is minted.
+  local webmail_base="https://webmail.${API_BASE#https://admin.}" code="" i
+  for i in $(seq 1 24); do
+    code=$(curl "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code}' --max-time 5 "${webmail_base}/" || true)
+    [[ "$code" =~ ^(000|502|503)$ ]] || break
+    sleep 5
+  done
+  if [[ "$code" =~ ^(000|502|503)$ ]]; then
+    fail "${tag} ${target} not answering at ${webmail_base}/ within 120s (HTTP ${code})"
+    return 1
+  fi
   return 0
 }
 
