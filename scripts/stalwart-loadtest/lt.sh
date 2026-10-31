@@ -133,7 +133,7 @@ cmd_init() {
     kx create secret generic lt-pg-app --type=kubernetes.io/basic-auth \
       --from-literal=username=stalwart --from-literal=password="$(secret pg)" >/dev/null
   fi
-  kx create configmap lt-scripts --from-file="$HERE/loadgen.py" --dry-run=client -o yaml | kx apply -f - >/dev/null
+  kx create configmap lt-scripts --from-file="$HERE/loadgen.py" --from-file="$HERE/failover-probe.py" --dry-run=client -o yaml | kx apply -f - >/dev/null
   kx apply -f - >/dev/null <<YAML
 apiVersion: v1
 kind: Pod
@@ -606,6 +606,15 @@ stalwart_deploy() {
     blob_vol="- {name: blobs, persistentVolumeClaim: {claimName: lt-blobs}}"
     init_blobs=", {name: blobs, mountPath: /blobs}"
   fi
+  # CONFIG_SECRET=1: no shared store volume — every pod copies config.json from the Secret lt-config
+  # into its own emptyDir (pods on several nodes; the stores are all remote: PostgreSQL, S3, RWX)
+  local store_vol="{name: store, persistentVolumeClaim: {claimName: $claim}}" conf_vol="" conf_cp="" init_conf=""
+  if [[ -n ${CONFIG_SECRET:-} ]]; then
+    store_vol="{name: store, emptyDir: {}}"
+    conf_vol="- {name: conf, secret: {secretName: lt-config}}"
+    conf_cp=" && cp /conf/config.json /pvc/etc/config.json && chown 2000:2000 /pvc/etc/config.json"
+    init_conf=", {name: conf, mountPath: /conf}"
+  fi
   kx apply -f - >/dev/null <<YAML
 apiVersion: apps/v1
 kind: Deployment
@@ -622,13 +631,14 @@ spec:
         sysctls: [{name: net.ipv4.ip_unprivileged_port_start, value: "0"}]
       topologySpreadConstraints:  # one pod per node where there are several (staging)
         - {maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: {lt-instance: $name}}}${STALWART_NODE:+
-      nodeSelector: {kubernetes.io/hostname: $STALWART_NODE\}}
+      nodeSelector: {kubernetes.io/hostname: $STALWART_NODE\}}${STALWART_AVOID_NODE:+
+      affinity: {nodeAffinity: {requiredDuringSchedulingIgnoredDuringExecution: {nodeSelectorTerms: [{matchExpressions: [{key: kubernetes.io/hostname, operator: NotIn, values: [$STALWART_AVOID_NODE]\}]\}]\}\}\}}
       initContainers:
         - name: dirs
           image: $image
           securityContext: {runAsUser: 0}
-          command: [sh, -c, "mkdir -p /pvc/data /pvc/blobs /pvc/etc && chown 2000:2000 /pvc/data /pvc/blobs /pvc/etc && if [ -d /blobs ]; then chown 2000:2000 /blobs; fi"]
-          volumeMounts: [{name: store, mountPath: /pvc}$init_blobs]
+          command: [sh, -c, "mkdir -p /pvc/data /pvc/blobs /pvc/etc && chown 2000:2000 /pvc/data /pvc/blobs /pvc/etc && if [ -d /blobs ]; then chown 2000:2000 /blobs; fi${conf_cp}"]
+          volumeMounts: [{name: store, mountPath: /pvc}$init_blobs$init_conf]
         - name: stalwart-binary
           image: $image
           command: [sh, -c, "cp /usr/local/bin/stalwart /opt/stalwart-bin/stalwart && chmod 0555 /opt/stalwart-bin/stalwart"]
@@ -669,8 +679,9 @@ spec:
             - {name: store, mountPath: $etc, subPath: etc}
       volumes:
         - {name: bin, emptyDir: {}}
-        - {name: store, persistentVolumeClaim: {claimName: $claim}}
+        - $store_vol
         $blob_vol
+        $conf_vol
 ---
 apiVersion: v1
 kind: Service
@@ -845,6 +856,14 @@ stalwart_up() {
   [[ -n ${RETENTION_JSON:-} ]] && retention_apply "$v"
   s=$(restart_pods lt-stalwart) || die "$v: not ready after configure"
   [[ $b == v1-pg-meili ]] && meili_exact "$v"
+  if [[ -n ${CONFIG_SECRET:-} ]]; then  # from here on, pods carry their config from the Secret
+    kx exec deploy/lt-stalwart -c stalwart -- cat /etc/stalwart/config.json > "$OUT/$v/config.json.tmp" &&
+      kx create secret generic lt-config --from-file=config.json="$OUT/$v/config.json.tmp" --dry-run=client -o yaml | kx apply -f - >/dev/null ||
+      die "$v: config not captured"
+    rm -f "$OUT/$v/config.json.tmp"
+    stalwart_deploy lt-stalwart "$image" lt-data /var/lib/stalwart /etc/stalwart 1
+    s=$(wait_ready lt-stalwart) || die "$v: not ready with the config from the Secret"
+  fi
   if (( replicas > 1 )); then
     kx scale deploy lt-stalwart --replicas="$replicas" >/dev/null
     s=$(wait_ready lt-stalwart) || die "$v: $replicas replicas not ready"
