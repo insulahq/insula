@@ -1,7 +1,7 @@
 # ADR-065: Stalwart v1 is a planned mail migration, not a version bump
 
 **Status**: PROPOSED — a living record, revised as upstream releases and our own drills change the facts
-**Date**: 2026-10-30 · **Last reviewed**: 2026-10-30
+**Date**: 2026-10-30 · **Last reviewed**: 2026-10-31
 **Related**: ADR-026 (email system), ADR-030 (mail server selection), ADR-031 (role-based multi-node),
 ADR-039 (Bulwark webmail), ADR-042 (Stalwart logical export), ADR-044 / ADR-061 (mailbox backup),
 ADR-046 (blob store stays RocksDB), ADR-064 (upgrade procedure). Registry: `security/components.yaml`
@@ -80,7 +80,7 @@ v1.0.4. Items marked *(reported)* come from upstream notes and are still to be m
 
 1. **Hold 0.16** (`watch.hold: below 1.0`) until every condition below holds.
 2. **The migration is a guided, operator-started action with a maintenance window** — not part of
-   an automatic platform upgrade. *(Proposed; awaiting the operator's decision.)* It runs: a disk
+   an automatic platform upgrade. *(Decided by the operator, 2026-10-30.)* It runs: a disk
    preflight for a second store copy; the platform's own answers for `prepare` that keep today's
    behaviour; repeated `run` while mail stays up; then the window — Stalwart at 0 replicas,
    `run --final`, `verify`, switch to v1, health checks, Bulwark OAuth registration; the 0.16
@@ -94,8 +94,9 @@ v1.0.4. Items marked *(reported)* come from upstream notes and are still to be m
 5. **The deployment shape is decided before the migration is built** — moving to v1 already
    copies every byte, so it is the cheapest moment to change the store engine. Proposed: option B
    below (PostgreSQL data store on a dedicated CNPG cluster, one Stalwart pod), with multi-node
-   (option C) as a later opt-in. *(Proposed; a mail-architecture change, so it needs the operator's
-   decision.)*
+   (option C) as a later opt-in. *(Open. The operator decides after the store evaluation: it depends
+   on the load-test results, the database sizes, and where message bodies and attachments live —
+   operator, 2026-10-30. See* Store evaluation *below.)*
 6. **The v1 integration is built for v1, not ported field by field** — see *v1 capabilities to
    adopt from the start*.
 
@@ -162,6 +163,46 @@ evaluation (ingest rate, FETCH latency, database and WAL growth, vacuum behaviou
 migration of a production-sized copy into PostgreSQL; ADR-030's swap triggers re-read for a second
 settings-schema break and private upstream test suites.
 
+## Store evaluation
+
+The evidence for the deployment shape (Decision 5) and for where message bodies and attachments live.
+Harness: `scripts/stalwart-loadtest/` (`lt.sh`, `loadgen.py`, `report.py`), run on DEV in a throwaway
+namespace with production's Stalwart limits (1 CPU, 2 GiB) and launcher.
+
+- **Corpus:** deterministic, identical for every variant — 50 mailboxes × 600 messages plus one
+  mailbox of 25,000 (≈ 55,000 messages, 4.4 GB; mean 78 KB, median 7.7 KB; 20 % with an attachment of
+  median 150 KB, base64 of random bytes). Production for scale (2026-10-31): 145 mailboxes, 45.6 GB by
+  quota accounting, largest 13.9 GB, 11 over 1 GB — DEV holds about a tenth of it, so the results are
+  per-GB figures to extrapolate, and the production-sized drill stays a staging condition.
+- **Variants:** 0.16.27 on RocksDB (today); v1 on RocksDB; v1 on PostgreSQL (dedicated CNPG, PG 18,
+  1 CPU / 2 GiB) with blobs in PostgreSQL, on a FileSystem volume, in an on-cluster S3, in an S3 on
+  another machine; a two-node v1 cluster on PostgreSQL + Valkey.
+- **Measured per variant:** ingest by IMAP APPEND and by SMTP (incl. queue and spam filter), IMAP and
+  JMAP read mixes, large-mailbox operations warm and after a restart, a mixed load, CPU-seconds and
+  peak memory per phase, store size per GB of mail and WAL written, the cost of a full copy (tar /
+  `pg_basebackup`), restart time, and the space after deleting half of every mailbox (purge,
+  autovacuum, `VACUUM`, re-ingest, `VACUUM FULL`).
+- **Migration:** `stalwart-migrate` from the loaded 0.16 store to v1 RocksDB and to v1 PostgreSQL —
+  a live copy under load, a delta, the final run, `verify --full`, v1 start, a UID/body-hash sample
+  comparison, the search-index rebuild, and a rollback after v1 has served mail.
+
+The test lifts Stalwart's per-account request limits and inbound throttles, which would otherwise
+measure themselves. Their defaults are what real clients meet, and the platform sets none of them:
+HTTP (JMAP) 1,000 requests/min per account, anonymous HTTP 100/min per IP, IMAP 2,000 requests/min
+per account; SMTP 5 messages/s per sender IP and **25/hour per sender domain and recipient**. The rate
+limits are keyed on the account a token belongs to, so Bulwark's master-user impersonation does not
+pool its users into one budget *(from source, v1.0.1)*.
+
+**Migration mechanics, confirmed at small scale (Docker, 2026-10-31):** `prepare` runs unattended
+when every question takes its recommended answer (four questions on a platform-shaped store:
+categories, changed defaults, OAuth client registration, new permissions; 48 dropped role
+permissions and OIDC-provider fields reported as warnings); the live copy reads the 0.16 store from a
+**read-only** mount; `run --final` spends a fixed 30 s watching the source change counters before it
+copies; `verify --full` found no mismatch; v1 started on the copy with UIDVALIDITY, UIDs, counts and
+body hashes unchanged.
+
+*Results: pending the DEV run.*
+
 ## v1 capabilities to adopt from the start
 
 The management API keeps its v0.16 shape (the JMAP `x:` registry); the work is the schema and the
@@ -185,9 +226,11 @@ behaviour behind it. Adopt with the migration:
 - **One `outboundReportDomain`** for every report type, replacing per-report sender settings.
 - **Per-message limits** (`maxFlagsPerEmail`, `maxMailboxesPerEmail`, `maxHeaderSize`): exercise
   restore and imapsync against them.
-- **A decision on OAuth for mail clients:** v1 advertises OAuth through client autoconfiguration,
-  while `/auth`, `/login` and `/.well-known/oauth-*` sit behind the admin gate — expose them, or stop
-  advertising *(inferred conflict)*.
+- **OAuth for mail clients:** the operator prefers to expose it; the impact is in *OAuth for mail
+  clients* below. ~~v1 advertises OAuth through client autoconfiguration while the endpoints sit
+  behind the admin gate *(inferred conflict)*~~ — not a conflict (2026-10-31): mail clients get the
+  platform's own autoconfig and autodiscover, which offer passwords only; v1's PACC document (with
+  its `oauth-public` profile) is not routed to clients.
 - **Rebuild rather than port:** drop the legacy `Principal/*` translation in `stalwart-jmap/client.ts`
   and talk to `x:Account` / `x:Domain` directly, checked against the server's `/api/schema/{hash}`;
   a v1 path for `bootstrap.sh` and the bootstrap plan; a least-privilege `ApiKey` for platform-api
@@ -205,10 +248,50 @@ evidence for each Stalwart bump from here on.
 
 ## Open decisions (operator)
 
-- Migration trigger: an operator-started action with a window (recommended), or automatic within a
-  platform upgrade.
-- Deployment shape: option B now (recommended), A, or straight to C.
-- OAuth for mail clients: expose Stalwart's OAuth endpoints, or stop advertising them.
+- ~~Migration trigger~~ — decided 2026-10-30: an operator-started action with a window.
+- Deployment shape: after the store evaluation (option B recommended so far; A, or straight to C).
+- OAuth for mail clients: the operator prefers exposing it (2026-10-30), subject to the impact below.
+  What remains to decide is the coupling: a login-password revoke also revokes the mailbox's OAuth
+  grants (recommended), and whether the tenant panel lists connected applications.
+
+## OAuth for mail clients
+
+Verified on v1.0.1 with `scripts/stalwart-loadtest/oauth-probe.py` (2026-10-31): a login password
+issued the way `login-passwords/service.ts` does it, a public client registered over RFC 7591,
+authorization code with PKCE, then the token over JMAP and IMAP.
+
+- **No tenant-panel account is needed.** The sign-in page is Stalwart's own, and it accepts the
+  mailbox address and a **login password** (`authenticate_login` → `authenticate_basic`, which takes
+  app passwords). Nobody needs the hidden primary password (ADR-049), so the credential model stays
+  as it is: the tenant admin issues a login password, the user signs in once with it, the device then
+  holds a token instead of the password. The token works for JMAP (Bearer) and IMAP
+  (`AUTH=XOAUTH2`/`OAUTHBEARER`, both advertised next to `PLAIN` after STARTTLS).
+- **An OAuth session outlives the login password it was opened with.** After the login password was
+  revoked, Basic auth with it failed (401), but the access token kept working for JMAP and IMAP, and
+  the refresh token kept issuing new ones. A grant records the account, client, scopes and IP — not
+  the credential (`NewOAuthGrant`); its tokens are bound to a hash of the *primary* password
+  (`credential_version`). A login password's expiry and IP allow-list therefore do not limit the
+  session either. Destroying the grant (`x:OAuthGrant`, "connected applications") cut access
+  immediately and the refresh was refused. Re-randomising the primary password would end every
+  session of the mailbox at once *(from source: `assert_credential_version`)*.
+- **Lifetimes** (v1 defaults): access token 1 h, refresh token 30 days and renewed on use — a client
+  that syncs monthly never signs in again.
+- **Second factor:** login passwords skip TOTP, so a sign-in with one is single-factor — the same as
+  an IMAP login with it today. No change, no gain.
+- **Registration:** v1 always accepts anonymous RFC 7591 registration of public clients, under the
+  anonymous HTTP rate limit (100 requests/min per IP by default); dynamically registered clients must
+  declare their scopes and may not use the device-code grant.
+- **Exposure:** `/auth/*`, `/api/auth`, `/.well-known/oauth-authorization-server`,
+  `/.well-known/openid-configuration` and the sign-in web UI must be reachable on the mail hostname
+  over HTTPS, outside the admin gate — an internet-facing login form behind the WAF and Stalwart's
+  `authBanRate`.
+
+**What exposing it requires from the platform:** a login-password revoke that also destroys the
+mailbox's grants (all of them — a grant does not say which credential opened it); grants destroyed on
+mailbox suspend and delete; optionally a per-mailbox list of connected applications in the tenant
+panel (client name, created, last used, IP — all in `x:OAuthGrant`); an OAuth entry in the
+autoconfig/autodiscover templates once the endpoints are public; the routes above with the WAF in
+front. Bulwark's own OAuth (first-party, cluster-internal) is separate and needs none of this.
 
 ## Keeping this record current
 
@@ -222,3 +305,6 @@ date, not deleted.
 
 - 2026-10-30 — Created from the v1.0.1 / stalwart-migrate v1.0.4 assessment; added the deployment-shape
   and store-engine research (options A–D, proposed B) and the v1 capabilities to adopt.
+- 2026-10-31 — Operator decisions recorded: the migration is operator-started; the deployment shape
+  waits for the store evaluation; OAuth exposure preferred. OAuth impact verified on v1.0.1 (login
+  passwords sign in; a session outlives its login password); the autoconfig "conflict" struck.
