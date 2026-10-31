@@ -729,6 +729,7 @@ def cmd_mixed(a):
     def sender(rng):
         nxt = time.time()
         s = None
+        left = 0  # 1–5 messages per connection, as cmd_smtp (the server allows 10 per session)
         while time.time() < deadline:
             now = time.time()
             if now < nxt:
@@ -741,11 +742,12 @@ def cmd_mixed(a):
             msg, _, _ = message(g, rcpt)
             try:
                 if s is None:
-                    s = _smtp_connect()
+                    s, left = _smtp_connect(), rng.randint(1, 5)
                 t = time.perf_counter()
                 s.sendmail(f"sender{g % 500}@senders.example.test", [rcpt], msg)
                 stats.add("smtp_deliver", (time.perf_counter() - t) * 1000, len(msg))
-                if rng.random() < 0.3:
+                left -= 1
+                if left <= 0:
                     s.quit()
                     s = None
             except Exception as exc:  # noqa: BLE001
