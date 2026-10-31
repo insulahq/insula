@@ -5,7 +5,7 @@ import clsx from 'clsx';
 import PaginationBar from '@/components/ui/PaginationBar';
 import { useTenantUsers } from '@/hooks/use-tenant-users';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
-import { useSortable } from '@/hooks/use-sortable';
+import { useServerSort } from '@/hooks/use-server-sort';
 import SortableHeader from '@/components/ui/SortableHeader';
 import TotpResetCell from '@/components/users/TotpResetCell';
 
@@ -48,17 +48,20 @@ export default function UsersTab() {
     pagination.resetPagination();
   }, [debouncedSearch]);
 
+  // The server sorts the whole list; a sort change starts again from page one.
+  const { sortKey, sortDirection, onSort, sortParam } = useServerSort('createdAt', 'asc', pagination.resetPagination);
+
   const { data, isLoading, error } = useTenantUsers({
     search: debouncedSearch || undefined,
     limit: pagination.limit,
     cursor: pagination.cursor,
+    sort: sortParam,
   });
 
   const users = data?.data ?? [];
   const totalCount = data?.pagination?.total_count ?? 0;
   const hasMore = data?.pagination?.has_more ?? false;
   const nextCursor = data?.pagination?.cursor ?? null;
-  const { sortedData, sortKey, sortDirection, onSort } = useSortable(users, 'createdAt');
 
   const handleSearchChange = (value: string) => {
     setSearch(value);
@@ -113,7 +116,7 @@ export default function UsersTab() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {sortedData.map((user) => (
+                  {users.map((user) => (
                     <tr
                       key={user.id}
                       className="transition-colors cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50"

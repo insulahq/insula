@@ -2,8 +2,9 @@
  * Notification Delivery Log — Platform → Notifications → Delivery Log.
  *
  * Operator triage surface for the per-channel delivery outcomes. Backend
- * caps `limit` at 100 and exposes a cursor for the next page. Filters
- * narrow by channel / status / categoryId / tenantId / sinceSeconds.
+ * caps `limit` at 100 and exposes an opaque cursor for the next page.
+ * Filters narrow by channel / status / categoryId / tenantId / sinceSeconds;
+ * column headers sort the whole log on the server (newest first by default).
  *
  * Recipient + content are hashes (GDPR) — we surface the truncated
  * hash with a hover-title revealing the full string.
@@ -17,6 +18,8 @@ import {
   type NotificationDeliveryFilters,
 } from '@/hooks/use-notification-deliveries';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
+import { useServerSort } from '@/hooks/use-server-sort';
+import SortableHeader from '@/components/ui/SortableHeader';
 import {
   NOTIFICATION_CHANNEL_ID,
   NOTIFICATION_DELIVERY_STATUS,
@@ -60,6 +63,8 @@ export default function DeliveryLogTable() {
   const [sinceSeconds, setSinceSeconds] = useState<number | undefined>(60 * 60);
 
   const pagination = useCursorPagination({ defaultLimit: 50 });
+  // A cursor belongs to the order it was made in: a sort change starts again from page one.
+  const { sortKey, sortDirection, onSort, sortParam } = useServerSort('queuedAt', 'desc', pagination.resetPagination);
 
   const filters: NotificationDeliveryFilters = {
     channel,
@@ -73,6 +78,7 @@ export default function DeliveryLogTable() {
     filters,
     cursor: pagination.cursor,
     limit: pagination.limit,
+    sort: sortParam,
   });
 
   const retry = useRetryNotificationDelivery();
@@ -86,7 +92,8 @@ export default function DeliveryLogTable() {
     pagination.resetPagination();
   };
 
-  const nextCursor = list.data?.pagination?.nextCursor ?? null;
+  // The API's paginated envelope: `cursor` (opaque) when `has_more`.
+  const nextCursor = list.data?.pagination?.has_more ? (list.data.pagination.cursor ?? null) : null;
 
   return (
     <div className="space-y-4">
@@ -195,13 +202,13 @@ export default function DeliveryLogTable() {
           <table className="w-full text-xs">
             <thead className="text-gray-500 dark:text-gray-400">
               <tr className="border-b border-gray-200/60 dark:border-gray-700/40">
-                <th className="px-4 py-2 text-left">Queued At</th>
-                <th className="px-4 py-2 text-left">Channel</th>
-                <th className="px-4 py-2 text-left">Category</th>
-                <th className="px-4 py-2 text-left">Status</th>
-                <th className="px-4 py-2 text-left">Recipient Hash</th>
-                <th className="px-4 py-2 text-right">Attempt</th>
-                <th className="px-4 py-2 text-left">Last Error</th>
+                <SortableHeader label="Queued At" sortKey="queuedAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-2" className="text-left" />
+                <SortableHeader label="Channel" sortKey="channel" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-2" className="text-left" />
+                <SortableHeader label="Category" sortKey="categoryId" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-2" className="text-left" />
+                <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-2" className="text-left" />
+                <SortableHeader label="Recipient Hash" sortKey="recipientHash" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-2" className="text-left" />
+                <SortableHeader label="Attempt" sortKey="attempt" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-2" className="text-right" />
+                <SortableHeader label="Last Error" sortKey="lastError" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-2" className="text-left" />
                 <th className="px-4 py-2 text-right">Actions</th>
               </tr>
             </thead>

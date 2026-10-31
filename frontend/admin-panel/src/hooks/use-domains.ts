@@ -7,6 +7,11 @@ interface ListDomainsParams {
   readonly search?: string;
   readonly limit?: number;
   readonly cursor?: string;
+  /**
+   * `field:asc|desc` — the server orders (and pages) the whole list by it.
+   * Sent to both the cross-tenant and the one-tenant listing; both sort on the server.
+   */
+  readonly sort?: string;
 }
 
 /**
@@ -36,6 +41,8 @@ export function useDomains(tenantId: string | undefined, params: ListDomainsPara
   if (params.search) searchParams.set('search', params.search);
   if (params.limit) searchParams.set('limit', String(params.limit));
   if (params.cursor) searchParams.set('cursor', params.cursor);
+  const sort = params.sort;
+  if (sort) searchParams.set('sort', sort);
 
   const qs = searchParams.toString();
   const path = tenantId
@@ -43,7 +50,7 @@ export function useDomains(tenantId: string | undefined, params: ListDomainsPara
     : `/api/v1/admin/domains${qs ? `?${qs}` : ''}`;
 
   return useQuery({
-    queryKey: ['domains', tenantId ?? 'all', params],
+    queryKey: ['domains', tenantId ?? 'all', { search: params.search, limit: params.limit, cursor: params.cursor, sort }],
     queryFn: () => apiFetch<PaginatedResponse<Domain>>(path),
     // 5s while a certificate is issuing or a domain is still pending; off
     // otherwise, so an idle list costs nothing.

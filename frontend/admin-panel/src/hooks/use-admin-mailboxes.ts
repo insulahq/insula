@@ -29,18 +29,21 @@ interface UseAdminMailboxesParams {
   readonly limit?: number;
   readonly cursor?: string;
   readonly search?: string;
+  /** `field:asc|desc` — the server orders (and pages) the whole list by it. */
+  readonly sort?: string;
 }
 
 export function useAdminMailboxes(params: UseAdminMailboxesParams = {}) {
-  const { limit, cursor, search } = params;
+  const { limit, cursor, search, sort } = params;
   const qs = new URLSearchParams();
   if (limit) qs.set('limit', String(limit));
   if (cursor) qs.set('cursor', cursor);
   if (search) qs.set('search', search);
+  if (sort) qs.set('sort', sort);
   const url = `/api/v1/admin/mailboxes${qs.toString() ? `?${qs.toString()}` : ''}`;
 
   return useQuery({
-    queryKey: ['admin-mailboxes', { limit, cursor, search }],
+    queryKey: ['admin-mailboxes', { limit, cursor, search, sort }],
     queryFn: () => apiFetch<PaginatedResponse<AdminMailbox>>(url),
   });
 }

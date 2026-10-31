@@ -17,9 +17,11 @@ import type {
 
 interface Envelope<T> {
   readonly data: T;
+  /** The API's `paginated()` envelope. `cursor` is opaque — pass it back, never parse it. */
   readonly pagination?: {
-    readonly nextCursor?: string | null;
-    readonly limit: number;
+    readonly cursor: string | null;
+    readonly has_more: boolean;
+    readonly page_size: number;
   };
 }
 
@@ -37,6 +39,8 @@ interface DeliveriesQueryInput {
   readonly filters: NotificationDeliveryFilters;
   readonly cursor?: string;
   readonly limit?: number;
+  /** `field:asc|desc` — the server orders (and pages) the whole log by it. */
+  readonly sort?: string;
 }
 
 function buildQs(input: DeliveriesQueryInput): string {
@@ -48,6 +52,7 @@ function buildQs(input: DeliveriesQueryInput): string {
   if (input.filters.sinceSeconds !== undefined) p.set('sinceSeconds', String(input.filters.sinceSeconds));
   if (input.cursor) p.set('cursor', input.cursor);
   if (input.limit !== undefined) p.set('limit', String(input.limit));
+  if (input.sort) p.set('sort', input.sort);
   const q = p.toString();
   return q ? `?${q}` : '';
 }
@@ -64,6 +69,7 @@ export function useNotificationDeliveries(input: DeliveriesQueryInput) {
       input.filters.sinceSeconds ?? null,
       input.cursor ?? null,
       input.limit ?? null,
+      input.sort ?? null,
     ],
     queryFn: () => apiFetch<Envelope<NotificationDeliveryResponse[]>>(
       `/api/v1/admin/notifications/deliveries${buildQs(input)}`,
