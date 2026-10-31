@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.10.23] - 2026-10-31
+
 ### Added
 
 - **WAF events are kept for 30 days, and a summary shows what to decide from them.** The WAF
