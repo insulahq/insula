@@ -11,7 +11,7 @@
 #                                incl. a live copy under load, final run, verify, rollback
 #   ./lt.sh migrate-gentle       init, then the PostgreSQL migration again with fewer write and
 #                                blob slots in the live runs (MIG_LIVE_ARGS), under the same load
-#   ./lt.sh followup             init, variant v1-pg-meili, migrate-gentle, report
+#   ./lt.sh followup             init, variant v1-pg-meili, migrate-gentle, cluster, report
 #   ./lt.sh cluster              v1 on PostgreSQL + Valkey, two pods
 #   ./lt.sh all                  everything above, in order
 #   ./lt.sh teardown             delete the namespace (results stay in $OUT)
@@ -963,9 +963,11 @@ cmd_cluster() {
   phase "$v" imap-read imap-read --accounts "$ACCOUNTS" --duration 120 --workers 16
   phase "$v" jmap-read jmap-read --accounts "$ACCOUNTS" --duration 120 --workers 16
   # one pod lost in the middle of an SMTP ingest: every accepted message must still be stored
-  phase "$v" smtp-failover smtp --accounts "$ACCOUNTS" --count 3000 --workers 10 --offset 9000000 &
+  # 20,000 messages take ~100 s at the ~200 msg/s v1 on PostgreSQL accepts, so the pod is deleted
+  # mid-ingest (the first run sent 3,000 in 15 s and deleted the pod after the ingest had ended)
+  phase "$v" smtp-failover smtp --accounts "$ACCOUNTS" --count 20000 --workers 10 --offset 9000000 &
   local smtp_pid=$!
-  sleep 60
+  sleep 30
   kx delete pod "$(kx get pod -l lt-instance=lt-stalwart -o jsonpath='{.items[0].metadata.name}')" --wait=false >/dev/null
   log "$v: deleted one pod during the SMTP ingest"
   wait "$smtp_pid"
@@ -1002,6 +1004,7 @@ case "${1:-}" in
     cmd_init
     ( cmd_variant v1-pg-meili ) || log "variant v1-pg-meili failed — continuing"
     ( cmd_migrate_gentle ) || log "migrate-gentle failed — continuing"
+    ( cmd_cluster ) || log "cluster failed — continuing"
     python3 "$HERE/report.py" "$OUT" > "$OUT/report.md" 2>> "$OUT/lt.log"
     log "=== followup done — results in $OUT ===" ;;
   cluster) cmd_cluster ;;
