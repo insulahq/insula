@@ -164,9 +164,13 @@ def main():
         for p in ("big", "big-cold"):
             d = r.phase(v, p)
             if d:
+                h = d.get("hits") or {}
+                hits = "/".join("–" if not h.get(o) else str(min(h[o])) for o in ("search_body_rare",
+                                                                                   "jmap_search_text"))
                 rows.append([f"{v} ({'after restart' if p == 'big-cold' else 'warm'})",
-                             d.get("messages_inbox")] + [lat(d, o, "max") for o in ops])
-    out += ["## Large mailbox (ms, worst of the samples)", "", table(["variant", "messages"] + ops, rows), ""]
+                             d.get("messages_inbox")] + [lat(d, o, "max") for o in ops] + [hits])
+    out += ["## Large mailbox (ms, worst of the samples)", "",
+            table(["variant", "messages"] + ops + ["fewest rare-term hits IMAP/JMAP"], rows), ""]
 
     rows = []
     for v in vs:

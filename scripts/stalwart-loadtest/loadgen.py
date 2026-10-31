@@ -279,6 +279,11 @@ class Jmap:
         return r["methodResponses"]
 
 
+def jmap_ids(responses):
+    """The ids of the first response of a JmapClient.call, or [] when the call failed."""
+    return (responses or [[None, {}]])[0][1].get("ids") or []
+
+
 ADMIN_USING = ("urn:ietf:params:jmap:core", "urn:stalwart:jmap")
 
 
@@ -676,6 +681,11 @@ def cmd_jmap_read(a):
 
 def cmd_big(a):
     stats = Stats()
+    hits = {}  # a fast search that matched nothing (index behind) must not read as a fast search
+
+    def imap_hits(op, r):
+        hits.setdefault(op, []).append(len(r[1][0].split()) if r and r[0] == "OK" and r[1][0] else 0)
+
     m = imap_login(BIG_ACCOUNT)
     r = timed(stats, "select_cold", lambda: m.select("INBOX"))
     exists = int(r[1][0]) if r else 0
@@ -683,9 +693,11 @@ def cmd_big(a):
     timed(stats, "fetch_last_50_envelopes",
           lambda: m.fetch(f"{max(1, exists - 49)}:{exists}", "(UID RFC822.SIZE FLAGS ENVELOPE)"))
     for k in range(5):
-        timed(stats, "search_body_rare", lambda: m.search(None, "BODY", f"zq{(k * 197) % 1000:03d}x"))
-        timed(stats, "search_subject", lambda: m.search(None, "SUBJECT", f"project-{k * 13:02d}"))
-        timed(stats, "search_since", lambda: m.search(None, "SINCE", "01-Jan-2026"))
+        imap_hits("search_body_rare",
+                  timed(stats, "search_body_rare", lambda: m.search(None, "BODY", f"zq{(k * 197) % 1000:03d}x")))
+        imap_hits("search_subject",
+                  timed(stats, "search_subject", lambda: m.search(None, "SUBJECT", f"project-{k * 13:02d}")))
+        imap_hits("search_since", timed(stats, "search_since", lambda: m.search(None, "SINCE", "01-Jan-2026")))
     m.close()
     timed(stats, "select_warm", lambda: m.select("INBOX"))
     m.logout()
@@ -699,10 +711,11 @@ def cmd_big(a):
                          "sort": [{"property": "receivedAt", "isAscending": False}],
                          "position": max(0, exists - 100), "limit": 50}, "q"]]))
     for k in range(5):
-        timed(stats, "jmap_search_text", lambda: acc.j.call([
+        r = timed(stats, "jmap_search_text", lambda: acc.j.call([
             ["Email/query", {"accountId": aid, "filter": {"text": f"zq{(k * 389) % 1000:03d}x"},
                              "limit": 50}, "q"]]))
-    return {"cmd": "big", "messages_inbox": exists, **stats.summary()}
+        hits.setdefault("jmap_search_text", []).append(len(jmap_ids(r)))
+    return {"cmd": "big", "messages_inbox": exists, "hits": hits, **stats.summary()}
 
 
 def cmd_mixed(a):
