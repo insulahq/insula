@@ -58,6 +58,12 @@ MIXED_SECONDS=${MIXED_SECONDS:-300}
 # the result name. The final run always goes at full speed: 0.16 is stopped by then.
 MIG_LIVE_ARGS=${MIG_LIVE_ARGS:-}
 MIG_TAG=${MIG_TAG:-}
+# Every migration starts from the same 0.16 store, which keeps what the previous one delivered.
+# A message number reused there carries the same Message-ID, and Stalwart drops it as a
+# duplicate after accepting it, so an SMTP phase would wait for mail that is never stored.
+# Each migration sends from its own range: MIG_OFF advances by 100000 per migration.
+MIG_N=0
+MIG_OFF=0
 
 mkdir -p "$OUT"
 kx() { $K -n "$NS" "$@"; }
@@ -647,6 +653,7 @@ MIG_ARGS=(--source /etc/stalwart/config.json --target /etc/stalwart-v1/config.js
 migrate_to() {
   local kind=$1 s
   MV=mig-$kind${MIG_TAG:+-$MIG_TAG}
+  MIG_OFF=$(( MIG_N * 100000 )); MIG_N=$(( MIG_N + 1 ))
   local live; read -ra live <<<"$MIG_LIVE_ARGS"
   mkdir -p "$OUT/$MV"
   log "=== migration 0.16.27 → v1 $kind ==="
@@ -670,12 +677,12 @@ migrate_to() {
     die "$MV: prepare left open questions (see $OUT/$MV/prepare.out)"
 
   # live copy, with 0.16 serving a mixed load at the same time
-  phase "$MV" mixed-during-copy mixed --accounts "$ACCOUNTS" --duration 600 --smtp-rate 5 --offset 6000000 &
+  phase "$MV" mixed-during-copy mixed --accounts "$ACCOUNTS" --duration 600 --smtp-rate 5 --offset $(( 6000000 + MIG_OFF )) &
   local mixed_pid=$!
   mig run-1-live run "${MIG_ARGS[@]}" "${live[@]}"
   wait "$mixed_pid"
   DATA_PVC=lt-mig-target sizes "$MV" after-run-1
-  phase "$MV" smtp-delta smtp --accounts "$ACCOUNTS" --count 500 --workers 4 --offset 7000000
+  phase "$MV" smtp-delta smtp --accounts "$ACCOUNTS" --count 500 --workers 4 --offset $(( 7000000 + MIG_OFF ))
   mig run-2-delta run "${MIG_ARGS[@]}" "${live[@]}"
   lg sample --accounts "$ACCOUNTS" > "$OUT/$MV/sample-source.json"
 
@@ -723,7 +730,7 @@ migrate_to() {
 # rollback_after_cutover — v1 has served mail; copy it back into a new 0.16 store and start 0.16
 rollback_after_cutover() {
   log "$MV: rollback after cutover"
-  phase "$MV" smtp-on-v1 smtp --accounts "$ACCOUNTS" --count 300 --workers 4 --offset 8000000
+  phase "$MV" smtp-on-v1 smtp --accounts "$ACCOUNTS" --count 300 --workers 4 --offset $(( 8000000 + MIG_OFF ))
   lg sample --accounts "$ACCOUNTS" > "$OUT/$MV/sample-v1-served.json"
   kx scale deploy lt-stalwart-v1 --replicas=0 >/dev/null
   kx wait --for=delete pod -l lt-instance=lt-stalwart-v1 --timeout=180s >/dev/null 2>&1

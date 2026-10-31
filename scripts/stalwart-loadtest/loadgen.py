@@ -530,10 +530,17 @@ def cmd_smtp(a):
     accept_wall = time.perf_counter() - t0
     delivered = stats.count("deliver")
     want = before + delivered
-    now = before
+    now, seen, moved = before, before, time.perf_counter()
+    stalled = False
     while time.perf_counter() - t0 < accept_wall + a.drain_timeout:
         now = total_messages(names)
         if now >= want:
+            break
+        if now != seen:
+            seen, moved = now, time.perf_counter()
+        elif time.perf_counter() - moved > 300:  # accepted, never stored (a duplicate Message-ID); 300 s
+            # outlasts the first retry of a deferred local delivery
+            stalled = True
             break
         time.sleep(5)
     drain_wall = time.perf_counter() - t0
@@ -541,7 +548,7 @@ def cmd_smtp(a):
     s = stats.summary()
     return {"cmd": "smtp", "workers": a.workers, "accepted": delivered,
             "accept_wall_s": round(accept_wall, 1), "accept_msg_per_s": round(delivered / accept_wall, 2),
-            "stored": now - before, "drain_wall_s": round(drain_wall, 1),
+            "stored": now - before, "drain_stalled": stalled, "drain_wall_s": round(drain_wall, 1),
             "stored_msg_per_s": round((now - before) / drain_wall, 2), **s}
 
 
