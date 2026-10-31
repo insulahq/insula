@@ -90,6 +90,16 @@ spec:
               path: /health
               port: 80
             periodSeconds: 10
+          # Keep serving for 5 s after SIGTERM is due. Traefik drops this pod
+          # from its endpoints a moment after the pod starts terminating;
+          # without the pause the old pod exited at once and requests in that
+          # moment got 502 — measured on staging at each upgrade's swap (admin
+          # panel, then API, one 2-second sample each). The kubelet's own sleep
+          # action, so the image needs no sleep binary.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           volumeMounts:
             # Operator-managed trusted-proxy CIDRs (Nodes & Storage →
             # Trusted Proxies tab). Reconciled into the cluster-trusted-
