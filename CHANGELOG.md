@@ -58,7 +58,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     suspended page, private-worker tunnels, the webmail and Stalwart admin ingresses, and the
     dev overlays. Existing Certificates move on the next reconcile. The ones from
     `reconcile: disabled` seed manifests are patched by the reconciler that keeps their
-    hostnames. A certificate that already has less than a third left renews right away, once.
+    hostnames. The minute-by-minute certificate status sweep also moves any tenant
+    Certificate still on a fixed schedule, which reaches domains no ingress reconcile
+    touches (a mail-only domain's wildcard). A certificate that already has less than a
+    third left renews right away, once.
   - "Expiring" (amber on the Domains lists, the admin "certificate expiring" notification
     and dashboard alert, the admin dashboard's red nearest-expiry, the posture card,
     platform URL health) now means renewal is overdue: less than half of the renewal window

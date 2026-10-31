@@ -474,7 +474,10 @@ export async function reconcileCertificateStatuses(
     // issuing, skip", so a permanently failed order was silent forever.
     try {
       if (!certsByNamespace.has(d.namespace)) {
-        certsByNamespace.set(d.namespace, await listCertificateHealth(k8s, d.namespace));
+        // The sweep reaches every domain each minute, including ones with no
+        // route (whose Certificate no ingress reconcile ever rewrites), so it
+        // is where a fixed renewBefore is moved to the renewal policy.
+        certsByNamespace.set(d.namespace, await listCertificateHealth(k8s, d.namespace, { fixRenewalSchedule: true }));
         // Sweep on a slower cadence than the 60s tick, rather than gating on
         // certificate health.
         //
