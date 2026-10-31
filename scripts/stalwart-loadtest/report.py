@@ -146,8 +146,8 @@ def store_bytes(s):
     if not s:
         return None
     total = (s.get("data_bytes") or 0) + (s.get("blob_bytes") or 0)
-    if s.get("pg"):
-        total += s["pg"].get("pvc_bytes") or s["pg"].get("db_bytes") or 0
+    if s.get("pg"):  # the database, not the volume: pg_wal holds up to max_wal_size (4 GB here)
+        total += s["pg"].get("db_bytes") or 0                    # even when empty — its own column
     if s.get("s3"):
         total += s["s3"].get("bytes") or 0
     if s.get("search"):
@@ -242,11 +242,14 @@ def main():
         e = r.size(v, "empty") or {}
         wal = (pg.get("wal_bytes") or 0) - ((e.get("pg") or {}).get("wal_bytes") or 0)
         rows.append([v, gib(raw), gib(s.get("data_bytes")), gib(s.get("blob_bytes")), s.get("blob_files"),
-                     gib(pg.get("db_bytes")), gib(wal) if pg else "–", gib((s.get("s3") or {}).get("bytes")),
+                     gib(pg.get("db_bytes")), gib(wal) if pg else "–", gib(pg.get("pg_wal_dir_bytes")),
+                     gib((s.get("s3") or {}).get("bytes")), gib((s.get("search") or {}).get("bytes")),
                      gib(total), round(total / raw, 2)])
     out += ["## Storage after ingest (GiB)", "",
             table(["variant", "raw mail", "data dir", "blob dir", "blob files", "PG database",
-                   "WAL written", "S3", "total on disk", "disk / raw"], rows), ""]
+                   "WAL written", "pg_wal dir", "S3", "search", "store total", "store / raw"], rows), "",
+            "Store total = data dir + blob dir + PG database + S3 + search index; the pg_wal directory is a "
+            "fixed allowance on top (up to max_wal_size).", ""]
 
     labels = ["before-delete", "after-delete", "after-purge", "after-purge-10min", "after-vacuum",
               "after-reappend", "after-vacuum-full"]
@@ -262,6 +265,8 @@ def main():
     rows = []
     restarts = {x["variant"]: x["restart_seconds"] for x in jsonl(f"{r.d}/restarts.jsonl")}
     for b in jsonl(f"{r.d}/backups.jsonl"):
+        if b["bytes"] < 2 ** 20:  # the data volume of a store kept elsewhere, or a failed copy
+            continue
         rows.append([b["variant"], b["kind"], gib(b["bytes"]), b["seconds"],
                      round(b["bytes"] / max(float(b["seconds"]), 0.1) / 1e6, 1), restarts.get(b["variant"])])
     out += ["## Full copy of the store, restart", "",
