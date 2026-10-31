@@ -5,8 +5,13 @@
  * SUNSHINE dry-run analysis had to be done by hand for.
  *
  * Rows of the scoring meta-rules (949110 "anomaly score exceeded", 980xxx) are
- * not rule groups: 949110 marks the request itself, so it is what `requests`
- * counts — one per blocked (or, detection-only, flagged) request.
+ * not rule groups: they say that a request was blocked, not why.
+ *
+ * `requests` counts distinct requests — ModSecurity's transaction id, the part
+ * of event_key before the rule id — not 949110 rows. A request can be refused
+ * without the anomaly score: a body the WAF cannot parse (200002, HTTP 400)
+ * writes no 949110 row, and counting those undercounted (staging showed 4 of 6).
+ * Rows without an event_key (a fallback the scraper rarely writes) count once each.
  */
 import { and, sql, type SQL } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
@@ -52,7 +57,8 @@ export async function summarizeWafLogs(db: Db, filters: SQL[]): Promise<WafLogSu
      LIMIT ${SUMMARY_MAX_ROWS + 1}
   `);
   const [total] = (await db.execute(sql`
-    SELECT count(*)::int AS requests FROM ${wafLogs} WHERE ${where} AND rule_id = '949110'
+    SELECT count(DISTINCT coalesce(nullif(split_part(event_key, ':', 1), ''), id))::int AS requests
+      FROM ${wafLogs} WHERE ${where}
   `) as unknown as { rows: Array<{ requests: number }> }).rows;
   const rows = (groups as unknown as { rows: GroupRow[] }).rows;
   return {
