@@ -140,6 +140,7 @@ def store_bytes(s):
 def main():
     r = Run(sys.argv[1])
     vs = [v for v in VARIANTS if os.path.isdir(f"{r.d}/{v}")]
+    migs = sorted(x for x in os.listdir(r.d) if x.startswith("mig-") and os.path.isdir(f"{r.d}/{x}"))
     out = [f"# Stalwart store evaluation — run {os.path.basename(r.d.rstrip('/'))}", ""]
     env = f"{r.d}/environment.txt"
     if os.path.exists(env):
@@ -164,20 +165,27 @@ def main():
                                 "store_flag", "login"]),
                       ("jmap", ["list_mailbox", "open_email", "search_text", "thread", "set_keyword"])):
         rows = []
-        for v in vs:
+        for v in vs + migs:
             d = r.phase(v, f"{kind}-read")
             if not d:
                 continue
             errs = sum(d.get("errors", {}).values())
-            rows.append([v, d.get("ops_per_s")] + [f"{fmt(lat(d, o, 'p50'), 2)} / {fmt(lat(d, o), 2)}" for o in ops]
-                        + [errs])
+            # ops/s alone ranks the load generator once it saturates (one Python process ≈ one
+            # core), so the server's CPU per operation is the comparable figure
+            u, w = r.usage(v, f"{kind}-read"), r.windows.get((v, f"{kind}-read"))
+            n = (d.get("ops_per_s") or 0) * (d.get("duration_s") or 0)
+            cpu_ms = round(u["stalwart"][0] / n * 1000, 2) if n and "stalwart" in u else None
+            gen = round(u["loadgen"][0] / (w[1] - w[0]), 2) if w and None not in w and "loadgen" in u else None
+            rows.append([v, d.get("ops_per_s"), cpu_ms, gen]
+                        + [f"{fmt(lat(d, o, 'p50'), 2)} / {fmt(lat(d, o), 2)}" for o in ops] + [errs])
         out += [f"## {kind.upper()} reads (ms, p50 / p95)", "",
-                table(["variant", "ops/s"] + ops + ["errors"], rows), ""]
+                table(["variant", "ops/s", "Stalwart CPU-ms / op", "load generator cores"] + ops + ["errors"],
+                      rows), ""]
 
     ops = ["select_cold", "fetch_all_flags", "search_body_rare", "search_subject", "jmap_query_total",
            "jmap_query_deep", "jmap_search_text"]
     rows = []
-    for v in vs:
+    for v in vs + migs:
         for p in ("big", "big-cold"):
             d = r.phase(v, p)
             if d:
@@ -243,7 +251,7 @@ def main():
                  m.get("seconds", m.get("window_seconds", m.get("index_rebuild_seconds"))), m.get("rc", "")]
                 for m in mig]
         out += ["## Migration", "", table(["migration", "step", "seconds", "rc"], rows), ""]
-        for mv in sorted(x for x in os.listdir(r.d) if x.startswith("mig-") and os.path.isdir(f"{r.d}/{x}")):
+        for mv in migs:
             w = r.windows.get((mv, "run-1-live"))
             tp = r.throughput(mv, "mixed-during-copy")
             if w and None not in w and tp:
