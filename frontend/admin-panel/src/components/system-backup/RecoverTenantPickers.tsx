@@ -5,6 +5,8 @@ import { AlertTriangle, CheckCircle2, Loader2, XCircle } from 'lucide-react';
 import type { DrRecoveryBundle, DrRecoveryInfo } from '@insula/api-contracts';
 import NodeName from '@/components/nodes/NodeName';
 import { formatBytes } from '@/lib/format-bytes';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
 
 function age(iso: string, now = Date.now()): string {
@@ -84,6 +86,16 @@ export function TenantFacts({ info, loading }: { readonly info: DrRecoveryInfo |
 
 const componentLabel = (c: string): string => (c === 'mailboxes' ? 'mail' : c);
 
+/** What the Contents cell shows — `files 1.2 GB · mail 300 MB`. */
+const contentsText = (b: DrRecoveryBundle): string | null => (b.components.length > 0
+  ? b.components.map((c) => `${componentLabel(c.component)} ${formatBytes(c.sizeBytes)}`).join(' · ')
+  : null);
+
+const BUNDLE_SORT: SortAccessors<DrRecoveryBundle> = {
+  by: (b) => `${b.trigger}${b.label ? ` · ${b.label}` : ''}`,
+  contents: contentsText,
+};
+
 /**
  * The tenant's bundles to choose from — when each was taken, by what, what it
  * holds, how big, and how long it is kept. No ids to type. A partial bundle is
@@ -98,6 +110,9 @@ export function BundleChooser({ bundles, value, onChange, disabled }: {
 }) {
   const newest = bundles.find((b) => b.status === 'completed')?.id ?? '';
   const selected = value || newest;
+  // Newest first, the order the server lists them in.
+  const { sortedData: sortedBundles, sortKey, sortDirection, onSort } = useSortable(bundles, 'createdAt', 'desc', BUNDLE_SORT);
+  const head = { currentKey: sortKey, direction: sortDirection, onSort, padding: 'px-3 py-2' } as const;
   if (bundles.length === 0) {
     return <p className="text-sm text-gray-500 dark:text-gray-400">This tenant has no bundle to recover from.</p>;
   }
@@ -107,15 +122,15 @@ export function BundleChooser({ bundles, value, onChange, disabled }: {
         <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500 dark:bg-gray-900/50 dark:text-gray-400">
           <tr>
             <th className="w-8 px-3 py-2" />
-            <th className="px-3 py-2" title={localZoneTitle()}>Taken ({utcOffsetLabel()})</th>
-            <th className="px-3 py-2">By</th>
-            <th className="px-3 py-2">Contents</th>
-            <th className="px-3 py-2 text-right">Size</th>
-            <th className="px-3 py-2">Kept until</th>
+            <SortableHeader label={`Taken (${utcOffsetLabel()})`} sortKey="createdAt" title={localZoneTitle()} {...head} />
+            <SortableHeader label="By" sortKey="by" {...head} />
+            <SortableHeader label="Contents" sortKey="contents" {...head} />
+            <SortableHeader label="Size" sortKey="sizeBytes" className="text-right" {...head} />
+            <SortableHeader label="Kept until" sortKey="expiresAt" {...head} />
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-          {bundles.map((b) => {
+          {sortedBundles.map((b) => {
             const usable = b.status === 'completed';
             const isSelected = usable && b.id === selected;
             return (
@@ -143,9 +158,7 @@ export function BundleChooser({ bundles, value, onChange, disabled }: {
                 </td>
                 <td className="px-3 py-2 text-gray-700 dark:text-gray-300">{b.trigger}{b.label ? ` · ${b.label}` : ''}</td>
                 <td className="px-3 py-2 text-gray-700 dark:text-gray-300">
-                  {b.components.length > 0
-                    ? b.components.map((c) => `${componentLabel(c.component)} ${formatBytes(c.sizeBytes)}`).join(' · ')
-                    : <span className="text-gray-400 dark:text-gray-500">—</span>}
+                  {contentsText(b) ?? <span className="text-gray-400 dark:text-gray-500">—</span>}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-gray-900 dark:text-gray-100">{formatBytes(b.sizeBytes)}</td>
                 <td className="whitespace-nowrap px-3 py-2 text-gray-700 dark:text-gray-300">{b.expiresAt ? <LocalTime iso={b.expiresAt} dateOnly /> : 'no expiry'}</td>

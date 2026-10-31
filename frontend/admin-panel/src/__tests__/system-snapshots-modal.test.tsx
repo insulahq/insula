@@ -3,10 +3,10 @@
  * storage) must not offer snapshot actions: "Take snapshot" on it reached the
  * operator as a 500 "Rejected by an admission webhook".
  */
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { SystemPvcSnapshotSummary } from '@insula/api-contracts';
+import type { SystemPvcSnapshotSummary, SystemSnapshotEntry } from '@insula/api-contracts';
 import SystemSnapshotsModal from '@/components/SystemSnapshotsModal';
 
 // Hook results are stable objects, as react-query's are. `jobs.data` is left
@@ -65,5 +65,42 @@ describe('SystemSnapshotsModal — volumes Longhorn cannot snapshot', () => {
     renderModal(base);
     expect(screen.getByTestId('manual-take-snapshot')).toBeInTheDocument();
     expect(screen.queryByTestId('snapshot-not-capable')).toBeNull();
+  });
+});
+
+describe('SystemSnapshotsModal — snapshot list sorting', () => {
+  const snap = (snapshotName: string, createdAt: string, sizeBytes: number, usable: boolean, markedForRemoval = false): SystemSnapshotEntry => ({
+    snapshotName, volumeName: 'pvc-local', createdAt, sizeBytes, usable, userLabel: null, markedForRemoval,
+  });
+  const list = m.snaps.data.data as { snapshots: SystemSnapshotEntry[] };
+
+  beforeEach(() => {
+    list.snapshots = [
+      snap('s-a', '2026-10-01T00:00:00.000Z', 100, true),
+      snap('s-b', '2026-10-05T00:00:00.000Z', 50, true, true),
+      snap('s-c', '2026-10-03T00:00:00.000Z', 300, false),
+    ];
+  });
+  afterEach(() => { list.snapshots = []; });
+
+  const order = () => screen.getAllByTestId(/^snapshot-row-/).map((r) => r.getAttribute('data-testid'));
+
+  it('opens newest first, then sorts by size both ways', () => {
+    renderModal(base);
+    expect(order()).toEqual(['snapshot-row-s-b', 'snapshot-row-s-c', 'snapshot-row-s-a']);
+
+    fireEvent.click(screen.getByTestId('sort-sizeBytes'));
+    expect(order()).toEqual(['snapshot-row-s-b', 'snapshot-row-s-a', 'snapshot-row-s-c']);
+    fireEvent.click(screen.getByTestId('sort-sizeBytes'));
+    expect(order()).toEqual(['snapshot-row-s-c', 'snapshot-row-s-a', 'snapshot-row-s-b']);
+  });
+
+  it('sorts Status by the words it shows', () => {
+    renderModal(base);
+    fireEvent.click(screen.getByTestId('sort-status'));
+    // marked-removed < pending < ready
+    expect(order()).toEqual(['snapshot-row-s-b', 'snapshot-row-s-c', 'snapshot-row-s-a']);
+    fireEvent.click(screen.getByTestId('sort-status'));
+    expect(order()).toEqual(['snapshot-row-s-a', 'snapshot-row-s-c', 'snapshot-row-s-b']);
   });
 });

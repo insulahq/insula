@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, AlertTriangle, Info, Plus, Trash2, X, Shield, Settings,
@@ -19,6 +19,8 @@ import { useDomains } from '@/hooks/use-domains';
 import OidcSection from '@/components/OidcSection';
 import { HostnameLink } from '@/components/HostnameLink';
 import LocalTime from '@/components/ui/LocalTime';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable } from '@/hooks/use-sortable';
 import { WafLogSummary } from '@/components/routes/WafLogSummary';
 import { localZoneTitle } from '@/lib/format-timestamp';
 import { utcOffsetLabel } from '@/lib/format-traffic';
@@ -1428,6 +1430,14 @@ function WafExclusionsSection({ tenantId, routeId, hostname }: {
   const { data, isLoading, isError, error } = useRouteWafExclusions(tenantId, routeId);
   const exclusions = data?.data?.exclusions ?? [];
   const del = useDeleteRouteWafExclusion(tenantId, routeId);
+  // Oldest first, as the API lists them. "every path" (no path) sorts last.
+  const sortableExclusions = useMemo(() => exclusions.map((ex) => ({
+    ...ex,
+    createdAtMs: Date.parse(ex.createdAt),
+    scopeLabel: wafExclusionScopeLabel(ex.scope),
+  })), [exclusions]);
+  const { sortedData: sortedExclusions, sortKey, sortDirection, onSort } = useSortable(sortableExclusions, 'createdAtMs');
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!px-3 !py-2 text-left' };
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
@@ -1500,16 +1510,16 @@ function WafExclusionsSection({ tenantId, routeId, hostname }: {
               <table className="min-w-full text-xs">
                 <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-500 uppercase">
                   <tr>
-                    <th className="px-3 py-2 text-left">Rule ID</th>
-                    <th className="px-3 py-2 text-left">Path</th>
-                    <th className="px-3 py-2 text-left">Scope</th>
-                    <th className="px-3 py-2 text-left">Reason</th>
-                    <th className="px-3 py-2 text-left" title={localZoneTitle()}>Added ({utcOffsetLabel()})</th>
+                    <SortableHeader label="Rule ID" sortKey="ruleId" {...th} />
+                    <SortableHeader label="Path" sortKey="pathRegex" {...th} />
+                    <SortableHeader label="Scope" sortKey="scopeLabel" {...th} />
+                    <SortableHeader label="Reason" sortKey="reason" {...th} />
+                    <SortableHeader label={`Added (${utcOffsetLabel()})`} sortKey="createdAtMs" {...th} title={localZoneTitle()} />
                     <th className="px-3 py-2"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                  {exclusions.map((ex) => (
+                  {sortedExclusions.map((ex) => (
                     <WafExclusionRow
                       key={ex.id}
                       ex={ex}
@@ -1605,6 +1615,11 @@ function ConfirmDeleteWafExclusionModal({ ex, hostname, isDeleting, error, onCan
   );
 }
 
+/** How the Scope column names a scope — the sort key and the badge share it. */
+function wafExclusionScopeLabel(scope: WafRuleExclusionScope): string {
+  return scope === 'text_plain_as_json' ? 'text/plain as JSON' : scope;
+}
+
 function WafExclusionRow({ ex, onDelete, isDeleting }: {
   readonly ex: WafRuleExclusionEntry;
   readonly onDelete: () => void;
@@ -1622,7 +1637,7 @@ function WafExclusionRow({ ex, onDelete, isDeleting }: {
           ex.scope === 'full_disable'
             ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200'
             : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200',
-        )}>{ex.scope === 'text_plain_as_json' ? 'text/plain as JSON' : ex.scope}</span>
+        )}>{wafExclusionScopeLabel(ex.scope)}</span>
       </td>
       <td className="px-3 py-2 text-gray-700 dark:text-gray-300 max-w-[280px] truncate" title={ex.reason}>{ex.reason}</td>
       <td className="px-3 py-2 text-[11px] text-gray-500 dark:text-gray-400 whitespace-nowrap">

@@ -42,8 +42,32 @@ import TrustedProxiesCard from '@/components/TrustedProxiesCard';
 import BootstrapCommandModal from '@/components/security/BootstrapCommandModal';
 import { useTabParam } from '@/hooks/use-tab-param';
 import type { TabOf } from '@/routes/tabbed-pages';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors, type SortDirection } from '@/hooks/use-sortable';
 
 type TabId = TabOf<'/security/network-trust'>;
+
+/** What the reconciler-status badge says. */
+const readyLabel = (r: { ready: 'True' | 'False' | 'Unknown'; readyReason: string | null }): string => (
+  r.ready === 'True' ? 'Synced' : r.ready === 'False' ? (r.readyReason ?? 'Failed') : 'Pending'
+);
+
+// An empty text field shows `—`: no value, so it sorts last rather than first.
+const RANGE_SORT: SortAccessors<TrustedRange> = {
+  description: (r) => r.description || null,
+  status: readyLabel,
+  addedBy: (r) => r.addedBy || null,
+};
+const PEER_SORT: SortAccessors<PendingPeer> = {
+  hostname: (p) => p.hostname || null,
+  status: (p) => (p.claimedAt ? 'Claimed' : 'Pending'),
+};
+const BLACKLIST_SORT: SortAccessors<FirewallBlacklistEntry> = {
+  description: (e) => e.description || null,
+  status: readyLabel,
+  source: (e) => (e.source === 'fail2ban-promote' ? 'fail2ban' : 'manual'),
+  addedBy: (e) => e.addedBy || null,
+};
 
 export default function NetworkTrustPage() {
   const [activeTab, setActiveTab] = useTabParam('/security/network-trust');
@@ -113,6 +137,7 @@ function TrustedRangesTab() {
   const [description, setDescription] = useState('');
 
   const ranges = list.data?.data?.data ?? [];
+  const sort = useSortable(ranges, 'name', 'asc', RANGE_SORT);
 
   const handleAdd = async (): Promise<void> => {
     try {
@@ -166,12 +191,12 @@ function TrustedRangesTab() {
         <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
           <thead className="bg-gray-50 dark:bg-gray-900/40">
             <tr>
-              <Th>Name</Th>
-              <Th>CIDR</Th>
-              <Th>Family</Th>
-              <Th>Description</Th>
-              <Th>Status</Th>
-              <Th>Added By</Th>
+              <SortTh label="Name" sortKey="name" sort={sort} />
+              <SortTh label="CIDR" sortKey="cidr" sort={sort} />
+              <SortTh label="Family" sortKey="family" sort={sort} />
+              <SortTh label="Description" sortKey="description" sort={sort} />
+              <SortTh label="Status" sortKey="status" sort={sort} />
+              <SortTh label="Added By" sortKey="addedBy" sort={sort} />
               <Th />
             </tr>
           </thead>
@@ -183,7 +208,7 @@ function TrustedRangesTab() {
                 </td>
               </tr>
             ) : (
-              ranges.map((r) => <TrustedRangeRow key={r.name} range={r} onDelete={(name) => del.mutate(name)} />)
+              sort.sortedData.map((r) => <TrustedRangeRow key={r.name} range={r} onDelete={(name) => del.mutate(name)} />)
             )}
           </tbody>
         </table>
@@ -319,6 +344,7 @@ function PendingPeersTab() {
   const [showCmd, setShowCmd] = useState<string | null>(null);
 
   const peers = list.data?.data?.data ?? [];
+  const sort = useSortable(peers, 'name', 'asc', PEER_SORT);
 
   const handleAdd = async (): Promise<void> => {
     try {
@@ -372,12 +398,12 @@ function PendingPeersTab() {
         <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
           <thead className="bg-gray-50 dark:bg-gray-900/40">
             <tr>
-              <Th>Name</Th>
-              <Th>IP</Th>
-              <Th>Role</Th>
-              <Th>Hostname</Th>
-              <Th>Expires</Th>
-              <Th>Status</Th>
+              <SortTh label="Name" sortKey="name" sort={sort} />
+              <SortTh label="IP" sortKey="ip" sort={sort} />
+              <SortTh label="Role" sortKey="role" sort={sort} />
+              <SortTh label="Hostname" sortKey="hostname" sort={sort} />
+              <SortTh label="Expires" sortKey="expiresAt" sort={sort} />
+              <SortTh label="Status" sortKey="status" sort={sort} />
               <Th />
             </tr>
           </thead>
@@ -389,7 +415,7 @@ function PendingPeersTab() {
                 </td>
               </tr>
             ) : (
-              peers.map((p) => (
+              sort.sortedData.map((p) => (
                 <PendingPeerRow
                   key={p.name}
                   peer={p}
@@ -580,11 +606,32 @@ function PendingPeerRow({
 
 // ─── shared atoms ────────────────────────────────────────────────────────
 
+const TH_CLASS = 'text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400';
+
 function Th({ children }: { children?: React.ReactNode }) {
   return (
-    <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+    <th className={`px-4 py-2 ${TH_CLASS}`}>
       {children}
     </th>
+  );
+}
+
+/** A `Th` that sorts its table by `sortKey`. */
+function SortTh({ label, sortKey, sort }: {
+  label: string;
+  sortKey: string;
+  sort: { readonly sortKey: string; readonly sortDirection: SortDirection; readonly onSort: (key: string) => void };
+}) {
+  return (
+    <SortableHeader
+      label={label}
+      sortKey={sortKey}
+      currentKey={sort.sortKey}
+      direction={sort.sortDirection}
+      onSort={sort.onSort}
+      padding="px-4 py-2"
+      className={TH_CLASS}
+    />
   );
 }
 
@@ -701,6 +748,7 @@ function BlacklistTab() {
   const [description, setDescription] = useState('');
 
   const entries = list.data?.data?.data ?? [];
+  const sort = useSortable(entries, 'cidr', 'asc', BLACKLIST_SORT);
 
   // Deep-link from the SSH Lockdown fail2ban modal: /security/network-trust/blacklist?prefill=<ip>
   // opens the Add form with the IP pre-filled (operator still type-to-confirms).
@@ -769,7 +817,15 @@ function BlacklistTab() {
       <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
         <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
           <thead className="bg-gray-50 dark:bg-gray-900/40">
-            <tr><Th>CIDR</Th><Th>Family</Th><Th>Reason</Th><Th>Status</Th><Th>Source</Th><Th>Added By</Th><Th /></tr>
+            <tr>
+              <SortTh label="CIDR" sortKey="cidr" sort={sort} />
+              <SortTh label="Family" sortKey="family" sort={sort} />
+              <SortTh label="Reason" sortKey="description" sort={sort} />
+              <SortTh label="Status" sortKey="status" sort={sort} />
+              <SortTh label="Source" sortKey="source" sort={sort} />
+              <SortTh label="Added By" sortKey="addedBy" sort={sort} />
+              <Th />
+            </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700 text-sm">
             {entries.length === 0 && !list.isLoading ? (
@@ -778,7 +834,7 @@ function BlacklistTab() {
                 Security → Posture → SSH Lockdown.
               </td></tr>
             ) : (
-              entries.map((e) => <BlacklistRow key={e.name} entry={e} onDelete={(name) => del.mutate(name)} />)
+              sort.sortedData.map((e) => <BlacklistRow key={e.name} entry={e} onDelete={(name) => del.mutate(name)} />)
             )}
           </tbody>
         </table>

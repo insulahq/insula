@@ -27,8 +27,26 @@ import type {
   DrRecoverAllTarget, DrRecoverAllSkipped, DrEncryptionKeyPreflight,
 } from '@insula/api-contracts';
 import { Link } from 'react-router-dom';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
 type Scope = 'missing' | 'all';
+
+/** A tenant row's name as shown — the short id when the name is gone. */
+const tenantLabel = (r: { tenantName: string | null; tenantId: string }): string => r.tenantName ?? r.tenantId;
+
+const TARGET_SORT: SortAccessors<DrRecoverAllTarget> = {
+  tenant: tenantLabel,
+  components: (t) => (t.components.length > 0 ? t.components.join(', ') : null),
+  namespace: (t) => (t.namespacePresent ? 'present (live)' : 'absent (lost)'),
+};
+
+const SKIPPED_SORT: SortAccessors<DrRecoverAllSkipped> = {
+  tenant: tenantLabel,
+  bundleStatus: (r) => r.latestBundleStatus ?? 'never backed up',
+};
+
+const HEAD = { padding: 'px-3 py-2' } as const;
 
 export default function RecoverAllTab() {
   const [scope, setScope] = useState<Scope>('missing');
@@ -282,18 +300,22 @@ function EncryptionKeyPanel({ check, overridden, onOverride, canOverride }: {
 }
 
 function TargetTable({ rows }: { rows: readonly DrRecoverAllTarget[] }) {
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(rows, 'tenant', 'asc', TARGET_SORT);
+  const head = { ...HEAD, currentKey: sortKey, direction: sortDirection, onSort };
   return (
     <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500 dark:border-gray-700 dark:text-gray-400">
-            <th className="px-3 py-2">Tenant</th><th className="px-3 py-2">Bundle</th>
-            <th className="px-3 py-2">Age</th><th className="px-3 py-2">Components</th>
-            <th className="px-3 py-2">Namespace</th>
+            <SortableHeader label="Tenant" sortKey="tenant" {...head} />
+            <SortableHeader label="Bundle" sortKey="bundleId" {...head} />
+            <SortableHeader label="Age" sortKey="bundleAgeDays" {...head} />
+            <SortableHeader label="Components" sortKey="components" {...head} />
+            <SortableHeader label="Namespace" sortKey="namespace" {...head} />
           </tr>
         </thead>
         <tbody>
-          {rows.map((t) => (
+          {sortedData.map((t) => (
             <tr key={t.tenantId} className="border-b border-gray-100 dark:border-gray-700/50">
               <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{t.tenantName ?? <span className="font-mono text-xs">{t.tenantId.slice(0, 8)}…</span>}</td>
               <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{t.bundleId.slice(0, 16)}…</td>
@@ -337,6 +359,8 @@ function TargetTable({ rows }: { rows: readonly DrRecoverAllTarget[] }) {
  * them, and saying nothing would read as "they do not exist".
  */
 function DeletedSkipsTable({ rows }: { rows: readonly DrRecoverAllSkipped[] }) {
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(rows, 'tenant', 'asc', SKIPPED_SORT);
+  const head = { ...HEAD, currentKey: sortKey, direction: sortDirection, onSort };
   return (
     <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700" data-testid="dr-deleted-skips">
       <div className="bg-gray-50 px-3 py-2 text-sm font-medium text-gray-800 dark:bg-gray-900/50 dark:text-gray-200">
@@ -344,10 +368,14 @@ function DeletedSkipsTable({ rows }: { rows: readonly DrRecoverAllSkipped[] }) {
       </div>
       <table className="w-full text-sm">
         <thead className="text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-          <tr><th className="px-3 py-2">Tenant</th><th className="px-3 py-2">Newest bundle</th><th className="px-3 py-2" /></tr>
+          <tr>
+            <SortableHeader label="Tenant" sortKey="tenant" {...head} />
+            <SortableHeader label="Newest bundle" sortKey="latestBundleAt" {...head} />
+            <th className="px-3 py-2" />
+          </tr>
         </thead>
         <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-          {rows.map((r) => (
+          {sortedData.map((r) => (
             <tr key={r.tenantId}>
               <td className="px-3 py-2 text-gray-900 dark:text-gray-100">{r.tenantName ?? <span className="font-mono text-xs">{r.tenantId.slice(0, 8)}…</span>}</td>
               <td className="px-3 py-2 text-gray-600 dark:text-gray-300">{r.latestBundleAt ? <LocalTime iso={r.latestBundleAt} withOffset /> : '—'}</td>
@@ -368,6 +396,8 @@ function DeletedSkipsTable({ rows }: { rows: readonly DrRecoverAllSkipped[] }) {
 }
 
 function UnrecoverableTable({ rows }: { rows: readonly DrRecoverAllSkipped[] }) {
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(rows, 'tenant', 'asc', SKIPPED_SORT);
+  const head = { ...HEAD, currentKey: sortKey, direction: sortDirection, onSort };
   return (
     <div className="overflow-x-auto rounded-lg border border-amber-300 dark:border-amber-700" data-testid="dr-unrecoverable">
       <div className="flex items-center gap-2 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900 dark:bg-amber-900/30 dark:text-amber-200">
@@ -377,11 +407,13 @@ function UnrecoverableTable({ rows }: { rows: readonly DrRecoverAllSkipped[] }) 
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-amber-200 text-left text-xs uppercase tracking-wide text-amber-800 dark:border-amber-800 dark:text-amber-300">
-            <th className="px-3 py-2">Tenant</th><th className="px-3 py-2">Newest bundle</th><th className="px-3 py-2">When</th>
+            <SortableHeader label="Tenant" sortKey="tenant" {...head} />
+            <SortableHeader label="Newest bundle" sortKey="bundleStatus" {...head} />
+            <SortableHeader label="When" sortKey="latestBundleAt" {...head} />
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
+          {sortedData.map((r) => (
             <tr key={r.tenantId} className="border-b border-amber-100 dark:border-amber-800/50">
               <td className="px-3 py-2 text-gray-900 dark:text-gray-100">
                 {r.tenantName ?? <span className="font-mono text-xs">{r.tenantId.slice(0, 8)}…</span>}

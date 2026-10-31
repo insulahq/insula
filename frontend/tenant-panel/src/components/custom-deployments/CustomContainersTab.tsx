@@ -34,6 +34,15 @@ import { PrivateRegistryPanel } from './PrivateRegistryPanel';
 import { UpdatesPill } from './UpdatesPill';
 import { UpgradeTagModal, suggestedUpgradeImage } from './UpgradeTagModal';
 import AppPreviewModal from '@/components/AppPreviewModal';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
+
+/** What the "Image / Services" cell shows: a stack's service count, else the image. */
+function imageOrServices(row: CustomDeploymentRow): string | null {
+  const services = row.customSpec?.services ?? {};
+  if (row.customSpec?.sourceMode === 'compose') return `${Object.keys(services).length} services`;
+  return Object.values(services)[0]?.image ?? null;
+}
 
 interface CustomContainersTabProps {
   readonly tenantId: string;
@@ -59,6 +68,21 @@ export function CustomContainersTab({ tenantId, canManage, atLimit = false }: Cu
   // image pull) only shows as failed when the list is read again.
   const { data, isLoading, error, refetch } = useCustomDeployments(tenantId, { pollByStatus: true });
   const rows = useMemo(() => data?.data ?? [], [data]);
+  // Newest first, as the API lists them, until a header is clicked.
+  const sortableRows = useMemo(() => rows.map((row) => ({
+    ...row,
+    createdAtMs: Date.parse(row.createdAt),
+    mode: row.customSpec?.sourceMode ?? null,
+    imageOrServices: imageOrServices(row),
+  })), [rows]);
+  const { sortedData: sortedRows, sortKey, sortDirection, onSort } = useSortable(sortableRows, 'createdAtMs', 'desc');
+  // SortableHeader defaults to px-5 — override to this table's px-4.
+  const th = {
+    currentKey: sortKey,
+    direction: sortDirection,
+    onSort,
+    className: '!px-4 text-left font-medium text-gray-700 dark:text-gray-300',
+  };
 
   const deploymentIds = useMemo(() => rows.map((r) => r.id), [rows]);
   const updatesQuery = useCheckUpdatesBatch(tenantId, deploymentIds);
@@ -200,18 +224,16 @@ export function CustomContainersTab({ tenantId, canManage, atLimit = false }: Cu
           <table className="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-700" data-testid="custom-deployments-table">
             <thead className="bg-gray-50 dark:bg-gray-800">
               <tr>
-                <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Name</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Mode</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Image / Services</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Status</th>
+                <SortableHeader label="Name" sortKey="name" {...th} />
+                <SortableHeader label="Mode" sortKey="mode" {...th} />
+                <SortableHeader label="Image / Services" sortKey="imageOrServices" {...th} />
+                <SortableHeader label="Status" sortKey="status" {...th} />
                 <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Updates</th>
                 <th className="px-4 py-3 text-right font-medium text-gray-700 dark:text-gray-300">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 bg-white dark:divide-gray-700 dark:bg-gray-900">
-              {rows.map((row) => {
-                const serviceCount = Object.keys(row.customSpec?.services ?? {}).length;
-                const firstImage = Object.values(row.customSpec?.services ?? {})[0]?.image;
+              {sortedRows.map((row) => {
                 const updates = updatesQuery.data?.data.results?.[row.id];
                 return (
                   <tr
@@ -223,9 +245,9 @@ export function CustomContainersTab({ tenantId, canManage, atLimit = false }: Cu
                     }}
                   >
                     <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{row.name}</td>
-                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300">{row.customSpec?.sourceMode ?? '—'}</td>
+                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300">{row.mode ?? '—'}</td>
                     <td className="px-4 py-3 font-mono text-xs text-gray-700 dark:text-gray-300">
-                      {row.customSpec?.sourceMode === 'compose' ? `${serviceCount} services` : firstImage ?? '—'}
+                      {row.imageOrServices ?? '—'}
                     </td>
                     <td className="px-4 py-3">
                       <span className={clsx('inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium', getStatusColor(row.status))}>

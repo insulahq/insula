@@ -26,8 +26,35 @@ import type {
   MigrationTenant, MigrationImportResult, MigrationImportRequest,
 } from '@insula/api-contracts';
 import { formatBytes } from '@/lib/format-bytes';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
 type Scope = 'selected' | 'all';
+
+const HEAD = { padding: 'px-3 py-2' } as const;
+
+const TENANT_SORT: SortAccessors<MigrationTenant> = {
+  // A source that reports no capture time sends '' — no value, not the oldest.
+  latestCreatedAt: (t) => t.latestCreatedAt || null,
+  components: (t) => (t.components.length > 0 ? t.components.join(', ') : null),
+  status: (t) => (t.alreadyPresent ? 'already present' : 'importable'),
+};
+
+/** The Result cell's words, so the column sorts by what it says. */
+function resultLabel(r: MigrationImportResult, dryRun: boolean): string {
+  if (dryRun) return r.alreadyPresent ? 'would skip (present)' : 'would import';
+  if (r.ok) return `${r.status ?? 'done'}${r.recreated ? ' (re-created)' : ''}`;
+  return r.status ?? 'failed';
+}
+
+const resultSort = (dryRun: boolean): SortAccessors<MigrationImportResult> => ({
+  tenant: (r) => r.tenantName ?? r.tenantId,
+  result: (r) => resultLabel(r, dryRun),
+  gaps: (r) => (r.residualGaps.length > 0 ? r.residualGaps.join(', ') : null),
+  detail: (r) => r.error,
+});
+const RESULT_SORT = resultSort(false);
+const DRY_RUN_RESULT_SORT = resultSort(true);
 
 /**
  * When the bundle this row would import was captured — the scan imports each
@@ -341,6 +368,9 @@ interface TenantTableProps {
 function TenantTable({
   rows, selected, onToggleRow, allImportableSelected, onToggleSelectAll, hasImportable,
 }: TenantTableProps) {
+  // The scan lists tenants by name.
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(rows, 'tenantName', 'asc', TENANT_SORT);
+  const head = { ...HEAD, currentKey: sortKey, direction: sortDirection, onSort };
   return (
     <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
       <table className="w-full text-sm">
@@ -356,18 +386,18 @@ function TenantTable({
                 className="accent-blue-600 disabled:opacity-40"
               />
             </th>
-            <th className="px-3 py-2">Tenant</th>
-            <th className="px-3 py-2">Primary email</th>
-            <th className="px-3 py-2">Latest bundle</th>
-            <th className="px-3 py-2">Bundles</th>
-            <th className="px-3 py-2">Size</th>
-            <th className="px-3 py-2">Components</th>
+            <SortableHeader label="Tenant" sortKey="tenantName" {...head} />
+            <SortableHeader label="Primary email" sortKey="primaryEmail" {...head} />
+            <SortableHeader label="Latest bundle" sortKey="latestCreatedAt" {...head} />
+            <SortableHeader label="Bundles" sortKey="bundleCount" {...head} />
+            <SortableHeader label="Size" sortKey="totalSizeBytes" {...head} />
+            <SortableHeader label="Components" sortKey="components" {...head} />
             <th className="px-3 py-2">Resources</th>
-            <th className="px-3 py-2">Status</th>
+            <SortableHeader label="Status" sortKey="status" {...head} />
           </tr>
         </thead>
         <tbody>
-          {rows.map((t) => {
+          {sortedData.map((t) => {
             const isSelected = selected.has(t.tenantId);
             return (
               <tr
@@ -471,19 +501,22 @@ function ResourceCell({ resources }: { resources: MigrationTenant['effectiveReso
 }
 
 function ResultTable({ rows, dryRun = false }: { rows: readonly MigrationImportResult[]; dryRun?: boolean }) {
+  // Results come back in import order, which is the scan's name order.
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(rows, 'tenant', 'asc', dryRun ? DRY_RUN_RESULT_SORT : RESULT_SORT);
+  const head = { ...HEAD, currentKey: sortKey, direction: sortDirection, onSort };
   return (
     <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500 dark:border-gray-700 dark:text-gray-400">
-            <th className="px-3 py-2">Tenant</th>
-            <th className="px-3 py-2">Result</th>
-            <th className="px-3 py-2">Residual gaps</th>
-            <th className="px-3 py-2">Detail</th>
+            <SortableHeader label="Tenant" sortKey="tenant" {...head} />
+            <SortableHeader label="Result" sortKey="result" {...head} />
+            <SortableHeader label="Residual gaps" sortKey="gaps" {...head} />
+            <SortableHeader label="Detail" sortKey="detail" {...head} />
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
+          {sortedData.map((r) => (
             <tr key={`${r.tenantId}:${r.bundleId}`} className="border-b border-gray-100 dark:border-gray-700/50">
               <td className="px-3 py-2 text-gray-900 dark:text-gray-100">
                 {r.tenantName ?? <span className="font-mono text-xs">{r.tenantId.slice(0, 8)}…</span>}

@@ -1,5 +1,9 @@
 import { ReactNode } from 'react';
 import { Loader2, Pencil, Trash2, Plus } from 'lucide-react';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
+
+const NO_ROWS: readonly never[] = [];
 
 export interface ProviderRow {
   readonly id: string;
@@ -38,6 +42,11 @@ export default function ProvidersTable<T extends ProviderRow>({
   extraColumns,
   testIdPrefix,
 }: Props<T>) {
+  // The APIs list providers in no set order, so by name. Caller-supplied
+  // extra columns are rendered cells with no value to sort by.
+  const { sortedData: sortedRows, sortKey, sortDirection, onSort } = useSortable<T>(rows ?? NO_ROWS, 'name');
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!px-2 !py-2' };
+
   return (
     <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid={`${testIdPrefix}-section`}>
       <div className="mb-4 flex items-center justify-between">
@@ -69,18 +78,18 @@ export default function ProvidersTable<T extends ProviderRow>({
           <table className="w-full text-sm" data-testid={`${testIdPrefix}-table`}>
             <thead>
               <tr className="border-b border-gray-200 dark:border-gray-700 text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                <th className="px-2 py-2">Name</th>
+                <SortableHeader label="Name" sortKey="name" {...th} />
                 {(extraColumns ?? []).map((c) => (
                   <th key={c.header} className="px-2 py-2" style={c.width ? { width: c.width } : undefined}>
                     {c.header}
                   </th>
                 ))}
-                <th className="px-2 py-2">In use</th>
+                <SortableHeader label="In use" sortKey="consumerCount" {...th} />
                 <th className="px-2 py-2 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-              {rows.map((row) => (
+              {sortedRows.map((row) => (
                 <tr key={row.id} className="text-gray-900 dark:text-gray-100" data-testid={`${testIdPrefix}-row-${row.id}`}>
                   <td className="px-2 py-2">
                     <div className="font-medium">{row.name}</div>

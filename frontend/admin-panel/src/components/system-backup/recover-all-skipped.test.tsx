@@ -7,7 +7,7 @@
  * was not counting, so the most alarming case produced the most reassuring
  * screen.
  */
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const preview = { data: undefined as unknown, isPending: false, isError: false, error: null, mutate: vi.fn(), reset: vi.fn() };
@@ -135,5 +135,63 @@ describe('RecoverAllTab — tenants deleted on purpose', () => {
 
     expect(screen.getByRole('link', { name: 'Recover this tenant…' }).getAttribute('href'))
       .toBe('/backups/disaster-recovery?section=recover&tenant=gone-1');
+  });
+});
+
+describe('RecoverAllTab — column sorting', () => {
+  const firstCells = (table: HTMLElement) => Array.from(table.querySelectorAll('tbody tr')).map((r) => r.querySelector('td')?.textContent);
+
+  it('lists the targets by tenant name, and sorts them by bundle age both ways', () => {
+    preview.data = {
+      data: {
+        dryRun: true, scope: 'missing', total: 3, recovered: 0, failed: 0, skipped: [],
+        targets: [
+          target({ tenantId: 't-1', tenantName: 'Charlie', bundleAgeDays: 2 }),
+          target({ tenantId: 't-2', tenantName: 'Alpha', bundleAgeDays: 9 }),
+          target({ tenantId: 't-3', tenantName: 'Bravo', bundleAgeDays: 0 }),
+        ],
+      },
+    };
+    render(<RecoverAllTab />);
+    const table = screen.getByRole('table');
+    expect(firstCells(table)).toEqual(['Alpha', 'Bravo', 'Charlie']);
+    fireEvent.click(within(table).getByTestId('sort-bundleAgeDays'));
+    expect(firstCells(table)).toEqual(['Bravo', 'Charlie', 'Alpha']);
+    fireEvent.click(within(table).getByTestId('sort-bundleAgeDays'));
+    expect(firstCells(table)).toEqual(['Alpha', 'Charlie', 'Bravo']);
+  });
+
+  it('sorts the unrecoverable tenants by tenant, both ways', () => {
+    preview.data = {
+      data: {
+        dryRun: true, scope: 'missing', total: 0, recovered: 0, failed: 0, targets: [],
+        skipped: [skipped({ tenantId: 't-1', tenantName: 'Bravo' }), skipped({ tenantId: 't-2', tenantName: 'Alpha' }), skipped({ tenantId: 't-3', tenantName: 'Charlie' })],
+      },
+    };
+    render(<RecoverAllTab />);
+    const panel = screen.getByTestId('dr-unrecoverable');
+    expect(firstCells(panel)).toEqual(['Alpha', 'Bravo', 'Charlie']);
+    fireEvent.click(within(panel).getByTestId('sort-tenant'));
+    expect(firstCells(panel)).toEqual(['Charlie', 'Bravo', 'Alpha']);
+    fireEvent.click(within(panel).getByTestId('sort-tenant'));
+    expect(firstCells(panel)).toEqual(['Alpha', 'Bravo', 'Charlie']);
+  });
+
+  it('sorts the tenants deleted on purpose by their newest bundle, both ways', async () => {
+    const { MemoryRouter } = await import('react-router-dom');
+    const gone = (id: string, name: string, at: string) => skipped({ tenantId: id, tenantName: name, reason: 'deleted', latestBundleStatus: 'completed', latestBundleAt: at });
+    preview.data = {
+      data: {
+        dryRun: true, scope: 'missing', total: 0, recovered: 0, failed: 0, targets: [],
+        skipped: [gone('g-1', 'Alpha', '2026-10-03T00:00:00.000Z'), gone('g-2', 'Bravo', '2026-09-01T00:00:00.000Z'), gone('g-3', 'Charlie', '2026-10-20T00:00:00.000Z')],
+      },
+    };
+    render(<MemoryRouter><RecoverAllTab /></MemoryRouter>);
+    const table = screen.getByTestId('dr-deleted-skips');
+    expect(firstCells(table)).toEqual(['Alpha', 'Bravo', 'Charlie']);
+    fireEvent.click(within(table).getByTestId('sort-latestBundleAt'));
+    expect(firstCells(table)).toEqual(['Bravo', 'Alpha', 'Charlie']);
+    fireEvent.click(within(table).getByTestId('sort-latestBundleAt'));
+    expect(firstCells(table)).toEqual(['Charlie', 'Alpha', 'Bravo']);
   });
 });

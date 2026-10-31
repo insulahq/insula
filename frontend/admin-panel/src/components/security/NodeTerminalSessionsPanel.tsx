@@ -9,11 +9,14 @@
  * which browser opened it. Useful for stale-session cleanup after
  * a Pod restart / replica rebalance.
  */
+import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Trash2, RefreshCw, Terminal } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
 import NodeName from '@/components/nodes/NodeName';
 import { useNodeLabel } from '@/hooks/use-node-labels';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
 interface NodeTerminalSession {
   readonly sessionId: string;
@@ -32,6 +35,8 @@ interface ListResp {
 }
 
 const QUERY_KEY = ['node-terminal-sessions'] as const;
+const NO_SESSIONS: ReadonlyArray<NodeTerminalSession> = [];
+const TH_PAD = 'py-2 pr-3';
 
 export default function NodeTerminalSessionsPanel() {
   const qc = useQueryClient();
@@ -54,7 +59,17 @@ export default function NodeTerminalSessionsPanel() {
     onSuccess: () => void qc.invalidateQueries({ queryKey: QUERY_KEY }),
   });
 
-  const sessions = data ?? [];
+  const sessions = data ?? NO_SESSIONS;
+  const sessionSort = useMemo<SortAccessors<NodeTerminalSession>>(
+    () => ({ nodeName: (s) => nodeLabel(s.nodeName) }),
+    [nodeLabel],
+  );
+  // The server lists the sessions in no particular order. Instants are ISO text.
+  const { sortedData: sortedSessions, sortKey, sortDirection, onSort } =
+    useSortable(sessions, 'userEmail', 'asc', sessionSort);
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding={TH_PAD} />
+  );
 
   const onTerminate = (s: NodeTerminalSession): void => {
     if (!confirm(
@@ -103,17 +118,17 @@ export default function NodeTerminalSessionsPanel() {
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
-                <th className="py-2 pr-3">User</th>
-                <th className="py-2 pr-3">Node</th>
-                <th className="py-2 pr-3">Pod</th>
-                <th className="py-2 pr-3">Owner replica</th>
-                <th className="py-2 pr-3">Opened</th>
-                <th className="py-2 pr-3">Last activity</th>
+                {header('User', 'userEmail')}
+                {header('Node', 'nodeName')}
+                {header('Pod', 'podName')}
+                {header('Owner replica', 'ownerReplica')}
+                {header('Opened', 'createdAt')}
+                {header('Last activity', 'lastActivityAt')}
                 <th className="py-2 pr-3 text-right"></th>
               </tr>
             </thead>
             <tbody>
-              {sessions.map((s) => (
+              {sortedSessions.map((s) => (
                 <tr
                   key={s.sessionId}
                   className="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50"

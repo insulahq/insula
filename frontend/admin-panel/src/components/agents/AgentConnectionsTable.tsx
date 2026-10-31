@@ -11,6 +11,15 @@ import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import { formatRelativeTime } from '@/lib/format-relative-time';
 import { useRevokeConnection } from '@/hooks/use-api-tokens';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
+
+const CONNECTION_SORT: SortAccessors<McpConnection> = {
+  owner: (c) => c.user.fullName,
+  scopes: (c) => c.scopes.join(' '),
+};
+const TH_CLS = 'font-medium';
+const TH_PAD = 'pb-2 pr-3';
 
 const btn = 'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium disabled:opacity-50';
 
@@ -90,6 +99,12 @@ export default function AgentConnectionsTable({
   readonly showOwner?: boolean;
   readonly emptyText: string;
 }) {
+  // A connection ends a fixed 8 h after approval, so latest-ending first is
+  // the server's newest-approval-first order.
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(connections, 'expiresAt', 'desc', CONNECTION_SORT);
+  const header = (label: string, key: string, className = TH_CLS) => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding={TH_PAD} className={className} />
+  );
   if (connections.length === 0) {
     return <p className="text-sm text-gray-500 dark:text-gray-400" data-testid="agent-connections-empty">{emptyText}</p>;
   }
@@ -98,15 +113,15 @@ export default function AgentConnectionsTable({
       <table className="w-full text-left text-sm" data-testid="agent-connections-table">
         <thead>
           <tr className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-            <th className="pb-2 pr-3 font-medium">Agent</th>
-            {showOwner && <th className="pb-2 pr-3 font-medium">Acts as</th>}
-            <th className="pb-2 pr-3 font-medium">Scopes</th>
-            <th className="hidden pb-2 pr-3 font-medium md:table-cell">Last active</th>
-            <th className="pb-2 pr-3 font-medium">Ends</th>
+            {header('Agent', 'clientName')}
+            {showOwner && header('Acts as', 'owner')}
+            {header('Scopes', 'scopes')}
+            {header('Last active', 'lastUsedAt', `hidden ${TH_CLS} md:table-cell`)}
+            {header('Ends', 'expiresAt')}
             <th className="pb-2" />
           </tr>
         </thead>
-        <tbody>{connections.map((c) => <ConnectionRow key={c.id} connection={c} showOwner={showOwner} />)}</tbody>
+        <tbody>{sortedData.map((c) => <ConnectionRow key={c.id} connection={c} showOwner={showOwner} />)}</tbody>
       </table>
     </div>
   );

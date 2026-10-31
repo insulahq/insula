@@ -38,3 +38,30 @@ describe('AdminMailboxLoginPasswordsModal — expiry date', () => {
     }
   });
 });
+
+describe('AdminMailboxLoginPasswordsModal — column sorting', () => {
+  const row = (id: string, label: string, createdAt: string) => ({
+    id, label, kind: 'login' as const, createdAt, expiresAt: null, allowedIps: [],
+  });
+
+  it('opens by label ("(no label)" last), then sorts by created both ways', async () => {
+    const { useAdminLoginPasswords } = await import('@/hooks/use-email');
+    vi.mocked(useAdminLoginPasswords).mockReturnValue({
+      data: { data: [
+        row('p1', 'Phone', '2026-10-01T10:00:00.000Z'),
+        row('p2', '', '2026-10-03T10:00:00.000Z'),
+        row('p3', 'Laptop', '2026-10-02T10:00:00.000Z'),
+      ] },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useAdminLoginPasswords>);
+    render(<AdminMailboxLoginPasswordsModal mailboxId="m1" fullAddress="info@example.test" onClose={() => {}} />);
+    const table = screen.getByTestId('admin-login-passwords-table');
+    const labels = () => Array.from(table.querySelectorAll('tbody > tr')).map((tr) => tr.querySelector('td')?.textContent);
+    expect(labels()).toEqual(['Laptop', 'Phone', '(no label)']);
+
+    fireEvent.click(screen.getByTestId('sort-createdAt'));
+    expect(labels()).toEqual(['Phone', 'Laptop', '(no label)']);
+    fireEvent.click(screen.getByTestId('sort-createdAt'));
+    expect(labels()).toEqual(['(no label)', 'Laptop', 'Phone']);
+  });
+});

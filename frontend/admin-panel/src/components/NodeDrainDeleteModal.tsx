@@ -18,6 +18,16 @@ import NodeName from '@/components/nodes/NodeName';
 import MailRoleNotice from '@/components/nodes/MailRoleNotice';
 import { useNodeLabel } from '@/hooks/use-node-labels';
 import { nodeTakesTier, pinnedOnlySuffix } from '@/lib/tenant-hosting';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
+
+const NO_PODS: DrainImpact['nonSystemPods'] = [];
+// Pods arrive in node order, so the table opens by tenant (a pod with none shows its namespace).
+const POD_SORT: SortAccessors<DrainImpact['nonSystemPods'][number]> = {
+  tenant: (p) => (p.tenantId ? p.tenantName ?? p.tenantId.slice(0, 8) : p.namespace),
+  owner: (p) => (p.workloadKind && p.workloadName ? `${p.workloadKind}/${p.workloadName}` : null),
+  flags: (p) => (p.pinnedToThisNode ? 'pinned' : null),
+};
 
 /**
  * Render "free / total" CPU + RAM + Disk for a worker option in the
@@ -104,6 +114,9 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
   const [expandedTenants, setExpandedTenants] = useState<Record<string, boolean>>({});
 
   const impact: DrainImpact | undefined = impactQuery.data?.data;
+  const pods = useSortable(impact?.nonSystemPods ?? NO_PODS, 'tenant', 'asc', POD_SORT);
+  const podHeader = (label: string, key: string, padding = 'py-1 pr-2') =>
+    <SortableHeader label={label} sortKey={key} currentKey={pods.sortKey} direction={pods.sortDirection} onSort={pods.onSort} padding={padding} className="text-left" />;
   // Delete is only safe when the node has no remaining tenant
   // attachment of any kind. Three concurrent conditions:
   //   - alreadyCordoned (k8s scheduler will refuse new pods)
@@ -437,14 +450,14 @@ export default function NodeDrainDeleteModal({ node, onClose }: NodeDrainDeleteM
                   <table className="mt-2 w-full text-xs">
                     <thead className="text-gray-500 dark:text-gray-400">
                       <tr>
-                        <th className="text-left py-1 pr-2">Tenant</th>
-                        <th className="text-left py-1 pr-2">Pod</th>
-                        <th className="text-left py-1 pr-2">Owner</th>
-                        <th className="text-left py-1">Flags</th>
+                        {podHeader('Tenant', 'tenant')}
+                        {podHeader('Pod', 'name')}
+                        {podHeader('Owner', 'owner')}
+                        {podHeader('Flags', 'flags', 'py-1')}
                       </tr>
                     </thead>
                     <tbody>
-                      {impact.nonSystemPods.map((p) => (
+                      {pods.sortedData.map((p) => (
                         <tr key={`${p.namespace}/${p.name}`} className="border-t border-gray-200/60 dark:border-gray-700/40">
                           <td className="py-1.5 pr-2">
                             {p.tenantId ? (

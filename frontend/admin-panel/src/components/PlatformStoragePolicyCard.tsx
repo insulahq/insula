@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Database, AlertTriangle, CheckCircle2, RefreshCw, Rocket } from 'lucide-react';
 import {
   usePlatformStoragePolicy,
@@ -6,11 +6,28 @@ import {
 } from '@/hooks/use-platform-storage-policy';
 import ApplyHaProgressModal from './ApplyHaProgressModal';
 import NodeList from '@/components/nodes/NodeList';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
+import { useNodeLabel } from '@/hooks/use-node-labels';
+import type { GetPlatformStoragePolicyResponse } from '@insula/api-contracts';
 
 // Display labels for the (wire-stable) tier values. Wire stays
 // `local`/`ha` everywhere — URL, DB, API. Only the human-facing string
 // changes here.
 const TIER_LABEL: Record<'local' | 'ha', string> = { local: 'Local', ha: 'High Availability' };
+
+type PlatformVolume = GetPlatformStoragePolicyResponse['clusterState']['volumes'][number];
+const NO_VOLUMES: readonly PlatformVolume[] = [];
+
+/** The Status cell's words — the Status column sorts by them. */
+function volumeStatusLabel(v: PlatformVolume): string {
+  const inSync = v.currentReplicas === v.desiredReplicas;
+  if (inSync && v.healthy) return 'in-sync';
+  if (!inSync) return 'reconciling';
+  return v.phase ?? 'unknown';
+}
+
+const TH_PAD = 'px-3 py-2';
 
 /**
  * Platform-storage replication policy card. Lives on StorageSettings.
@@ -40,6 +57,18 @@ export default function PlatformStoragePolicyCard() {
   // placeholder until the id arrives.
   const [showModal, setShowModal] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const nodeLabel = useNodeLabel();
+  const volumeSort = useMemo<SortAccessors<PlatformVolume>>(() => ({
+    pvc: (v) => `${v.namespace}/${v.pvcName}`,
+    replicaNodes: (v) => (v.replicaNodes.length === 0 ? null : v.replicaNodes.map(nodeLabel).join(', ')),
+    status: volumeStatusLabel,
+  }), [nodeLabel]);
+  // The server lists the volumes in no particular order; the PVC is the name an operator reads.
+  const { sortedData: sortedVolumes, sortKey, sortDirection, onSort } =
+    useSortable(data?.data.clusterState.volumes ?? NO_VOLUMES, 'pvc', 'asc', volumeSort);
+  const header = (label: string, key: string, align: 'text-left' | 'text-right') => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding={TH_PAD} className={align} />
+  );
 
   if (isLoading) {
     return (
@@ -145,16 +174,16 @@ export default function PlatformStoragePolicyCard() {
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400">
             <tr>
-              <th className="px-3 py-2 text-left">Volume</th>
-              <th className="px-3 py-2 text-left">PVC</th>
-              <th className="px-3 py-2 text-right">Current</th>
-              <th className="px-3 py-2 text-right">Desired</th>
-              <th className="px-3 py-2 text-left">Replicas on</th>
-              <th className="px-3 py-2 text-left">Status</th>
+              {header('Volume', 'volumeName', 'text-left')}
+              {header('PVC', 'pvc', 'text-left')}
+              {header('Current', 'currentReplicas', 'text-right')}
+              {header('Desired', 'desiredReplicas', 'text-right')}
+              {header('Replicas on', 'replicaNodes', 'text-left')}
+              {header('Status', 'status', 'text-left')}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-            {cluster.volumes.map((v) => {
+            {sortedVolumes.map((v) => {
               const inSync = v.currentReplicas === v.desiredReplicas;
               const drift = v.hasOffSystemReplica;
               return (

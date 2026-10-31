@@ -2,6 +2,11 @@ import LocalTime from '@/components/ui/LocalTime';
 import { Link } from 'react-router-dom';
 import { RotateCcw, Trash2 } from 'lucide-react';
 import { useRecoverableTenants } from '@/hooks/use-dr-recover';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable } from '@/hooks/use-sortable';
+
+const TH_CLS = 'font-medium';
+const TH_PAD = 'py-1.5 pr-4';
 
 /** Where a deleted tenant is recovered — the DR Recover Tenant tab, preselected. */
 export function recoverTenantPath(tenantId: string): string {
@@ -18,7 +23,13 @@ export function recoverTenantPath(tenantId: string): string {
 export default function DeletedTenantsCard() {
   const { data } = useRecoverableTenants();
   const deleted = (data?.data ?? []).filter((t) => t.deleted);
+  // Newest delete first, as the server sends them. Instants are ISO text;
+  // "no expiry" (null) sorts after every date.
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(deleted, 'deletedAt', 'desc');
   if (deleted.length === 0) return null;
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding={TH_PAD} className={TH_CLS} />
+  );
   return (
     <section
       className="rounded-xl border border-amber-200 bg-amber-50/60 p-4 dark:border-amber-800 dark:bg-amber-900/10"
@@ -35,15 +46,15 @@ export default function DeletedTenantsCard() {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs uppercase tracking-wide text-amber-800/80 dark:text-amber-300/80">
-              <th className="py-1.5 pr-4 font-medium">Tenant</th>
-              <th className="py-1.5 pr-4 font-medium">Deleted</th>
-              <th className="py-1.5 pr-4 font-medium">Bundles</th>
-              <th className="py-1.5 pr-4 font-medium">Recoverable until</th>
+              {header('Tenant', 'name')}
+              {header('Deleted', 'deletedAt')}
+              {header('Bundles', 'bundleCount')}
+              {header('Recoverable until', 'keptUntil')}
               <th className="py-1.5" />
             </tr>
           </thead>
           <tbody>
-            {deleted.map((t) => (
+            {sortedData.map((t) => (
               <tr key={t.tenantId} className="border-t border-amber-200/70 dark:border-amber-800/60" data-testid={`deleted-tenant-${t.tenantId}`}>
                 <td className="py-2 pr-4 font-medium text-gray-900 dark:text-gray-100">{t.name}</td>
                 <td className="py-2 pr-4 text-gray-700 dark:text-gray-300">{t.deletedAt ? <LocalTime iso={t.deletedAt} dateOnly /> : '—'}</td>

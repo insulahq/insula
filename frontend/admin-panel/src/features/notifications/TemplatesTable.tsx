@@ -15,10 +15,19 @@ import { useNotificationCategories } from '@/hooks/use-notification-categories';
 import {
   NOTIFICATION_CHANNEL_ID,
   type NotificationChannelId,
+  type NotificationTemplateResponse,
 } from '@insula/api-contracts';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import TemplateEditor from './TemplateEditor';
+
+const NO_TEMPLATES: readonly NotificationTemplateResponse[] = [];
+const TEMPLATE_SORT: SortAccessors<NotificationTemplateResponse> = {
+  source: (t) => (t.isSeed ? 'seed' : 'edited'),
+};
+const HEAD = { padding: 'px-4 py-2', className: 'text-left' } as const;
 
 export default function TemplatesTable() {
   const [categoryId, setCategoryId] = useState<string | undefined>(undefined);
@@ -27,6 +36,9 @@ export default function TemplatesTable() {
 
   const list = useNotificationTemplates({ categoryId, channel });
   const categories = useNotificationCategories();
+  // The server orders by category, then channel; a stable sort on category keeps that.
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(list.data?.data ?? NO_TEMPLATES, 'categoryId', 'asc', TEMPLATE_SORT);
+  const sort = { ...HEAD, currentKey: sortKey, direction: sortDirection, onSort };
 
   return (
     <div className="space-y-4">
@@ -94,13 +106,13 @@ export default function TemplatesTable() {
           <table className="w-full text-xs">
             <thead className="text-gray-500 dark:text-gray-400">
               <tr className="border-b border-gray-200/60 dark:border-gray-700/40">
-                <th className="px-4 py-2 text-left">Category</th>
-                <th className="px-4 py-2 text-left">Channel</th>
-                <th className="px-4 py-2 text-left">Locale</th>
-                <th className="px-4 py-2 text-left">Format</th>
-                <th className="px-4 py-2 text-left">Version</th>
-                <th className="px-4 py-2 text-left">Source</th>
-                <th className="px-4 py-2 text-left">Updated</th>
+                <SortableHeader label="Category" sortKey="categoryId" {...sort} />
+                <SortableHeader label="Channel" sortKey="channel" {...sort} />
+                <SortableHeader label="Locale" sortKey="locale" {...sort} />
+                <SortableHeader label="Format" sortKey="bodyFormat" {...sort} />
+                <SortableHeader label="Version" sortKey="version" {...sort} />
+                <SortableHeader label="Source" sortKey="source" {...sort} />
+                <SortableHeader label="Updated" sortKey="updatedAt" {...sort} />
               </tr>
             </thead>
             <tbody>
@@ -118,7 +130,7 @@ export default function TemplatesTable() {
                   </td>
                 </tr>
               )}
-              {list.data?.data.map((t) => (
+              {sortedData.map((t) => (
                 <tr
                   key={t.id}
                   onClick={() => setOpenTemplateId(t.id)}

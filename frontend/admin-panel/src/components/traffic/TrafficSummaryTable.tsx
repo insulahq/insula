@@ -16,13 +16,16 @@
  * the table shifts under the pointer mid-comparison.
  */
 
+import { useMemo } from 'react';
 import clsx from 'clsx';
-import type { TrafficFrame } from '@insula/api-contracts';
+import type { TrafficFrame, TrafficSeries } from '@insula/api-contracts';
 import { formatTrafficRate, formatTrafficVolume } from '@/lib/format-traffic';
 import { decimateMinMax } from '@/components/charts/chart-scale';
 import { TOTAL_BG, TOTAL_STROKE } from '@/components/charts/TimeSeriesChart';
 import { colourForIndex } from './TrafficChart';
 import { TOTAL_KEY } from './combined-line';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
 /** The combined row, when the view offers one. */
 export interface SummaryTotal {
@@ -101,6 +104,22 @@ function sparkSegments(points: ReadonlyArray<number | null>): string[] {
 const HEAD = 'whitespace-nowrap border-b border-gray-200 px-2.5 py-2 text-[10.5px] font-semibold uppercase '
   + 'tracking-[0.1em] text-gray-500 dark:border-gray-700 dark:text-gray-400';
 
+interface SummaryRow {
+  readonly s: TrafficSeries;
+  readonly colour: string;
+  readonly total: number | null;
+  readonly peak: number | null;
+  /** Position in the frame — the server's ranking, biggest first. */
+  readonly order: number;
+}
+
+const SUMMARY_SORT: SortAccessors<SummaryRow> = {
+  name: (r) => r.s.name,
+  // A share is of the row's own group and rows only sort within their group,
+  // so ordering by total orders the share column too.
+  share: (r) => r.total,
+};
+
 export default function TrafficSummaryTable({
   frame, hidden, onToggle, subjectLabel, total, focusKey = null, onFocus,
 }: TrafficSummaryTableProps) {
@@ -108,9 +127,21 @@ export default function TrafficSummaryTable({
   const figure = (points: ReadonlyArray<number | null>): number | null => (
     isLatency ? meanOf(points) : integrate(points, frame.stepSeconds)
   );
-  const rows = frame.series.map((s, i) => ({
-    s, colour: colourForIndex(i), total: figure(s.points), peak: peakOf(s.points),
-  }));
+  const rows = useMemo<readonly SummaryRow[]>(() => frame.series.map((s, i) => ({
+    s,
+    colour: colourForIndex(i),
+    total: isLatency ? meanOf(s.points) : integrate(s.points, frame.stepSeconds),
+    peak: peakOf(s.points),
+    order: i,
+  })), [frame, isLatency]);
+  // Unsorted, the rows keep the frame's order. `Other` is the rest folded
+  // together, not one subject, so it stays last whatever the column.
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(rows, 'order', 'asc', SUMMARY_SORT);
+  const ordered = [
+    ...sortedData.filter((r) => r.s.kind !== 'other'),
+    ...sortedData.filter((r) => r.s.kind === 'other'),
+  ];
+  const sort = { currentKey: sortKey, direction: sortDirection, onSort, padding: '' } as const;
   // Share is of the group a row belongs to. A subset of the wire is not a
   // share OF the wire plus the workload rows, and the workload rows do not
   // decompose the wire at all — one grand total across both would be a
@@ -133,7 +164,7 @@ export default function TrafficSummaryTable({
   const groupsInOrder = [...new Set(rows.map((r) => r.s.group))]
     .filter((g): g is NonNullable<typeof g> => Boolean(g));
 
-  const rowFor = (r: typeof rows[number], grand: number) => (
+  const rowFor = (r: SummaryRow, grand: number) => (
     <Row
       key={r.s.key}
       rowKey={r.s.key}
@@ -159,10 +190,12 @@ export default function TrafficSummaryTable({
           <thead>
             <tr>
               <th className={clsx(HEAD, 'w-[26px] pl-2.5 pr-0 text-left')} aria-label="Colour" />
-              <th className={clsx(HEAD, 'truncate text-left')}>{subjectLabel}</th>
-              <th className={clsx(HEAD, 'w-[124px] text-right')}>{isLatency ? 'Average' : 'Total'}</th>
-              <th className={clsx(HEAD, 'w-[124px] text-right')}>Peak</th>
-              <th className={clsx(HEAD, 'w-[84px] text-right')}>{isLatency ? '' : 'Share'}</th>
+              <SortableHeader label={subjectLabel} sortKey="name" className={clsx(HEAD, 'truncate text-left')} {...sort} />
+              <SortableHeader label={isLatency ? 'Average' : 'Total'} sortKey="total" className={clsx(HEAD, 'w-[124px] text-right')} {...sort} />
+              <SortableHeader label="Peak" sortKey="peak" className={clsx(HEAD, 'w-[124px] text-right')} {...sort} />
+              {isLatency
+                ? <th className={clsx(HEAD, 'w-[84px] text-right')} />
+                : <SortableHeader label="Share" sortKey="share" className={clsx(HEAD, 'w-[84px] text-right')} {...sort} />}
               <th className={clsx(HEAD, 'w-[132px] text-left')}>Trend</th>
             </tr>
           </thead>
@@ -198,9 +231,9 @@ export default function TrafficSummaryTable({
                   {GROUP_LABEL[group] ?? group}
                 </td>
               </tr>,
-              ...rows.filter((r) => r.s.group === group).map((r) => rowFor(r, grandOf(r.s.group))),
+              ...ordered.filter((r) => r.s.group === group).map((r) => rowFor(r, grandOf(r.s.group))),
             ])}
-            {groupsInOrder.length === 0 && rows.map((r) => rowFor(r, grandOf(undefined)))}
+            {groupsInOrder.length === 0 && ordered.map((r) => rowFor(r, grandOf(undefined)))}
             {rows.length === 0 && (
               <tr>
                 <td colSpan={6} className="py-6 text-center text-gray-500 dark:text-gray-400">

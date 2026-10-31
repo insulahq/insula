@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   X, Trash2, Camera, Loader2, AlertTriangle, AlertCircle, RefreshCw, CheckCircle, Eraser,
 } from 'lucide-react';
@@ -12,6 +12,9 @@ import type { OrphanedVolumeEntry, OrphanReason } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import NodeList from '@/components/nodes/NodeList';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 
 interface OrphanedVolumesModalProps {
   readonly onClose: () => void;
@@ -72,6 +75,17 @@ function formatBytes(bytes: number): string {
  *   2. Delete (cascades PV + Longhorn volume CR) — guarded by an
  *      "Are you sure?" confirm dialog.
  */
+const rowKey = (o: OrphanedVolumeEntry): string =>
+  o.longhornVolumeName ?? o.pvName ?? `${o.namespace ?? '-'}/${o.pvcName ?? '-'}`;
+
+/** The PVC / Volume cell's main line — the column sorts by it. */
+function volumeLabel(o: OrphanedVolumeEntry): string {
+  if (o.reason === 'namespace_orphaned' && o.namespace) return o.namespace;
+  if (o.namespace && o.pvcName) return `${o.namespace}/${o.pvcName}`;
+  return o.longhornVolumeName ?? o.pvName ?? rowKey(o);
+}
+const TH_PAD = 'py-1 pr-2';
+
 export default function OrphanedVolumesModal({ onClose }: OrphanedVolumesModalProps) {
   const list = useOrphanedVolumes();
   const snap = useSnapshotOrphan();
@@ -86,9 +100,18 @@ export default function OrphanedVolumesModal({ onClose }: OrphanedVolumesModalPr
   const totalBytes = list.data?.data.totalBytes ?? 0;
   const stale = list.data?.data.stalePvThresholdDays ?? 7;
   const purgeResult = purge.data?.data ?? null;
-
-  const rowKey = (o: OrphanedVolumeEntry): string =>
-    o.longhornVolumeName ?? o.pvName ?? `${o.namespace ?? '-'}/${o.pvcName ?? '-'}`;
+  const nodeLabel = useNodeLabel();
+  const orphanSort = useMemo<SortAccessors<OrphanedVolumeEntry>>(() => ({
+    volume: volumeLabel,
+    nodes: (o) => (o.nodes.length === 0 ? null : o.nodes.map(nodeLabel).join(', ')),
+    reason: (o) => REASON_LABELS[o.reason].label,
+  }), [nodeLabel]);
+  // Largest first — the server's order, so the high-impact orphans lead.
+  const { sortedData: sortedOrphans, sortKey, sortDirection, onSort } =
+    useSortable(orphans, 'sizeBytes', 'desc', orphanSort);
+  const header = (label: string, key: string, align: 'text-left' | 'text-right') => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding={TH_PAD} className={align} />
+  );
 
   const handleSnapshot = async (entry: OrphanedVolumeEntry): Promise<void> => {
     if (!entry.longhornVolumeName) return; // button is hidden for these rows
@@ -243,17 +266,17 @@ export default function OrphanedVolumesModal({ onClose }: OrphanedVolumesModalPr
               <table className="w-full text-xs" data-testid="orphans-table">
                 <thead className="text-gray-500 dark:text-gray-400">
                   <tr>
-                    <th className="text-left py-1 pr-2">Owner</th>
-                    <th className="text-left py-1 pr-2">PVC / Volume</th>
-                    <th className="text-right py-1 pr-2">Size</th>
-                    <th className="text-left py-1 pr-2">Node(s)</th>
-                    <th className="text-left py-1 pr-2">Reason</th>
-                    <th className="text-right py-1 pr-2">Age</th>
+                    {header('Owner', 'ownerLabel', 'text-left')}
+                    {header('PVC / Volume', 'volume', 'text-left')}
+                    {header('Size', 'sizeBytes', 'text-right')}
+                    {header('Node(s)', 'nodes', 'text-left')}
+                    {header('Reason', 'reason', 'text-left')}
+                    {header('Age', 'ageDays', 'text-right')}
                     <th className="text-right py-1">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {orphans.map((o) => {
+                  {sortedOrphans.map((o) => {
                     const reasonInfo = REASON_LABELS[o.reason];
                     const key = rowKey(o);
                     const lhName = o.longhornVolumeName;

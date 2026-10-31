@@ -96,6 +96,24 @@ describe('route WAF exclusions — path scope', () => {
     expect(screen.getByTestId('waf-exclusion-row-x2')).toHaveTextContent('text/plain as JSON');
   });
 
+  it('lists exclusions oldest first, and sorts by rule ID either way', async () => {
+    exclusions = [
+      exclusion({ id: 'x1', ruleId: '941100', createdAt: '2026-01-01T00:00:00Z' }),
+      exclusion({ id: 'x2', ruleId: '920420', createdAt: '2026-02-01T00:00:00Z' }),
+      exclusion({ id: 'x3', ruleId: '949110', createdAt: '2026-03-01T00:00:00Z' }),
+    ];
+    const user = await openExclusions();
+    const table = (await screen.findByTestId('waf-exclusion-row-x1')).closest('table')!;
+    const order = () => Array.from(table.querySelectorAll('tbody > tr'))
+      .map((tr) => tr.getAttribute('data-testid')?.replace('waf-exclusion-row-', ''));
+    expect(order()).toEqual(['x1', 'x2', 'x3']);
+
+    await user.click(within(table).getByTestId('sort-ruleId'));
+    expect(order()).toEqual(['x2', 'x1', 'x3']);
+    await user.click(within(table).getByTestId('sort-ruleId'));
+    expect(order()).toEqual(['x3', 'x1', 'x2']);
+  });
+
   it('posts the path, or null for the whole domain', async () => {
     const user = await openAdd();
     await user.type(screen.getByTestId('add-waf-exclusion-rule-id'), '941100');
@@ -192,6 +210,24 @@ describe('route WAF log — summary by rule and path', () => {
     await user.type(screen.getByTestId('add-waf-exclusion-path-regex'), '{Enter}');
     // …stays unsaved: no PATCH of the route's security settings.
     expect(mockApiFetch.mock.calls.some(([url, init]) => String(url).endsWith('/security') && (init as RequestInit | undefined)?.method === 'PATCH')).toBe(false);
+  });
+
+  it('ranks groups by requests, and sorts by path either way', async () => {
+    summary = { requests: 110, rows: [
+      ROWS[0],
+      { ...ROWS[1], path: '/a/first.php' },
+      { ...ROWS[1], ruleId: '930120', path: '/z/last.php', requests: 6 },
+    ], truncated: false };
+    const user = await openLog();
+    const table = (await screen.findByTestId('waf-summary-row-922130-/mod/quiz/processattempt.php')).closest('table')!;
+    const order = () => Array.from(table.querySelectorAll('tbody > tr'))
+      .map((tr) => tr.getAttribute('data-testid')?.replace('waf-summary-row-', ''));
+    expect(order()).toEqual(['922130-/mod/quiz/processattempt.php', '941160-/a/first.php', '930120-/z/last.php']);
+
+    await user.click(within(table).getByTestId('sort-path'));
+    expect(order()).toEqual(['941160-/a/first.php', '922130-/mod/quiz/processattempt.php', '930120-/z/last.php']);
+    await user.click(within(table).getByTestId('sort-path'));
+    expect(order()).toEqual(['930120-/z/last.php', '922130-/mod/quiz/processattempt.php', '941160-/a/first.php']);
   });
 
   it('says so when nothing was blocked', async () => {

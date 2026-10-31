@@ -12,6 +12,8 @@ import {
   type SubUser,
   type SubUserRole,
 } from '@/hooks/use-sub-users';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
 /**
  * Phase 5: admin panel per-tenant user management. Lives inside the
@@ -32,6 +34,13 @@ const ROLE_BADGE_CLASSES: Record<SubUserRole, string> = {
   tenant_admin: 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
   tenant_user: 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
 };
+
+const NO_USERS: readonly SubUser[] = [];
+const USER_SORT: SortAccessors<SubUser> = {
+  roleName: (u) => ROLE_LABELS[u.roleName as SubUserRole] ?? u.roleName,
+};
+const TH_CLS = 'text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400';
+const TH_PAD = 'px-3 py-2';
 
 /**
  * One-shot credential display. Sub-user passwords are always
@@ -98,7 +107,12 @@ export default function TenantUsersTab({ tenantId }: { readonly tenantId: string
   const resetPassword = useAdminResetSubUserPassword(tenantId);
   const deleteUser = useAdminDeleteSubUser(tenantId);
 
-  const users = data?.data ?? [];
+  const users = data?.data ?? NO_USERS;
+  // The server lists a tenant's users in no particular order.
+  const { sortedData: sortedUsers, sortKey, sortDirection, onSort } = useSortable(users, 'fullName', 'asc', USER_SORT);
+  const header = (label: string, key: string, className = TH_CLS) => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding={TH_PAD} className={className} />
+  );
   const [showForm, setShowForm] = useState(false);
   const [editingUser, setEditingUser] = useState<SubUser | null>(null);
   const [resetPasswordUser, setResetPasswordUser] = useState<SubUser | null>(null);
@@ -305,16 +319,16 @@ export default function TenantUsersTab({ tenantId }: { readonly tenantId: string
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50">
-                <th className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Name</th>
-                <th className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Email</th>
-                <th className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Role</th>
-                <th className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Status</th>
-                <th className="px-3 py-2 hidden text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400 sm:table-cell">Last Login</th>
+                {header('Name', 'fullName')}
+                {header('Email', 'email')}
+                {header('Role', 'roleName')}
+                {header('Status', 'status')}
+                {header('Last Login', 'lastLoginAt', `hidden ${TH_CLS} sm:table-cell`)}
                 <th className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {users.map((u) => (
+              {sortedUsers.map((u) => (
                 <tr key={u.id} className="border-b border-gray-100 dark:border-gray-700 last:border-0">
                   <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{u.fullName}</td>
                   <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{u.email}</td>

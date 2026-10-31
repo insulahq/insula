@@ -1,5 +1,15 @@
 import { Loader2, CheckCircle, AlertCircle, Container, X } from 'lucide-react';
-import { usePlatformImages } from '@/hooks/use-platform-images';
+import { usePlatformImages, type ImageInventoryEntry } from '@/hooks/use-platform-images';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
+
+const NO_IMAGES: readonly ImageInventoryEntry[] = [];
+// Ready sorts by the share of desired pods running — least ready first, ascending.
+const IMAGE_SORT: SortAccessors<ImageInventoryEntry> = {
+  ready: (r) => (r.desired === 0 ? null : r.running / r.desired),
+};
+const TH_CLS = 'font-medium';
+const TH_PAD = 'px-2 py-2';
 
 /**
  * Modal listing the container images + resolved tags currently running on the
@@ -8,7 +18,13 @@ import { usePlatformImages } from '@/hooks/use-platform-images';
  */
 export default function DeployedImagesModal({ onClose }: { readonly onClose: () => void }) {
   const { data, isLoading, isError } = usePlatformImages();
-  const images = data?.data ?? [];
+  const images = data?.data ?? NO_IMAGES;
+  // The server groups the images by namespace, components by name within;
+  // the sort is stable, so by namespace keeps that.
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(images, 'namespace', 'asc', IMAGE_SORT);
+  const header = (label: string, key: string, className = TH_CLS) => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding={TH_PAD} className={className} />
+  );
 
   return (
     <div
@@ -37,15 +53,15 @@ export default function DeployedImagesModal({ onClose }: { readonly onClose: () 
               <table className="min-w-full text-sm" data-testid="platform-images-table">
                 <thead>
                   <tr className="text-left text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">
-                    <th className="px-2 py-2 font-medium">Component</th>
-                    <th className="px-2 py-2 font-medium">Namespace</th>
-                    <th className="px-2 py-2 font-medium">Image</th>
-                    <th className="px-2 py-2 font-medium">Tag</th>
-                    <th className="px-2 py-2 font-medium text-right">Ready</th>
+                    {header('Component', 'component')}
+                    {header('Namespace', 'namespace')}
+                    {header('Image', 'image')}
+                    {header('Tag', 'tag')}
+                    {header('Ready', 'ready', `${TH_CLS} text-right`)}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {images.map((row) => (
+                  {sortedData.map((row) => (
                     <tr key={`${row.namespace}/${row.component}/${row.image}`}>
                       <td className="px-2 py-2 text-gray-900 dark:text-gray-100 font-medium">{row.component}</td>
                       <td className="px-2 py-2 text-gray-600 dark:text-gray-400 font-mono text-xs">{row.namespace}</td>

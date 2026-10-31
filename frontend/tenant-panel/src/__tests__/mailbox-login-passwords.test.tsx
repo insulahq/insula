@@ -94,3 +94,29 @@ describe('MailboxLoginPasswordsModal — limit', () => {
     expect(screen.getByTestId('new-login-password')).toBeDisabled();
   });
 });
+
+// The mail server lists them in no set order: by label, then by any column.
+describe('MailboxLoginPasswordsModal — sorting', () => {
+  const login = (id: string, label: string, createdAt: string, expiresAt: string | null): LoginPassword =>
+    ({ id, label, kind: 'login', createdAt, expiresAt, allowedIps: [] });
+  const order = () => Array.from(screen.getByTestId('login-passwords-table').querySelectorAll('tbody > tr'))
+    .map((tr) => tr.getAttribute('data-testid')?.replace('login-password-row-', ''));
+
+  it('lists by label, then by created date either way, with "never" expiring last', () => {
+    vi.mocked(useLoginPasswords).mockReturnValue({ data: { data: [
+      login('a', 'Laptop', '2026-10-01T00:00:00Z', null),
+      login('b', 'android', '2026-08-01T00:00:00Z', '2027-01-01T00:00:00Z'),
+      login('c', 'Zed', '2026-09-01T00:00:00Z', '2026-12-01T00:00:00Z'),
+    ] }, isLoading: false } as never);
+    render(<MailboxLoginPasswordsModal tenantId="t1" mailboxId="m1" fullAddress="info@example.test" onClose={() => {}} />);
+    expect(order()).toEqual(['b', 'a', 'c']);
+
+    fireEvent.click(screen.getByTestId('sort-createdAtMs'));
+    expect(order()).toEqual(['b', 'c', 'a']);
+    fireEvent.click(screen.getByTestId('sort-createdAtMs'));
+    expect(order()).toEqual(['a', 'c', 'b']);
+
+    fireEvent.click(screen.getByTestId('sort-expiresAtMs'));
+    expect(order()).toEqual(['c', 'b', 'a']);
+  });
+});

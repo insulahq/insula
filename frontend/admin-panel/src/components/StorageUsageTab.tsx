@@ -2,10 +2,22 @@ import { useState } from 'react';
 import { HardDrive, Loader2, Trash2, AlertTriangle, CheckCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { useStorageOverview, useImageInventory, usePurgeImages } from '@/hooks/use-storage';
-import type { ImageEntry } from '@insula/api-contracts';
+import type { ImageEntry, StorageOverviewResponse } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import { formatVolumeBytes } from '@/lib/format-bytes';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
+
+type TenantUsage = StorageOverviewResponse['tenants'][number];
+const NO_TENANTS: readonly TenantUsage[] = [];
+/** The Status pill's words. */
+function imageStatusLabel(img: ImageEntry): string {
+  if (img.protected) return 'protected';
+  return img.inUse ? 'in use' : 'purgeable';
+}
+const IMAGE_SORT: SortAccessors<ImageEntry> = { status: imageStatusLabel };
+const TH_PAD = 'px-5 py-2';
 
 export default function StorageUsageTab() {
   const { data: overviewData, isLoading: overviewLoading } = useStorageOverview();
@@ -23,7 +35,16 @@ export default function StorageUsageTab() {
     if (filter === 'in-use') return img.inUse;
     if (filter === 'purgeable') return !img.protected && !img.inUse;
     return true;
-  }).sort((a, b) => b.sizeBytes - a.sizeBytes);
+  });
+  // Both tables open largest first, as they always have.
+  const tenantView = useSortable(overview?.tenants ?? NO_TENANTS, 'usedBytes', 'desc');
+  const imageView = useSortable(filteredImages, 'sizeBytes', 'desc', IMAGE_SORT);
+  const tenantHeader = (label: string, key: string, className?: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={tenantView.sortKey} direction={tenantView.sortDirection} onSort={tenantView.onSort} padding={TH_PAD} className={className} />
+  );
+  const imageHeader = (label: string, key: string, className?: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={imageView.sortKey} direction={imageView.sortDirection} onSort={imageView.onSort} padding={TH_PAD} className={className} />
+  );
 
   const handlePreviewPurge = () => {
     purgeMutation.mutate({ dryRun: true }, {
@@ -74,13 +95,13 @@ export default function StorageUsageTab() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50 dark:bg-gray-700/50">
               <tr className="text-left text-xs font-medium text-gray-500 dark:text-gray-400">
-                <th className="px-5 py-2">Tenant</th>
-                <th className="px-5 py-2">Namespace</th>
-                <th className="px-5 py-2 text-right">Used</th>
+                {tenantHeader('Tenant', 'name')}
+                {tenantHeader('Namespace', 'namespace')}
+                {tenantHeader('Used', 'usedBytes', 'text-right')}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-              {[...overview.tenants].sort((a, b) => b.usedBytes - a.usedBytes).map(tenant => (
+              {tenantView.sortedData.map(tenant => (
                 <tr key={tenant.tenantId} className="hover:bg-gray-50 dark:hover:bg-gray-700/30">
                   <td className="px-5 py-2.5 font-medium text-gray-900 dark:text-gray-100">{tenant.name}</td>
                   <td className="px-5 py-2.5 font-mono text-xs text-gray-500 dark:text-gray-400">{tenant.namespace}</td>
@@ -153,13 +174,13 @@ export default function StorageUsageTab() {
             <table className="w-full text-sm">
               <thead className="bg-gray-50 dark:bg-gray-700/50 sticky top-0">
                 <tr className="text-left text-xs font-medium text-gray-500 dark:text-gray-400">
-                  <th className="px-5 py-2">Image</th>
-                  <th className="px-5 py-2 text-center">Status</th>
-                  <th className="px-5 py-2 text-right">Size</th>
+                  {imageHeader('Image', 'name')}
+                  {imageHeader('Status', 'status', 'text-center')}
+                  {imageHeader('Size', 'sizeBytes', 'text-right')}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                {filteredImages.map(img => (
+                {imageView.sortedData.map(img => (
                   <tr key={img.name} className="hover:bg-gray-50 dark:hover:bg-gray-700/30">
                     <td className="px-5 py-2 font-mono text-xs text-gray-700 dark:text-gray-300 truncate max-w-lg">{img.name}</td>
                     <td className="px-5 py-2 text-center">

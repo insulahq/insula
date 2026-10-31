@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { NodeHealthEntry } from '@/hooks/use-node-health';
 import NodeHealthPanel from '@/components/NodeHealthPanel';
@@ -107,5 +107,36 @@ describe('NodeHealthPanel — Recover button gate', () => {
     renderPanel();
     expect(screen.queryByTestId('recovery-open-node-a')).toBeNull();
     expect(screen.getByTestId('recovery-open-node-b')).toBeTruthy();
+  });
+});
+
+describe('NodeHealthPanel — column sorting', () => {
+  const order = () => screen.getAllByTestId(/^node-health-row-/).map((r) => r.getAttribute('data-testid'));
+
+  beforeEach(() => {
+    mockHealth.mockReturnValue({
+      data: { data: { nodes: [
+        entry({ name: 'node-b', severity: 'critical', evictionsLastHour: 1 }),
+        entry({ name: 'node-c', severity: 'warning', evictionsLastHour: 9 }),
+        entry({ name: 'node-a', severity: 'normal', evictionsLastHour: 4 }),
+      ], overallSeverity: 'critical', lastTickAt: null } },
+      isLoading: false, isError: false, error: null,
+    });
+  });
+
+  it('opens worst severity first, then sorts by node name both ways', () => {
+    renderPanel();
+    expect(order()).toEqual(['node-health-row-node-b', 'node-health-row-node-c', 'node-health-row-node-a']);
+
+    fireEvent.click(screen.getByTestId('sort-name'));
+    expect(order()).toEqual(['node-health-row-node-a', 'node-health-row-node-b', 'node-health-row-node-c']);
+    fireEvent.click(screen.getByTestId('sort-name'));
+    expect(order()).toEqual(['node-health-row-node-c', 'node-health-row-node-b', 'node-health-row-node-a']);
+  });
+
+  it('sorts evictions numerically', () => {
+    renderPanel();
+    fireEvent.click(screen.getByTestId('sort-evictionsLastHour'));
+    expect(order()).toEqual(['node-health-row-node-b', 'node-health-row-node-a', 'node-health-row-node-c']);
   });
 });

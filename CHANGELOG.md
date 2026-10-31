@@ -30,6 +30,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   takes `enabled`, and every route response carries it. Migration 0170 adds the column, `true`
   for every existing route.
 
+- **Sortable columns on the remaining tables of both panels.** About 70 tables in the
+  admin and tenant panels that list records now sort by clicking a header. Examples include
+  backup health, node health, storage usage, sessions, API tokens, snapshots, the security
+  posture tables, CPU scheduling, mailbox login passwords, the trash, custom containers, the
+  WAF summary and exclusions, and installed-app components. Each opens in the order it
+  showed before, and each column sorts by what it shows (sizes by bytes, nodes by their
+  alias, states by severity). Left unsorted on purpose:
+  - tables whose order carries meaning: operation steps, hook execution order, a manifest's
+    component order;
+  - key/value detail tables and editable form rows;
+  - lists the server caps or pages: TLS and abuse reports, DMARC senders, mTLS
+    certificates, a private worker's audit trail, the Applications page's installed
+    deployments, and two tenant-detail lists that show only their first 20 rows. These
+    need server-side sorting first.
+
+  Sort headers are now keyboard-operable (Tab, then Enter or Space) and tell assistive
+  technology which column sorts which way.
+
 ### Security
 
 - **A tenant can no longer list, change or delete another tenant's ingress routes.** The route
@@ -45,6 +63,33 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   domain in the path.
 
 ### Fixed
+
+- **Clicking a column header sorts the whole list, not the page on screen.** The admin
+  panel's paged tables (Tenants, Users, Domains, Email Accounts, Cron Jobs) fetched 20 rows
+  at a time from a server that always ordered by creation date, then sorted those 20 rows in
+  the browser: sorting 140 tenants by name ordered one page of them. These lists now sort on
+  the server. The API takes `sort=<field>:asc|desc` with an allow-list per endpoint
+  (`INVALID_SORT_FIELD` otherwise, as `docs/architecture/API_PAGINATION_STRATEGY.md`
+  specified), text compares case-insensitively, empty values come last, and the next page
+  continues the same order (keyset cursor on the sort key and the row id). Changing the
+  sort starts again from page one, and a cursor made under another sort is refused.
+  - On the Tenants list, CPU, Memory, Storage and Placement are live values the database
+    does not hold. Sorting by one of them loads every tenant and sorts them in the browser,
+    and the page says so.
+  - The Tenant column of Domains and Cron Jobs sorts by the tenant's name. It sorted by
+    the tenant id.
+  - The same applies with a tenant picked on those two tabs.
+  - SFTP Users, the Audit log and the notification Delivery log get sortable headers on the
+    same terms.
+  - Fixed along the way:
+    - The delivery log's Next button was always disabled (it read a field the API never
+      sent).
+    - The audit log's and the tenant domain list's total shrank on every page, and so did
+      the SFTP users' total while searching.
+    - Paging by creation date could skip or repeat rows created in the same millisecond.
+  - A cursor from before the upgrade is refused once with `INVALID_CURSOR`. The panels then
+    start from page one.
+
 
 - **A healthy certificate no longer shows an amber "expiring" warning.** Tenant certificates
   renewed 15 days before expiry (`renewBefore: 360h`) while the panels turned a certificate

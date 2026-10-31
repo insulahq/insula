@@ -266,3 +266,30 @@ describe('Applications page', () => {
     });
   });
 });
+
+describe('Upgrades tab — column sorting', () => {
+  it('opens by customer, then sorts by deployment name both ways', async () => {
+    const { apiFetch } = await import('@/lib/api-client');
+    (apiFetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.includes('/admin/upgrades/overview')) {
+        // Out of customer order on purpose: the server sends no particular order.
+        const [acme, beta] = mockUpgradesOverview.data[0].deployments;
+        return Promise.resolve({ data: [{ ...mockUpgradesOverview.data[0], deployments: [beta, acme] }] });
+      }
+      if (url.includes('/catalog')) return Promise.resolve(mockCatalog);
+      if (url.includes('/admin/deployments')) return Promise.resolve(mockDeployments);
+      return Promise.resolve({ data: [] });
+    });
+
+    renderWithProviders(<Applications />);
+    screen.getByTestId('tab-upgrades').click();
+    const table = await screen.findByTestId('deployments-table-wordpress');
+    const order = () => within(table).getAllByTestId(/^deployment-row-/).map((r) => r.getAttribute('data-testid'));
+    expect(order()).toEqual(['deployment-row-inst-001', 'deployment-row-inst-002']);
+
+    within(table).getByTestId('sort-name').click();
+    await waitFor(() => expect(order()).toEqual(['deployment-row-inst-002', 'deployment-row-inst-001']));
+    within(table).getByTestId('sort-name').click();
+    await waitFor(() => expect(order()).toEqual(['deployment-row-inst-001', 'deployment-row-inst-002']));
+  });
+});

@@ -17,6 +17,8 @@ import ErrorPanel from '@/components/ErrorPanel';
 import AgentConnectionsTable, { ScopeChips } from '@/components/agents/AgentConnectionsTable';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import { useApiTokens, useCreateApiToken, useRevokeApiToken } from '@/hooks/use-api-tokens';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
 const SCOPE_HELP: Record<McpScope, string> = {
   read: 'View anything the admin role can see.',
@@ -26,6 +28,11 @@ const SCOPE_HELP: Record<McpScope, string> = {
 
 const card = 'rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-gray-700 dark:bg-gray-800';
 const btn = 'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium disabled:opacity-50';
+
+const NO_TOKENS: readonly McpToken[] = [];
+
+/** The Scopes cell shows the token's scope chips, so it sorts by those words. */
+const TOKEN_SORT: SortAccessors<McpToken> = { scopes: (t) => t.scopes.join(' ') };
 
 function formatDate(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString() : '—';
@@ -158,6 +165,9 @@ export default function ApiTokensSection() {
   const connectionHours = Math.round(MCP_CONNECTION_MAX_SECONDS / 3600);
   const sectionRef = useRef<HTMLElement>(null);
   const loaded = Boolean(data);
+  // Newest first, as the server lists them.
+  const { sortedData: sortedTokens, sortKey, sortDirection, onSort } = useSortable(data?.tokens ?? NO_TOKENS, 'createdAt', 'desc', TOKEN_SORT);
+  const head = { currentKey: sortKey, direction: sortDirection, onSort, padding: 'pb-2 pr-3' } as const;
 
   // The header's agent chip links to #ai-agents; the router does not scroll to it.
   useEffect(() => {
@@ -220,15 +230,15 @@ export default function ApiTokensSection() {
                   <table className="w-full text-left text-sm">
                     <thead>
                       <tr className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                        <th className="pb-2 pr-3 font-medium">Token</th>
-                        <th className="pb-2 pr-3 font-medium">Scopes</th>
-                        <th className="hidden pb-2 pr-3 font-medium md:table-cell">Created</th>
-                        <th className="pb-2 pr-3 font-medium">Expires</th>
-                        <th className="hidden pb-2 pr-3 font-medium md:table-cell">Last used</th>
+                        <SortableHeader label="Token" sortKey="name" className="font-medium" {...head} />
+                        <SortableHeader label="Scopes" sortKey="scopes" className="font-medium" {...head} />
+                        <SortableHeader label="Created" sortKey="createdAt" className="hidden font-medium md:table-cell" {...head} />
+                        <SortableHeader label="Expires" sortKey="expiresAt" className="font-medium" {...head} />
+                        <SortableHeader label="Last used" sortKey="lastUsedAt" className="hidden font-medium md:table-cell" {...head} />
                         <th className="pb-2" />
                       </tr>
                     </thead>
-                    <tbody>{data.tokens.map((t) => <TokenRow key={t.id} token={t} />)}</tbody>
+                    <tbody>{sortedTokens.map((t) => <TokenRow key={t.id} token={t} />)}</tbody>
                   </table>
                 </div>
               )}

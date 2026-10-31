@@ -7,7 +7,7 @@ import clsx from 'clsx';
 import CatalogRepoSettings from '@/components/CatalogRepoSettings';
 import DeploymentUpgradesTab from '@/components/DeploymentUpgradesTab';
 import { useCatalog, useUpdateCatalogBadges, useCatalogEntryVersions } from '@/hooks/use-catalog';
-import type { CatalogEntry } from '@/hooks/use-catalog';
+import type { CatalogEntry, CatalogEntryVersion } from '@/hooks/use-catalog';
 import { useCapacityCheck } from '@/hooks/use-capacity-check';
 import {
   useAdminDeployments,
@@ -22,6 +22,8 @@ import StatusBadge from '@/components/ui/StatusBadge';
 import { useTabParam } from '@/hooks/use-tab-param';
 import type { TabOf } from '@/routes/tabbed-pages';
 import NodeName from '@/components/nodes/NodeName';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
 type Tab = TabOf<'/applications'>;
 
@@ -563,6 +565,8 @@ function CollapsibleSection({ title, children }: { readonly title: string; reado
   );
 }
 
+const VERSION_SORT: SortAccessors<CatalogEntryVersion> = { image: (v) => v.components?.[0]?.image ?? null };
+
 function AppDetailPanel({
   entry,
   onClose,
@@ -580,7 +584,11 @@ function AppDetailPanel({
   const capacity = capacityResponse?.data;
 
   const { data: versionsData } = useCatalogEntryVersions(entry.id);
-  const versions = versionsData?.data ?? [];
+  // The server lists versions in no particular order; newest first reads best.
+  const {
+    sortedData: versions, sortKey: versionSortKey, sortDirection: versionSortDir, onSort: onVersionSort,
+  } = useSortable(versionsData?.data ?? [], 'version', 'desc', VERSION_SORT);
+  const versionHead = { currentKey: versionSortKey, direction: versionSortDir, onSort: onVersionSort, padding: 'px-3 py-2' } as const;
 
   const components = asComponents(entry.components);
   const parameters = asParameters(entry.parameters);
@@ -899,12 +907,12 @@ function AppDetailPanel({
             <div>
               <SectionHeading icon={Tag} title="Supported Versions" />
               <div className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
-                <table className="w-full text-sm">
+                <table className="w-full text-sm" data-testid="versions-table">
                   <thead>
                     <tr className="bg-gray-50 dark:bg-gray-700/50 text-left text-xs font-medium text-gray-500 dark:text-gray-400">
-                      <th className="px-3 py-2">Version</th>
-                      <th className="px-3 py-2">Image</th>
-                      <th className="px-3 py-2">Status</th>
+                      <SortableHeader label="Version" sortKey="version" {...versionHead} />
+                      <SortableHeader label="Image" sortKey="image" {...versionHead} />
+                      <SortableHeader label="Status" sortKey="status" {...versionHead} />
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 dark:divide-gray-700">

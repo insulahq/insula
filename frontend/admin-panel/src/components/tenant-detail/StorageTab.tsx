@@ -21,6 +21,8 @@ import { useTenantBundles } from '@/hooks/use-tenant-bundles';
 import { Card, Chip, formatGb } from './ui';
 import TenantPanelLink from './TenantPanelLink';
 import { tenantPanel } from './tenant-panel-paths';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable } from '@/hooks/use-sortable';
 
 export default function StorageTab({ tenant, tenantId }: { readonly tenant: Tenant; readonly tenantId: string }) {
   const { data: placementRes } = useTenantPlacement(tenantId);
@@ -58,7 +60,9 @@ export default function StorageTab({ tenant, tenantId }: { readonly tenant: Tena
 
 function SnapshotsCard({ tenantId }: { readonly tenantId: string }) {
   const { data, isLoading } = useTenantSnapshots(tenantId);
-  const snapshots = [...(data?.data?.snapshots ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  // Newest first.
+  const { sortedData: snapshots, sortKey, sortDirection, onSort } = useSortable(data?.data?.snapshots ?? [], 'createdAt', 'desc');
+  const head = { currentKey: sortKey, direction: sortDirection, onSort, padding: 'px-5 py-2.5' } as const;
   return (
     <Card
       title={(
@@ -79,11 +83,11 @@ function SnapshotsCard({ tenantId }: { readonly tenantId: string }) {
         <table className="w-full text-left text-[13px]">
           <thead>
             <tr className="border-b border-gray-200 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
-              <th scope="col" className="px-5 py-2.5 font-medium">Taken</th>
-              <th scope="col" className="px-5 py-2.5 font-medium">Label</th>
-              <th scope="col" className="px-5 py-2.5 font-medium">Status</th>
-              <th scope="col" className="px-5 py-2.5 text-right font-medium">Holds</th>
-              <th scope="col" className="px-5 py-2.5 font-medium">Expires</th>
+              <SortableHeader label="Taken" sortKey="createdAt" className="font-medium" {...head} />
+              <SortableHeader label="Label" sortKey="label" className="font-medium" {...head} />
+              <SortableHeader label="Status" sortKey="status" className="font-medium" {...head} />
+              <SortableHeader label="Holds" sortKey="dataSizeBytes" className="text-right font-medium" {...head} />
+              <SortableHeader label="Expires" sortKey="expiresAt" className="font-medium" {...head} />
             </tr>
           </thead>
           <tbody>

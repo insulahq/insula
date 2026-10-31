@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { McpConnection, McpConsentRequest, TenantMcpAgents } from '@insula/api-contracts';
 
@@ -67,7 +67,9 @@ describe('User Settings → AI agents', () => {
     render(<AiAgentsSection />);
     expect(screen.getByText('Agents connected to this account')).toBeInTheDocument();
     expect(screen.getByTestId('ai-agent-row-conn-2')).toHaveTextContent('staff@example.test');
-    fireEvent.click(screen.getAllByTestId('ai-agent-revoke')[1]);
+    // By row, not by position: the list is newest first and both fixtures are
+    // created within the same few milliseconds.
+    fireEvent.click(within(screen.getByTestId('ai-agent-row-conn-2')).getByTestId('ai-agent-revoke'));
     expect(agents.revoke).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId('ai-agent-revoke-confirm'));
     expect(agents.revoke).toHaveBeenCalledWith('conn-2');
@@ -78,6 +80,24 @@ describe('User Settings → AI agents', () => {
     render(<AiAgentsSection />);
     expect(screen.getByText('Your connected agents')).toBeInTheDocument();
     expect(screen.queryByText('Acts as')).not.toBeInTheDocument();
+  });
+
+  it('keeps the newest connection first, and sorts by agent name either way', () => {
+    const at = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+    agents.list.data = listing({ view: 'tenant', connections: [
+      agent({ id: 'new', clientName: 'Cursor', createdAt: at(1) }),
+      agent({ id: 'mid', clientName: 'VS Code', createdAt: at(30) }),
+      agent({ id: 'old', clientName: 'Claude Code', createdAt: at(90) }),
+    ] });
+    render(<AiAgentsSection />);
+    const order = () => Array.from(screen.getByTestId('ai-agents-section').querySelectorAll('tbody > tr'))
+      .map((tr) => tr.getAttribute('data-testid')?.replace('ai-agent-row-', ''));
+    expect(order()).toEqual(['new', 'mid', 'old']);
+
+    fireEvent.click(screen.getByTestId('sort-clientName'));
+    expect(order()).toEqual(['old', 'new', 'mid']);
+    fireEvent.click(screen.getByTestId('sort-clientName'));
+    expect(order()).toEqual(['mid', 'new', 'old']);
   });
 });
 

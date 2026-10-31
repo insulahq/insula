@@ -20,7 +20,7 @@
  * is omitted entirely instead of showing empty rows.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -45,6 +45,8 @@ import MailEndpointsSection from './MailEndpointsSection';
 import NodeName from '@/components/nodes/NodeName';
 import { useNodeLabel, useNodeText } from '@/hooks/use-node-labels';
 import { formatVolumeBytes } from '@/lib/format-bytes';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 import type {
   DeliverabilityProbeSeverity,
   MailHealthBlocklistProbe,
@@ -579,20 +581,7 @@ function DeliverabilitySection({ d }: { readonly d: MailHealthDeliverabilityComp
             <ShieldAlert size={12} />
             Blocklists ({d.blocklists.length} checks across {new Set(d.blocklists.map((b) => b.list)).size} providers × {new Set(d.blocklists.map((b) => b.ip)).size} IPs)
           </div>
-          <table className="w-full text-xs">
-            <thead className="bg-gray-50 dark:bg-gray-900/30 text-gray-500 dark:text-gray-400">
-              <tr>
-                <th className="text-left px-3 py-1.5 font-medium">Node</th>
-                <th className="text-left px-3 py-1.5 font-medium">IP</th>
-                <th className="text-left px-3 py-1.5 font-medium">List</th>
-                <th className="text-left px-3 py-1.5 font-medium">Status</th>
-                <th className="text-left px-3 py-1.5 font-medium">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-              {d.blocklists.map((b) => <BlocklistRow key={`${b.ip}-${b.zone}`} probe={b} />)}
-            </tbody>
-          </table>
+          <BlocklistTable probes={d.blocklists} />
         </div>
       )}
     </div>
@@ -604,6 +593,39 @@ function reverseDnsTitle(p: MailHealthReverseDnsProbe): string {
   const family = p.family === 'ipv6' ? 'IPv6' : p.family === 'ipv4' ? 'IPv4' : null;
   const label = [p.node, family].filter(Boolean).join(' · ');
   return label ? `Reverse DNS — ${label} (${p.ip})` : `Reverse DNS (${p.ip})`;
+}
+
+/** The Status column sorts worst first — not the chip's words alphabetically. */
+const SEVERITY_RANK: Record<DeliverabilityProbeSeverity, number> = { fail: 0, warning: 1, advisory: 2, ok: 3, skipped: 4 };
+
+function BlocklistTable({ probes }: { readonly probes: readonly MailHealthBlocklistProbe[] }) {
+  const nodeLabel = useNodeLabel();
+  const accessors = useMemo<SortAccessors<MailHealthBlocklistProbe>>(() => ({
+    node: (b) => (b.node ? nodeLabel(b.node) : null),
+    severity: (b) => SEVERITY_RANK[b.severity],
+  }), [nodeLabel]);
+  // The server lists each address's checks together, the lists in their
+  // configured order; by node keeps that grouping (the sort is stable).
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(probes, 'node', 'asc', accessors);
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-3 py-1.5" className="text-left font-medium" />
+  );
+  return (
+    <table className="w-full text-xs">
+      <thead className="bg-gray-50 dark:bg-gray-900/30 text-gray-500 dark:text-gray-400">
+        <tr>
+          {header('Node', 'node')}
+          {header('IP', 'ip')}
+          {header('List', 'list')}
+          {header('Status', 'severity')}
+          <th className="text-left px-3 py-1.5 font-medium">Action</th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+        {sortedData.map((b) => <BlocklistRow key={`${b.ip}-${b.zone}`} probe={b} />)}
+      </tbody>
+    </table>
+  );
 }
 
 function BlocklistRow({ probe }: { readonly probe: MailHealthBlocklistProbe }) {
