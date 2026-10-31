@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.23-rc.2] - 2026-10-31
-
 ### Added
 
 - **WAF events are kept for 30 days, and a summary shows what to decide from them.** The WAF
@@ -225,6 +223,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   none reachable in those images, none fixed upstream yet; they are scoped ledger entries.
 
 ### Fixed
+
+- **Upgrades no longer cut the admin panel, tenant panel or API off for a moment.**
+  - Each rolls by starting a new pod and stopping the old one once the new one is ready. The old
+    one exited the instant it was told to stop, while Traefik still sent it requests for the
+    moment it takes to drop it.
+  - On staging, an upgrade showed a 502 at each swap. A probe at about 40 requests a second
+    counted 6–7 failed requests per admin-panel roll.
+  - The three now keep serving for 5 seconds after they are told to stop (the kubelet's own
+    `preStop` sleep), so no request is lost. That makes the upgrade review's claim true: a
+    short gap only if the new pod cannot start. Measured on staging: 0 failures in 7,932
+    requests over three rolls.
+- **The upgrade progress bar no longer jumps back.** It read 67% and then fell to 33% for a few
+  seconds while the API that reports the services' share was itself being replaced, because an
+  unknown share counted as 0. A run's bar now never shows less than it already did.
 
 - **Requiring a sign-in on a route works.** A signed-out visitor got a bare `Unauthorized`: the
   route asked oauth2-proxy's `/oauth2/auth`, which only answers 401 (the NGINX-era sign-in

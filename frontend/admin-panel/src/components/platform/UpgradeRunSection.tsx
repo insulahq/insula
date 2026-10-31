@@ -50,6 +50,22 @@ export function runPercent(run: UpgradeRun, servicesPercent: number | null): num
   return 100;
 }
 
+/**
+ * Pure: the percent to show for a run — never lower than what was already shown
+ * for the same run. The services' share is unknown for a moment when the API
+ * that reports it is itself replaced, and `null` counts as 0: the bar fell from
+ * 67% to 33% on staging and came back. A run only moves forward, so its bar does
+ * too; a different run starts from its own value.
+ */
+export function neverBackwards(
+  shown: { readonly runId: string; readonly percent: number } | null,
+  runId: string,
+  percent: number,
+): { readonly runId: string; readonly percent: number } {
+  if (!shown || shown.runId !== runId) return { runId, percent };
+  return percent > shown.percent ? { runId, percent } : shown;
+}
+
 const bare = (version: string | null | undefined): string => (version ?? '').replace(/^v/, '');
 
 /**

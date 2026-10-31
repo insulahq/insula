@@ -37,11 +37,13 @@ describe.skipIf(!dbAvailable)('WAF event retention and summary (integration)', (
   let tokenB = '';
 
   /** n rows on a route (or the platform hosts, routeId null), `ageSeconds` old. */
-  const insertRows = (routeId: string | null, n: number, ageSeconds: number, over: { rule?: string; uri?: string; ip?: string; detect?: boolean; host?: string } = {}) =>
+  /** `tx` gives the rows ModSecurity's transaction id (event_key `<tx>:<rule>`), as the scraper writes them. */
+  const insertRows = (routeId: string | null, n: number, ageSeconds: number, over: { rule?: string; uri?: string; ip?: string; detect?: boolean; host?: string; tx?: string } = {}) =>
     db().execute(sql`
-      INSERT INTO waf_logs (id, route_id, tenant_id, hostname, rule_id, severity, message, request_uri, request_method, source_ip, detection_only, created_at)
+      INSERT INTO waf_logs (id, route_id, tenant_id, hostname, rule_id, severity, message, request_uri, request_method, source_ip, detection_only, event_key, created_at)
       SELECT gen_random_uuid()::text, ${routeId}, NULL, ${over.host ?? 'a.example.test'}, ${over.rule ?? '941100'}, 'critical', 'XSS Attack Detected',
              ${over.uri ?? '/mod/forum/post.php?x=1'}, 'POST', ${over.ip ?? '192.0.2.10'}, ${over.detect ?? false},
+             CASE WHEN ${over.tx ?? null}::text IS NULL THEN NULL ELSE ${over.tx ?? null}::text || ':' || ${over.rule ?? '941100'} || ':' || g END,
              now() - make_interval(secs => ${ageSeconds}) - make_interval(secs => g * 0.001)
         FROM generate_series(1, ${n}) AS g`);
   const count = async (where = sql`TRUE`) =>
@@ -158,14 +160,18 @@ describe.skipIf(!dbAvailable)('WAF event retention and summary (integration)', (
 
   describe('summary', () => {
     const seedEvents = async () => {
-      // Four requests: three on the forum page (941100 + 941160 each), one H5P beacon (920420).
+      // Five requests: three on the forum page (941100 + 941160 each, blocked by
+      // the anomaly score), one H5P beacon (920420), and one body the WAF could
+      // not parse (200002) — refused without any 949110 row.
       for (let i = 0; i < 3; i += 1) {
-        await insertRows(ids.routeA, 1, 600 + i, { rule: '941100', ip: `192.0.2.${10 + (i % 2)}`, detect: i === 0 });
-        await insertRows(ids.routeA, 1, 600 + i, { rule: '941160', ip: `192.0.2.${10 + (i % 2)}`, detect: i === 0 });
-        await insertRows(ids.routeA, 1, 600 + i, { rule: '949110' });
+        const tx = `forum-${i}`;
+        await insertRows(ids.routeA, 1, 600 + i, { rule: '941100', ip: `192.0.2.${10 + (i % 2)}`, detect: i === 0, tx });
+        await insertRows(ids.routeA, 1, 600 + i, { rule: '941160', ip: `192.0.2.${10 + (i % 2)}`, detect: i === 0, tx });
+        await insertRows(ids.routeA, 1, 600 + i, { rule: '949110', tx });
       }
-      await insertRows(ids.routeA, 1, 700, { rule: '920420', uri: '/lib/ajax/service.php?sesskey=abc' });
-      await insertRows(ids.routeA, 1, 700, { rule: '949110', uri: '/lib/ajax/service.php?sesskey=abc' });
+      await insertRows(ids.routeA, 1, 700, { rule: '920420', uri: '/lib/ajax/service.php?sesskey=abc', tx: 'beacon' });
+      await insertRows(ids.routeA, 1, 700, { rule: '949110', uri: '/lib/ajax/service.php?sesskey=abc', tx: 'beacon' });
+      await insertRows(ids.routeA, 1, 710, { rule: '200002', uri: '/lib/ajax/service.php', tx: 'notjson' });
       // Outside a one-day window, and another tenant's route.
       await insertRows(ids.routeA, 1, 3 * 86_400, { rule: '942100', uri: '/old' });
       await insertRows(ids.routeB, 2, 600, { rule: '930130', host: 'b.example.test', uri: '/.env' });
@@ -174,11 +180,13 @@ describe.skipIf(!dbAvailable)('WAF event retention and summary (integration)', (
     it('groups a route\'s events by rule and path, without the scoring rule', async () => {
       await seedEvents();
       const s = await summarizeForRoute(db(), ids.routeA, 86_400);
-      expect(s.requests).toBe(4);
+      // Each request once, whichever rule refused it.
+      expect(s.requests).toBe(5);
       expect(s.truncated).toBe(false);
       // Most requests first (ties: most recent first).
-      expect(s.rows.map((r) => r.requests)).toEqual([3, 3, 1]);
+      expect(s.rows.map((r) => r.requests)).toEqual([3, 3, 1, 1]);
       expect(s.rows.map((r) => [r.ruleId, r.path, r.requests, r.detectionOnly, r.sourceIps]).sort()).toEqual([
+        ['200002', '/lib/ajax/service.php', 1, 0, 1],
         ['920420', '/lib/ajax/service.php', 1, 0, 1],
         ['941100', '/mod/forum/post.php', 3, 1, 2],
         ['941160', '/mod/forum/post.php', 3, 1, 2],
@@ -198,7 +206,7 @@ describe.skipIf(!dbAvailable)('WAF event retention and summary (integration)', (
       const url = `/api/v1/tenants/${ids.a}/routes/${ids.routeA}/waf-logs/summary?sinceSeconds=86400`;
       const own = await app.inject({ method: 'GET', url, headers: { authorization: `Bearer ${tokenA}` } });
       expect(own.statusCode).toBe(200);
-      expect(own.json().data.rows).toHaveLength(3);
+      expect(own.json().data.rows).toHaveLength(4);
       const other = await app.inject({
         method: 'GET',
         url: `/api/v1/tenants/${ids.b}/routes/${ids.routeA}/waf-logs/summary`,
