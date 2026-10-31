@@ -5,11 +5,14 @@
  *   POST   /api/v1/tenants/:tenantId/ziti-providers
  *   PATCH  /api/v1/tenants/:tenantId/ziti-providers/:pid
  *   DELETE /api/v1/tenants/:tenantId/ziti-providers/:pid
- *   POST   /api/v1/tenants/:tenantId/ziti-providers/:pid/test
  *
  * Auth: tenant_admin / super_admin / admin; a tenant token reaches its own
  * tenant only (requireTenantAccess), and handlers scope provider rows by
  * that id.
+ *
+ * There is no "test connection" route: it fetched any URL the caller sent and
+ * told them its status and body size — a probe of internal HTTP services
+ * through platform-api. No panel used it.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -72,46 +75,5 @@ export async function zitiProvidersRoutes(app: FastifyInstance): Promise<void> {
     const { tenantId, pid } = request.params as { tenantId: string; pid: string };
     await deleteProvider(app.db, tenantId, pid);
     return success({ deleted: true });
-  });
-
-  // Probes the controller's CA bundle endpoint to validate reachability.
-  // Doesn't persist or modify anything.
-  app.post('/tenants/:tenantId/ziti-providers/:pid/test', async (request) => {
-    const { tenantId: _cid, pid: _pid } = request.params as { tenantId: string; pid: string };
-    // For v1, the test just probes the configured controller URL —
-    // resolving the provider row first is unnecessary because the
-    // probe target comes from the request body. This avoids leaking
-    // enrollment JWTs into the test path.
-    const body = request.body as { controllerUrl?: string } | null;
-    const url = body?.controllerUrl;
-    if (!url) {
-      throw new ApiError('VALIDATION_ERROR', 'controllerUrl required', 400);
-    }
-    try {
-      const probe = `${url.replace(/\/+$/, '')}/.well-known/est/cacerts`;
-      const res = await fetch(probe, { method: 'GET', signal: AbortSignal.timeout(5000) });
-      if (!res.ok) {
-        return success({
-          ok: false,
-          controllerReachable: true,
-          caBundleBytes: null,
-          error: `controller responded ${res.status}`,
-        });
-      }
-      const text = await res.text();
-      return success({
-        ok: true,
-        controllerReachable: true,
-        caBundleBytes: text.length,
-        error: null,
-      });
-    } catch (err) {
-      return success({
-        ok: false,
-        controllerReachable: false,
-        caBundleBytes: null,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
   });
 }

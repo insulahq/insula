@@ -25,7 +25,7 @@
  */
 
 import { isIP } from 'node:net';
-import type { WafRuleExclusion } from '@insula/api-contracts';
+import { isPortablePathRegex, type WafRuleExclusion } from '@insula/api-contracts';
 
 export const DYNAMIC_RULE_ID_BASE = 9_001_000;
 export const DYNAMIC_RULE_ID_MAX = 9_001_999;
@@ -124,63 +124,126 @@ export interface RenderResult {
   readonly hash: string;
 }
 
+/** Matches the Content-Types `text_plain_as_json` accepts (after t:lowercase). */
+const TEXT_PLAIN_CONTENT_TYPE = '^text/plain(?:[\\s;]|$)';
+
+/**
+ * Refuse a regex that would break the SecRule string it is interpolated into.
+ * `"` closes the @rx argument, so the rest of the line would become rule text;
+ * a trailing `\` escapes the closing quote and crash-loops modsec-crs (the
+ * cluster-wide WAF outage the security review called out). Zod and the DB
+ * CHECKs refuse both first; this is the layer that cannot be bypassed by a
+ * direct DB write.
+ */
+const assertRenderable = (field: 'hostnameRegex' | 'pathRegex', value: string, ruleId: string): void => {
+  if (value.includes('"') || /[\r\n]/.test(value)) {
+    throw new Error(
+      `waf-rule-exclusions renderer: unsafe ${field} characters in row ${ruleId} — refusing to render`,
+    );
+  }
+  if (value.endsWith('\\')) {
+    throw new Error(
+      `waf-rule-exclusions renderer: trailing backslash in ${field} of row ${ruleId} — refusing to render (would crash modsec-crs)`,
+    );
+  }
+};
+
+/** The ctl: actions an exclusion's scope applies when its conditions match. */
+const ctlActions = (exclusion: Pick<WafRuleExclusion, 'ruleId' | 'scope'>): string[] => {
+  switch (exclusion.scope) {
+    case 'full_disable':
+      return [`ctl:ruleRemoveById=${exclusion.ruleId}`];
+    case 'args_names_only':
+      return [`ctl:ruleRemoveTargetById=${exclusion.ruleId};ARGS_NAMES`];
+    case 'text_plain_as_json':
+      // 920420 would refuse the type; JSON keeps the body inspected (a body
+      // that is not JSON fails as REQBODY_ERROR instead of passing unread).
+      return [`ctl:ruleRemoveById=${exclusion.ruleId}`, 'ctl:requestBodyProcessor=JSON'];
+    case 'args':
+      // 'args' removes BOTH the values and the names. Removing only ARGS_NAMES
+      // — which used to be the behaviour for every non-full_disable row — is a
+      // no-op for any rule that matches argument VALUES, so the exclusion
+      // rendered, loaded, and changed nothing while appearing to have worked.
+      //
+      // One element on one line, five spaces after the comma: the bytes every
+      // existing row already renders to (an earlier template literal ended the
+      // line in `\` + newline, which JS drops). The reconciler rolls the WAF
+      // on any change to the file, so a reformat would roll it on upgrade.
+      return [`ctl:ruleRemoveTargetById=${exclusion.ruleId};ARGS,     ctl:ruleRemoveTargetById=${exclusion.ruleId};ARGS_NAMES`];
+  }
+};
+
 /**
  * Render the SecRule snippet for one exclusion.
  * Caller is responsible for ensuring rowIndex < (DYNAMIC_RULE_ID_MAX - DYNAMIC_RULE_ID_BASE).
+ *
+ * A host-wide exclusion with a parameter scope is one rule. A path, or the
+ * text_plain_as_json scope, adds chained conditions; the ctl: actions sit on
+ * the LAST link, so they run only when every condition matched. (Verified on
+ * the CRS 4.30 image: both placements work, and a complete chain at the end
+ * of this file does not absorb the first rule of the next file.)
  */
 export const renderOneExclusion = (
-  exclusion: Pick<WafRuleExclusion, 'ruleId' | 'hostnameRegex' | 'scope' | 'reason' | 'createdBy'>,
+  exclusion: Pick<WafRuleExclusion, 'ruleId' | 'hostnameRegex' | 'scope' | 'reason' | 'createdBy'>
+    & Partial<Pick<WafRuleExclusion, 'pathRegex'>>,
   rowIndex: number,
 ): string => {
-  // Defense-in-depth: if `"` reaches the renderer despite the Zod +
-  // DB CHECK guards, refuse rather than emit a broken SecRule that
-  // would let the rest of the line escape the @rx string and crash
-  // modsec-crs (or worse, become an attacker-controlled SecRule body).
-  // Trailing backslash is blocked by the DB CHECK + Zod regexParseable.
-  if (exclusion.hostnameRegex.includes('"')) {
-    throw new Error(
-      `waf-rule-exclusions renderer: unsafe hostnameRegex characters in row ${exclusion.ruleId} — refusing to render`,
-    );
+  assertRenderable('hostnameRegex', exclusion.hostnameRegex, exclusion.ruleId);
+  const pathRegex = exclusion.pathRegex ?? null;
+  if (pathRegex !== null) {
+    assertRenderable('pathRegex', pathRegex, exclusion.ruleId);
+    // A pattern PCRE refuses fails the whole WAF config load; the API refuses
+    // it, and a row that got past the API is not rendered either (the
+    // reconciler then keeps the last good file).
+    if (!isPortablePathRegex(pathRegex)) {
+      throw new Error(
+        `waf-rule-exclusions renderer: pathRegex of row ${exclusion.ruleId} is not portable to PCRE — refusing to render (would fail the WAF config load)`,
+      );
+    }
   }
-  // Belt-and-braces against a row that somehow has a trailing backslash
-  // (bypassing every other layer). The PCRE parser crash this prevents
-  // is the cluster-wide WAF DoS the security review called out.
-  if (exclusion.hostnameRegex.endsWith('\\')) {
-    throw new Error(
-      `waf-rule-exclusions renderer: trailing backslash in row ${exclusion.ruleId} — refusing to render (would crash modsec-crs)`,
-    );
-  }
+
   const ruleId = DYNAMIC_RULE_ID_BASE + rowIndex;
-  // 'args' removes BOTH the values and the names. Removing only ARGS_NAMES —
-  // which used to be the behaviour for every non-full_disable row — is a no-op
-  // for any rule that matches argument VALUES, so the exclusion rendered,
-  // loaded, and changed nothing while appearing to have worked.
-  const ctl =
-    exclusion.scope === 'full_disable'
-      ? `ctl:ruleRemoveById=${exclusion.ruleId}`
-      : exclusion.scope === 'args_names_only'
-        ? `ctl:ruleRemoveTargetById=${exclusion.ruleId};ARGS_NAMES`
-        : `ctl:ruleRemoveTargetById=${exclusion.ruleId};ARGS,\
-     ctl:ruleRemoveTargetById=${exclusion.ruleId};ARGS_NAMES`;
+  const ctl = ctlActions(exclusion);
+
+  // Conditions after the host, each one chained link.
+  const links: Array<{ variable: string; operator: string; transforms: string[] }> = [];
+  if (pathRegex !== null) {
+    links.push({ variable: 'REQUEST_FILENAME', operator: `@rx ${pathRegex}`, transforms: ['t:none'] });
+  }
+  if (exclusion.scope === 'text_plain_as_json') {
+    links.push({ variable: 'REQUEST_HEADERS:Content-Type', operator: `@rx ${TEXT_PLAIN_CONTENT_TYPE}`, transforms: ['t:none', 't:lowercase'] });
+  }
 
   // Multi-line comment header so operators can grep the .conf for the reason.
   // Strip any CR/LF from reason just in case (DB CHECK constraint blocks newlines,
   // but defensive belt-and-braces here).
   const safeReason = exclusion.reason.replace(/[\r\n]+/g, ' ').slice(0, 256);
   const safeCreatedBy = exclusion.createdBy.replace(/[\r\n"]+/g, '_').slice(0, 64);
+  const where = pathRegex === null ? exclusion.hostnameRegex : `${exclusion.hostnameRegex} path ${pathRegex}`;
 
   // Trailing `\\` after each line is the CRS/ModSecurity continuation marker.
-  // The final line has NO trailing `\\` so the SecRule terminates.
-  return [
-    `# rule ${exclusion.ruleId} for ${exclusion.hostnameRegex} — ${safeReason} (by ${safeCreatedBy})`,
+  // The final line of each SecRule has NO trailing `\\` so the SecRule terminates.
+  const lines = [
+    `# rule ${exclusion.ruleId} for ${where} — ${safeReason} (by ${safeCreatedBy})`,
     `SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ${exclusion.hostnameRegex}" \\`,
-    `    "id:${ruleId},\\`,
-    `     phase:1,\\`,
-    `     pass,\\`,
-    `     nolog,\\`,
-    `     ${ctl}"`,
-  ].join('\n');
+  ];
+  const starter = [`id:${ruleId}`, 'phase:1', 'pass', 'nolog', ...(links.length === 0 ? ctl : ['chain'])];
+  lines.push(...actionLines(starter, '    ', '     '));
+  links.forEach((link, i) => {
+    const last = i === links.length - 1;
+    lines.push(`    SecRule ${link.variable} "${link.operator}" \\`);
+    lines.push(...actionLines([...link.transforms, ...(last ? ctl : ['chain'])], '        ', '         '));
+  });
+  return lines.join('\n');
 };
+
+/** One action per line: `"a,\`, `b,\`, …, `z"` — the layout every rule in this file uses. */
+const actionLines = (actions: string[], firstIndent: string, indent: string): string[] =>
+  actions.map((action, i) => {
+    const open = i === 0 ? `${firstIndent}"` : indent;
+    const close = i === actions.length - 1 ? '"' : ',\\';
+    return `${open}${action}${close}`;
+  });
 
 /**
  * Render all enabled exclusions into one .conf body + sha256 hash.
@@ -237,9 +300,8 @@ export const renderExclusions = (
   };
 };
 
-// Local sha256 — module-scoped so renderer.ts has zero non-test imports
-// other than the contracts type (which is types-only and tree-shakes
-// to nothing in JS).
+// Local sha256 — module-scoped so renderer.ts imports nothing beyond node
+// built-ins and the contracts (the row type and isPortablePathRegex).
 import { createHash } from 'node:crypto';
 
 const sha256Hex = (input: string): string => createHash('sha256').update(input).digest('hex');

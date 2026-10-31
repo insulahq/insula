@@ -12,10 +12,67 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.10.23-rc.1] - 2026-10-30
+### Added
+
+- **WAF events are kept for 30 days, and a summary shows what to decide from them.** The WAF
+  log kept only the newest 50 events per site (500 for all platform hosts together), trimmed
+  every 30 seconds. A site in detection-only mode, the dry run before enforcing, showed its last
+  few minutes: one site logged 736 would-block requests in a day and WAF Logs showed 50. The
+  trim also deleted rows before CrowdSec auto-ban had judged them, so a flood on one site could
+  escape it.
+  - Events are now kept by age, 30 days by default, set under **WAF Settings → WAF event
+    retention** (1–365 days). A flood limit of 20,000 events per site and 50,000 for the
+    platform hosts removes the oldest first, but never events auto-ban still has to judge
+    (younger than 15 minutes, or than its window plus 10 minutes when that is longer). Pruning
+    runs every 10 minutes in batches.
+  - **WAF Events → Summary by rule and path**, and the summary at the top of a route's **WAF
+    Log** in the tenant panel, group events by rule and request path. Each row shows requests,
+    how many were only detected, distinct IPs and when it was last seen, plus a button that
+    opens the exclusion dialog with the rule, host, path and a scope that fits the rule. For
+    example, `text_plain_as_json` for 920420 and `full_disable` for header and multipart rules,
+    where `args` would change nothing.
+- **A WAF exclusion can be limited to one path.** Exclusions covered a whole host, so a rule that
+  false-positived on one endpoint had to be switched off for the entire site. An exclusion now
+  takes an optional path regex (matched against the request path without the query string; it
+  must start with `^/`), in the admin panel's Web Defense dialog and on a tenant route's WAF
+  Exclusions panel alike. The admin dialog offers the WAF event's own path with one click. The
+  same rule can be excluded on several paths of a host, or host-wide and on a path. Rows without
+  a path render exactly as before, so upgrading does not restart the WAF. The WAF compiles the
+  regex with PCRE, and a pattern PCRE cannot compile would stop it loading its rules for every
+  site. So only syntax both engines read alike is accepted; lookarounds, named groups,
+  back-references and letter escapes other than `\d \w \s` are refused, by the API and again by
+  the renderer.
+- **Rule 920420 can accept `text/plain` bodies and still inspect them** (new scope
+  `text_plain_as_json`). Browsers send `navigator.sendBeacon` data as `text/plain`, and apps put
+  JSON in it: Moodle saves H5P progress this way, and 920420 ("content type not allowed")
+  refused every save. Switching 920420 off is not a fix. The WAF parses only body types it
+  knows, so with the rule off any body could be sent as an unparsed type and never be
+  inspected, while an app that reads the raw body (Moodle's AJAX endpoint does) still
+  processes it. The new scope removes 920420 only for `text/plain` requests and has the WAF
+  parse their body as JSON. A body that is not JSON is blocked, and every other unlisted type
+  is still refused. It is accepted for rule 920420 only (the API, the panels and a database
+  CHECK all refuse it on any other rule).
 
 ### Security
 
+- **The zrok and OpenZiti provider "test connection" API routes are removed.**
+  `POST /tenants/:tenantId/zrok-providers/:pid/test` and `…/ziti-providers/:pid/test` fetched
+  whatever controller URL the request sent, from platform-api, and answered with the result. zrok
+  returned the response body, ziti its status and size. So any tenant administrator could read or
+  probe HTTP services inside the cluster or on the platform's networks. Ending the URL in `?`
+  turned the appended version path into a query string. No panel called either route. The tunnel
+  agents in the tenant's own namespace are what talk to the controller, so nothing else changes.
+- **A tenant can no longer manage another tenant's password-protected folders or read its WAF
+  log.** The routes for a protected folder's users (list, add, enable/disable, delete, change
+  password), the route's folder list and its WAF log checked the tenant id in the URL against the
+  caller but looked the route and folder up by their own ids alone. Anyone who knew another
+  tenant's route or folder id could put it after their own tenant id and add themselves a login
+  to that folder, lock out or delete its users, reset their passwords, or read the route's WAF
+  events (visitor IPs and request URIs). Every one of them now checks that the route belongs to
+  the tenant and the folder to the route, and answers 404 otherwise. The ids are random UUIDs
+  that the panels never show to another tenant, which limited the exposure. To look for past use,
+  check the audit log for writes to `…/protected-dirs/…/users…` whose tenant id does not own the
+  route in the path.
 - **A tenant can no longer read or change another tenant's route sign-in, mTLS, network-access,
   Ziti or zrok settings.** Six API modules (route OIDC, OIDC providers, route mTLS, deployment
   network access, Ziti providers, zrok providers) checked that the caller was a tenant

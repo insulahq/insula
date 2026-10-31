@@ -40,7 +40,7 @@ const TABS: ReadonlyArray<{ readonly id: TabId; readonly label: string; readonly
   { id: 'waf', label: 'WAF Events', hint: 'Cluster-wide ModSec/CRS event stream' },
   { id: 'bans', label: 'Banned IPs', hint: 'Active bans — operator (timed or permanent) and auto-bans' },
   { id: 'exclusions', label: 'WAF Exclusions', hint: 'Per-route CRS rule exclusions + IP allowlist' },
-  { id: 'settings', label: 'WAF Settings', hint: 'CrowdSec status, auto-ban, L4 enforcement' },
+  { id: 'settings', label: 'WAF Settings', hint: 'CrowdSec status, event retention, auto-ban, L4 enforcement' },
 ];
 
 export default function WebDefensePage() {

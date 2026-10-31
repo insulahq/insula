@@ -99,7 +99,8 @@ export function parseRuleIds(raw: string | undefined): string[] {
     .slice(0, 50);
 }
 
-function buildFilters(query: WafEventsQuery) {
+/** The Events tab's filters as SQL — shared with the summary, so both show the same rows. */
+export function buildFilters(query: WafEventsQuery) {
   const filters = [];
   const ruleIds = parseRuleIds(query.ruleId);
   if (ruleIds.length > 0) filters.push(inArray(wafLogs.ruleId, ruleIds));

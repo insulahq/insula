@@ -23,11 +23,12 @@
  * "No ingress controller pod found" 60x/minute.
  */
 
-import { eq, and, inArray, desc, notInArray, sql, isNull } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import crypto from 'crypto';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { wafLogs, ingressRoutes, domains, platformSettings } from '../../db/schema.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
+import { createWafLogPruner } from '../waf-logs/retention.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -45,10 +46,6 @@ const LOG_SINCE_SECONDS = 35;
 const TAKEOVER_SINCE_SECONDS = 180;
 /** Where the scraping replica publishes its status for the others to serve. */
 const STATUS_SETTING_KEY = 'waf-scraper-status';
-const MAX_LOGS_PER_ROUTE = 50;
-// Admin/api/client/platform hosts have route_id=NULL. Cap them as one global
-// bucket so a single noisy admin endpoint can't flood the table.
-const MAX_LOGS_FOR_ADMIN_HOSTS = 500;
 // Field caps mirror the api-contracts Zod schema — bound DB row size against
 // attacker-controlled requestUri / message stuffing.
 const MAX_REQUEST_URI_LEN = 2048;
@@ -558,11 +555,9 @@ export async function scrapeWafLogs(
   // sourceIp='0.0.0.0'. When the JSON line arrives on the next cycle the
   // conflicting write now REPAIRS those placeholders instead of being dropped.
   // Guarded so a later, worse read can never overwrite good data.
-  let adminHostsTouched = false;
   for (const event of events) {
     const route = routeMap.get(event.hostname);
     const tenantId = route ? tenantMap.get(route.domainId) ?? null : null;
-    if (!route) adminHostsTouched = true;
 
     try {
       const values = {
@@ -617,61 +612,10 @@ export async function scrapeWafLogs(
     }
   }
 
-  // 5a. Prune old logs (keep last MAX_LOGS_PER_ROUTE per route).
-  for (const route of routes) {
-    try {
-      const [{ count: logCount }] = await db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(wafLogs)
-        .where(eq(wafLogs.routeId, route.id));
-
-      if (Number(logCount ?? 0) > MAX_LOGS_PER_ROUTE) {
-        const keepRows = await db
-          .select({ id: wafLogs.id })
-          .from(wafLogs)
-          .where(eq(wafLogs.routeId, route.id))
-          .orderBy(desc(wafLogs.createdAt))
-          .limit(MAX_LOGS_PER_ROUTE);
-
-        const keepIds = keepRows.map(r => r.id);
-        if (keepIds.length > 0) {
-          await db.delete(wafLogs).where(
-            and(eq(wafLogs.routeId, route.id), notInArray(wafLogs.id, keepIds)),
-          );
-        }
-      }
-    } catch {
-      // Non-fatal — pruning failure shouldn't break the scraper
-    }
-  }
-
-  // 5b. Prune admin-host bucket (route_id IS NULL) — capped globally.
-  if (adminHostsTouched) {
-    try {
-      const [{ count: adminCount }] = await db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(wafLogs)
-        .where(isNull(wafLogs.routeId));
-
-      if (Number(adminCount ?? 0) > MAX_LOGS_FOR_ADMIN_HOSTS) {
-        const keepRows = await db
-          .select({ id: wafLogs.id })
-          .from(wafLogs)
-          .where(isNull(wafLogs.routeId))
-          .orderBy(desc(wafLogs.createdAt))
-          .limit(MAX_LOGS_FOR_ADMIN_HOSTS);
-
-        const keepIds = keepRows.map(r => r.id);
-        if (keepIds.length > 0) {
-          await db.delete(wafLogs).where(
-            and(isNull(wafLogs.routeId), notInArray(wafLogs.id, keepIds)),
-          );
-        }
-      }
-    } catch {
-      // Non-fatal
-    }
-  }
+  // Retention is not this cycle's job any more: rows used to be trimmed here to
+  // the newest 50 per route on every cycle, which kept a detection dry run's
+  // last minutes and deleted rows before auto-ban had judged them. The leased
+  // loop below runs pruneWafLogs (waf-logs/retention.ts) every 10 minutes.
 
   return { scraped, inserted, errors };
 }
@@ -689,6 +633,8 @@ export function startWafLogScraper(
   // Whether THIS replica ran the previous cycle — the first cycle after a
   // takeover reads a wider window (see TAKEOVER_SINCE_SECONDS).
   let ranLastCycle = false;
+  // Retention: every 10 minutes, at most one at a time (waf-logs/retention.ts).
+  const pruner = createWafLogPruner(db);
 
   const scrapeCycle = async () => {
     try {
@@ -713,6 +659,9 @@ export function startWafLogScraper(
         console.warn('[waf-log-scraper] status publish failed:', err instanceof Error ? err.message : String(err));
       });
     }
+    // Started by the lease holder, so one replica prunes; not awaited, so a
+    // long prune never delays the next scrape.
+    void pruner.tick();
   };
 
   // One replica scrapes. Three replicas each read every modsec pod's logs

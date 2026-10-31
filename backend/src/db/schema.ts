@@ -1434,6 +1434,8 @@ export const wafLogs = pgTable('waf_logs', {
 }, (table) => [
   uniqueIndex('waf_logs_event_key_uniq').on(table.eventKey),
   index('waf_logs_route_idx').on(table.routeId),
+  // 0169: a route's rows newest-first — the retention ceiling and the tenant summary.
+  index('waf_logs_route_created_idx').on(table.routeId, table.createdAt),
   index('waf_logs_tenant_idx').on(table.tenantId),
   index('waf_logs_created_idx').on(table.createdAt),
   // Keyset cursor for the auto-ban scheduler: (created_at, id) ordering with
@@ -1452,6 +1454,8 @@ export const wafRuleExclusions = pgTable('waf_rule_exclusions', {
   id: varchar('id', { length: 36 }).primaryKey(),
   ruleId: varchar('rule_id', { length: 16 }).notNull(),
   hostnameRegex: varchar('hostname_regex', { length: 255 }).notNull(),
+  // 0168: narrows the exclusion to matching request paths; NULL = every path.
+  pathRegex: varchar('path_regex', { length: 255 }),
   scope: varchar('scope', { length: 32 }).notNull(),
   reason: text('reason').notNull(),
   createdBy: varchar('created_by', { length: 255 }).notNull(),

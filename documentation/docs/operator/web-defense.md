@@ -20,10 +20,10 @@ You manage both from **Security → Web Defense** (`super_admin`).
 
 | Tab | What it's for |
 |---|---|
-| **WAF Events** | Cluster-wide stream of WAF/CRS detections, with per-source-IP **Ban IP** and **Allowlist IP** buttons |
+| **WAF Events** | Cluster-wide stream of WAF/CRS detections, with per-source-IP **Ban IP** and **Allowlist IP** buttons, and a **Summary by rule and path** |
 | **Banned IPs** | Every address the platform is banning — your timed and permanent bans, and the auto-bans |
 | **WAF Exclusions** | Per-route CRS rule exclusions + an IP allowlist |
-| **WAF Settings** | CrowdSec status, the community blocklist, WAF auto-ban, Malicious Traffic Detection, the L4 host-firewall toggle, CrowdSec Console enrollment |
+| **WAF Settings** | CrowdSec status, WAF event retention, the community blocklist, WAF auto-ban, Malicious Traffic Detection, the L4 host-firewall toggle, CrowdSec Console enrollment |
 
 ## WAF: OWASP CRS per route
 
@@ -42,6 +42,26 @@ The WAF runs the OWASP Core Rule Set. Each route can be in one of three modes:
     a tenant route on deliberately, ideally via **DETECTION_ONLY** first to find
     false positives before you block.
 
+### A detection dry run, and reading it
+
+Run a new site in **DETECTION_ONLY** against its real traffic for a week or two —
+long enough to include its less frequent work (for a school: course building and
+grading, not just a quiz day). Then open **WAF Events → Summary by rule and
+path**, filtered to the site's host. Each row is one rule on one request path:
+how many requests matched it, from how many IPs, how many were only detected, and
+when it was last seen. Scanners probing for `.env` or `.git` show up here too;
+those are the WAF doing its job, not exceptions to add. For a genuine false
+positive, **Whitelist on this path** opens the exclusion dialog with the rule,
+the host, the path and a fitting scope filled in (see below). Tenants see the
+same summary for their own site under the route's **WAF Log**.
+
+Events are kept for **30 days** by default; change it under **WAF Settings →
+WAF event retention** (1–365 days). Two flood limits apply on top: at most
+20,000 events per site and 50,000 for the platform's own hosts together — the
+oldest go first. Events younger than 15 minutes (longer if auto-ban's window is
+set longer) are never removed by those limits, so auto-ban always sees a flood
+whole.
+
 ### Tuning false positives with exclusions
 
 When a legitimate request trips a rule, you don't disable the whole WAF — you add
@@ -56,6 +76,36 @@ off for matching hosts:
 | `args` | Stops the rule inspecting request parameters — both names and values. The rule still scans the URI, headers, cookies and body, and every other rule stays fully active. | **The default.** Almost always what "whitelist this rule for this host" means. |
 | `args_names_only` | Stops the rule inspecting parameter *names* only. | Rare. Only correct when the rule matches a field *name*. |
 | `full_disable` | Disables the rule entirely for matching hosts. | Last resort. |
+| `text_plain_as_json` | Rule **920420** only. Accepts a `text/plain` body and has the WAF parse it as JSON, so the body is still inspected. Other body types are still refused, and a `text/plain` body that is not JSON is blocked. | Browser *beacons* (`navigator.sendBeacon`) that post JSON as `text/plain` — Moodle saves H5P progress this way. |
+
+!!! warning "Do not switch 920420 off for a host"
+    920420 refuses request body types the WAF cannot parse. With it off, a
+    client can send any body as an unparsed type, and the WAF never inspects
+    it — while an app that reads the raw body (Moodle's AJAX endpoint does)
+    still processes it. Use `text_plain_as_json`, limited to the endpoint
+    that needs it.
+
+#### Limit an exclusion to one path
+
+An exclusion covers every path of the host unless you give it a **path regex**.
+The regex is matched against the URL-decoded request path without the query
+string. A path the client wrote in another form (`//`, `/./`, `/../`, a trailing
+`/`, other letter case) does not match, so such a request keeps the full rule.
+It must start with `^/`; end it with `$` to match one path
+exactly — `^/lib/ajax/service\.php$` matches that endpoint and nothing else,
+while `^/mod/` matches everything under `/mod/`. In **WAF Events**, the
+**Whitelist** dialog offers the event's own path with one click.
+
+The WAF compiles the regex with PCRE, so only syntax that PCRE and the panel's
+check read the same way is accepted: literal characters, `.` `*` `+` `?` `|`,
+groups `( )` and `(?: )`, classes `[...]`, `{n}` / `{n,}` / `{n,m}`, `^` `$`,
+`\d` `\w` `\s` (and their capitals) and a backslash before punctuation.
+Lookarounds, named groups, back-references and other escapes are refused —
+a pattern PCRE could not compile would stop the WAF loading its rules for every
+site.
+
+A host-wide exclusion and path exclusions for the same rule can exist side by
+side; the same rule, scope and path on one host can exist only once.
 
 !!! warning "`args_names_only` does nothing for most rules"
     Most CRS rules match parameter **values**, not parameter names — 930120
@@ -69,7 +119,8 @@ off for matching hosts:
     Tenants can manage CRS exclusions for *their own* routes from the tenant
     panel. The platform forces each tenant exclusion to a hostname regex
     matching exactly that route's hostname, so a tenant can never write an
-    exclusion that affects another tenant's traffic.
+    exclusion that affects another tenant's traffic. A tenant may narrow its
+    exclusion further with a path regex.
 
 ### Deploys, cron jobs and the app terminal are never WAF-blocked
 
