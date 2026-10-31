@@ -58,10 +58,11 @@ class Run:
             key = (e["variant"], e["phase"])
             w = self.windows.setdefault(key, [None, None])
             w[0 if e["event"] == "start" else 1] = e["t"]
-        self.samples = defaultdict(list)  # (pod, container) → [(t, cpu_ns, ws)]
+        self.samples = defaultdict(list)  # (pod, container) → [(t, cpu_ns, ws, rss)]
         for s in jsonl(f"{d}/samples.jsonl"):
             if "pod" in s and s.get("cpu_ns") is not None:
-                self.samples[(s["pod"], s["container"])].append((s["t"], s["cpu_ns"], s.get("ws") or 0))
+                self.samples[(s["pod"], s["container"])].append((s["t"], s["cpu_ns"], s.get("ws") or 0,
+                                                                  s.get("rss") or 0))
         self.sizes = jsonl(f"{d}/sizes.jsonl")
 
     def phase(self, v, p):
@@ -73,8 +74,10 @@ class Run:
         except ValueError:
             return None
 
-    def usage(self, v, p):
-        """{group: (cpu_seconds, peak_working_set_bytes)} inside the phase window."""
+    def usage(self, v, p, mem="ws"):
+        """{group: (cpu_seconds, peak memory bytes)} inside the phase window. mem="ws" is the working
+        set (what the cgroup limit sees, page cache included), "rss" the process's own memory: with
+        FileSystem blobs the two differ by the blob files' page cache (0.19 vs 1.98 GiB on DEV)."""
         w = self.windows.get((v, p))
         if not w or None in w:
             return {}
@@ -84,13 +87,13 @@ class Run:
             if g is None:
                 continue
             prev = None
-            for t, cpu, ws in xs:
+            for t, cpu, ws, rss in xs:
                 if t < w[0] - 5 or t > w[1] + 5:
                     prev = (t, cpu) if t < w[0] else prev
                     continue
                 if prev is not None and cpu >= prev[1]:
                     out[g][0] += (cpu - prev[1]) / 1e9
-                out[g][1] = max(out[g][1], ws)
+                out[g][1] = max(out[g][1], rss if mem == "rss" else ws)
                 prev = (t, cpu)
         return {g: (round(c, 1), m) for g, (c, m) in out.items()}
 
@@ -170,15 +173,23 @@ def main():
         ua = r.usage(v, "append")
         cpu = sum(c for g, (c, _) in ua.items() if g == "stalwart" or g in stores_of(v))
         n = (a or {}).get("messages") or 0
+        peaks = {"ws": 0, "rss": 0, "pg": 0}
+        for ph in ("append", "smtp", "imap-read", "jmap-read", "big", "mixed"):
+            for mem in ("ws", "rss"):
+                peaks[mem] = max(peaks[mem], r.usage(v, ph, mem).get("stalwart", (0, 0))[1])
+            peaks["pg"] = max(peaks["pg"], r.usage(v, ph).get("postgres", (0, 0))[1])
         rows.append([v, (a or {}).get("msg_per_s"), (a or {}).get("mb_per_s"), lat(a, "append", "p50"),
                      lat(a, "append"), round(cpu / n * 1000, 1) if n else None,
                      (s or {}).get("accept_msg_per_s"), (s or {}).get("stored_msg_per_s"),
                      lat(s, "deliver", "p50"), lat(s, "deliver"),
-                     gib(ua.get("stalwart", (0, None))[1]),
-                     gib(ua.get("postgres", (0, None))[1]) if "postgres" in stores_of(v) else "–"])
+                     f"{gib(peaks['rss'])} / {gib(peaks['ws'])}",
+                     gib(peaks["pg"]) if "postgres" in stores_of(v) else "–"])
     out += ["## Ingest", "", table(["variant", "APPEND msg/s", "MB/s", "p50 ms", "p95 ms",
                                     "CPU-s / 1k msgs", "SMTP accepted msg/s", "stored msg/s",
-                                    "deliver p50 ms", "p95 ms", "Stalwart peak GiB", "PG peak GiB"], rows), ""]
+                                    "deliver p50 ms", "p95 ms", "Stalwart peak RSS / working set GiB",
+                                    "PG peak GiB"], rows), "",
+            "Peaks over ingest, reads and the mixed load. The working set includes page cache (blob files on "
+            "a FileSystem store) and is what the container limit counts.", ""]
 
     for kind, ops in (("imap", ["select", "fetch_headers", "fetch_body", "search_subject", "search_body",
                                 "store_flag", "login"]),
@@ -316,7 +327,7 @@ def main():
                              sum(d.get("errors", {}).values())])
         f = r.phase(v, "smtp-failover") or {}
         out += ["## Two-node cluster", "", table(["IDLE probe", "p50 ms", "p95 ms", "notices", "missed"], rows),
-                "", f"- SMTP with one pod deleted after 60 s: accepted {f.get('accepted')}, stored "
+                "", f"- SMTP with one pod deleted during the ingest: accepted {f.get('accepted')}, stored "
                     f"{f.get('stored')}, session errors {sum(f.get('errors', {}).values()) if f else '–'}", ""]
     print("\n".join(out))
 
