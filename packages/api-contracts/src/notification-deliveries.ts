@@ -49,5 +49,7 @@ export const listNotificationDeliveriesQuerySchema = z.object({
   sinceSeconds: z.coerce.number().int().min(60).max(7 * 24 * 3600).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().optional(),
+  /** `field:asc|desc` — queuedAt, channel, categoryId, status, recipientHash, attempt, lastError. Default queuedAt:desc. */
+  sort: z.string().max(64).optional(),
 });
 export type ListNotificationDeliveriesQuery = z.infer<typeof listNotificationDeliveriesQuerySchema>;

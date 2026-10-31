@@ -20,21 +20,11 @@
 import { createNotificationMuteSchema, deleteNotificationMuteSchema } from '@insula/api-contracts';
 import { parseBody } from '../../shared/validate-body.js';
 import type { FastifyInstance } from 'fastify';
-import { eq, and, desc, lt, gt } from 'drizzle-orm';
+import { eq, and, gt, getTableColumns } from 'drizzle-orm';
 import { authenticate, requirePanel, requireRole } from '../../middleware/auth.js';
 import { success, paginated } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import {
-  updateNotificationCategorySchema,
-  updateNotificationTemplateSchema,
-  previewNotificationTemplateSchema,
-  listNotificationDeliveriesQuerySchema,
-  createNotificationProviderSchema,
-  updateNotificationProviderSchema,
-  testNotificationProviderSchema,
-  NOTIFICATION_CHANNEL_ID,
-  isNotificationChannelId,
-} from '@insula/api-contracts';
+import { updateNotificationCategorySchema, updateNotificationTemplateSchema, previewNotificationTemplateSchema, listNotificationDeliveriesQuerySchema, createNotificationProviderSchema, updateNotificationProviderSchema, testNotificationProviderSchema, NOTIFICATION_CHANNEL_ID, isNotificationChannelId } from '@insula/api-contracts';
 import * as categoryService from './categories/service.js';
 import * as templateService from './templates/service.js';
 import * as providerService from './providers/service.js';
@@ -43,6 +33,18 @@ import { notificationDeliveries } from '../../db/schema.js';
 import { enqueueDelivery } from './queue/enqueue.js';
 import type { CoreV1Api } from '@kubernetes/client-node';
 import { registerRawBodyParser } from '../custom-deployments/raw-body-transport.js';
+import { encodeListCursor, listCursorCondition, listOrderBy, listSortKeySelect, resolveListSort, type SortFields } from '../../shared/list-sort.js';
+
+/** Columns the delivery log sorts by on the server — what the table shows. */
+const DELIVERY_SORT_FIELDS: SortFields = {
+  queuedAt: { expr: notificationDeliveries.queuedAt, kind: 'timestamptz' },
+  channel: { expr: notificationDeliveries.channel, kind: 'text' },
+  categoryId: { expr: notificationDeliveries.categoryId, kind: 'text' },
+  status: { expr: notificationDeliveries.status, kind: 'text' },
+  recipientHash: { expr: notificationDeliveries.recipientHash, kind: 'text' },
+  attempt: { expr: notificationDeliveries.attempt, kind: 'numeric' },
+  lastError: { expr: notificationDeliveries.lastError, kind: 'text' },
+};
 
 const PROVIDERS_RATE_LIMIT_ERR =
   'PLATFORM_ENCRYPTION_KEY is required for notification provider operations (credential encryption)';
@@ -188,6 +190,7 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
       );
     }
     const q = parsed.data;
+    const sort = resolveListSort(q.sort, DELIVERY_SORT_FIELDS, { field: 'queuedAt', direction: 'desc' });
     const conditions = [];
     if (q.channel) conditions.push(eq(notificationDeliveries.channel, q.channel));
     if (q.status) conditions.push(eq(notificationDeliveries.status, q.status));
@@ -197,22 +200,22 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
       const cutoff = new Date(Date.now() - q.sinceSeconds * 1000);
       conditions.push(gt(notificationDeliveries.queuedAt, cutoff));
     }
-    if (q.cursor) {
-      const cursorDate = new Date(q.cursor);
-      if (!Number.isNaN(cursorDate.getTime())) {
-        conditions.push(lt(notificationDeliveries.queuedAt, cursorDate));
-      }
-    }
+    const after = listCursorCondition(q.cursor, 'notification_delivery', sort, DELIVERY_SORT_FIELDS, notificationDeliveries.id);
+    if (after) conditions.push(after);
 
     const rows = await app.db
-      .select()
+      .select({ ...getTableColumns(notificationDeliveries), sortKey: listSortKeySelect(sort, DELIVERY_SORT_FIELDS) })
       .from(notificationDeliveries)
       .where(conditions.length > 0 ? and(...conditions) : undefined)
-      .orderBy(desc(notificationDeliveries.queuedAt))
+      .orderBy(...listOrderBy(sort, DELIVERY_SORT_FIELDS, notificationDeliveries.id))
       .limit(q.limit + 1);
 
     const hasMore = rows.length > q.limit;
-    const data = rows.slice(0, q.limit).map((r) => ({
+    const page = rows.slice(0, q.limit);
+    const nextCursor = hasMore && page.length > 0
+      ? encodeListCursor('notification_delivery', sort, page[page.length - 1])
+      : null;
+    const data = page.map((r) => ({
       id: r.id,
       notificationId: r.notificationId,
       eventId: r.eventId,
@@ -237,9 +240,8 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
       deliveredAt: r.deliveredAt?.toISOString() ?? null,
       failedAt: r.failedAt?.toISOString() ?? null,
     }));
-    const last = data[data.length - 1];
     return paginated(data, {
-      cursor: hasMore && last ? last.queuedAt : null,
+      cursor: nextCursor,
       has_more: hasMore,
       page_size: q.limit,
     });

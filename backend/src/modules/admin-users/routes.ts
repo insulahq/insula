@@ -1,25 +1,28 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { eq, and, inArray, sql, desc, lt, or, ilike } from 'drizzle-orm';
+import { eq, and, inArray, sql, or, ilike } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { randomUUID } from 'node:crypto';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { auditLogs, refreshTokens, users, userPasskeys, userTotp, tenants } from '../../db/schema.js';
 import { clearTotp } from '../auth/totp-service.js';
-import { createAdminUserSchema, updateAdminUserSchema,
-  bulkDeleteAdminUsersSchema,
-} from '@insula/api-contracts';
+import { createAdminUserSchema, updateAdminUserSchema, bulkDeleteAdminUsersSchema } from '@insula/api-contracts';
 import { eraseUserNotifications } from '../notifications/retention/gdpr-erasure.js';
 import { success, paginated } from '../../shared/response.js';
 import { parseBody } from '../../shared/validate-body.js';
 import { ApiError } from '../../shared/errors.js';
-import { parsePaginationParams, encodeCursor, decodeCursor } from '../../shared/pagination.js';
-import {
-  findSessionIdByHash,
-  hashRefreshToken,
-  listActiveSessionsForUser,
-  revokeAllUserRefreshTokens,
-  revokeRefreshTokenById,
-} from '../auth/refresh-token-service.js';
+import { parsePaginationParams } from '../../shared/pagination.js';
+import { findSessionIdByHash, hashRefreshToken, listActiveSessionsForUser, revokeAllUserRefreshTokens, revokeRefreshTokenById } from '../auth/refresh-token-service.js';
+import { encodeListCursor, listCursorCondition, listOrderBy, listSortKeySelect, resolveListSort, withoutSortKey, type SortFields } from '../../shared/list-sort.js';
+
+/** Columns the admin Users list sorts by on the server — every column it shows. */
+const TENANT_USER_SORT_FIELDS: SortFields = {
+  email: { expr: users.email, kind: 'text' },
+  tenantName: { expr: tenants.name, kind: 'text' },
+  roleName: { expr: users.roleName, kind: 'text' },
+  status: { expr: users.status, kind: 'text' },
+  lastLoginAt: { expr: users.lastLoginAt, kind: 'timestamp' },
+  createdAt: { expr: users.createdAt, kind: 'timestamp' },
+};
 
 // Tightened UUID regex — the loose [0-9a-f-]{36} would accept e.g.
 // `------------------------------------`. Real v4/v8 UUIDs have a
@@ -142,8 +145,9 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [requireRole('super_admin', 'admin', 'support', 'read_only')],
   }, async (request) => {
     const query = request.query as Record<string, unknown>;
-    const { limit, cursor } = parsePaginationParams(query);
+    const { limit, cursor, sortParam } = parsePaginationParams(query);
     const search = typeof query.search === 'string' && query.search.length > 0 ? query.search : undefined;
+    const sort = resolveListSort(sortParam, TENANT_USER_SORT_FIELDS, { field: 'createdAt', direction: 'desc' });
 
     const filters = [eq(users.panel, 'tenant')];
     if (search) {
@@ -156,12 +160,8 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
       if (orExpr) filters.push(orExpr);
     }
 
-    const cursorConds = [];
-    if (cursor) {
-      const decoded = decodeCursor(cursor);
-      cursorConds.push(lt(users.createdAt, new Date(decoded.sort)));
-    }
-    const allConds = [...filters, ...cursorConds];
+    const after = listCursorCondition(cursor, 'tenant_user', sort, TENANT_USER_SORT_FIELDS, users.id);
+    const allConds = after ? [...filters, after] : [...filters];
     const where = allConds.length === 1 ? allConds[0] : and(...allConds);
 
     const rows = await app.db
@@ -176,25 +176,20 @@ export async function adminUserRoutes(app: FastifyInstance): Promise<void> {
         lastLoginAt: users.lastLoginAt,
         createdAt: users.createdAt,
         totpEnabled: totpEnabledColumn(),
+        sortKey: listSortKeySelect(sort, TENANT_USER_SORT_FIELDS),
       })
       .from(users)
       .leftJoin(tenants, eq(users.tenantId, tenants.id))
       .where(where)
-      .orderBy(desc(users.createdAt))
+      .orderBy(...listOrderBy(sort, TENANT_USER_SORT_FIELDS, users.id))
       .limit(limit + 1);
 
     const hasMore = rows.length > limit;
-    const data = rows.slice(0, limit);
-
-    let nextCursor: string | null = null;
-    if (hasMore && data.length > 0) {
-      const last = data[data.length - 1];
-      nextCursor = encodeCursor({
-        resource: 'tenant_user',
-        sort: last.createdAt.toISOString(),
-        id: last.id,
-      });
-    }
+    const page = rows.slice(0, limit);
+    const nextCursor = hasMore && page.length > 0
+      ? encodeListCursor('tenant_user', sort, page[page.length - 1])
+      : null;
+    const data = withoutSortKey(page);
 
     const countWhere = filters.length === 1 ? filters[0] : and(...filters);
     const [countResult] = await app.db

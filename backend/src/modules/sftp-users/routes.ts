@@ -21,9 +21,9 @@ export async function sftpUserRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
   }, async (request) => {
     const query = request.query as Record<string, unknown>;
-    const { limit, cursor } = parsePaginationParams(query);
+    const { limit, cursor, sortParam } = parsePaginationParams(query);
     const search = typeof query.search === 'string' && query.search.length > 0 ? query.search : undefined;
-    const result = await service.listAllSftpUsers(app.db, { limit, cursor, search });
+    const result = await service.listAllSftpUsers(app.db, { limit, cursor, sortParam, search });
     return paginated(result.data, result.pagination);
   });
 
