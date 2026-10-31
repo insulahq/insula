@@ -605,7 +605,11 @@ backup_cost() {  # <variant> — the cost of a full copy of the store, as the ba
   printf '{"variant":"%s","kind":"tar-pvc","bytes":%s,"seconds":%s}\n' "$v" "$bytes" "$(since "$t0")" >> "$OUT/backups.jsonl"
   if [[ $v == v1-pg* ]]; then
     t0=$EPOCHREALTIME
-    bytes=$(kx exec lt-pg-1 -c postgres -- sh -c 'pg_basebackup -U postgres -D - -Ft -X none | wc -c' 2> "$OUT/$v/pg_basebackup.err")
+    # --checkpoint=fast: the default spread checkpoint first waits up to checkpoint_completion_target
+    # × checkpoint_timeout (13.5 min here; 832 MB took 503 s on DEV) — a delay before the copy, which
+    # CNPG's backups also take by default (immediateCheckpoint: false), not the copy's cost
+    bytes=$(kx exec lt-pg-1 -c postgres -- sh -c 'pg_basebackup -U postgres -D - -Ft -X none --checkpoint=fast | wc -c' \
+      2> "$OUT/$v/pg_basebackup.err")
     # a refused connection streams nothing: report it instead of recording a 0-byte backup
     (( ${bytes:-0} > 0 )) || log "$v: pg_basebackup failed: $(head -c 300 "$OUT/$v/pg_basebackup.err")"
     printf '{"variant":"%s","kind":"pg_basebackup","bytes":%s,"seconds":%s}\n' "$v" "${bytes:-0}" "$(since "$t0")" >> "$OUT/backups.jsonl"
