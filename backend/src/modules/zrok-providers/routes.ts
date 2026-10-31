@@ -5,10 +5,15 @@
  *   POST   /api/v1/tenants/:tenantId/zrok-providers
  *   PATCH  /api/v1/tenants/:tenantId/zrok-providers/:pid
  *   DELETE /api/v1/tenants/:tenantId/zrok-providers/:pid
- *   POST   /api/v1/tenants/:tenantId/zrok-providers/:pid/test
  *
  * Auth: tenant_admin / super_admin / admin; a tenant token reaches its own
  * tenant only (requireTenantAccess), and handlers scope rows by that id.
+ *
+ * There is no "test connection" route: it fetched any URL the caller sent and
+ * returned the response body, so a tenant admin could read internal HTTP
+ * services through platform-api (a `?` at the end of the URL turned the
+ * appended `/api/v1/version` into a query string). No panel used it. The zrok
+ * agent in the tenant's own namespace is what talks to the controller.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -71,48 +76,5 @@ export async function zrokProvidersRoutes(app: FastifyInstance): Promise<void> {
     const { tenantId, pid } = request.params as { tenantId: string; pid: string };
     await deleteProvider(app.db, tenantId, pid);
     return success({ deleted: true });
-  });
-
-  app.post('/tenants/:tenantId/zrok-providers/:pid/test', async (request) => {
-    const body = request.body as { controllerUrl?: string } | null;
-    const url = body?.controllerUrl;
-    if (!url) {
-      throw new ApiError('VALIDATION_ERROR', 'controllerUrl required', 400);
-    }
-    try {
-      const probe = `${url.replace(/\/+$/, '')}/api/v1/version`;
-      const res = await fetch(probe, { method: 'GET', signal: AbortSignal.timeout(5000) });
-      const text = await res.text().catch(() => '');
-      if (!res.ok) {
-        return success({
-          ok: false,
-          controllerReachable: true,
-          version: null,
-          error: `controller responded ${res.status}`,
-        });
-      }
-      // zrok /api/v1/version returns either a version string or JSON.
-      // Try JSON first; fall back to plain text.
-      let version: string | null = null;
-      try {
-        const parsed = JSON.parse(text);
-        version = typeof parsed === 'object' && parsed && 'version' in parsed ? String(parsed.version) : text.trim();
-      } catch {
-        version = text.trim() || null;
-      }
-      return success({
-        ok: true,
-        controllerReachable: true,
-        version,
-        error: null,
-      });
-    } catch (err) {
-      return success({
-        ok: false,
-        controllerReachable: false,
-        version: null,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
   });
 }

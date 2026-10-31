@@ -97,6 +97,81 @@ describe('renderOneExclusion', () => {
   });
 });
 
+describe('renderOneExclusion — path scope and text_plain_as_json', () => {
+  const AJAX = '^/lib/ajax/service\\.php$';
+
+  it('a host-wide row renders exactly as before (one SecRule, no chain)', () => {
+    const out = renderOneExclusion({ ...baseExclusion, scope: 'args', pathRegex: null }, 0);
+    expect(out).not.toContain('chain');
+    expect(out).not.toContain('REQUEST_FILENAME');
+    expect(out).toContain('ctl:ruleRemoveTargetById=930120;ARGS,     ctl:ruleRemoveTargetById=930120;ARGS_NAMES"');
+  });
+
+  it('a path chains REQUEST_FILENAME and puts the ctl on the last link', () => {
+    const out = renderOneExclusion({ ...baseExclusion, scope: 'full_disable', pathRegex: AJAX }, 3);
+    const lines = out.split('\n');
+    expect(lines[0]).toContain(`path ${AJAX}`);
+    expect(out).toContain(`id:${DYNAMIC_RULE_ID_BASE + 3},`);
+    expect(out).toMatch(/nolog,\\\n\s+chain"\n/);
+    expect(out).toContain(`    SecRule REQUEST_FILENAME "@rx ${AJAX}" \\`);
+    expect(lines.at(-1)).toBe('         ctl:ruleRemoveById=930120"');
+    // The starter carries no ctl: it would run before the path was checked.
+    expect(out.slice(0, out.indexOf('REQUEST_FILENAME'))).not.toContain('ctl:');
+  });
+
+  it('text_plain_as_json removes 920420 only for text/plain and parses the body as JSON', () => {
+    const out = renderOneExclusion({ ...baseExclusion, ruleId: '920420', scope: 'text_plain_as_json', pathRegex: AJAX }, 0);
+    expect(out).toContain(`SecRule REQUEST_FILENAME "@rx ${AJAX}" \\\n        "t:none,\\\n         chain"`);
+    expect(out).toContain('SecRule REQUEST_HEADERS:Content-Type "@rx ^text/plain(?:[\\s;]|$)"');
+    expect(out).toContain('t:lowercase');
+    expect(out.trimEnd().endsWith('ctl:ruleRemoveById=920420,\\\n         ctl:requestBodyProcessor=JSON"')).toBe(true);
+  });
+
+  it('text_plain_as_json without a path still checks the Content-Type', () => {
+    const out = renderOneExclusion({ ...baseExclusion, ruleId: '920420', scope: 'text_plain_as_json' }, 0);
+    expect(out).not.toContain('REQUEST_FILENAME');
+    expect(out).toContain('REQUEST_HEADERS:Content-Type');
+    expect(out).toContain('ctl:requestBodyProcessor=JSON"');
+  });
+
+  it.each([
+    ['a double-quote', '^/a".*', /unsafe pathRegex/],
+    ['a newline', '^/a\nSecRuleEngine Off', /unsafe pathRegex/],
+    ['a trailing backslash', '^/a\\', /trailing backslash in pathRegex/],
+  ])('refuses a pathRegex with %s', (_label, pathRegex, message) => {
+    expect(() => renderOneExclusion({ ...baseExclusion, pathRegex }, 0)).toThrow(message);
+  });
+
+  it('refuses a pathRegex PCRE would not compile (it would fail the WAF config load)', () => {
+    expect(() => renderOneExclusion({ ...baseExclusion, pathRegex: '^/x\\q' }, 0)).toThrow(/not portable to PCRE/);
+    expect(() => renderOneExclusion({ ...baseExclusion, pathRegex: '^/x[\\d-z]' }, 0)).toThrow(/not portable to PCRE/);
+  });
+
+  it('rows without a path render byte-for-byte as before path scoping existed', () => {
+    // The sha256 of the file the renderer on development produced for these
+    // three rows before this change. The reconciler rolls the WAF on any byte
+    // change, so a reformat here would restart it on every installation's upgrade.
+    const rows = (['args', 'args_names_only', 'full_disable'] as const).map((scope, i) => ({
+      ...baseExclusion, id: `00000000-0000-4000-8000-00000000000${i}`, ruleId: String(941100 + i),
+      hostnameRegex: '^moodle\\.example\\.test$', scope, reason: 'golden', createdBy: 'u', pathRegex: null,
+    }));
+    expect(renderExclusions(rows).hash).toBe('703e1a882ed6f004a59863a98ae6626db2cc25e6e4e90916c1e68e14051fbcc4');
+  });
+
+  it('every SecRule in a mixed file terminates: no rule ends with a dangling chain', () => {
+    const { body } = renderExclusions([
+      { ...baseExclusion, pathRegex: AJAX },
+      { ...baseExclusion, id: '00000000-0000-0000-0000-000000000002', ruleId: '920420', scope: 'text_plain_as_json', pathRegex: AJAX },
+    ]);
+    // Each "chain" action must be followed by exactly one more SecRule before the next blank line.
+    for (const block of body.split('\n\n').filter((b) => b.includes('SecRule'))) {
+      const rules = (block.match(/^\s*SecRule /gm) ?? []).length;
+      const chains = (block.match(/chain"/g) ?? []).length;
+      expect(rules, block).toBe(chains + 1);
+    }
+  });
+});
+
 describe('renderExclusions', () => {
   it('returns the empty-body banner for zero exclusions', () => {
     const result = renderExclusions([]);

@@ -2750,3 +2750,20 @@ also makes rollback safe by contract. Nodes report their CLI version; an offline
 operator excludes it, and is then shown as catching up, not failed. The Automatic-updates toggle
 becomes real, and Kubernetes upgrades join the same flow. Phased as R44.
 
+## ADR-065: Stalwart v1 is a planned mail migration, not a version bump
+
+See [ADR-065-stalwart-v1-migration.md](ADR-065-stalwart-v1-migration.md).
+
+Proposed (2026-10-30), living record: Stalwart v1 refuses a store written before 1.0 (and one
+written by the other edition), so the image cannot simply change — data is copied into a new store
+with `stalwart-migrate` (prepare → repeatable run while mail is up → `run --final` in a window →
+verify), and a rollback after cutover loses data. Eight settings the platform writes were renamed
+or removed; OAuth sign-ins and every 0.16 backup and standby copy do not carry over. Decision: hold
+0.16 (supported to 2027-06-01) until the tool has settled and a drill passes; build version-aware
+writes and version-tagged backups first; migrate as an operator-started action with a maintenance
+window, in its own release. Proposed deployment shape: PostgreSQL on a dedicated CNPG cluster with
+one Stalwart pod (the migration can change engines in the same copy; a later engine change is an
+offline export/import), multi-node with Valkey as a later opt-in; gated on a PostgreSQL stress test
+and a timed migration. Lists the v1 capabilities to adopt from the start (memory budget, task
+model, metrics, DKIM Manual, client-IP source) and the Enterprise-only ones to avoid.
+

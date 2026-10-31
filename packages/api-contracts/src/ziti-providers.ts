@@ -44,12 +44,3 @@ export const zitiProviderResponseSchema = z.object({
   updatedAt: z.string(),
 });
 export type ZitiProviderResponse = z.infer<typeof zitiProviderResponseSchema>;
-
-export const zitiProviderTestResponseSchema = z.object({
-  ok: z.boolean(),
-  controllerReachable: z.boolean(),
-  /** Pulled from /.well-known/est/cacerts when reachable. */
-  caBundleBytes: z.number().int().nonnegative().nullable(),
-  error: z.string().nullable(),
-});
-export type ZitiProviderTestResponse = z.infer<typeof zitiProviderTestResponseSchema>;

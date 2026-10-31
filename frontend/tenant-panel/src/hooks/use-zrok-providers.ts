@@ -3,7 +3,6 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   ZrokProviderInput,
   ZrokProviderResponse,
-  ZrokProviderTestResponse,
 } from '@insula/api-contracts';
 
 interface ApiEnvelope<T> {
@@ -63,17 +62,5 @@ export function useDeleteZrokProvider(tenantId: string) {
       );
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY(tenantId) }),
-  });
-}
-
-export function useTestZrokProvider(tenantId: string, providerId: string) {
-  return useMutation({
-    mutationFn: async (controllerUrl: string) => {
-      const res = await apiFetch<ApiEnvelope<ZrokProviderTestResponse>>(
-        `/api/v1/tenants/${tenantId}/zrok-providers/${providerId}/test`,
-        { method: 'POST', body: JSON.stringify({ controllerUrl }) },
-      );
-      return res.data;
-    },
   });
 }

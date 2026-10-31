@@ -126,6 +126,14 @@ Click any route to open its detail page, which has these tabs:
   *detected · not blocked*, but blocks nothing: run it against your real
   traffic for as long as you need, add exclusions for anything your site
   legitimately does, then switch to *Enforced*, which blocks with a 403.
+  The **WAF Log** opens with a summary by rule and path for the last day, week
+  or month — what was blocked or would have been — and an **Exclude on this
+  path** button for each row; the latest single events follow below it.
+  An exclusion (under **WAF Exclusions**) switches one rule off for your
+  website, or — when you give it a **path** such as `^/lib/ajax/service\.php$`
+  — only for the pages whose address matches. For rule 920420 there is also
+  **text_plain_as_json**, which accepts browser beacons sent as `text/plain`
+  and still inspects them.
 - **Access Control** — [require a sign-in](#require-a-sign-in-oidc),
   client certificates (mTLS) and
   [password-protected folders](protected-directories.md).

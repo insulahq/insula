@@ -3,7 +3,6 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   ZitiProviderInput,
   ZitiProviderResponse,
-  ZitiProviderTestResponse,
 } from '@insula/api-contracts';
 
 interface ApiEnvelope<T> {
@@ -63,17 +62,5 @@ export function useDeleteZitiProvider(tenantId: string) {
       );
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY(tenantId) }),
-  });
-}
-
-export function useTestZitiProvider(tenantId: string, providerId: string) {
-  return useMutation({
-    mutationFn: async (controllerUrl: string) => {
-      const res = await apiFetch<ApiEnvelope<ZitiProviderTestResponse>>(
-        `/api/v1/tenants/${tenantId}/ziti-providers/${providerId}/test`,
-        { method: 'POST', body: JSON.stringify({ controllerUrl }) },
-      );
-      return res.data;
-    },
   });
 }

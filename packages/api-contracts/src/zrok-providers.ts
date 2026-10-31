@@ -45,12 +45,3 @@ export const zrokProviderResponseSchema = z.object({
   updatedAt: z.string(),
 });
 export type ZrokProviderResponse = z.infer<typeof zrokProviderResponseSchema>;
-
-export const zrokProviderTestResponseSchema = z.object({
-  ok: z.boolean(),
-  controllerReachable: z.boolean(),
-  /** zrok controller version, if returned by /v1/version. */
-  version: z.string().nullable(),
-  error: z.string().nullable(),
-});
-export type ZrokProviderTestResponse = z.infer<typeof zrokProviderTestResponseSchema>;

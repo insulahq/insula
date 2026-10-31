@@ -170,7 +170,7 @@ components:
         reason: >-
           1.0 cannot be installed over 0.16: stalwart-migrate copies the data into a new
           store, OAuth tokens are not carried over and the configuration model changed —
-          a planned mail migration with its own runbook, not a version bump.
+          a planned mail migration with its own runbook, not a version bump (ADR-065).
     scan: trivy
     owner: platform
     notes: Internet-facing mail (ports 25/465/587/993/JMAP). Handles mailbox creds + mail data. RocksDB store (see rocksdb-secondary-checkpoint).

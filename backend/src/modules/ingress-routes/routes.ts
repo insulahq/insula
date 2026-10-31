@@ -315,8 +315,8 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { routeId } = request.params as { routeId: string };
-    const dirs = await listProtectedDirs(app.db, routeId);
+    const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
+    const dirs = await listProtectedDirs(app.db, routeId, tenantId);
     return success(dirs);
   });
 
@@ -398,8 +398,8 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { dirId } = request.params as { dirId: string };
-    const users = await listDirUsers(app.db, dirId);
+    const { tenantId, routeId, dirId } = request.params as { tenantId: string; routeId: string; dirId: string };
+    const users = await listDirUsers(app.db, dirId, routeId, tenantId);
     return success(users);
   });
 
@@ -419,7 +419,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
-    const user = await createDirUser(app.db, dirId, parsed.data.username, parsed.data.password);
+    const user = await createDirUser(app.db, dirId, routeId, tenantId, parsed.data.username, parsed.data.password);
     await triggerAnnotationSync(routeId, tenantId);
     reply.status(201).send(success(user));
   });
@@ -434,7 +434,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     },
   }, async (request, reply) => {
     const { tenantId, routeId, dirId, userId } = request.params as { tenantId: string; routeId: string; dirId: string; userId: string };
-    await deleteDirUser(app.db, dirId, userId);
+    await deleteDirUser(app.db, dirId, routeId, tenantId, userId);
     await triggerAnnotationSync(routeId, tenantId);
     reply.status(204).send();
   });
@@ -454,7 +454,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
-    await toggleDirUser(app.db, dirId, userId, parsed.data.enabled);
+    await toggleDirUser(app.db, dirId, routeId, tenantId, userId, parsed.data.enabled);
     await triggerAnnotationSync(routeId, tenantId);
     return success({ message: 'User toggled' });
   });
@@ -475,7 +475,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
 
-    await changeDirUserPassword(app.db, dirId, userId, parsed.data.password);
+    await changeDirUserPassword(app.db, dirId, routeId, tenantId, userId, parsed.data.password);
     await triggerAnnotationSync(routeId, tenantId);
     return success({ message: 'Password changed' });
   });
@@ -491,10 +491,10 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { routeId } = request.params as { routeId: string };
+    const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
     const query = request.query as { limit?: string };
     const limit = query.limit ? Math.min(Number(query.limit), 100) : 50;
-    const logs = await listWafLogs(app.db, routeId, limit);
+    const logs = await listWafLogs(app.db, routeId, tenantId, limit);
     return success(logs);
   });
 
