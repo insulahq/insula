@@ -73,7 +73,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     renewal-time metric is now scraped and kept (it was dropped as unused); a new test fails
     when a scrape job drops a metric family a rule reads. Migration 0172 moves an operator's
     on/off choice to the new rule (a seconds threshold cannot be a ratio, so it is dropped)
-    and removes the retired rule's alert rows.
+    and removes the retired rule's alert rows. vmsingle reads its metric allowlist only
+    at start, so on an upgraded cluster the new rule has data from vmsingle's next daily
+    recycle (or a SIGHUP to it); until then it cannot fire. The panels, the admin
+    notification and the dashboards use the database and work at once.
   - The tenant dashboard's **Renews in** counts to the renewal, not to expiry.
   - The rule lives in one module (`certificates/renewal-policy.ts`, with an SQL form for the
     dashboards). The new CI guard `ci-cert-renewal-window-check.sh` (Backend and
