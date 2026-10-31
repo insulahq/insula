@@ -328,6 +328,7 @@ export type AdminDashboardLive = z.infer<typeof adminDashboardLiveSchema>;
 export const tenantSiteSchema = z.object({
   host: z.string(),
   application: z.string(),
+  /** The application's deployment status, or `inactive` when the route itself is switched off. */
   status: z.string(),
   tlsState: z.enum(['valid', 'pending', 'expired', 'none']),
   tlsDaysRemaining: z.number().nullable(),

@@ -229,7 +229,8 @@ function SiteStrip({ sites, loading }: { sites: readonly TenantSite[]; loading: 
         <span className="text-right">State</span>
       </div>
       {sites.map((site, i) => {
-        const sev = site.status === 'running' ? 'ok' : site.status === 'failed' ? 'crit' : 'warn';
+        // 'inactive' = the route is switched off on purpose: neither healthy nor a fault.
+        const sev = site.status === 'running' ? 'ok' : site.status === 'failed' ? 'crit' : site.status === 'inactive' ? 'off' : 'warn';
         return (
           <Link
             key={site.host}
@@ -240,7 +241,7 @@ function SiteStrip({ sites, loading }: { sites: readonly TenantSite[]; loading: 
           >
             <span className="flex min-w-0 items-center gap-2">
               <span className={`h-2 w-2 shrink-0 rounded-full ${
-                sev === 'crit' ? 'bg-red-500' : sev === 'warn' ? 'bg-amber-500' : 'bg-green-500'
+                sev === 'crit' ? 'bg-red-500' : sev === 'warn' ? 'bg-amber-500' : sev === 'off' ? 'bg-gray-400 dark:bg-gray-500' : 'bg-green-500'
               }`} />
               <b title={site.host} className="min-w-0 truncate font-mono text-[13px] font-semibold text-gray-900 dark:text-gray-100">{site.host}</b>
             </span>
@@ -265,7 +266,8 @@ function SiteStrip({ sites, loading }: { sites: readonly TenantSite[]; loading: 
               <span className={`inline-flex min-w-[74px] items-center justify-center rounded-md border px-1.5 py-0.5 font-mono text-[10px] ${
                 sev === 'ok' ? 'border-green-500 text-green-600 dark:text-green-400'
                   : sev === 'crit' ? 'border-red-500 text-red-600 dark:text-red-400'
-                    : 'border-amber-500 text-amber-600 dark:text-amber-400'
+                    : sev === 'off' ? 'border-gray-400 text-gray-500 dark:border-gray-500 dark:text-gray-400'
+                      : 'border-amber-500 text-amber-600 dark:text-amber-400'
               }`}>
                 {site.status}
               </span>
@@ -282,7 +284,9 @@ function SiteStrip({ sites, loading }: { sites: readonly TenantSite[]; loading: 
               ]}
               note={sev === 'ok'
                 ? 'Serving normally. Open Applications to deploy, restart or view logs.'
-                : 'Not serving visitors right now. Open Applications to start it or read the logs.'}
+                : sev === 'off'
+                  ? 'This route is deactivated: not served, settings kept. Activate it again under Domains → the domain → Ingress Routes.'
+                  : 'Not serving visitors right now. Open Applications to start it or read the logs.'}
             />
           </Link>
         );

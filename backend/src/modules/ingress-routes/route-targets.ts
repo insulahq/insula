@@ -34,3 +34,19 @@ export function isRedirectOnly(route: RouteTargetFields): boolean {
 export function isRoutable(route: RouteTargetFields): boolean {
   return Boolean(route.deploymentId || route.privateWorkerId || route.redirectUrl);
 }
+
+/** The subset of an `ingress_routes` row that decides whether it is served at all. */
+export interface ServedRouteFields extends RouteTargetFields {
+  readonly status: string;
+  readonly enabled: boolean;
+}
+
+/**
+ * A route is served — gets a router — when it is set up (`status`), switched
+ * on (`enabled`) and routable. The domains reconciler and `buildAllRouteSpecs`
+ * must agree on this, or a switched-off route would keep its Middlewares while
+ * losing its router (or the reverse).
+ */
+export function isServed(route: ServedRouteFields): boolean {
+  return route.enabled && route.status === 'active' && isRoutable(route);
+}

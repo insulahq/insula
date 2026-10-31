@@ -571,6 +571,7 @@ export async function updateRoute(
     servicePort?: number | null;
     siteFolder?: string | null;
     appRoot?: string | null;
+    enabled?: boolean;
   },
   // The tenant the caller acts for. A new target (worker or deployment) must
   // belong to it — the ids arrive in the request body, and a target from
@@ -646,6 +647,7 @@ export async function updateRoute(
   if (input.tlsMode !== undefined) updateValues.tlsMode = input.tlsMode;
   if (input.nodeHostname !== undefined) updateValues.nodeHostname = input.nodeHostname;
   if (input.servicePort !== undefined) updateValues.servicePort = input.servicePort;
+  if (input.enabled !== undefined) updateValues.enabled = input.enabled;
 
   if (input.siteFolder !== undefined) {
     // Clearing is always allowed — it hands the hostname back to the stock

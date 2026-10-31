@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, AlertTriangle, Info, Plus, Trash2, X, Shield, Settings,
-  ArrowLeftRight, Save, ChevronDown, ChevronRight, FolderLock,
+  ArrowLeftRight, Save, ChevronDown, ChevronRight, FolderLock, PowerOff,
 } from 'lucide-react';
 import clsx from 'clsx';
 import {
@@ -23,6 +23,10 @@ import { WafLogSummary } from '@/components/routes/WafLogSummary';
 import { localZoneTitle } from '@/lib/format-timestamp';
 import { utcOffsetLabel } from '@/lib/format-traffic';
 import MtlsSection from '@/components/MtlsSection';
+import ErrorPanel from '@/components/ErrorPanel';
+import RouteActiveToggle from '@/components/routes/RouteActiveToggle';
+import { extractOperatorError } from '@/lib/extract-operator-error';
+import { useUpdateIngressRoute } from '@/hooks/use-ingress-routes';
 import {
   useRouteDetail,
   useUpdateRouteRedirects,
@@ -58,6 +62,7 @@ export default function RouteDetail() {
 
   const { data: routeData, isLoading, isError } = useRouteDetail(tenantId ?? undefined, routeId);
   const route = routeData?.data;
+  const updateRoute = useUpdateIngressRoute(tenantId ?? undefined, domainId);
 
   // Fetch parent domain to determine DNS mode (needed for www redirect hint).
   const { data: domainsData } = useDomains(tenantId ?? undefined);
@@ -133,15 +138,45 @@ export default function RouteDetail() {
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="route-hostname-heading">
           <HostnameLink host={route.hostname} path={route.path} />
         </h1>
-        <span className={clsx(
-          'inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium',
-          route.status === 'active'
-            ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300'
-            : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-        )}>
-          {route.status}
-        </span>
+        {/* Set-up state, shown only when it is not the normal one. The
+            Active / Inactive pill on the right is the route's served state. */}
+        {route.status !== 'active' && (
+          <span className="inline-flex rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+            {route.status}
+          </span>
+        )}
+        <div className="ml-auto">
+          <RouteActiveToggle
+            hostname={route.hostname}
+            enabled={route.enabled}
+            isPending={updateRoute.isPending}
+            onChange={(enabled) => updateRoute.mutate({ routeId: route.id, enabled })}
+            testId="route-active-toggle"
+          />
+        </div>
       </div>
+
+      {updateRoute.error && (
+        <ErrorPanel
+          error={extractOperatorError(updateRoute.error)}
+          severity="error"
+          compact
+          testId="route-toggle-error"
+        />
+      )}
+
+      {!route.enabled && (
+        <div
+          className="flex items-start gap-2 rounded-lg border border-gray-300 bg-gray-50 px-4 py-3 text-sm text-gray-700 dark:border-gray-600 dark:bg-gray-800/60 dark:text-gray-300"
+          data-testid="route-inactive-notice"
+        >
+          <PowerOff size={16} className="mt-0.5 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden="true" />
+          <p>
+            This route is inactive: <span className="font-mono text-xs">{route.hostname}</span> is not served.
+            Its settings below are kept and can still be changed — they take effect when you activate it again.
+          </p>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">

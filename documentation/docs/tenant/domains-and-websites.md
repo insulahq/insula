@@ -102,6 +102,20 @@ records for the address could not be removed at the same time, the page tells
 you; they stay listed on the **DNS Records** tab, where you can delete them
 later.
 
+**Deactivate a route (keep its settings)**
+
+To take a website offline for a while without losing anything, switch its
+route off instead of removing it. The **Status** column shows each route as a
+green **Active** or grey **Inactive** pill; the same pill sits at the top right
+of the route's detail page. Click **Active**, then **Deactivate** to confirm.
+While a route is inactive its address is not served, so visitors get an error
+instead of your site. Everything else stays as it was: the app it points at,
+its redirect, security and access-control settings, its DNS records and its
+certificate, which keeps renewing. You can still change those settings while
+the route is inactive. Click **Inactive** to switch the route back on; it serves
+again within a few seconds, exactly as before. Your dashboard's **Sites** list
+shows a deactivated route as `inactive`.
+
 **Finding a route**
 
 The list is sorted alphabetically by hostname. Click **Hostname**, **Path** or

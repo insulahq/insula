@@ -242,7 +242,8 @@ export async function buildTenantLive(
     const r = await db.execute<Record<string, string | number | null>>(sql`
       SELECT r.hostname,
              COALESCE(d.name, 'Site') AS application,
-             COALESCE(d.status::text, 'unknown') AS status,
+             -- A switched-off route serves nothing, whatever its app is doing.
+             CASE WHEN NOT r.enabled THEN 'inactive' ELSE COALESCE(d.status::text, 'unknown') END AS status,
              r.created_at,
              (SELECT COUNT(*)::int FROM waf_logs w
                WHERE w.route_id = r.id AND w.created_at > NOW() - INTERVAL '7 days' AND NOT w.detection_only) AS blocked,

@@ -33,7 +33,7 @@ import {
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
-import { isRoutable } from './route-targets.js';
+import { isServed } from './route-targets.js';
 import type { RouteTargetFields } from './route-targets.js';
 import {
   buildMiddleware,
@@ -738,9 +738,7 @@ export async function buildAllRouteSpecs(
   // Middleware gets built; dropping it here would leave the IngressRoute
   // without the 301 that is its entire purpose.
   const tenantRoutes = allRoutes.filter(
-    (r) => domainIds.includes(r.domainId)
-      && isRoutable(r)
-      && r.status === 'active',
+    (r) => domainIds.includes(r.domainId) && isServed(r),
   );
   for (const route of tenantRoutes) {
     const backend = backendResolver(route);

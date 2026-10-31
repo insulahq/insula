@@ -187,7 +187,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Routes'],
-      summary: 'Update an ingress route (assign workload, change TLS mode)',
+      summary: 'Update an ingress route (assign workload, change TLS mode, switch it on or off)',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
@@ -206,6 +206,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       servicePort: parsed.data.service_port,
       siteFolder: parsed.data.site_folder,
       appRoot: parsed.data.app_root,
+      enabled: parsed.data.enabled,
     }, tenantId);
     await triggerReconcile(tenantId);
     return success(mapRouteToResponse(updated));

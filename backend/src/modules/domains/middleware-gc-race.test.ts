@@ -34,6 +34,7 @@ const route = (over: Record<string, unknown> = {}) => ({
   id: 'aaaaaaaa-1111-1111-1111-111111111111',
   domainId: 'dom-1',
   hostname: 'a.example.test',
+  enabled: true,
   forceHttps: 1,
   hstsEnabled: 0,
   wwwRedirect: 'none',
@@ -58,6 +59,12 @@ describe('currentRouteMiddlewareNames', () => {
     const db = mockDb([{ id: 'dom-1' }], [route({ forceHttps: 0 })]);
     const names = await currentRouteMiddlewareNames(db, 'tenant-1', 'ns-x');
     expect([...names]).not.toContain('r-aaaaaaaa-force-https');
+  });
+
+  it('lets a switched-off route\'s Middlewares be swept: it has no router to use them', async () => {
+    const db = mockDb([{ id: 'dom-1' }], [route({ enabled: false })]);
+    const names = await currentRouteMiddlewareNames(db, 'tenant-1', 'ns-x');
+    expect([...names]).toEqual([]);
   });
 
   it('ignores routes that belong to another tenant', async () => {
