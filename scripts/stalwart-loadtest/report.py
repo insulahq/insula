@@ -6,8 +6,10 @@ Reads <variant>/<phase>.json (load generator), phases.jsonl (phase windows), sam
 CPU per phase = the sum of positive deltas of each container's cumulative CPU inside the
 phase window (a restarted container's counter starts again at zero).
 """
+import datetime
 import json
 import os
+import re
 import sys
 from collections import defaultdict
 
@@ -75,6 +77,21 @@ class Run:
                 out[g][1] = max(out[g][1], ws)
                 prev = (t, cpu)
         return {g: (round(c, 1), m) for g, (c, m) in out.items()}
+
+    def throughput(self, v, p):
+        """[(interval_mid_t, ops_per_s)] from a phase's 30 s progress lines and its start time."""
+        f, d = f"{self.d}/{v}/{p}.log", self.phase(v, p)
+        if not os.path.exists(f) or not d or not d.get("started"):
+            return []
+        t0 = datetime.datetime.fromisoformat(d["started"]).timestamp()
+        out, prev = [], (0, 0)
+        for line in open(f):
+            m = re.search(r" (\d+) ops, \d+ errors, (\d+)s", line)
+            if m and int(m[2]) > prev[1]:
+                n, s = int(m[1]), int(m[2])
+                out.append((t0 + (s + prev[1]) / 2, (n - prev[0]) / (s - prev[1])))
+                prev = (n, s)
+        return out
 
     def size(self, v, label):
         for s in reversed(self.sizes):
@@ -226,7 +243,16 @@ def main():
                  m.get("seconds", m.get("window_seconds", m.get("index_rebuild_seconds"))), m.get("rc", "")]
                 for m in mig]
         out += ["## Migration", "", table(["migration", "step", "seconds", "rc"], rows), ""]
-        for mv in ("mig-rocks", "mig-pg"):
+        for mv in sorted(x for x in os.listdir(r.d) if x.startswith("mig-") and os.path.isdir(f"{r.d}/{x}")):
+            w = r.windows.get((mv, "run-1-live"))
+            tp = r.throughput(mv, "mixed-during-copy")
+            if w and None not in w and tp:
+                inside = [x for t, x in tp if w[0] <= t <= w[1]]
+                after = [x for t, x in tp if t > w[1] + 15]
+                if inside and after:
+                    a, b = sum(inside) / len(inside), sum(after) / len(after)
+                    out.append(f"- {mv}: client ops/s while the live copy ran {a:.0f}, after it {b:.0f} "
+                               f"({a / b:.0%}; copy {w[1] - w[0]:.0f} s)")
             c = r.phase(mv, "compare")
             if c:
                 out.append(f"- {mv}: sample compare {c.get('checked_messages')} messages, ok={c.get('ok')}, "

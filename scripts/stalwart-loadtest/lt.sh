@@ -9,6 +9,8 @@
 #   ./lt.sh variant <v>          full run of one store variant (see VARIANTS), then removes it
 #   ./lt.sh migrate-suite        0.16.27 store → stalwart-migrate → v1 RocksDB and v1 PostgreSQL,
 #                                incl. a live copy under load, final run, verify, rollback
+#   ./lt.sh migrate-gentle       init, then the RocksDB migration again with fewer write and blob
+#                                slots in the live runs (MIG_LIVE_ARGS), under the same load
 #   ./lt.sh cluster              v1 on PostgreSQL + Valkey, two pods
 #   ./lt.sh all                  everything above, in order
 #   ./lt.sh teardown             delete the namespace (results stay in $OUT)
@@ -52,6 +54,10 @@ PER_ACCOUNT=${PER_ACCOUNT:-600}
 BIG=${BIG:-25000}
 READ_SECONDS=${READ_SECONDS:-180}
 MIXED_SECONDS=${MIXED_SECONDS:-300}
+# Extra stalwart-migrate options for the two live runs (0.16 still serving), and a suffix for
+# the result name. The final run always goes at full speed: 0.16 is stopped by then.
+MIG_LIVE_ARGS=${MIG_LIVE_ARGS:-}
+MIG_TAG=${MIG_TAG:-}
 
 mkdir -p "$OUT"
 kx() { $K -n "$NS" "$@"; }
@@ -640,7 +646,8 @@ MIG_ARGS=(--source /etc/stalwart/config.json --target /etc/stalwart-v1/config.js
 # platform would do it: live copy under load, delta, stop 0.16, final run, verify, start v1.
 migrate_to() {
   local kind=$1 s
-  MV=mig-$kind
+  MV=mig-$kind${MIG_TAG:+-$MIG_TAG}
+  local live; read -ra live <<<"$MIG_LIVE_ARGS"
   mkdir -p "$OUT/$MV"
   log "=== migration 0.16.27 → v1 $kind ==="
   kx delete pvc lt-mig-target lt-mig-state --ignore-not-found --wait=true >/dev/null
@@ -665,11 +672,11 @@ migrate_to() {
   # live copy, with 0.16 serving a mixed load at the same time
   phase "$MV" mixed-during-copy mixed --accounts "$ACCOUNTS" --duration 600 --smtp-rate 5 --offset 6000000 &
   local mixed_pid=$!
-  mig run-1-live run "${MIG_ARGS[@]}"
+  mig run-1-live run "${MIG_ARGS[@]}" "${live[@]}"
   wait "$mixed_pid"
   DATA_PVC=lt-mig-target sizes "$MV" after-run-1
   phase "$MV" smtp-delta smtp --accounts "$ACCOUNTS" --count 500 --workers 4 --offset 7000000
-  mig run-2-delta run "${MIG_ARGS[@]}"
+  mig run-2-delta run "${MIG_ARGS[@]}" "${live[@]}"
   lg sample --accounts "$ACCOUNTS" > "$OUT/$MV/sample-source.json"
 
   # the window: 0.16 stopped → final run → verify → v1 up
@@ -768,6 +775,21 @@ cmd_migrate_suite() {
   stalwart_down
   log "=== migrate-suite done ==="
 }
+cmd_migrate_gentle() {  # what the live copy costs clients when it copies fewer accounts and blobs at once
+  local v=v016-rocks
+  MIG_LIVE_ARGS=${MIG_LIVE_ARGS:---concurrency 2 --blob-concurrency 2}
+  MIG_TAG=${MIG_TAG:-gentle}
+  log "=== migrate-gentle (live runs: $MIG_LIVE_ARGS) ==="
+  stalwart_up "$v"
+  sizes "$v" empty
+  phase "$v" append append --accounts "$ACCOUNTS" --per-account "$PER_ACCOUNT" --big "$BIG" --workers 8
+  phase "$v" smtp smtp --accounts "$ACCOUNTS" --count 5000 --workers 10
+  sizes "$v" after-smtp
+  phase "$v" mixed mixed --accounts "$ACCOUNTS" --duration "$MIXED_SECONDS" --smtp-rate 5
+  migrate_to rocks
+  stalwart_down
+  log "=== migrate-gentle done ==="
+}
 
 # ── cluster ────────────────────────────────────────────────────────────────────────
 
@@ -821,6 +843,7 @@ case "${1:-}" in
   init) cmd_init ;;
   variant) cmd_variant "${2:?variant}" ;;
   migrate-suite) cmd_migrate_suite ;;
+  migrate-gentle) cmd_init; cmd_migrate_gentle ;;
   cluster) cmd_cluster ;;
   pg-up) cmd_pg_up ;;
   all) cmd_all ;;
