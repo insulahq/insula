@@ -45,10 +45,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     workload there. The watchdog that completes an interrupted move does the same.
   - When Longhorn refuses a copy, the move's result, the Placement banner and the "Not on
     its primary node" notification name the cause and what to do: a node tag left on the
-    volume, scheduling switched off on the node, a disk tag no disk has, or too little
-    room. When none of these explains it, they give Longhorn's own words. Before, each said
-    only "replica scheduling failed" and advised moving to a node with room or shrinking
-    the volume; the node in question had 595 GB free.
+    volume, scheduling switched off on the node, a disk Longhorn reports as not ready (with
+    its reason), a disk tag no disk has, or too little room. When none of these explains it,
+    they give Longhorn's own words. Before, each said only "replica scheduling failed" and
+    advised moving to a node with room or shrinking the volume; the node in question had
+    595 GB free. A move to the node a tenant already runs on now says so too, instead of
+    "the restarted workloads take the data with them".
   - The bulk Change placement waits for each running tenant's move and reports how it
     ended. It used to report "moved by a background operation" while the move ended with
     the data left behind. Such a row is now Failed, with the cause, and Retry failed moves

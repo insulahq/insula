@@ -23,7 +23,7 @@ function render(ui: ReactElement) {
 
 const result = (over: Partial<MigrateToWorkerResult> = {}): MigrateToWorkerResult => ({
   tenantId: 't1', previousWorker: 'node-b', currentWorker: 'node-a', deploymentsRestarted: 0,
-  dataRelocation: { started: [], skipped: [], error: null }, moveOperationId: null, ...over,
+  dataRelocation: { started: [], skipped: [], error: null }, moveOperationId: null, copyBlocker: null, ...over,
 });
 
 describe('MigrateResultNote', () => {
@@ -32,6 +32,18 @@ describe('MigrateResultNote', () => {
     const note = screen.getByTestId('migrate-result');
     expect(note).toHaveTextContent('Pinned to node-a. Moving the data there now (1 volume)');
     expect(note).not.toHaveTextContent('restarted 0');
+  });
+
+  it('a copy Longhorn refuses: says the data has not moved, why and what to do — not "take the data with them"', () => {
+    render(<MigrateResultNote result={result({
+      deploymentsRestarted: 1,
+      copyBlocker: { cause: 'node-a\'s Longhorn disk is not ready: record diskUUID doesn\'t match', action: 'fix the disk on node-a in Longhorn' },
+    })} />);
+    const note = screen.getByTestId('migrate-copy-blocked');
+    expect(note).toHaveTextContent('Pinned to node-a, but its data has NOT moved: Longhorn cannot place a copy there — '
+      + 'node-a\'s Longhorn disk is not ready');
+    expect(note).toHaveTextContent('Fix the disk on node-a in Longhorn.');
+    expect(screen.getByTestId('migrate-result')).not.toHaveTextContent('take the data with them');
   });
 
   it('a running tenant: the restarted workloads carry the data', () => {

@@ -76,6 +76,26 @@ describe('explainCopyRefusal', () => {
     expect(explainCopyRefusal('node-b', volume(), ctx(lhNode('node-b', { disks: { d1: disk({ allowScheduling: false }) } })), WORDS).cause).toBe(off);
   });
 
+  it('passes on why Longhorn says a disk is not ready, and does not promise that waiting fixes it', () => {
+    // Lab staging: a disk whose filesystem changed under Longhorn.
+    const node = lhNode('node-b');
+    const broken: LhNodeRaw = {
+      ...node,
+      status: {
+        ...node.status,
+        diskStatus: { d1: { storageMaximum: 0, storageAvailable: 0, storageScheduled: 0, conditions: [{
+          type: 'Ready', status: 'False',
+          message: 'Disk default-disk-1(/var/lib/longhorn/) on node node-b is not ready: record diskUUID doesn\'t match the one on the disk ',
+        }] } },
+      },
+    };
+    const r = explainCopyRefusal('node-b', volume(), ctx(broken), WORDS);
+    expect(r.cause).toBe('node-b\'s Longhorn disk is not ready: Disk default-disk-1(/var/lib/longhorn/) on node node-b is not ready: '
+      + 'record diskUUID doesn\'t match the one on the disk');
+    expect(r.action).toBe('a node that only just joined gets there by itself; otherwise fix the disk on node-b in Longhorn, '
+      + 'or move the tenant to another node');
+  });
+
   it('names a disk tag no disk on the node has', () => {
     const r = explainCopyRefusal('node-b', volume({ diskSelector: ['nvme'] }), ctx(lhNode('node-b', { disks: { d1: disk({ tags: ['system'] }) } })), WORDS);
     expect(r.cause).toBe('the volume may only use Longhorn disks tagged nvme, and no disk on node-b has it');
@@ -197,6 +217,16 @@ describe('readCopyBlocker', () => {
     expect(await read([lhVol()], [lhRep('node-b')], 'ha')).toBeNull();
     expect(await read([lhVol({}, { kubernetesStatus: { namespace: 'tenant-other' } })], [lhRep('node-b')])).toBeNull();
     expect(await read([lhVol({}, { kubernetesStatus: { namespace: NS, lastPVCRefAt: '2026-09-01T00:00:00Z' } })], [lhRep('node-b')])).toBeNull();
+  });
+
+  it('with namedOnly, reports only a cause read from the cluster now — not Longhorn\'s possibly stale words', async () => {
+    // Right after a re-pin the condition can still describe the volume as it was.
+    const k8s = fakeK8s({ volumes: [lhVol()], replicas: [lhRep('node-b')], nodes });
+    expect(await readCopyBlocker(k8s, NS, 'node-a', 'local', { namedOnly: true })).toBeNull();
+    expect((await readCopyBlocker(k8s, NS, 'node-a', 'local'))?.cause).toBe(`Longhorn: ${WORDS}`);
+    const tagged = lhVol({ spec: { numberOfReplicas: 1, size: String(50 * GIB), diskSelector: ['nvme'] } });
+    expect((await readCopyBlocker(fakeK8s({ volumes: [tagged], replicas: [lhRep('node-b')], nodes }), NS, 'node-a', 'local', { namedOnly: true }))?.cause)
+      .toMatch(/^the volume may only use Longhorn disks tagged nvme/);
   });
 
   it('never throws: an unreadable cluster words nothing', async () => {

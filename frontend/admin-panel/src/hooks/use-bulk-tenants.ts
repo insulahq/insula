@@ -230,6 +230,12 @@ export function describeMoveOperation(result: MoveWaitResult, targetLabel: strin
  * Placement card's note. A background move is `describeMoveOperation`.
  */
 export function describeMove(result: MigrateToWorkerResult, targetLabel: string): BulkItemOutcome {
+  if (result.copyBlocker) {
+    return {
+      status: 'failed',
+      detail: `Pinned to ${targetLabel}, but its data has NOT moved: ${result.copyBlocker.cause} — ${result.copyBlocker.action}.`,
+    };
+  }
   const { started, error } = result.dataRelocation;
   if (error) {
     // The pin changed but the data did not follow: not done yet, so it stays

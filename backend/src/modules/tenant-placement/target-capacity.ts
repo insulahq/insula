@@ -150,7 +150,7 @@ interface LhReplicaRaw {
   readonly spec?: { readonly volumeName?: string; readonly nodeID?: string; readonly failedAt?: string };
   readonly status?: { readonly currentState?: string };
 }
-interface LhCondition { readonly type?: string; readonly status?: string }
+interface LhCondition { readonly type?: string; readonly status?: string; readonly message?: string }
 export interface LhNodeRaw {
   readonly metadata?: { readonly name?: string };
   readonly spec?: {

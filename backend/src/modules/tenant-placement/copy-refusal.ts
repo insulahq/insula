@@ -100,13 +100,36 @@ export function explainCopyRefusal(
   ctx: CopyRefusalContext | null,
   longhornWords: string,
 ): CopyRefusal {
-  const unexplained = (checked: boolean): CopyRefusal => ({
-    cause: `Longhorn: ${longhornWords}`,
-    action: checked
-      ? `${target}, its disks and the volume's tags all allow the copy, so look at the volume in the Longhorn UI`
-      : 'look at the volume in the Longhorn UI',
-  });
-  if (!ctx) return unexplained(false);
+  return diagnoseCopyRefusal(target, volume, ctx, longhornWords).refusal;
+}
+
+/** The refusal, and whether a check here named its cause (false: Longhorn's words passed on). */
+export function diagnoseCopyRefusal(
+  target: string,
+  volume: RefusedVolume,
+  ctx: CopyRefusalContext | null,
+  longhornWords: string,
+): { readonly refusal: CopyRefusal; readonly named: boolean } {
+  const found = findCopyRefusal(target, volume, ctx);
+  if (found !== 'unchecked' && found !== 'all-allow') return { refusal: found, named: true };
+  return {
+    refusal: {
+      cause: `Longhorn: ${longhornWords}`,
+      action: found === 'all-allow'
+        ? `${target}, its disks and the volume's tags all allow the copy, so look at the volume in the Longhorn UI`
+        : 'look at the volume in the Longhorn UI',
+    },
+    named: false,
+  };
+}
+
+/** The first check that fails; `unchecked` when one could not be made, `all-allow` when none fails. */
+function findCopyRefusal(
+  target: string,
+  volume: RefusedVolume,
+  ctx: CopyRefusalContext | null,
+): CopyRefusal | 'unchecked' | 'all-allow' {
+  if (!ctx) return 'unchecked';
   const node = ctx.nodes.get(target);
   if (!node) {
     return {
@@ -151,7 +174,17 @@ export function explainCopyRefusal(
     };
   }
   if (offered.state === 'not-ready') {
-    return { cause: `${target}: ${offered.detail}`, action: 'Longhorn builds the copy once the node\'s disks are ready' };
+    // Longhorn's own reason per disk: a disk whose filesystem changed under it
+    // stays not ready until someone acts, so "wait" alone would be wrong.
+    const why = Object.values(node.status?.diskStatus ?? {})
+      .flatMap((d) => d.conditions ?? [])
+      .filter((c) => c.type === 'Ready' && c.status === 'False' && c.message?.trim())
+      .map((c) => c.message!.trim().slice(0, 200));
+    return {
+      cause: why.length > 0 ? `${target}'s Longhorn disk is not ready: ${[...new Set(why)].join('; ')}` : `${target}: ${offered.detail}`,
+      action: `a node that only just joined gets there by itself; otherwise fix the disk on ${target} in Longhorn, or move `
+        + 'the tenant to another node',
+    };
   }
 
   const untaggedOnly = volume.diskSelector.length === 0 && ctx.emptySelector?.disk === false;
@@ -171,9 +204,10 @@ export function explainCopyRefusal(
     };
   }
 
-  if (!ctx.settings) return unexplained(false);
-  const everyCheckMade = ctx.emptySelector?.node != null && ctx.emptySelector.disk != null;
-  return roomRefusal(target, volume, usable, ctx.settings) ?? unexplained(everyCheckMade);
+  if (!ctx.settings) return 'unchecked';
+  const room = roomRefusal(target, volume, usable, ctx.settings);
+  if (room) return room;
+  return ctx.emptySelector?.node != null && ctx.emptySelector.disk != null ? 'all-allow' : 'unchecked';
 }
 
 /** A Longhorn volume as the refusal read needs it. */
@@ -276,6 +310,13 @@ export async function readCopyBlocker(
   namespace: string,
   target: string,
   storageTier: string | null,
+  /**
+   * Only a refusal whose cause a check here names. For a read made right after
+   * a re-pin, when Longhorn's condition can still describe the volume as it
+   * was before: a cause read from the cluster now is current, Longhorn's words
+   * may not be.
+   */
+  opts: { readonly namedOnly?: boolean } = {},
 ): Promise<CopyRefusal | null> {
   if (storageTier === 'ha') return null;
   try {
@@ -290,7 +331,9 @@ export async function readCopyBlocker(
       if (!failure) continue;
       const local = (reps.items ?? []).some((r) => r.spec?.volumeName === v.metadata?.name
         && r.spec?.nodeID === target && !r.spec?.failedAt && r.status?.currentState !== 'error');
-      if (!local) return explainCopyRefusal(target, refusedVolumeOf(v), await readCopyRefusalContext(k8s), failure);
+      if (local) continue;
+      const { refusal, named } = diagnoseCopyRefusal(target, refusedVolumeOf(v), await readCopyRefusalContext(k8s), failure);
+      if (named || !opts.namedOnly) return refusal;
     }
     return null;
   } catch (err) {

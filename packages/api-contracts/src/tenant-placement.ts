@@ -73,6 +73,17 @@ export type TenantPlacementDetailResponse = z.infer<typeof tenantPlacementDetail
 export const dataRelocationSkipReasonEnum = z.enum(['already-local', 'in-use', 'ha-tier']);
 export type DataRelocationSkipReason = z.infer<typeof dataRelocationSkipReasonEnum>;
 
+/**
+ * Why Longhorn will not build a tenant's copy on a node: the check its
+ * scheduler stopped at (a node tag, a disk tag, scheduling switched off, room),
+ * and what the operator can do about it.
+ */
+export const copyRefusalSchema = z.object({
+  cause: z.string(),
+  action: z.string(),
+});
+export type CopyRefusal = z.infer<typeof copyRefusalSchema>;
+
 /** POST /admin/tenants/:id/migrate-to-worker → data */
 export const migrateToWorkerResultSchema = z.object({
   tenantId: z.string(),
@@ -96,19 +107,14 @@ export const migrateToWorkerResultSchema = z.object({
    * empty — the operation starts the copy once the volume has detached.
    */
   moveOperationId: z.string().nullable(),
+  /**
+   * A move without a background operation (the tenant was stopped, or already
+   * runs on the target): set when Longhorn refuses the copy there for a cause
+   * it could name. A background move reports the same on its operation.
+   */
+  copyBlocker: copyRefusalSchema.nullable(),
 });
 export type MigrateToWorkerResult = z.infer<typeof migrateToWorkerResultSchema>;
-
-/**
- * Why Longhorn will not build a tenant's copy on a node: the check its
- * scheduler stopped at (a node tag, a disk tag, scheduling switched off, room),
- * and what the operator can do about it.
- */
-export const copyRefusalSchema = z.object({
-  cause: z.string(),
-  action: z.string(),
-});
-export type CopyRefusal = z.infer<typeof copyRefusalSchema>;
 
 /**
  * GET /admin/storage/operations/:id → data, for a tenant move (`opType`

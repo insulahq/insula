@@ -5,6 +5,7 @@ import { tenants, clusterNodes } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { MigrateToWorkerResult } from '@insula/api-contracts';
 import { startDataRelocation } from '../tenant-placement/relocate.js';
+import { readCopyBlocker } from '../tenant-placement/copy-refusal.js';
 import { checkTargetCapacity } from '../tenant-placement/target-capacity.js';
 import { repinTenant } from './repin.js';
 import { beginTenantMove, planTenantMove, readMoveFacts, type MovePlan } from './stop-move-start.js';
@@ -163,6 +164,8 @@ export async function migrateTenantToWorker(
       // Started by the operation once the volume has detached.
       dataRelocation: { started: [], skipped: [], error: null },
       moveOperationId,
+      // The operation reports it, once the tenant runs on the target.
+      copyBlocker: null,
     };
   }
 
@@ -178,6 +181,12 @@ export async function migrateTenantToWorker(
     .where(eq(tenants.id, tenantId));
 
   const dataRelocation = await startDataRelocation(k8s, namespace, input.nodeName, tenant.storageTier ?? null);
+  // A tenant already running on the target has its volume attached there, and
+  // Longhorn has answered for the copy: "the restarted workloads take the data
+  // with them" must not be said of a copy it refuses (lab staging: a disk that
+  // was not ready). Read right after the re-pin, so only a cause read from the
+  // cluster now counts.
+  const copyBlocker = await readCopyBlocker(k8s, namespace, input.nodeName, tenant.storageTier ?? null, { namedOnly: true });
 
   return {
     tenantId,
@@ -186,5 +195,6 @@ export async function migrateTenantToWorker(
     deploymentsRestarted,
     dataRelocation,
     moveOperationId: null,
+    copyBlocker,
   };
 }

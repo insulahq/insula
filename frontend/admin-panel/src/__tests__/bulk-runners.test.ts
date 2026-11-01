@@ -238,6 +238,7 @@ const MOVE: MigrateToWorkerResult = {
   deploymentsRestarted: 2,
   dataRelocation: { started: ['pvc-1'], skipped: [], error: null },
   moveOperationId: null,
+  copyBlocker: null,
 };
 
 describe('tenant bulk: change placement', () => {
@@ -315,6 +316,15 @@ describe('tenant bulk: change placement', () => {
     expect(outcome.status).toBe('failed');
     expect(outcome.detail).toBe('Still moving to Node A after 1 minute. The move keeps running; follow it in the Task Tracker.');
     expect(mockApiFetch.mock.calls.length).toBeGreaterThan(2);
+  });
+
+  it('fails the row of an in-place move whose copy Longhorn refuses, with the cause it named', () => {
+    // Lab staging: "Move back" to the node the tenant ran on, whose disk was not ready.
+    const blocked = { cause: 'node-b\'s Longhorn disk is not ready: record diskUUID doesn\'t match', action: 'fix the disk on node-b in Longhorn' };
+    expect(describeMove({ ...MOVE, deploymentsRestarted: 1, copyBlocker: blocked }, 'Node B')).toEqual({
+      status: 'failed',
+      detail: `Pinned to Node B, but its data has NOT moved: ${blocked.cause} — ${blocked.action}.`,
+    });
   });
 
   it('fails the row when the data could not follow the pin', () => {

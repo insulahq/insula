@@ -203,11 +203,12 @@ node** banner says what is elsewhere and since when, with two ways out:
   (a pin left by an earlier drain or move), and node-b does not carry that
   tag — move the tenant again from its Placement card; a move holds the
   volume to the node it moves to*: **Move back to &lt;primary&gt;** when it
-  already runs there. The notification carries the same line. The
-  platform checks, in Longhorn's order: the volume's node tags, whether
-  Longhorn takes new data on the node, the volume's disk tags, then room.
-  When none of these explains it, the banner gives Longhorn's own words.
-  A refused copy does not resolve by waiting.
+  already runs there. The notification and the move's own result carry the
+  same line. The platform checks, in Longhorn's order: the volume's node
+  tags, whether Longhorn takes new data on the node and its disks are ready
+  (with Longhorn's reason when one is not), the volume's disk tags, then
+  room. When none of these explains it, the banner gives Longhorn's own
+  words. A refused copy does not resolve by waiting.
 - **Make &lt;current node&gt; the primary node** accepts where it is: the
   workloads restart once on the same node to pick up the new pin, and no
   data is copied.
