@@ -10,6 +10,7 @@
  * See docs/architecture/NODE_OUTAGE_RESILIENCE.md §2 for the model this
  * implements and the drill that produced it.
  */
+import type { RefusedVolume } from '../tenant-placement/copy-refusal.js';
 import type {
   ClusterOutageImpact,
   NodeDown,
@@ -121,6 +122,12 @@ export interface VolumeFact {
    * while scheduling is fine. Why a tenant's data is not following it.
    */
   readonly scheduleFailure: string | null;
+  /**
+   * The volume's tags and sizes — what decides where Longhorn may put a copy.
+   * Read to say WHY a copy is refused (tenant-placement/copy-refusal.ts);
+   * absent where a caller did not read them.
+   */
+  readonly scheduling?: RefusedVolume;
 }
 
 /** One entry of a Longhorn object's `status.conditions`. */

@@ -41,8 +41,10 @@ sed -n '/^detect_public_ipv6()/,/^}/p'            "$BOOTSTRAP" >> "$WORK/helpers
 sed -n '/^probe_ipv6_egress()/,/^}/p'             "$BOOTSTRAP" >> "$WORK/helpers.sh"
 sed -n '/^hold_for_operator()/,/^}/p'             "$BOOTSTRAP" >> "$WORK/helpers.sh"
 sed -n '/^resolve_dual_stack()/,/^}/p'            "$BOOTSTRAP" >> "$WORK/helpers.sh"
+sed -n '/^write_node_external_ip_dropin()/,/^}/p' "$BOOTSTRAP" >> "$WORK/helpers.sh"
 for fn in detect_node_ipv6 resolve_cluster_network_ipv6 resolve_same_link_ipv6 resolve_dual_stack_node_ipv6 \
-          cluster_cidr_args detect_public_ipv6 probe_ipv6_egress hold_for_operator resolve_dual_stack; do
+          cluster_cidr_args detect_public_ipv6 probe_ipv6_egress hold_for_operator resolve_dual_stack \
+          write_node_external_ip_dropin; do
   grep -q "^${fn}()" "$WORK/helpers.sh" || { echo "FAIL: could not extract ${fn}() from $BOOTSTRAP" >&2; exit 1; }
 done
 # error() is called by the helpers on the refuse paths. It is FATAL in
@@ -411,6 +413,27 @@ if [[ -n "$rs_line" && -n "$val_line" && "$rs_line" -lt "$val_line" ]]; then
 else
   bad "resolve_dual_stack must run before the v6 CIDR validation (resolve=$rs_line validate=$val_line)"
 fi
+
+echo
+echo "a public-underlay node always publishes an ExternalIP"
+# Lab staging: the servers that joined an IPv4-only (ULA-v6) public-underlay
+# cluster had no ExternalIP, because the flag was passed only with a global v6.
+# Ingress discovery and ingress-external-ips read ExternalIP only, so those
+# servers never served ingress.
+dropin_entries() {  # <v4> <v6> — the addresses the drop-in lists, comma-joined
+  ( set +e; source "$WORK/helpers.sh"; NODE_EXTERNAL_IP_DROPIN="$WORK/dropin/60.yaml"
+    write_node_external_ip_dropin "$1" "$2" && sed -n 's/^  - "\(.*\)"$/\1/p' "$NODE_EXTERNAL_IP_DROPIN" | paste -sd, )
+}
+check "IPv4-only: the public v4 is the ExternalIP" "203.0.113.5" "$(dropin_entries 203.0.113.5 '')"
+check "dual-stack with a global v6: both families" "203.0.113.5,2001:db8:9::7" "$(dropin_entries 203.0.113.5 2001:db8:9::7)"
+check "the drop-in sets node-external-ip" "node-external-ip:" "$(grep -x 'node-external-ip:' "$WORK/dropin/60.yaml")"
+for blk in server worker; do
+  b=$([[ $blk == server ]] && echo "$server_block" || echo "$worker_block")
+  has "$b" 'write_node_external_ip_dropin "$public_ip" "$node_public_ipv6"' \
+    "${blk}: public-underlay always writes the ExternalIP drop-in, with the global v6 only"
+  hasnt "$b" 'if [[ -n "$node_public_ipv6" ]]; then' \
+    "${blk}: the ExternalIP no longer depends on a global v6"
+done
 
 echo
 printf 'dual-stack: %d passed, %d failed\n' "$pass" "$fail"

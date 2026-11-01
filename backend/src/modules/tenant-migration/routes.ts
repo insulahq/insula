@@ -4,6 +4,7 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { migrateTenantToWorker } from './service.js';
+import { unpinTenant } from './unpin.js';
 
 export async function tenantMigrationRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -44,5 +45,27 @@ export async function tenantMigrationRoutes(app: FastifyInstance): Promise<void>
       triggeredByUserId: ((request.user as { id?: string } | undefined)?.id) ?? null,
     });
     return success(result);
+  });
+
+  // POST /api/v1/admin/tenants/:id/unpin
+  //
+  // Auto: takes the tenant's pin off and moves nothing (unpin.ts). Its volume
+  // loses the platform's node tag; on the Local tier its pods stay with its
+  // data.
+  app.post('/admin/tenants/:id/unpin', {
+    schema: {
+      tags: ['TenantMigration'],
+      summary: 'Set a tenant to Auto placement: remove its pin without moving it',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: { id: { type: 'string' } },
+      },
+    },
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    return success(await unpinTenant(app.db, createK8sClients(kubeconfigPath), id));
   });
 }

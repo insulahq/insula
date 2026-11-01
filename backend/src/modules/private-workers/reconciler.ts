@@ -206,7 +206,7 @@ async function apply(
     errors,
     'frps-deployment',
     async () => upsertFrpsDeployment(
-      deps.k8s.apps, namespace, await loadTenantPodPlacement(deps.db, tenantId), frpsConfigHash(frpsToml),
+      deps.k8s.apps, namespace, await loadTenantPodPlacement(deps.db, tenantId, deps.k8s), frpsConfigHash(frpsToml),
     ),
   );
 

@@ -631,6 +631,26 @@ export function evidenceIsStale(seen: { since: number; at: number } | undefined,
   return nowMs - seen.at >= EVIDENCE_REFRESH_MS;
 }
 
+const FILE_MANAGER_DEPLOYMENT = 'file-manager';
+
+/**
+ * What a re-stage brings back: the tenant's own workloads, not its file
+ * manager. Pure. The file manager is an on-demand pod, and when the volume
+ * would not attach it is often the reason: started on another node, it held
+ * the volume there while the tenant's own pods waited. Restored with the rest,
+ * it took the volume straight back, the heal failed, and its hold kept the idle
+ * loop from ever scaling it down (lab staging: the tenant's site down 15
+ * minutes and a "workloads down" alert, until it idled). Left at 0, it starts
+ * on its next use, on the node holding the data.
+ */
+export function restoreWithoutFileManager(snap: QuiesceSnapshot): { restore: QuiesceSnapshot; fileManagerLeftDown: boolean } {
+  const fileManagerLeftDown = snap.deployments.some((d) => d.name === FILE_MANAGER_DEPLOYMENT);
+  return {
+    restore: { ...snap, deployments: snap.deployments.filter((d) => d.name !== FILE_MANAGER_DEPLOYMENT) },
+    fileManagerLeftDown,
+  };
+}
+
 /**
  * Heal by re-staging the volume: scale every PVC consumer to 0, wait for
  * Longhorn to report `detached`, then scale back up and CONFIRM availability.
@@ -849,7 +869,12 @@ async function healNamespace(
       // detached, which releases the staging directory and the attachment
       // tickets, and flushes the filesystem journal.
       await waitForVolumeDetachedByPvc(k8s, namespace, pvcName);
-      await unquiesce(k8s, namespace, snap);
+      const { restore, fileManagerLeftDown } = restoreWithoutFileManager(snap);
+      await unquiesce(k8s, namespace, restore);
+      if (fileManagerLeftDown) {
+        const { clearQuiesceHold } = await import('./quiesce.js');
+        await clearQuiesceHold(k8s, namespace, FILE_MANAGER_DEPLOYMENT);
+      }
     } catch (err) {
       // Restore on EVERY failure path, including a throw from inside quiesce
       // itself, falling back to the op-persisted snapshot when the local is

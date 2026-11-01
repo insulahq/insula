@@ -21,16 +21,17 @@ export default function PlacementCell({ nodeName, placement }: PlacementCellProp
   if (placement?.status === 'misplaced') {
     const actual = placement.actualNodes.length > 0 ? placement.actualNodes.map((n) => nodeLabel(n)).join(', ') : 'unknown';
     const primaryName = placement.primaryNode ?? nodeName ?? null;
-    const primary = primaryName ? nodeLabel(primaryName) : '—';
+    const primary = primaryName ? nodeLabel(primaryName) : null;
     const why = placement.reasons.length > 0 ? ` — ${nodeText(placement.reasons.join(', '))}` : '';
     return (
       <span
         className="flex flex-col"
-        title={`Not on its primary node ${primary}${why}`}
+        // Auto has no primary node: its pods and its data are apart.
+        title={primary ? `Not on its primary node ${primary}${why}` : `Auto: its pods and its data are on different nodes${why}`}
         data-testid="placement-misplaced"
       >
         <span className="font-mono font-semibold text-red-600 dark:text-red-400">{actual}</span>
-        <span className="text-[11px] text-gray-500 dark:text-gray-400">primary {primary}</span>
+        <span className="text-[11px] text-gray-500 dark:text-gray-400">{primary ? `primary ${primary}` : 'auto'}</span>
       </span>
     );
   }
@@ -53,7 +54,7 @@ export default function PlacementCell({ nodeName, placement }: PlacementCellProp
   return (
     <span
       className="italic text-gray-500 dark:text-gray-400"
-      title="No node pin — the Kubernetes scheduler places this tenant's workloads"
+      title="Auto: no node pin. Its pods run on the node holding its data"
     >
       auto
     </span>

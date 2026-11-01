@@ -28,8 +28,9 @@
  * view then names (tenant-health `VolumeFact.scheduleFailure`).
  *
  * Not modelled: a volume's disk and node selectors (tags). The tenant storage
- * classes set none; a volume given one by hand can still be refused by Longhorn
- * after an `ok` here, and is then reported the same way.
+ * classes set none, and a move replaces the node selector with the target's
+ * own tag (volume-pin.ts). A disk selector set by hand can still make Longhorn
+ * refuse after an `ok` here; copy-refusal.ts then names it.
  *
  * The volumes counted are the ones the move brings along — the same selection
  * as `planRelocation`: every live single-replica volume of the namespace.
@@ -46,6 +47,8 @@ export interface DiskCapacity {
   readonly available: number;
   readonly scheduled: number;
   readonly reserved: number;
+  /** Longhorn disk tags, matched against a volume's `diskSelector`. */
+  readonly tags?: readonly string[];
 }
 
 export interface SchedulingSettings {
@@ -94,7 +97,7 @@ export function diskRefusal(need: VolumeNeed, disk: DiskCapacity, settings: Sche
   return null;
 }
 
-function gib(bytes: number): string {
+export function gib(bytes: number): string {
   return `${(Math.max(0, bytes) / GIB).toFixed(1)} GiB`;
 }
 
@@ -147,14 +150,18 @@ interface LhReplicaRaw {
   readonly spec?: { readonly volumeName?: string; readonly nodeID?: string; readonly failedAt?: string };
   readonly status?: { readonly currentState?: string };
 }
-interface LhCondition { readonly type?: string; readonly status?: string }
+interface LhCondition { readonly type?: string; readonly status?: string; readonly message?: string }
 export interface LhNodeRaw {
+  readonly metadata?: { readonly name?: string };
   readonly spec?: {
     readonly allowScheduling?: boolean;
+    /** Matched against a volume's `nodeSelector`. */
+    readonly tags?: readonly string[];
     readonly disks?: Record<string, {
       readonly allowScheduling?: boolean;
       readonly evictionRequested?: boolean;
       readonly storageReserved?: number;
+      readonly tags?: readonly string[];
     }>;
   };
   readonly status?: {
@@ -190,7 +197,7 @@ export function parseIntSetting(name: string, value: unknown): number {
   return n;
 }
 
-async function readSetting(k8s: K8sClients, name: string): Promise<number> {
+export async function readSetting(k8s: K8sClients, name: string): Promise<number> {
   const setting = await lhGet<{ value?: unknown }>(k8s, 'settings', name);
   return parseIntSetting(name, setting.value);
 }
@@ -233,6 +240,7 @@ export function nodeDisks(node: LhNodeRaw): NodeDisks {
       available: status.storageAvailable ?? 0,
       scheduled: status.storageScheduled ?? 0,
       reserved: spec.storageReserved ?? 0,
+      tags: spec.tags ?? [],
     });
   }
   if (disks.length > 0) return { state: 'ready', disks };

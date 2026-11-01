@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  platformPodPlacement, tenantPodPlacementOf, tenantPodScheduling,
+  platformPodPlacement, resolveAutoPlacement, tenantPodPlacementOf, tenantPodScheduling,
   TENANT_OVERHEAD_PRIORITY_CLASS,
 } from './pod-placement.js';
 import { carryQuiesceHold, STORAGE_PREQUIESCE_REPLICAS_ANNOTATION, STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
@@ -71,5 +71,37 @@ describe('carryQuiesceHold', () => {
   it('changes nothing when no hold is set', () => {
     expect(carryQuiesceHold({ metadata: { annotations: {} }, spec: { replicas: 3 } }, body)).toBe(body);
     expect(carryQuiesceHold(undefined, body)).toBe(body);
+  });
+});
+
+describe('resolveAutoPlacement', () => {
+  // An Auto tenant keeps its pods on one host with its data: the node the
+  // volume is attached to, else a running pod mounts it, else its replica.
+  const cluster = (o: { attached?: string; replicas?: string[] }) => ({
+    core: {
+      readNamespacedPersistentVolumeClaim: async () => ({ spec: { volumeName: 'pvc-1' } }),
+      listNamespacedPod: async () => ({ items: [] }),
+    },
+    custom: {
+      getNamespacedCustomObject: async () => ({ status: o.attached ? { state: 'attached', currentNodeID: o.attached } : { state: 'detached' } }),
+      listNamespacedCustomObject: async () => ({ items: (o.replicas ?? []).map((n) => ({ spec: { nodeID: n }, status: { currentState: 'running' } })) }),
+    },
+  }) as unknown as Parameters<typeof resolveAutoPlacement>[0];
+
+  it('places an Auto Local-tier tenant on the node its volume is attached to, else its replica', async () => {
+    expect(await resolveAutoPlacement(cluster({ attached: 'node-b', replicas: ['node-a'] }), 'tenant-x', { nodeName: null, storageTier: 'local' }))
+      .toEqual({ nodeName: 'node-b', storageTier: 'local' });
+    expect(await resolveAutoPlacement(cluster({ replicas: ['node-a'] }), 'tenant-x', { nodeName: null, storageTier: null }))
+      .toEqual({ nodeName: 'node-a', storageTier: null });
+  });
+
+  it('leaves a pinned tenant, an HA tenant, one with no data yet, and a copy in flight as they are', async () => {
+    const k8s = cluster({ attached: 'node-b' });
+    expect(await resolveAutoPlacement(k8s, 'tenant-x', { nodeName: 'node-a', storageTier: 'local' })).toEqual({ nodeName: 'node-a', storageTier: 'local' });
+    expect(await resolveAutoPlacement(k8s, 'tenant-x', { nodeName: null, storageTier: 'ha' })).toEqual({ nodeName: null, storageTier: 'ha' });
+    expect(await resolveAutoPlacement(cluster({}), 'tenant-x', { nodeName: null, storageTier: 'local' })).toEqual({ nodeName: null, storageTier: 'local' });
+    // Two replicas while a copy runs and nothing attached: no node to choose yet.
+    expect(await resolveAutoPlacement(cluster({ replicas: ['node-a', 'node-b'] }), 'tenant-x', { nodeName: null, storageTier: 'local' }))
+      .toEqual({ nodeName: null, storageTier: 'local' });
   });
 });

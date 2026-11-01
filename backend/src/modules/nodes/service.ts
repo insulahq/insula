@@ -16,6 +16,7 @@ import { loadMailRoleOnNode, type MailRoleOnNode } from './mail-role.js';
 import { assertTaintSafeForSystem, cordonNode, moveSystemPodsOff } from './system-pods.js';
 import { movePostgresInstancesOff, type MoveOptions } from './postgres-move.js';
 import { assertNoSharedEtcdMember } from './etcd-identity.js';
+import { makeLonghornHostTagEnsurer } from '../tenant-placement/volume-pin.js';
 import {
   haOnPinnedOnlyError, haTenantsPinnedTo, PINNED_ONLY_TAINT_KEY, takesAutoPlacedTenants, TENANT_PLACEMENT_LABEL, TENANT_PLACEMENT_PINNED, tenantHostingOf,
 } from './tenant-hosting.js';
@@ -1322,36 +1323,10 @@ export interface RepinCounts {
   relocation: { started: string[]; skipped: Array<{ volumeName: string; reason: string }>; error: string | null } | null;
 }
 
-/**
- * Build the memoised Longhorn host-tag ensurer.
- *
- * Adding the per-host tag to a target Longhorn Node CR must happen exactly
- * once per target even when several tenants move to the same node, so the
- * memo lives in the closure and is shared across one re-pin batch.
- */
-export function makeLonghornHostTagEnsurer(k8s: K8sClients): (target: string) => Promise<string> {
-  const PER_HOST_TAG_PREFIX = 'node-';
-  const tagged = new Set<string>();
-  return async (target: string): Promise<string> => {
-    const hostTag = `${PER_HOST_TAG_PREFIX}${target}`;
-    if (tagged.has(target)) return hostTag;
-    const existing = await k8s.custom.getNamespacedCustomObject({
-      group: 'longhorn.io', version: 'v1beta2',
-      namespace: 'longhorn-system', plural: 'nodes', name: target,
-    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { spec?: { tags?: string[] } };
-    const currentTags = existing.spec?.tags ?? [];
-    if (!currentTags.includes(hostTag)) {
-      await k8s.custom.patchNamespacedCustomObject({
-        group: 'longhorn.io', version: 'v1beta2',
-        namespace: 'longhorn-system', plural: 'nodes', name: target,
-        body: { spec: { tags: [...currentTags, hostTag] } },
-      } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
-        MERGE_PATCH);
-    }
-    tagged.add(target);
-    return hostTag;
-  };
-}
+// The per-host Longhorn tag lives beside the move's volume re-pin
+// (tenant-placement/volume-pin.ts), so a drain and a move hold a volume to a
+// node the same way.
+export { makeLonghornHostTagEnsurer };
 
 /**
  * Move one tenant's placement: Longhorn volumes, workloads, and the DB row.
@@ -1391,6 +1366,9 @@ export async function strandedPodsOnDeadNode(
   };
   return (pods.items ?? []).map((p) => p.metadata?.name ?? '').filter(Boolean);
 }
+
+/** The tenant's on-demand file manager (file-manager/k8s-lifecycle.ts). */
+const FILE_MANAGER_DEPLOYMENT = 'file-manager';
 
 export async function repinTenantPlacement(
   k8s: K8sClients,
@@ -1483,6 +1461,26 @@ export async function repinTenantPlacement(
       counts.workloads += 1;
     } catch (err) {
       console.warn(`[nodes] re-pin tenant=${tenant.tenantId} ${w.kind}/${w.name} in ${ns} failed:`, (err as Error).message);
+    }
+  }
+
+  // (c1) The file manager, which the impact lists only when it carries the old
+  //      pin: it is placed where the data is when it starts, so it often has
+  //      none. A RUNNING one still holds the RWO volume on the node it runs on,
+  //      and the re-pinned pods waited behind it until it idled (lab staging:
+  //      8 minutes). Pinned with the tenant, a running one restarts on the
+  //      target, and a stopped one starts there; "auto" takes its pin off.
+  if (!tenant.workloads.some((w) => w.kind === 'Deployment' && w.name === FILE_MANAGER_DEPLOYMENT)) {
+    try {
+      await k8s.apps.patchNamespacedDeployment({
+        namespace: ns, name: FILE_MANAGER_DEPLOYMENT, body,
+      } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
+        MERGE_PATCH);
+    } catch (err) {
+      const status = (err as { code?: number; statusCode?: number }).code ?? (err as { statusCode?: number }).statusCode;
+      if (status !== 404) {
+        console.warn(`[nodes] re-pin tenant=${tenant.tenantId} file manager in ${ns} → ${target || 'auto'} failed:`, (err as Error).message);
+      }
     }
   }
 

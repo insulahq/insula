@@ -73,6 +73,17 @@ export type TenantPlacementDetailResponse = z.infer<typeof tenantPlacementDetail
 export const dataRelocationSkipReasonEnum = z.enum(['already-local', 'in-use', 'ha-tier']);
 export type DataRelocationSkipReason = z.infer<typeof dataRelocationSkipReasonEnum>;
 
+/**
+ * Why Longhorn will not build a tenant's copy on a node: the check its
+ * scheduler stopped at (a node tag, a disk tag, scheduling switched off, room),
+ * and what the operator can do about it.
+ */
+export const copyRefusalSchema = z.object({
+  cause: z.string(),
+  action: z.string(),
+});
+export type CopyRefusal = z.infer<typeof copyRefusalSchema>;
+
 /** POST /admin/tenants/:id/migrate-to-worker → data */
 export const migrateToWorkerResultSchema = z.object({
   tenantId: z.string(),
@@ -96,5 +107,50 @@ export const migrateToWorkerResultSchema = z.object({
    * empty — the operation starts the copy once the volume has detached.
    */
   moveOperationId: z.string().nullable(),
+  /**
+   * A move without a background operation (the tenant was stopped, or already
+   * runs on the target): set when Longhorn refuses the copy there for a cause
+   * it could name. A background move reports the same on its operation.
+   */
+  copyBlocker: copyRefusalSchema.nullable(),
 });
 export type MigrateToWorkerResult = z.infer<typeof migrateToWorkerResultSchema>;
+
+/**
+ * GET /admin/storage/operations/:id → data, for a tenant move (`opType`
+ * `relocate`): the fields a caller waiting for the move reads.
+ */
+export const tenantMoveOperationSchema = z.object({
+  id: z.string(),
+  /** quiescing → unquiescing → idle (finished) | failed. */
+  state: z.string(),
+  progressMessage: z.string().nullable(),
+  lastError: z.string().nullable(),
+  completedAt: z.string().nullable(),
+  params: z.object({
+    targetNode: z.string().optional(),
+    /**
+     * Set when the move finished with the tenant running on the target but
+     * Longhorn refusing its data there: every block is still on the node it
+     * came from.
+     */
+    copyBlocker: copyRefusalSchema.nullable().optional(),
+  }).nullable(),
+});
+export type TenantMoveOperation = z.infer<typeof tenantMoveOperationSchema>;
+
+/**
+ * POST /admin/tenants/:id/unpin → data. Auto: the tenant's pin is taken off
+ * and nothing moves. Its volume loses the platform's node tag, and on the
+ * Local tier its pods stay on the node holding its data.
+ */
+export const unpinTenantResultSchema = z.object({
+  tenantId: z.string(),
+  /** The pin it had; null when it was on Auto already. */
+  previousPin: z.string().nullable(),
+  /** The node holding its data, which its pods stay on; null when unknown (no data yet, or an HA tenant). */
+  runsOn: z.string().nullable(),
+  /** Volumes whose node tag was taken off. */
+  volumesReleased: z.array(z.string()),
+});
+export type UnpinTenantResult = z.infer<typeof unpinTenantResultSchema>;

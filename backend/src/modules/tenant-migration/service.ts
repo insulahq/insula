@@ -5,8 +5,9 @@ import { tenants, clusterNodes } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { MigrateToWorkerResult } from '@insula/api-contracts';
 import { startDataRelocation } from '../tenant-placement/relocate.js';
+import { readCopyBlocker } from '../tenant-placement/copy-refusal.js';
 import { checkTargetCapacity } from '../tenant-placement/target-capacity.js';
-import { repinDeployments } from './repin.js';
+import { repinTenant } from './repin.js';
 import { beginTenantMove, planTenantMove, readMoveFacts, type MovePlan } from './stop-move-start.js';
 import { assertNodeTakesTier } from '../nodes/tenant-hosting.js';
 
@@ -21,10 +22,10 @@ import { assertNodeTakesTier } from '../nodes/tenant-hosting.js';
 //      across nodes while the old ones still hold the RWO volume, and
 //      Longhorn detaches it under them. The response carries the
 //      operation's id.
-//   3. Otherwise: pin every tenant Deployment to the target and restart
-//      the running ones (they restart on the node their data is on), then
-//      flip tenants.node_name so future Deployment creates pick the new
-//      pin (via M5 plumbing).
+//   3. Otherwise: hold the tenant's volumes to the target, pin every
+//      tenant Deployment to it and restart the running ones (they restart
+//      on the node their data is on), then flip tenants.node_name so future
+//      Deployment creates pick the new pin (via M5 plumbing).
 //   4. Move the data: a volume nothing re-attaches (a stopped tenant) is
 //      attached on the new node by the platform until the copy is done
 //      (tenant-placement/relocate.ts).
@@ -163,6 +164,8 @@ export async function migrateTenantToWorker(
       // Started by the operation once the volume has detached.
       dataRelocation: { started: [], skipped: [], error: null },
       moveOperationId,
+      // The operation reports it, once the tenant runs on the target.
+      copyBlocker: null,
     };
   }
 
@@ -171,13 +174,19 @@ export async function migrateTenantToWorker(
   // Only after every Deployment is successfully re-patched do we
   // commit the new pin to the DB — avoids the DB pointing at a
   // worker where no pods actually live.
-  const deploymentsRestarted = await repinDeployments(k8s, namespace, input.nodeName, { restart: true });
+  const deploymentsRestarted = await repinTenant(k8s, namespace, input.nodeName, tenant.storageTier ?? null, { restart: true });
 
   await db.update(tenants)
     .set({ nodeName: input.nodeName, updatedAt: sql`NOW()` })
     .where(eq(tenants.id, tenantId));
 
   const dataRelocation = await startDataRelocation(k8s, namespace, input.nodeName, tenant.storageTier ?? null);
+  // A tenant already running on the target has its volume attached there, and
+  // Longhorn has answered for the copy: "the restarted workloads take the data
+  // with them" must not be said of a copy it refuses (lab staging: a disk that
+  // was not ready). Read right after the re-pin, so only a cause read from the
+  // cluster now counts.
+  const copyBlocker = await readCopyBlocker(k8s, namespace, input.nodeName, tenant.storageTier ?? null, { namedOnly: true });
 
   return {
     tenantId,
@@ -186,5 +195,6 @@ export async function migrateTenantToWorker(
     deploymentsRestarted,
     dataRelocation,
     moveOperationId: null,
+    copyBlocker,
   };
 }

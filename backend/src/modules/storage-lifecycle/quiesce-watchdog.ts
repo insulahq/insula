@@ -41,6 +41,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { storageOperations, storageSnapshots, tenants } from '../../db/schema.js';
 import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
 import { repinDeployments } from '../tenant-migration/repin.js';
+import { holdTenantVolumes } from '../tenant-placement/volume-pin.js';
 import { settleTenantAfterFailure, unquiesceBestEffort, updateOp, whyWorkloadsStayStopped, withHold } from './service.js';
 import { runExclusive } from '../../shared/exclusive-run.js';
 import { opLockJob } from './op-lock.js';
@@ -77,16 +78,18 @@ export interface QuiesceWatchdogResult {
  * at 0 and the volume has detached. A process that died part way through left
  * some pinned to the target and some to the source; started like that, pods on
  * two nodes would contend for the RWO volume. So when every Deployment is at
- * 0, pin them all — and the tenant row — to the move's target, completing the
- * move. When any is still running, the re-pin never began and the pins are
- * as they were: re-pinning a running Deployment would roll it across nodes,
- * which is exactly what the move exists to avoid. Never throws.
+ * 0, pin them all — and the tenant row, then its volumes — to the move's
+ * target, completing the move. When any is still running, the re-pin never
+ * began and the pins are as they were: re-pinning a running Deployment would
+ * roll it across nodes, which is exactly what the move exists to avoid.
+ * Never throws.
  */
 async function settleAbandonedMove(
   db: Database,
   k8s: K8sClients,
   tenantId: string,
   namespace: string,
+  storageTier: string | null,
   params: Record<string, unknown> | null,
 ): Promise<void> {
   const target = params?.targetNode;
@@ -98,7 +101,14 @@ async function settleAbandonedMove(
     await db.update(tenants).set({ nodeName: target }).where(eq(tenants.id, tenantId));
   } catch (err) {
     console.warn(`[quiesce-watchdog] could not settle the pins of an abandoned move in ${namespace}: ${err instanceof Error ? err.message : String(err)}`);
+    return;
   }
+  // After the Deployments, and on its own: agreeing pins are what keep two
+  // pods off one RWO volume, and must not wait on Longhorn. A volume left held
+  // to the source keeps its data there, which the placement view reports.
+  await holdTenantVolumes(k8s, namespace, target, storageTier).catch((err: unknown) => {
+    console.warn(`[quiesce-watchdog] abandoned move in ${namespace}: could not hold its volumes to ${target}: ${err instanceof Error ? err.message : String(err)}`);
+  });
 }
 
 /**
@@ -181,6 +191,7 @@ export async function endAbandonedOperation(
         tenantId: storageOperations.tenantId,
         tenantName: tenants.name,
         namespace: tenants.kubernetesNamespace,
+        storageTier: tenants.storageTier,
         activeOpId: tenants.activeStorageOpId,
       })
       .from(storageOperations)
@@ -206,7 +217,7 @@ export async function endAbandonedOperation(
     }
     if (op.namespace) {
       if (op.opType === 'relocate') {
-        await settleAbandonedMove(db, k8s, op.tenantId, op.namespace, op.params);
+        await settleAbandonedMove(db, k8s, op.tenantId, op.namespace, op.storageTier ?? null, op.params);
       } else {
         const { settleInterruptedCaptures } = await import('./prebundle.js');
         await settleInterruptedCaptures(db, k8s, op.tenantId, op.createdAt).catch(() => 0);

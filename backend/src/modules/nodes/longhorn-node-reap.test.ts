@@ -199,6 +199,54 @@ describe('reapOrphanLonghornNodes', () => {
     expect(del).not.toHaveBeenCalled();
   });
 
+  it('removes a stale replica on the gone node when its volume has a copy elsewhere, then the node', async () => {
+    // Lab staging: a server removed with Delete kept one replica of a volume with two
+    // more copies; its Longhorn node was never removed, and when the host joined again
+    // the new disk never matched the old record.
+    const rep = (name: string, nodeID: string, over: Record<string, unknown> = {}) =>
+      ({ metadata: { name }, spec: { nodeID, volumeName: 'crowdsec-data', healthyAt: '2026-10-16T12:30:00Z', ...over }, status: { currentState: 'stopped' } });
+    const { k8s, del } = makeK8s({
+      list: listing({ nodes: [lhNode('s1', UP), lhNode('s3', GONE)], replicas: [rep('r-s1', 's1'), rep('r-s3', 's3')], engines: [] }),
+    });
+    await expect(reapOrphanLonghornNodes(k8s, ['s1'])).resolves.toEqual(['s3']);
+    expect(del.mock.calls.map((c) => `${(c[0] as { plural: string }).plural}/${(c[0] as { name: string }).name}`))
+      .toEqual(['replicas/r-s3', 'nodes/s3']);
+  });
+
+  it('never removes the last copy: a volume whose every usable replica is on the gone node keeps it, and so does the node', async () => {
+    const { k8s, del } = makeK8s({
+      list: listing({
+        nodes: [lhNode('s1', UP), lhNode('s3', GONE)],
+        replicas: [
+          { metadata: { name: 'r-s3' }, spec: { nodeID: 's3', volumeName: 'only-here' }, status: { currentState: 'stopped' } },
+          // A failed copy elsewhere is not a copy.
+          { metadata: { name: 'r-s1' }, spec: { nodeID: 's1', volumeName: 'only-here', healthyAt: '2026-09-01T00:00:00Z', failedAt: '2026-10-01T00:00:00Z' }, status: { currentState: 'stopped' } },
+        ],
+        engines: [],
+      }),
+    });
+    await expect(reapOrphanLonghornNodes(k8s, ['s1'])).resolves.toEqual([]);
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it('does not count a copy still being rebuilt, or one on a node that is not Ready, as a copy elsewhere', async () => {
+    // Mid-copy: the replica on the gone node may be the only COMPLETE data, the one the
+    // rebuild reads from.
+    const { k8s, del } = makeK8s({
+      list: listing({
+        nodes: [lhNode('s1', UP), lhNode('s2', { status: 'False', reason: 'KubeletNotReady' }), lhNode('s3', GONE)],
+        replicas: [
+          { metadata: { name: 'r-s3' }, spec: { nodeID: 's3', volumeName: 'vol', healthyAt: '2026-10-16T12:30:00Z' }, status: { currentState: 'stopped' } },
+          { metadata: { name: 'r-s1' }, spec: { nodeID: 's1', volumeName: 'vol' }, status: { currentState: 'running' } },
+          { metadata: { name: 'r-s2' }, spec: { nodeID: 's2', volumeName: 'vol', healthyAt: '2026-10-16T12:30:00Z' }, status: { currentState: 'stopped' } },
+        ],
+        engines: [],
+      }),
+    });
+    await expect(reapOrphanLonghornNodes(k8s, ['s1', 's2'])).resolves.toEqual([]);
+    expect(del).not.toHaveBeenCalled();
+  });
+
   it('keeps a gone node that still holds an engine', async () => {
     const { k8s, del } = makeK8s({
       list: listing({ nodes: [lhNode('s1', UP), lhNode('w1', GONE)], replicas: [], engines: [{ spec: { nodeID: 'w1' } }] }),

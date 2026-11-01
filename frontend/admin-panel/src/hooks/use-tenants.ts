@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import { resortPlaceholder } from '@/hooks/resort-placeholder';
 import type { Tenant, PaginatedResponse } from '@/types/api';
-import { MAX_PAGE_LIMIT, type CreateTenantInput, type UpdateTenantInput, type CreateTenantResponse } from '@insula/api-contracts';
+import { MAX_PAGE_LIMIT, type CreateTenantInput, type UpdateTenantInput, type CreateTenantResponse, type TenantListFilters } from '@insula/api-contracts';
 
 interface ListTenantsParams {
   readonly search?: string;
@@ -15,6 +15,8 @@ interface ListTenantsParams {
    * A cursor belongs to the sort it was made under: change one, drop the other.
    */
   readonly sort?: string;
+  /** The page's "Filter by": narrows the list and its total on the server. */
+  readonly filters?: TenantListFilters;
 }
 
 function tenantsPath(
@@ -22,9 +24,13 @@ function tenantsPath(
   limit: number | undefined,
   cursor: string | undefined,
   sort: string | undefined,
+  filters: TenantListFilters = {},
 ): string {
   const searchParams = new URLSearchParams();
   if (search) searchParams.set('search', search);
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) searchParams.set(key, value);
+  }
   if (limit) searchParams.set('limit', String(limit));
   if (cursor) searchParams.set('cursor', cursor);
   if (sort) searchParams.set('sort', sort);
@@ -43,13 +49,14 @@ const MAX_PAGES_FOR_ALL = 100;
 export async function fetchAllTenants(
   search: string | undefined,
   sort?: string,
+  filters?: TenantListFilters,
 ): Promise<PaginatedResponse<Tenant>> {
   const rows: Tenant[] = [];
   let cursor: string | undefined;
   let total = 0;
   let more = false;
   for (let page = 0; page < MAX_PAGES_FOR_ALL; page += 1) {
-    const res = await apiFetch<PaginatedResponse<Tenant>>(tenantsPath(search, MAX_PAGE_LIMIT, cursor, sort));
+    const res = await apiFetch<PaginatedResponse<Tenant>>(tenantsPath(search, MAX_PAGE_LIMIT, cursor, sort, filters));
     rows.push(...res.data);
     total = res.pagination?.total_count ?? rows.length;
     more = Boolean(res.pagination?.has_more && res.pagination.cursor);
@@ -65,13 +72,13 @@ export function useTenants(params: ListTenantsParams = {}) {
   return useQuery({
     queryKey: ['tenants', params],
     queryFn: () => (params.all
-      ? fetchAllTenants(params.search, params.sort)
-      : apiFetch<PaginatedResponse<Tenant>>(tenantsPath(params.search, params.limit, params.cursor, params.sort))),
+      ? fetchAllTenants(params.search, params.sort, params.filters)
+      : apiFetch<PaginatedResponse<Tenant>>(tenantsPath(params.search, params.limit, params.cursor, params.sort, params.filters))),
     // A live column (CPU, memory, …) and "All" rows per page read the whole
     // list, a live column in name order: switching to or from either changes
     // the rows on screen as a sort does, so the old ones stay until it lands.
     ...resortPlaceholder<PaginatedResponse<Tenant>>(
-      { search: params.search },
+      { search: params.search, filters: params.filters },
       `${params.all ? 'all ' : ''}${params.sort ?? ''}`,
       params.cursor,
     ),

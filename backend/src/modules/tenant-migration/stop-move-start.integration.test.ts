@@ -45,7 +45,8 @@ function fakeK8s(): K8sClients {
     status: { availableReplicas: d.replicas },
   });
   const lh: Record<string, unknown[]> = {
-    volumes: [{ metadata: { name: 'pvc-1' }, spec: { numberOfReplicas: 1 }, status: { state: 'detached', kubernetesStatus: { namespace: NS } } }],
+    // Held to node-b by an earlier drain: the move must take the hold along.
+    volumes: [{ metadata: { name: 'pvc-1' }, spec: { numberOfReplicas: 1, nodeSelector: ['node-node-b'] }, status: { state: 'detached', kubernetesStatus: { namespace: NS } } }],
     replicas: [{ spec: { volumeName: 'pvc-1', nodeID: 'node-b' }, status: { currentState: 'stopped' } }],
     volumeattachments: [{ metadata: { name: 'pvc-1' }, spec: { attachmentTickets: {} } }],
   };
@@ -76,9 +77,14 @@ function fakeK8s(): K8sClients {
     custom: {
       getNamespacedCustomObject: async () => { cluster.log.push('detach-check'); return { status: { state: 'detached' } }; },
       listNamespacedCustomObject: async ({ plural }: { plural: string }) => ({ items: lh[plural] ?? [] }),
-      patchNamespacedCustomObject: async ({ body }: { body: { spec?: { attachmentTickets?: Record<string, { nodeID?: string } | null> } } }) => {
+      patchNamespacedCustomObject: async ({ plural, name, body }: {
+        plural: string; name: string;
+        body: { spec?: { attachmentTickets?: Record<string, { nodeID?: string } | null>; nodeSelector?: string[]; tags?: string[] } };
+      }) => {
         const ticket = body.spec?.attachmentTickets?.['insula-relocate'];
         if (ticket) cluster.log.push(`ticket:${ticket.nodeID}`);
+        if (plural === 'volumes' && body.spec?.nodeSelector) cluster.log.push(`hold:${name}:${body.spec.nodeSelector.join(',')}`);
+        if (plural === 'nodes' && body.spec?.tags) cluster.log.push(`tag:${name}:${body.spec.tags.join(',')}`);
         return {};
       },
     },
@@ -157,6 +163,13 @@ describe.skipIf(!url)('moving a running tenant (real Postgres)', () => {
     expect(detached).toBeLessThan(firstPin);
     expect(firstPin).toBeLessThan(ticket);
     expect(ticket).toBeLessThan(firstStart);
+    // The volume is held to the target before any workload is pinned there: a
+    // volume left held to node-b keeps its data on node-b, however the pods run.
+    const tagged = log.indexOf('tag:node-a:node-node-a');
+    const hold = log.indexOf('hold:pvc-1:node-node-a');
+    expect(detached).toBeLessThan(tagged);
+    expect(tagged).toBeLessThan(hold);
+    expect(hold).toBeLessThan(firstPin);
     // Every workload starts on the target — none is left behind on the source.
     expect(log.filter((l) => /^scale:\w+:1/.test(l)).sort()).toEqual(['scale:db:1@node-a', 'scale:web:1@node-a']);
     expect(cluster.deployments.map((d) => d.node)).toEqual(['node-a', 'node-a', 'node-a']);
@@ -214,6 +227,7 @@ describe.skipIf(!url)('moving a running tenant (real Postgres)', () => {
       const r = await sweepAbandonedQuiesce(db, fakeK8s());
       expect(r.abandonedOps).toBe(1);
       expect(cluster.deployments.map((d) => d.node)).toEqual(['node-c', 'node-c']);
+      expect(cluster.log).toContain('hold:pvc-1:node-node-c');
       expect(cluster.log.filter((l) => l.startsWith('scale:')).sort()).toEqual(['scale:db:1@node-c', 'scale:web:1@node-c']);
       const op = await pool.query('SELECT state FROM storage_operations');
       expect(op.rows[0].state).toBe('failed');
@@ -226,7 +240,7 @@ describe.skipIf(!url)('moving a running tenant (real Postgres)', () => {
         { name: 'web', replicas: 1, node: 'node-b' }, { name: 'db', replicas: 0, node: 'node-b' });
       await abandonedMove(31);
       await sweepAbandonedQuiesce(db, fakeK8s());
-      expect(cluster.log.some((l) => l.startsWith('pin:'))).toBe(false);
+      expect(cluster.log.some((l) => l.startsWith('pin:') || l.startsWith('hold:'))).toBe(false);
       expect(cluster.deployments.map((d) => d.node)).toEqual(['node-b', 'node-b']);
     });
 

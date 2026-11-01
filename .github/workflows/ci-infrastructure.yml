@@ -277,6 +277,8 @@ jobs:
       - run: ./scripts/test-host-migration-leader-elect-spread.sh
       - run: ./scripts/test-host-migration-tenant-drain-taint.sh
       - run: ./scripts/test-host-migration-node-name-pin.sh
+      - run: ./scripts/test-host-migration-node-external-ip.sh
+      - run: ./scripts/test-bootstrap-dual-stack.sh
       - run: ./scripts/test-traefik-access-log-values.sh
       - run: ./scripts/test-traefik-ingress-memory-bounds.sh
       - run: ./scripts/test-traefik-modsecurity-plugin-migration.sh

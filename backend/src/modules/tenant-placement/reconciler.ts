@@ -22,6 +22,7 @@ import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { collectFacts, type CollectedFacts } from '../tenant-health/collect.js';
 import { notifyAdminTenantMisplaced, notifyAdminTenantStorageFailover } from '../notifications/events.js';
 import { computePlacements, observeStorageFailovers, type TenantPlacementObservation } from './compute.js';
+import { readCopyRefusalContext, type CopyRefusalContext } from './copy-refusal.js';
 import { failoverMessage, misplacedMessage, type NamedFailover, type NamedPlacement } from './messages.js';
 import {
   claimMisplacedNotifications, loadPlacementStates, recordStorageFailovers, savePlacementStates,
@@ -53,6 +54,8 @@ export interface PlacementDeps {
   readonly now?: () => Date;
   /** Test seam; defaults to the shared fleet read. */
   readonly collect?: (db: Database, k8s: K8sClients) => Promise<CollectedFacts>;
+  /** Test seam; defaults to reading Longhorn's nodes and scheduling settings. */
+  readonly readRefusals?: (k8s: K8sClients) => Promise<CopyRefusalContext | null>;
   /** Test seam: await the pin repair instead of letting it run in the background. */
   readonly awaitRepair?: boolean;
 }
@@ -77,7 +80,12 @@ export async function runPlacementTick(deps: PlacementDeps): Promise<PlacementTi
   const log = deps.logger ?? console;
   const now = (deps.now ?? (() => new Date()))();
   const facts = await (deps.collect ?? collectFacts)(deps.db, deps.k8s);
-  const placements = computePlacements(facts);
+  // Longhorn's nodes are read only when some volume has a copy refused, to
+  // say why (copy-refusal.ts); every other tick costs nothing extra.
+  const refusals = facts.volumes.some((v) => v.scheduleFailure)
+    ? await (deps.readRefusals ?? readCopyRefusalContext)(deps.k8s)
+    : undefined;
+  const placements = computePlacements(facts, refusals);
   const byTenant = new Map(placements.map((p) => [p.tenantId, p]));
   const before = await loadPlacementStates(deps.db);
 

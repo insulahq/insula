@@ -148,7 +148,7 @@ export function MisplacedBanner({ placement, pending, busy, onChoose, onConfirm,
     >
       <p className="flex items-start gap-2 text-sm font-semibold text-red-900 dark:text-red-200">
         <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
-        Not on its primary node {primary ? nodeLabel(primary) : ''}
+        {primary ? `Not on its primary node ${nodeLabel(primary)}` : 'Auto: its pods and its data are on different nodes'}
       </p>
       <p className="mt-1 text-xs text-red-800 dark:text-red-300">
         <NodeText text={placement.reasons.join(', ')} />{placement.misplacedSince ? ` — since ${local(placement.misplacedSince)}` : ''}.

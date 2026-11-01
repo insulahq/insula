@@ -214,7 +214,9 @@ node card click **Drain Tenants**. A modal computes the impact:
 - **Pinned tenants** — tenants with a workload or volume on this node. Pick one
   re-pin target per tenant (or **Auto** to clear the pin). The orchestrator
   moves every Deployment, StatefulSet, and Longhorn volume in that tenant's
-  namespace together. Leaving a tenant on **Stay** blocks the drain; otherwise a
+  namespace together, the tenant's file manager included: a running one
+  restarts on the new node rather than holding the volume on the old one.
+  Leaving a tenant on **Stay** blocks the drain; otherwise a
   tenant's volumes never hold the drain back, because the re-pin moves them.
   A running tenant's data follows its restarted pod. A tenant marked **not
   running** (stopped or suspended) has no pod for its data to follow, so the
@@ -499,6 +501,17 @@ kubelet not reporting* instead.
    blank node, schedulable, listed as a worker that can host tenants. If that
    happened, uninstall k3s first, then `kubectl delete node <name>` and
    **Remove orphan** on its card.
+
+   Once the host is gone, Insula also removes Longhorn's record of the node,
+   which deleting the Kubernetes node leaves behind. A replica Longhorn still
+   lists on the gone node is removed first when its volume has a usable copy
+   elsewhere; a last copy is kept, and so is the node's record. A record left
+   behind matters when a host **joins again under the same name** with a new
+   Longhorn directory: Longhorn compares the new disk with the old record
+   (*record diskUUID doesn't match the one on the disk*), and the node's disk
+   never becomes ready, so no data can be placed there. To repair such a
+   node, remove the disk from the node in Longhorn and add it again with the
+   same path.
 
 ### Moving a database instance off a server
 

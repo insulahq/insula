@@ -57,6 +57,8 @@ export interface ReconcileDeps {
     readonly core: k8s.CoreV1Api;
     readonly apps: k8s.AppsV1Api;
     readonly networking: k8s.NetworkingV1Api;
+    /** Longhorn, to keep an Auto tenant's proxy pods with its data; without it they are unpinned. */
+    readonly custom?: k8s.CustomObjectsApi;
   };
   readonly encryptionKey: string;
 }
@@ -68,6 +70,11 @@ export interface ReconcileOutcome {
   readonly zrokDeployments: number;
   readonly action: 'provisioned' | 'updated' | 'torn_down' | 'noop';
   readonly error: string | null;
+}
+
+/** The clients an Auto tenant's placement is read with, when this reconcile has Longhorn's. */
+function placementReader(deps: ReconcileDeps): { core: k8s.CoreV1Api; custom: k8s.CustomObjectsApi } | undefined {
+  return deps.k8s.custom ? { core: deps.k8s.core, custom: deps.k8s.custom } : undefined;
 }
 
 export async function reconcileTenant(
@@ -174,7 +181,7 @@ async function ensureZitiTunneler(
   await upsertService(deps.k8s.core, namespace, ZITI_PROXY_NAME, [
     { name: 'http-proxy', port: 8080, targetPort: 8080 },
   ]);
-  const wasNew = await upsertZitiDeployment(deps.k8s.apps, namespace, await loadTenantPodPlacementByNamespace(deps.db, namespace));
+  const wasNew = await upsertZitiDeployment(deps.k8s.apps, namespace, await loadTenantPodPlacementByNamespace(deps.db, namespace, placementReader(deps)));
   await markMeshState(deps.db, await tenantIdForNamespace(deps.db, namespace), 'ziti-tunneler', true, null);
   return wasNew;
 }
@@ -191,7 +198,7 @@ async function ensureZrokFrontdoor(
   await upsertService(deps.k8s.core, namespace, ZROK_FRONTDOOR_NAME, [
     { name: 'http', port: 8080, targetPort: 8080 },
   ]);
-  const wasNew = await upsertZrokDeployment(deps.k8s.apps, namespace, await loadTenantPodPlacementByNamespace(deps.db, namespace));
+  const wasNew = await upsertZrokDeployment(deps.k8s.apps, namespace, await loadTenantPodPlacementByNamespace(deps.db, namespace, placementReader(deps)));
   await markMeshState(deps.db, await tenantIdForNamespace(deps.db, namespace), 'zrok-frontdoor', true, null);
   return wasNew;
 }
