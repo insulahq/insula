@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { PaginatedResponse } from '@/types/api';
+import { resortPlaceholder } from '@/hooks/resort-placeholder';
 
 export interface AdminMailbox {
   readonly id: string;
@@ -45,5 +46,6 @@ export function useAdminMailboxes(params: UseAdminMailboxesParams = {}) {
   return useQuery({
     queryKey: ['admin-mailboxes', { limit, cursor, search, sort }],
     queryFn: () => apiFetch<PaginatedResponse<AdminMailbox>>(url),
+    ...resortPlaceholder<PaginatedResponse<AdminMailbox>>({ limit, search }, sort, cursor),
   });
 }

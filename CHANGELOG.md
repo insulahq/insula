@@ -73,6 +73,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   specified), text compares case-insensitively, empty values come last, and the next page
   continues the same order (keyset cursor on the sort key and the row id). Changing the
   sort starts again from page one, and a cursor made under another sort is refused.
+  - While the new order loads, the table keeps the rows it shows, the clicked header keeps
+    keyboard focus, and Next waits for the new order. In v2026.11.1-rc.1 each header click
+    swapped the whole table for a spinner, so the header disappeared and a keyboard user lost
+    focus.
   - On the Tenants list, CPU, Memory, Storage and Placement are live values the database
     does not hold. Sorting by one of them loads every tenant and sorts them in the browser,
     and the page says so.

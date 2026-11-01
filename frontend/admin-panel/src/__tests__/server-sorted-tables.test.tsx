@@ -305,6 +305,37 @@ describe('Tenants — a live column', () => {
     expect(screen.queryByTestId('tenants-live-sort-note')).not.toBeInTheDocument();
   });
 
+  it('keeps the table on screen while a live column reads every tenant', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    apiFetch.mockImplementation(async (url: string) => {
+      const u = new URL(url, 'http://panel.test');
+      if (u.pathname !== '/api/v1/tenants') return EMPTY;
+      // The whole-list read a live column needs is the slow one.
+      if (u.searchParams.get('limit') === '100') await gate;
+      const first = !u.searchParams.has('cursor');
+      const offset = first ? 0 : 2;
+      return {
+        data: [tenantRow(offset + 1), tenantRow(offset + 2)],
+        pagination: { total_count: 4, cursor: first ? 'c-next' : null, has_more: first, page_size: 2 },
+      };
+    });
+    renderTable(TenantsListTab);
+    const table = await screen.findByTestId('tenants-table');
+    expect(rowNames()).toEqual(['Tenant 001', 'Tenant 002']);
+
+    fireEvent.click(screen.getByTestId('sort-cpu'));
+    await waitFor(() => expect(lastRequest('/api/v1/tenants')).toMatchObject({ limit: '100', cursor: null }));
+    // The order is the server's name order still, so the server sort is the
+    // same — the switch to a live column must count as a re-sort anyway.
+    // The rows on screen stay, already in CPU order, until the rest arrive.
+    expect(table.isConnected).toBe(true);
+    expect(rowNames()).toEqual(['Tenant 002', 'Tenant 001']);
+
+    release();
+    await waitFor(() => expect(rowNames()).toEqual(['Tenant 002', 'Tenant 004', 'Tenant 003', 'Tenant 001']));
+  });
+
   it('keeps "All" rows per page server-sorted for a server column', async () => {
     serve({ listPath: '/api/v1/tenants', row: tenantRow });
     renderTable(TenantsListTab);
@@ -318,5 +349,74 @@ describe('Tenants — a live column', () => {
       { sort: 'subscriptionExpiresAt:asc', cursor: 'c-next', limit: '100' },
     ]));
     expect(await screen.findByTestId('pagination-bar')).toHaveTextContent(/Showing 1-4 of 4/);
+  });
+});
+
+/**
+ * Like serve(), but the first request in `slowSort` waits until released —
+ * the moment between a header click and the new order arriving.
+ */
+function serveSlowly(c: Pick<TableCase, 'listPath' | 'row'>, slowSort: string) {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  apiFetch.mockImplementation(async (url: string) => {
+    const u = new URL(url, 'http://panel.test');
+    if (u.pathname !== c.listPath) return EMPTY;
+    if (u.searchParams.get('sort') === slowSort) await gate;
+    const first = !u.searchParams.has('cursor');
+    const offset = first ? 0 : 2;
+    return {
+      data: [c.row(offset + 1), c.row(offset + 2)],
+      pagination: { total_count: 4, cursor: first ? 'c-next' : null, has_more: first, page_size: 2 },
+    };
+  });
+  return () => release();
+}
+
+describe.each(CASES)('$name — a re-sort keeps the table on screen', (c) => {
+  it('keeps the rows and the focused header until the new order arrives, with no next page meanwhile', async () => {
+    const release = serveSlowly(c, `${c.column}:asc`);
+    renderTable(c.Component);
+    await waitFor(() => expect(screen.getByTestId(c.nextTestId)).not.toBeDisabled());
+    const rowsBefore = document.querySelectorAll('tbody tr').length;
+    expect(rowsBefore).toBeGreaterThan(0);
+
+    // A keyboard user sorts: focus the header, press Enter.
+    const header = screen.getByTestId(`sort-${c.column}`);
+    header.focus();
+    fireEvent.keyDown(header, { key: 'Enter' });
+    await waitFor(() => expect(lastRequest(c.listPath)).toMatchObject({ sort: `${c.column}:asc`, cursor: null }));
+
+    // While the server works: the same header, still focused, over the same rows…
+    expect(header.isConnected).toBe(true);
+    expect(document.activeElement).toBe(header);
+    expect(document.querySelectorAll('tbody tr').length).toBe(rowsBefore);
+    // …and no way to page on with a cursor made in the old order.
+    const next = screen.queryByTestId(c.nextTestId);
+    expect(next === null || next.hasAttribute('disabled')).toBe(true);
+
+    release();
+    await waitFor(() => expect(screen.getByTestId(c.nextTestId)).not.toBeDisabled());
+    expect(header.getAttribute('aria-sort')).toBe('ascending');
+  });
+});
+
+describe('Audit logs — a re-sort after "Load more"', () => {
+  it('keeps every row read so far until the new order arrives, then starts again from page one', async () => {
+    const audit = CASES.find((c) => c.name === 'Audit logs')!;
+    const release = serveSlowly(audit, 'actionType:asc');
+    renderTable(AuditLogs);
+    fireEvent.click(await screen.findByTestId('audit-logs-load-more'));
+    await waitFor(() => expect(document.querySelectorAll('tbody tr')).toHaveLength(4));
+
+    fireEvent.click(screen.getByTestId('sort-actionType'));
+    await waitFor(() => expect(lastRequest(audit.listPath)).toMatchObject({ sort: 'actionType:asc', cursor: null }));
+    // Both pages stay — not just the last one read, which is all the query keeps.
+    expect(document.querySelectorAll('tbody tr')).toHaveLength(4);
+    expect(screen.queryByTestId('audit-logs-load-more')).toBeNull();
+
+    release();
+    await waitFor(() => expect(screen.getByTestId('audit-logs-load-more')).toBeInTheDocument());
+    expect(document.querySelectorAll('tbody tr')).toHaveLength(2);
   });
 });
