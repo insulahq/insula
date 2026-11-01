@@ -106,6 +106,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   match the one on the disk"): the server's disk never became ready. The reconciler now removes
   such replicas first, never a last copy, then the record.
 
+### Security
+
+- **Official Catalog images triaged in the CVE ledger.** The weekly image scan reported
+  CRITICALs in the catalog's database images and runtimes. The ones a rebuild of the catalog
+  cannot clear are now in `security/cve-ledger.yaml`, each scoped to its image (and its binary
+  or package):
+  - the Go stdlib flaw in `gosu` (MariaDB, MySQL, MongoDB, PostgreSQL) and in static-nginx's
+    entrypoint: neither links `crypto/tls`, so it is not reachable;
+  - certifi in MySQL Shell (MySQL): nothing in the platform runs it;
+  - Go 1.22 itself in the golang-122 runtime: accepted until the runtime moves to a supported Go.
+
+  The runtimes' OS packages are fixed by rebuilding them in the catalog repository.
+
 ## [2026.11.1] - 2026-11-01
 
 ### Added
