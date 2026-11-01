@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.11.1-rc.1] - 2026-11-01
-
 ### Added
 
 - **An ingress route can be switched off without losing its settings.** The tenant panel's
@@ -66,6 +64,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A server that loses power keeps the firewall members it needs to rejoin the cluster.**
+  firewall-reconciler keeps a copy of the cluster peer and trusted-range set members in
+  `/etc/nftables.d/10-cluster-peers.conf`, which nftables loads at boot, so a rebooted server
+  can reach its etcd peers before the cluster is reachable. It replaced that file every 30 s
+  without syncing it to disk. A server whose power was cut within seconds of a replace could
+  boot with the file empty: no peer could reach it, and it stayed `NotReady` until the members
+  were restored by hand. This was 55 minutes on a lab server running Rocky Linux on XFS. The
+  reconciler now leaves the file alone while the members are unchanged. When they change, it
+  syncs the new file before renaming it into place and syncs the directory after. On that lab
+  server, three power cuts each landing the moment a replace happened left the file empty with
+  the old reconciler, and none of five did with the new one.
+
 - **Clicking a column header sorts the whole list, not the page on screen.** The admin
   panel's paged tables (Tenants, Users, Domains, Email Accounts, Cron Jobs) fetched 20 rows
   at a time from a server that always ordered by creation date, then sorted those 20 rows in
@@ -75,6 +85,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   specified), text compares case-insensitively, empty values come last, and the next page
   continues the same order (keyset cursor on the sort key and the row id). Changing the
   sort starts again from page one, and a cursor made under another sort is refused.
+  - While the new order loads, the table keeps the rows it shows, the clicked header keeps
+    keyboard focus, and Next waits for the new order. In v2026.11.1-rc.1 each header click
+    swapped the whole table for a spinner, so the header disappeared and a keyboard user lost
+    focus.
   - On the Tenants list, CPU, Memory, Storage and Placement are live values the database
     does not hold. Sorting by one of them loads every tenant and sorts them in the browser,
     and the page says so.

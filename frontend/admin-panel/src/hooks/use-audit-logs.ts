@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { PaginatedResponse } from '@/types/api';
+import { resortPlaceholder } from '@/hooks/resort-placeholder';
 
 export interface AuditLogEntry {
   readonly id: string;
@@ -55,6 +56,11 @@ export function useAuditLogs(params: ListAuditLogsParams = {}) {
   return useQuery({
     queryKey: ['audit-logs', params],
     queryFn: () => apiFetch<PaginatedResponse<AuditLogEntry>>(path),
+    ...resortPlaceholder<PaginatedResponse<AuditLogEntry>>(
+      { ...params, cursor: undefined, sort: undefined },
+      params.sort,
+      params.cursor,
+    ),
     refetchInterval: 30_000,
   });
 }

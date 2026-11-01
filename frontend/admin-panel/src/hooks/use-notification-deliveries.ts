@@ -14,6 +14,7 @@ import type {
   NotificationDeliveryStatus,
   NotificationChannelId,
 } from '@insula/api-contracts';
+import { resortPlaceholder } from '@/hooks/resort-placeholder';
 
 interface Envelope<T> {
   readonly data: T;
@@ -73,6 +74,11 @@ export function useNotificationDeliveries(input: DeliveriesQueryInput) {
     ],
     queryFn: () => apiFetch<Envelope<NotificationDeliveryResponse[]>>(
       `/api/v1/admin/notifications/deliveries${buildQs(input)}`,
+    ),
+    ...resortPlaceholder<Envelope<NotificationDeliveryResponse[]>>(
+      { filters: input.filters, limit: input.limit },
+      input.sort,
+      input.cursor,
     ),
   });
 }
