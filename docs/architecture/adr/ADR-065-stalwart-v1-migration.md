@@ -1,7 +1,7 @@
 # ADR-065: Stalwart v1 is a planned mail migration, not a version bump
 
 **Status**: PROPOSED — a living record, revised as upstream releases and our own drills change the facts
-**Date**: 2026-10-30 · **Last reviewed**: 2026-10-31
+**Date**: 2026-10-30 · **Last reviewed**: 2026-11-01
 **Related**: ADR-026 (email system), ADR-030 (mail server selection), ADR-031 (role-based multi-node),
 ADR-039 (Bulwark webmail), ADR-042 (Stalwart logical export), ADR-044 / ADR-061 (mailbox backup),
 ADR-046 (blob store stays RocksDB), ADR-064 (upgrade procedure). Registry: `security/components.yaml`
@@ -548,22 +548,75 @@ setbacks. Against that bar:
   - a migration window ≈ 3× as long at production's size (≈ 10 against ≈ 3 min);
   - with blobs as files, two stores that must be backed up and failed over together, plus the body
     durability gap (round 2, finding 1).
-- **C is the only shape with an advantage A cannot reach**: no mail lost when a node fails (one
-  synchronous standby) and no failover wait (other pods keep serving). That is **not yet proven**:
-  the staging power-cut drill could not run (one staging server would not boot). It costs:
+- **C is the only shape with an advantage A cannot reach**: no mail lost when a server fails (one
+  synchronous standby) and a short failover wait (the other pods keep serving). The staging drill
+  below measured it once per variant. Blobs on Longhorn RWX showed both advantages; blobs in Garage
+  lost nothing but were degraded for longer than today's failover. It costs:
   - three PostgreSQL instances: ≈ 2 GiB of memory held together;
-  - a shared body store: Longhorn RWX (−40 % writes, +0.6 GiB, an NFS server pod that moves on
-    failure) or Garage at replication factor 3 (3× the body storage, an S3 service on every install);
+  - a shared body store: Longhorn RWX (−40 % writes on DEV, +0.6 GiB for the share-manager, an NFS
+    server pod that moves on failure) or Garage at replication factor 3 (3× the body storage, an S3
+    service on every install);
   - Valkey (cheap);
   - pods on every server, which changes mail port exposure;
   - ≈ 127–177 GB of storage against today's ≈ 103 GB.
 
-**What would make C the recommendation:** a drill on staging that powers off a server under SMTP
-delivery and shows no accepted message lost, no body missing, and mail served within seconds — run
-against today's failover on the same staging, measured the same way (`failover-probe.py`: steady
-delivery, the time nothing was accepted, the accepted messages missing afterwards). That drill
-replaces round 1's gates 1–4 for C; for A, round 1's gates reduce to the timed production-sized
-migration and the cache caps.
+### Round 2 on staging: a server powered off under delivery (2026-11-01)
+
+Lab staging: three servers (4 vCPU, 6 GB each), the platform in production mode at v2026.10.23,
+Stalwart and PostgreSQL limited to 768 MiB each. A power cut is `virsh destroy` of one server: no
+shutdown, page cache lost. The server stayed off for 240 s and was then started again. Two deliveries
+ran across the cut:
+- a steady probe (`failover-probe.py`), one SMTP session at a time, recording each accepted message
+  with its time; afterwards every accepted message was looked up by Message-ID;
+- a bulk delivery of 20,000 messages from 10 workers, counted against what was stored.
+
+Every stored message of the corpus accounts was then compared with the bytes it was made from
+(`verify-bodies`).
+
+| shape | server cut | no mail accepted | accepted mail lost | bodies missing |
+|---|---|---|---|---|
+| **today** — 0.16, RocksDB, warm standby, `dr-watcher`, with production's settings (auto-failover, 300 s, one secondary, `allServerNodes`) | the mail node | **456 s**: first acceptance 449 s after the cut; Stalwart was ready on the standby after 387 s and 392 s in two runs | **all 23 messages accepted in the 2 minutes before the cut**, i.e. everything since the last standby pass, which had started 127 s earlier | – |
+| **C** — 3 Stalwart pods, PostgreSQL ×3 with one synchronous standby, Valkey + Sentinel ×3, blobs in Garage (replication factor 3) | the PostgreSQL primary's node, which also held a Garage node and the Valkey master | 121 s, then acceptance degraded again for ≈ 12 min from 232 s on — longer than today in total; cause not found | 0 of 981 (probe); the bulk run's 19,805 accepted messages all stored | 0 empty, 0 unreadable |
+| **C** — the same with blobs on a Longhorn RWX volume (2 replicas) | the PostgreSQL primary's node, which also ran the RWX share-manager | **181 s**, then two short drops (60 s, 45 s) while the server came back | 0 of 1,082 (probe); the bulk run's 19,780 accepted messages all stored | 0 empty, 0 unreadable |
+| **B** — 1 pod pinned to one server, blobs as files on its local disk, PostgreSQL ×3 with one synchronous standby | the Stalwart node | as long as the server is down — the pod and its blobs are bound to it (18 min here, ≈ 13 of them a harness bug in the pod's start, now fixed) | 0 of 683 (probe) | **0 empty, 0 unreadable in 38,867 messages, despite the missing fsync** |
+
+Each shape was cut once, so the numbers show a direction, not a distribution. Appended mail came
+back byte-identical in every shape. Delivered mail filed as Junk carried content the server added
+beyond its headers in every shape, Garage included, so this is a property of the server, not of the
+disk. A search right after an outage missed most of the newest messages (801 of 895 on RWX; full-text
+indexing catches up later), and all of them were present when read by Message-ID.
+
+What the drill found beyond the shapes:
+1. **Today's failover loses the mail accepted since the last standby pass, and nothing counts it.**
+   The 23 messages had been accepted with `250`; the old volume, which still held them, is kept 48 h
+   (`mail-pvc-reaper`) and then deleted. With the standby looping every 300 s plus the pass, the
+   window is up to ≈ 5 minutes of mail.
+2. **Today's failover needs platform-api and the platform database on other servers.** With
+   `system-db` at one instance on the mail node (HA mode off, as on staging), the dr-watcher failed
+   every tick, and mail was still down 17 minutes after the cut, its pod Pending on the dead node.
+   Production runs `system-db` ×3 and platform-api ×3 off the mail node.
+3. **A server's firewall can lock it out of the cluster after a power cut** (Rocky 9, XFS):
+   `/etc/nftables.d/10-cluster-peers.conf` came back 0 bytes. firewall-reconciler writes it with
+   write + rename and no fsync, and had rewritten it in the second before the cut. The server booted
+   with empty peer sets and could not rejoin etcd for ≈ 55 min, until the sets were restored by hand
+   (1 of 2 cuts on that server). This is the deadlock the file exists to prevent (`nft.go`).
+4. A planned move to a server that was NotReady minutes earlier fails its preflight after 300 s.
+   Right after a move, enabling email on a domain failed with a JMAP 401 for ≈ 30 s while the
+   credentials were re-synchronised.
+
+**What it means for the recommendation.** A stays the recommendation for the migration. C with
+Longhorn RWX is the only shape whose advantages were proven against today's: no accepted mail lost
+(against minutes of mail), and 181 s without acceptance (against 456 s). That makes it the
+candidate for an opt-in HA mode after the migration — provided that:
+- the drill is repeated with the server holding the share-manager and with other cut timings;
+- the Garage variant's 12-minute degradation is understood (it shares C's Valkey, coordinator and
+  PostgreSQL failover);
+- the platform findings above are fixed.
+
+For A, round 1's gates reduce to the timed production-sized migration and the cache caps; the
+repeated staging drill replaces round 1's gates 1–4 for C. Independently of v1, finding 1 is a reason
+to shorten today's loss window (a shorter standby cadence), and finding 3 is a platform bug to fix on
+its own.
 
 ## v1 capabilities to adopt from the start
 
@@ -698,3 +751,9 @@ date, not deleted.
   restore with both engines; store-level backup and restore; account and mail deletion; blob files
   on Longhorn RWO/RWX and in Garage. Against the operator's bar for changing the architecture, the
   recommendation for Decision 5 changed from B to A; C waits for a multi-node power-cut drill.
+- 2026-11-01 — Round 2 on staging: a server powered off under SMTP delivery, today's failover against
+  C (Garage, Longhorn RWX) and B on one node. Today's failover measured at 456 s without acceptance and
+  the loss of every message accepted since the last standby pass; C on Longhorn RWX lost nothing and
+  stopped accepting for 181 s; C on Garage lost nothing but degraded for ≈ 12 min; B lost no body
+  despite the missing fsync. Platform findings: the failover's dependence on platform-api and the
+  platform database, the firewall peers file left empty by a power cut, the planned-move preflight.
