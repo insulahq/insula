@@ -64,6 +64,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A server that loses power keeps the firewall members it needs to rejoin the cluster.**
+  firewall-reconciler keeps a copy of the cluster peer and trusted-range set members in
+  `/etc/nftables.d/10-cluster-peers.conf`, which nftables loads at boot, so a rebooted server
+  can reach its etcd peers before the cluster is reachable. It replaced that file every 30 s
+  without syncing it to disk. A server whose power was cut within seconds of a replace could
+  boot with the file empty: no peer could reach it, and it stayed `NotReady` until the members
+  were restored by hand. This was 55 minutes on a lab server running Rocky Linux on XFS. The
+  reconciler now leaves the file alone while the members are unchanged. When they change, it
+  syncs the new file before renaming it into place and syncs the directory after.
+
 - **Clicking a column header sorts the whole list, not the page on screen.** The admin
   panel's paged tables (Tenants, Users, Domains, Email Accounts, Cron Jobs) fetched 20 rows
   at a time from a server that always ordered by creation date, then sorted those 20 rows in
