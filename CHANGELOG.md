@@ -21,11 +21,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   addresses, and so the tenant apex records, from it, and the Traefik Service's external IPs come
   from it. Such servers never served ingress. On lab staging, the two servers that joined after
   the first had none.
-  - Fresh installs now always pass `--node-external-ip` with the node's public IPv4, plus its
-    global IPv6 when there is one. This applies to servers and workers alike.
-  - Host migration `2026.11.2/0001` does the same for existing nodes. It acts only on a node
-    whose k3s sets no external IP and whose pinned node IP is the address the host reaches the
-    internet from. There it writes a k3s config drop-in and restarts k3s once; pods keep running.
+  - Fresh installs now always publish the node's public IPv4, plus its global IPv6 when there
+    is one, through the k3s config drop-in `/etc/rancher/k3s/config.yaml.d/60-node-external-ip.yaml`.
+    This applies to servers and workers alike.
+  - Host migration `2026.11.2/0001` writes the same file, byte for byte, on existing nodes. It
+    acts only on a node whose k3s sets no external IP and whose pinned node IP is the address
+    the host reaches the internet from, and restarts k3s once; pods keep running.
     A server restarts only while every other server is Ready, so the cluster keeps its etcd
     quorum. If k3s does not come back within 4 minutes, the migration removes the drop-in again.
   - Nodes on a private underlay, and nodes that already publish an external IP, are left alone.

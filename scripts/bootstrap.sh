@@ -4194,21 +4194,33 @@ detect_public_ipv4() {
   return 1
 }
 
-# public_underlay_node_args <public-v4> <node-v6|""> <global-v6|""> — the address flags a
-# public-underlay node is installed with: --node-ip carries the node's underlay address(es), and
-# --node-external-ip publishes the public v4, plus the v6 only when it is global.
+# write_node_external_ip_dropin <public-v4> <global-v6|""> — publish a public-underlay node's
+# address as its ExternalIP: the v4, plus the v6 only when it is global, never a ULA.
 #
-# --node-external-ip is unconditional here. The Node's ExternalIP is what the platform reads as
-# "this node serves the public": ingress-nodes/discovery.ts builds the ingress addresses (and so
-# the tenant apex records) from it, and the ingress-external-ips CronJob builds the Traefik
-# Service's externalIPs from it. Passing the flag only when a global v6 existed left every
+# Every public-underlay node gets it. The Node's ExternalIP is what the platform reads as "this
+# node serves the public": ingress-nodes/discovery.ts builds the ingress addresses (and so the
+# tenant apex records) from it, and the ingress-external-ips CronJob builds the Traefik Service's
+# externalIPs from it. Passing --node-external-ip only when a global v6 existed left every
 # IPv4-only (or ULA-v6) node without an ExternalIP, and ingress discovery published only the
 # servers installed before that; on lab staging the two servers that joined later never served
 # ingress. Calico is unaffected: it autodetects from the InternalIP.
-public_underlay_node_args() {
-  local v4="$1" node_v6="$2" public_v6="$3"
-  printf -- '--node-ip=%s%s --node-external-ip=%s%s' \
-    "$v4" "${node_v6:+,${node_v6}}" "$v4" "${public_v6:+,${public_v6}}"
+#
+# A k3s config drop-in rather than a flag, because host migration 2026.11.2/0001-node-external-ip
+# writes the same file, byte for byte, on nodes installed before this: one source for a node's
+# ExternalIP whichever way it was installed (test-host-migration-node-external-ip.sh compares the
+# two). k3s reads config.yaml.d on every start, the first one included.
+NODE_EXTERNAL_IP_DROPIN=/etc/rancher/k3s/config.yaml.d/60-node-external-ip.yaml
+write_node_external_ip_dropin() {
+  local v4="$1" v6="$2"
+  install -d -m 0755 "$(dirname "$NODE_EXTERNAL_IP_DROPIN")"
+  {
+    printf '# Written by bootstrap.sh and by host-migration 2026.11.2/0001-node-external-ip: the\n'
+    printf "# node's public-underlay address, published as its ExternalIP.\n"
+    printf 'node-external-ip:\n'
+    printf '  - "%s"\n' "$v4"
+    if [[ -n "$v6" ]]; then printf '  - "%s"\n' "$v6"; fi
+  } > "${NODE_EXTERNAL_IP_DROPIN}.new"
+  mv -f "${NODE_EXTERNAL_IP_DROPIN}.new" "$NODE_EXTERNAL_IP_DROPIN"
 }
 
 # warn_if_private_external_ipv4 <v4> — a public-underlay node publishes the address it reaches the
@@ -4845,11 +4857,12 @@ install_k3s_server() {
     if [[ -z "$public_ip" ]]; then
       error "Could not detect a non-VPN public IPv4 address. Set --cluster-network-cidr <CIDR> to pin the underlay manually."
     fi
-    log "  public-underlay mode: --node-ip=${public_ip} --node-external-ip=${public_ip}${node_public_ipv6:+,${node_public_ipv6}}"
+    log "  public-underlay mode: --node-ip=${public_ip}, ExternalIP ${public_ip}${node_public_ipv6:+,${node_public_ipv6}}"
+    node_pin="--node-ip=${public_ip}${node_ipv6:+,${node_ipv6}} --advertise-address=${public_ip}"
     # Both families when the host has a global v6: ingress-external-ips copies
     # ExternalIP onto the Traefik Service, so a v4-only list there would leave a
     # dual-stack cluster's ingress v4-only.
-    node_pin="$(public_underlay_node_args "$public_ip" "$node_ipv6" "$node_public_ipv6") --advertise-address=${public_ip}"
+    write_node_external_ip_dropin "$public_ip" "$node_public_ipv6"
     warn_if_private_external_ipv4 "$public_ip"
     tls_sans="${tls_sans} --tls-san=${public_ip}"
   fi
@@ -5236,8 +5249,9 @@ install_k3s_worker() {
     if [[ -z "$public_ip" ]]; then
       error "Could not detect a non-VPN public IPv4 address. Set --cluster-network-cidr <CIDR> to pin the underlay manually."
     fi
-    log "  public-underlay mode: --node-ip=${public_ip} --node-external-ip=${public_ip}${node_public_ipv6:+,${node_public_ipv6}}"
-    exec_args="agent $(public_underlay_node_args "$public_ip" "$node_ipv6" "$node_public_ipv6")"
+    log "  public-underlay mode: --node-ip=${public_ip}, ExternalIP ${public_ip}${node_public_ipv6:+,${node_public_ipv6}}"
+    exec_args="agent --node-ip=${public_ip}${node_ipv6:+,${node_ipv6}}"
+    write_node_external_ip_dropin "$public_ip" "$node_public_ipv6"
     warn_if_private_external_ipv4 "$public_ip"
   fi
 

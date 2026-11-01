@@ -11,8 +11,8 @@
 # public": ingress-nodes/discovery.ts builds the ingress addresses (and so the tenant apex records)
 # from it, and the ingress-external-ips CronJob builds the Traefik Service's externalIPs from it.
 # Those nodes therefore never served ingress; on lab staging the two servers that joined after
-# the first had none. bootstrap.sh now passes the flag on every public-underlay node
-# (public_underlay_node_args); this gives existing nodes the same ExternalIP.
+# the first had none. bootstrap.sh now writes this drop-in on every public-underlay node
+# (write_node_external_ip_dropin); this gives existing nodes the same file.
 #
 # The address published is the node's own pinned --node-ip v4, and only when that is the address
 # the host reaches the internet from (what bootstrap's detect_public_ipv4 picks), plus any GLOBAL
@@ -150,8 +150,9 @@ if [[ "$unit" == k3s ]]; then
   done
 fi
 
-want="# Written by host-migration 2026.11.2/0001-node-external-ip: publishes the node's own
-# public-underlay address as its ExternalIP, as bootstrap.sh does on a fresh install.
+# Byte for byte what bootstrap.sh's write_node_external_ip_dropin writes on a fresh install.
+want="# Written by bootstrap.sh and by host-migration 2026.11.2/0001-node-external-ip: the
+# node's public-underlay address, published as its ExternalIP.
 node-external-ip:
   - \"${v4}\"${v6:+
   - \"${v6}\"}"

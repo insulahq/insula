@@ -198,6 +198,18 @@ printf 'self\t10.0.0.5\tTrue\npeer-a\t10.0.0.6\tTrue\n' > "$WORK/servers"
 out="$(run)"
 grep -qx '  - "10.0.0.5"' <<<"$(dropin)" && grep -q "is a private address" <<<"$out" && ok "LAN address published and flagged" || no "out: $out"
 
+echo "── same file as a fresh install ──"
+sed -n '/^write_node_external_ip_dropin()/,/^}/p' "$HERE/scripts/bootstrap.sh" > "$WORK/bootstrap-writer.sh"
+grep -q '^write_node_external_ip_dropin()' "$WORK/bootstrap-writer.sh" || no "could not extract bootstrap's writer"
+for case in "192.0.2.12|fd98:120::13c|" "192.0.2.12|2001:db8:9::7|2001:db8:9::7"; do
+  IFS='|' read -r v4 nodev6 globalv6 <<<"$case"
+  node parity k3s "--node-ip=${v4},${nodev6}"
+  run > /dev/null
+  ( source "$WORK/bootstrap-writer.sh"; NODE_EXTERNAL_IP_DROPIN="$WORK/fresh.yaml"; write_node_external_ip_dropin "$v4" "$globalv6" )
+  cmp -s "$WORK/fresh.yaml" "$NODE/k3s/config.yaml.d/60-node-external-ip.yaml" \
+    && ok "byte-identical to bootstrap's drop-in (${nodev6})" || no "differs from bootstrap: $(diff "$WORK/fresh.yaml" "$NODE/k3s/config.yaml.d/60-node-external-ip.yaml")"
+done
+
 echo
 printf 'host-migration node-external-ip: %d passed, %d failed\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]
