@@ -193,11 +193,21 @@ node** banner says what is elsewhere and since when, with two ways out:
   volume first (**Plan & limits**). Without this check the tenant
   would start on the new node with its data left behind, and do all of
   its disk I/O across the network from then on.
+- A move holds the tenant's volume to its new node, as a drain does: it
+  tags that node in Longhorn (`node-<name>`) and limits the volume to it.
+  Before, a move left the volume limited to the node an earlier drain had
+  put it on, and Longhorn could place the copy nowhere.
 - When Longhorn cannot copy the data to where the tenant runs, the banner
-  says so in Longhorn's words — *data on node-a; Longhorn cannot copy it to
-  node-b: insufficient storage* — and so does the notification. That does
-  not resolve by waiting: move the tenant to a node with room, or shrink
-  its volume.
+  says why, and what to do — *data on node-a; Longhorn cannot copy it to
+  node-b: the volume is still held to the Longhorn node tagged node-node-a
+  (a pin left by an earlier drain or move), and node-b does not carry that
+  tag — move the tenant again from its Placement card; a move holds the
+  volume to the node it moves to*: **Move back to &lt;primary&gt;** when it
+  already runs there. The notification carries the same line. The
+  platform checks, in Longhorn's order: the volume's node tags, whether
+  Longhorn takes new data on the node, the volume's disk tags, then room.
+  When none of these explains it, the banner gives Longhorn's own words.
+  A refused copy does not resolve by waiting.
 - **Make &lt;current node&gt; the primary node** accepts where it is: the
   workloads restart once on the same node to pick up the new pin, and no
   data is copied.
@@ -412,8 +422,8 @@ workloads again.
 ## Bulk actions
 
 On the **Tenants** tab, tick the checkbox on one or more rows to reveal
-the bulk action bar at the bottom: **Suspend**, **Reactivate**, and
-**Delete**. The **Domains** and **Cron Jobs** tabs have their own bulk bars
+the bulk action bar at the bottom: **Suspend**, **Reactivate**, **Delete**,
+**Change placement** and **Change plan**. The **Domains** and **Cron Jobs** tabs have their own bulk bars
 (verify / refresh route DNS / delete, and enable / disable / delete).
 
 Every bulk action asks for confirmation with the count, then opens a progress
@@ -424,6 +434,11 @@ dialog that processes the selection **one item at a time**:
   includes the lifecycle hooks: a tenant whose hooks did not all complete is
   shown as *Failed*, with each failing hook listed (failed hooks keep being
   retried in the background).
+- **Change placement** moves each tenant as [Move back](#placement) does. A
+  running tenant's row waits until its move has finished (about a minute
+  each) and shows how it ended. A tenant that now runs on the new node but
+  whose data Longhorn would not copy there is *Failed*, with the cause; it
+  stays selected, and **Retry failed** moves it again.
 - A progress bar and running counts sit at the top.
 - **Cancel** stops before the next item; the one already running finishes.
   Items that never ran are shown as *Not run*.

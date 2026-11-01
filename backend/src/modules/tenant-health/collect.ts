@@ -19,6 +19,7 @@ import {
   scheduleFailureOf,
   type LonghornCondition, type NodeFact, type PodFact, type ReplicaFact, type TenantFact, type VolumeFact,
 } from './service.js';
+import { refusedVolumeOf } from '../tenant-placement/copy-refusal.js';
 
 const NODE_ROLE_LABEL = 'insula.host/node-role';
 const INGRESS_MODE_LABEL = 'insula.host/ingress-mode';
@@ -68,7 +69,13 @@ interface LhReplica {
 }
 interface LhVolume {
   metadata?: { name?: string };
+  spec?: {
+    size?: string | number;
+    nodeSelector?: string[] | null;
+    diskSelector?: string[] | null;
+  };
   status?: {
+    actualSize?: string | number;
     robustness?: string;
     /** attached | detached | attaching | detaching | creating | deleting */
     state?: string;
@@ -350,6 +357,7 @@ export async function collectFacts(
     attachedNode: v.status?.currentNodeID || null,
     remountRequestedAt: v.status?.remountRequestedAt || null,
     scheduleFailure: scheduleFailureOf(v.status?.conditions),
+    scheduling: refusedVolumeOf(v),
   })).filter((v) => v.volumeName !== '');
 
   const tenantFacts: TenantFact[] = tenantRows

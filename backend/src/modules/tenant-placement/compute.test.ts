@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { computePlacements, observeStorageFailovers, observeTenantPlacement } from './compute.js';
 import type { PodFact, ReplicaFact, TenantFact, VolumeFact } from '../tenant-health/service.js';
+import type { LhNodeRaw } from './target-capacity.js';
 
 const NS = 'tenant-acme';
 const tenant = (over: Partial<TenantFact> = {}): TenantFact => ({
@@ -59,6 +60,32 @@ describe('observeTenantPlacement — local tier', () => {
     });
     expect(p.status).toBe('misplaced');
     expect(p.reasons).toEqual(['data on node-b; Longhorn cannot copy it to node-a: insufficient storage']);
+  });
+
+  it('says why Longhorn refuses the copy when its nodes were read — the cause, not only its words', () => {
+    // Production: drained onto one node (the volume held to its tag), then moved to another.
+    const target: LhNodeRaw = {
+      metadata: { name: 'node-a' },
+      spec: { allowScheduling: true, tags: ['system'], disks: { d1: { allowScheduling: true, storageReserved: 0 } } },
+      status: {
+        conditions: [{ type: 'Ready', status: 'True' }],
+        diskStatus: { d1: { storageMaximum: 675 * 2 ** 30, storageAvailable: 595 * 2 ** 30, storageScheduled: 0, conditions: [] } },
+      },
+    };
+    const input = {
+      pods: [pod('node-a')],
+      volumes: [vol({
+        attachedNode: 'node-a', scheduleFailure: 'replica scheduling failed',
+        scheduling: { nodeSelector: ['node-node-b'], diskSelector: [], size: 50 * 2 ** 30, actualSize: 28 * 2 ** 30 },
+      })],
+      replicas: [rep('node-b')],
+    };
+    const p = observeTenantPlacement(tenant(), input, { nodes: new Map([['node-a', target]]), settings: { overProvisioningPct: 100, minimalAvailablePct: 25 } });
+    expect(p.reasons).toEqual(['data on node-b; Longhorn cannot copy it to node-a: the volume is still held to the Longhorn node '
+      + 'tagged node-node-b (a pin left by an earlier drain or move), and node-a does not carry that tag — move the tenant '
+      + 'again from its Placement card; a move holds the volume to the node it moves to']);
+    // Longhorn's nodes not read on this tick: its own words, as before.
+    expect(observeTenantPlacement(tenant(), input).reasons).toEqual(['data on node-b; Longhorn cannot copy it to node-a: replica scheduling failed']);
   });
 
   it('names the node the volume is attached to as the copy\'s target, the primary when it is detached', () => {

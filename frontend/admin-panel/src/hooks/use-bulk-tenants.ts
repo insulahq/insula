@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { BulkTenantResult, MigrateToWorkerResult, SubscriptionResponse } from '@insula/api-contracts';
-import { apiFetch } from '@/lib/api-client';
+import type { BulkTenantResult, MigrateToWorkerResult, SubscriptionResponse, TenantMoveOperation } from '@insula/api-contracts';
+import { apiFetch, ApiError } from '@/lib/api-client';
 import { plural, type BulkItemOutcome, type BulkRunItem } from '@/lib/bulk-run';
 import type { BulkOpResponse } from '@/hooks/use-lifecycle';
 
@@ -113,8 +113,38 @@ export interface BulkTarget {
   readonly label: string;
 }
 
-/** Re-pin to `target` and move the tenant there (POST …/migrate-to-worker). */
-export async function moveTenantToNodeItem(item: TenantChangeItem, target: BulkTarget): Promise<BulkItemOutcome> {
+/** How a bulk move waits for the background operation that moves a running tenant. */
+export interface MoveWait {
+  readonly pollMs: number;
+  readonly maxMs: number;
+  readonly sleep: (ms: number) => Promise<void>;
+  readonly now: () => number;
+}
+
+const MOVE_WAIT: MoveWait = {
+  pollMs: 2_000,
+  // A move is about a minute of downtime; the cap is for one that hangs.
+  maxMs: 15 * 60_000,
+  sleep: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
+  now: () => Date.now(),
+};
+
+/**
+ * Re-pin to `target` and move the tenant there (POST …/migrate-to-worker).
+ *
+ * A running tenant is moved by a background operation, and how it ENDED is the
+ * row's outcome — not that it started. The row used to read "stopped, moved and
+ * started by a background operation" while the operation finished with "its
+ * data has NOT moved" that only its Task Tracker entry showed (production: two
+ * of five tenants of one bulk move left their data behind, and the bulk run said
+ * nothing). So the row waits for it — the tenants move one after another, as
+ * every bulk action runs its rows.
+ */
+export async function moveTenantToNodeItem(
+  item: TenantChangeItem,
+  target: BulkTarget,
+  wait: MoveWait = MOVE_WAIT,
+): Promise<BulkItemOutcome> {
   if (item.nodeName === target.id && !item.misplaced) {
     return { status: 'skipped', detail: `Already on ${target.label}.` };
   }
@@ -122,17 +152,84 @@ export async function moveTenantToNodeItem(item: TenantChangeItem, target: BulkT
     `/api/v1/admin/tenants/${encodeURIComponent(item.id)}/migrate-to-worker`,
     { method: 'POST', body: JSON.stringify({ node_name: target.id }) },
   );
-  return describeMove(res.data, target.label);
+  if (!res.data.moveOperationId) return describeMove(res.data, target.label);
+  return describeMoveOperation(await waitForMove(res.data.moveOperationId, wait), target.label, wait.maxMs);
 }
 
-/** What one migrate-to-worker did, in the same terms as the Placement card's note. */
-export function describeMove(result: MigrateToWorkerResult, targetLabel: string): BulkItemOutcome {
-  if (result.moveOperationId) {
+/** How waiting for a move ended. */
+export type MoveWaitResult =
+  | { readonly kind: 'finished'; readonly op: TenantMoveOperation }
+  /** Still running at the cap. */
+  | { readonly kind: 'timed-out' }
+  /** The operation cannot be read, and asking again will not change that (signed out, gone). */
+  | { readonly kind: 'unreadable'; readonly reason: string };
+
+/** An answer that waiting will not change: signed out, not allowed, no such operation. */
+function isPermanent(err: unknown): boolean {
+  return err instanceof ApiError && [401, 403, 404].includes(err.status);
+}
+
+/**
+ * Poll a move's storage operation until it has finished or failed, or `maxMs`
+ * has passed. A read that fails for a passing reason is tried again until
+ * then; one that will keep failing ends the wait. The move runs on regardless
+ * of this tab.
+ */
+export async function waitForMove(operationId: string, wait: MoveWait = MOVE_WAIT): Promise<MoveWaitResult> {
+  const deadline = wait.now() + wait.maxMs;
+  for (;;) {
+    try {
+      const res = await apiFetch<{ data: TenantMoveOperation }>(
+        `/api/v1/admin/storage/operations/${encodeURIComponent(operationId)}`,
+      );
+      if (res.data.state === 'idle' || res.data.state === 'failed') return { kind: 'finished', op: res.data };
+    } catch (err) {
+      if (isPermanent(err)) return { kind: 'unreadable', reason: err instanceof Error ? err.message : String(err) };
+    }
+    if (wait.now() >= deadline) return { kind: 'timed-out' };
+    await wait.sleep(wait.pollMs);
+  }
+}
+
+/** A finished move operation as a row. A tenant running on the target with its data left behind is not done. */
+export function describeMoveOperation(result: MoveWaitResult, targetLabel: string, waitedMs: number): BulkItemOutcome {
+  if (result.kind === 'timed-out') {
+    const minutes = Math.max(1, Math.round(waitedMs / 60_000));
     return {
-      status: 'succeeded',
-      detail: `Moving to ${targetLabel} — stopped, moved and started by a background operation (about a minute of downtime).`,
+      status: 'failed',
+      detail: `Still moving to ${targetLabel} after ${plural(minutes, 'minute')}. The move keeps running; `
+        + 'follow it in the Task Tracker.',
     };
   }
+  if (result.kind === 'unreadable') {
+    return {
+      status: 'failed',
+      detail: `The move to ${targetLabel} started, but how it went cannot be read (${result.reason}). `
+        + 'Follow it in the Task Tracker.',
+    };
+  }
+  const { op } = result;
+  if (op.state === 'failed') {
+    return { status: 'failed', detail: op.lastError ?? `Moving to ${targetLabel} failed, and the operation recorded no reason.` };
+  }
+  const blocker = op.params?.copyBlocker;
+  if (blocker) {
+    // Stays selected for "Retry failed": a move to the node it already runs on
+    // holds its volume there too.
+    return {
+      status: 'failed',
+      detail: op.progressMessage ?? `Running on ${targetLabel}, but its data has NOT moved: ${blocker.cause} — ${blocker.action}.`,
+    };
+  }
+  return { status: 'succeeded', detail: op.progressMessage ?? `Moved to ${targetLabel}.` };
+}
+
+/**
+ * What one migrate-to-worker did without a background operation (a tenant that
+ * was stopped, or already running on the target), in the same terms as the
+ * Placement card's note. A background move is `describeMoveOperation`.
+ */
+export function describeMove(result: MigrateToWorkerResult, targetLabel: string): BulkItemOutcome {
   const { started, error } = result.dataRelocation;
   if (error) {
     // The pin changed but the data did not follow: not done yet, so it stays

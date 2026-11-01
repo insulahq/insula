@@ -53,16 +53,18 @@ describe('misplacedMessage', () => {
     expect(m.guidance).not.toContain('cannot copy');
   });
 
-  it('carries Longhorn\'s reason for a blocked copy, and says it will not resolve by waiting', () => {
+  it('carries the cause of a blocked copy on the tenant\'s line, and says it will not resolve by waiting', () => {
+    const held = 'the volume is still held to the Longhorn node tagged node-node-a (a pin left by an earlier drain or move), '
+      + 'and node-b does not carry that tag — move the tenant again from its Placement card; a move holds the volume to the node it moves to';
     const m = misplacedMessage([
-      placement({ primaryNode: 'node-b', reasons: ['data on node-a; Longhorn cannot copy it to node-b: insufficient storage'] }),
+      placement({ primaryNode: 'node-b', reasons: [`data on node-a; Longhorn cannot copy it to node-b: ${held}`] }),
       placement({ tenantId: 't2', tenantName: 'Bright Academy' }),
     ]);
-    expect(m.details[0]).toBe('Acme School: primary node node-b, but data on node-a; Longhorn cannot copy it to node-b: '
-      + 'insufficient storage (seen since 2026-10-02 05:10 UTC).');
-    expect(m.guidance).toContain('Where Longhorn cannot copy the data it stays put');
-    expect(m.guidance).toContain('reserves the volume\'s full size');
-    expect(m.guidance).toContain('shrink the volume');
+    expect(m.details[0]).toBe(`Acme School: primary node node-b, but data on node-a; Longhorn cannot copy it to node-b: ${held} `
+      + '(seen since 2026-10-02 05:10 UTC).');
+    expect(m.guidance).toContain('Where Longhorn cannot copy the data, it stays where it is until the cause given for that tenant is dealt with.');
+    // One piece of advice for every cause sent the operator looking for room on a node with plenty.
+    expect(m.guidance).not.toMatch(/shrink|room for its volume/);
   });
 
   it('recognises a blocked copy by the wording the placement check writes', () => {

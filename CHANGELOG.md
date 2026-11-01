@@ -35,6 +35,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     private address, and the node cannot see its NAT address. Bootstrap and the migration say
     so; the ingress address override on Cluster → Ingress & TLS always wins over the
     discovered one.
+- **Moving a tenant moves its data, even after a drain.** A drain holds each tenant volume
+  it re-pins to the target node through a Longhorn node tag (`node-<name>`). A later move
+  (the Placement card, or the bulk Change placement) pinned the pods to the new node but
+  left the volume held to the old one. Longhorn then could place the new copy nowhere, and
+  the tenant ran on the new node with every block still on the old one. On production two
+  tenants of one bulk move stayed that way.
+  - A move now holds the volume to the new node, as a drain does, before it pins a single
+    workload there. The watchdog that completes an interrupted move does the same.
+  - When Longhorn refuses a copy, the move's result, the Placement banner and the "Not on
+    its primary node" notification name the cause and what to do: a node tag left on the
+    volume, scheduling switched off on the node, a disk tag no disk has, or too little
+    room. When none of these explains it, they give Longhorn's own words. Before, each said
+    only "replica scheduling failed" and advised moving to a node with room or shrinking
+    the volume; the node in question had 595 GB free.
+  - The bulk Change placement waits for each running tenant's move and reports how it
+    ended. It used to report "moved by a background operation" while the move ended with
+    the data left behind. Such a row is now Failed, with the cause, and Retry failed moves
+    it again. The tenants are moved one after another.
+  - The move's progress dialog shows a move that left its data behind as "Data not
+    moved", in amber, rather than a green finish.
 
 ## [2026.11.1] - 2026-11-01
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { QuiesceSnapshot } from '../storage-lifecycle/quiesce.js';
+import type { CopyRefusal } from '../tenant-placement/copy-refusal.js';
 import {
   planTenantMove,
   readMoveFacts,
@@ -65,9 +66,13 @@ describe('planTenantMove', () => {
 
 const SNAP: QuiesceSnapshot = { deployments: [{ name: 'web', replicas: 1 }], cronJobs: [] };
 const COPY = { started: ['pvc-1'], skipped: [], error: null };
+const HELD: CopyRefusal = {
+  cause: 'the volume is still held to the Longhorn node tagged node-node-b, and node-a does not carry that tag',
+  action: 'move the tenant to node-a again from its Placement card',
+};
 
 /** Fake steps recording every call in order; `fail` makes the named step throw. */
-function fakeSteps(opts: { fail?: string; failPinBack?: boolean; restored?: boolean; blocker?: string } = {}) {
+function fakeSteps(opts: { fail?: string; failPinBack?: boolean; restored?: boolean; blocker?: CopyRefusal } = {}) {
   const calls: string[] = [];
   const outcomes: MoveOutcome[] = [];
   const step = <T>(name: string, value: T) => async (): Promise<T> => {
@@ -82,8 +87,11 @@ function fakeSteps(opts: { fail?: string; failPinBack?: boolean; restored?: bool
     waitForDetached: step('waitForDetached', undefined),
     repin: async (node) => {
       calls.push(`repin:${node}`);
-      if (opts.fail === 'repin' && node === 'node-a') throw new Error('repin broke');
-      if (opts.failPinBack && node === 'node-b') throw new Error('pin back broke');
+      if (opts.fail === 'repin') throw new Error('repin broke');
+    },
+    pinBack: async (node) => {
+      calls.push(`pinBack:${node}`);
+      if (opts.failPinBack) throw new Error('pin back broke');
     },
     recordPrimary: step('recordPrimary', undefined),
     startCopy: step('startCopy', COPY),
@@ -111,28 +119,35 @@ describe('runTenantMove', () => {
   });
 
   it('does not claim a copy Longhorn has refused: says the data has not moved, why, and what to do', async () => {
-    const { steps, outcomes } = fakeSteps({ blocker: 'insufficient storage' });
+    const { steps, outcomes } = fakeSteps({ blocker: HELD });
     await runTenantMove(steps, NODES);
     // The tenant IS running on the target — the move is not undone or failed.
-    expect(outcomes[0]).toMatchObject({ ok: true, dataRelocation: COPY });
+    expect(outcomes[0]).toMatchObject({ ok: true, dataRelocation: COPY, copyBlocker: HELD });
     const message = (outcomes[0] as { message: string }).message;
-    expect(message).toContain('Running on node-a, but its data has NOT moved');
-    expect(message).toContain('Longhorn cannot place a copy there (insufficient storage)');
-    expect(message).toContain('across the network');
-    expect(message).toContain('shrink the volume');
-    expect(message).not.toContain('copying the data');
+    expect(message).toBe('Running on node-a, but its data has NOT moved: Longhorn cannot place a copy there — '
+      + 'the volume is still held to the Longhorn node tagged node-node-b, and node-a does not carry that tag. '
+      + 'The tenant now reads and writes its data across the network on the node it came from. '
+      + 'Move the tenant to node-a again from its Placement card.');
+    // Only the cause found is advised on — not room, when it was a tag.
+    expect(message).not.toContain('shrink');
+  });
+
+  it('records no blocker when the copy is under way', async () => {
+    const { steps, outcomes } = fakeSteps();
+    await runTenantMove(steps, NODES);
+    expect(outcomes[0]).toMatchObject({ ok: true, copyBlocker: null });
   });
 
   it('asks Longhorn only once the tenant is running on the target, never after a failed move', async () => {
-    const ok = fakeSteps({ blocker: 'insufficient storage' });
+    const ok = fakeSteps({ blocker: HELD });
     await runTenantMove(ok.steps, NODES);
     const calls = withoutProgress(ok.calls);
     expect(calls.indexOf('copyBlocker')).toBeGreaterThan(calls.indexOf('unquiesce:1'));
 
-    const failed = fakeSteps({ fail: 'unquiesce', blocker: 'insufficient storage' });
+    const failed = fakeSteps({ fail: 'unquiesce', blocker: HELD });
     await runTenantMove(failed.steps, NODES);
     expect(failed.calls).not.toContain('copyBlocker');
-    expect((failed.outcomes[0] as { error: string }).error).not.toContain('insufficient storage');
+    expect((failed.outcomes[0] as { error: string }).error).not.toContain('node-node-b');
   });
 
   it('reports progress as quiescing until the start, then unquiescing', async () => {
@@ -164,14 +179,22 @@ describe('runTenantMove', () => {
   it('a re-pin that fails part way pins everything back to the source before starting it', async () => {
     const { steps, calls, outcomes } = fakeSteps({ fail: 'repin' });
     await runTenantMove(steps, NODES);
-    expect(withoutProgress(calls).slice(-4)).toEqual(['repin:node-a', 'repin:node-b', 'restore:snap', 'finish:failed']);
+    expect(withoutProgress(calls).slice(-4)).toEqual(['repin:node-a', 'pinBack:node-b', 'restore:snap', 'finish:failed']);
     expect((outcomes[0] as { error: string }).error).toContain('started again on node-b');
+  });
+
+  it('pins back with the Deployments-only step, never the volume-first re-pin', async () => {
+    // The re-pin puts its volumes back itself when it fails; the pin back must
+    // not depend on Longhorn answering before the pins agree again.
+    const { steps, calls } = fakeSteps({ fail: 'repin' });
+    await runTenantMove(steps, NODES);
+    expect(calls.filter((c) => c.startsWith('repin:'))).toEqual(['repin:node-a']);
   });
 
   it('pins a tenant split across nodes back onto one of them', async () => {
     const { steps, calls, outcomes } = fakeSteps({ fail: 'repin' });
     await runTenantMove(steps, { sourceNodes: ['node-b', 'node-c'], target: 'node-a' });
-    expect(calls.filter((c) => c.startsWith('repin:'))).toEqual(['repin:node-a', 'repin:node-b']);
+    expect(calls.filter((c) => /^(repin|pinBack):/.test(c))).toEqual(['repin:node-a', 'pinBack:node-b']);
     expect((outcomes[0] as { error: string }).error).toContain('started again on node-b.');
   });
 

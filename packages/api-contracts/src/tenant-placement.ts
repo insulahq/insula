@@ -98,3 +98,37 @@ export const migrateToWorkerResultSchema = z.object({
   moveOperationId: z.string().nullable(),
 });
 export type MigrateToWorkerResult = z.infer<typeof migrateToWorkerResultSchema>;
+
+/**
+ * Why Longhorn will not build a tenant's copy on a node: the check its
+ * scheduler stopped at (a node tag, a disk tag, scheduling switched off, room),
+ * and what the operator can do about it.
+ */
+export const copyRefusalSchema = z.object({
+  cause: z.string(),
+  action: z.string(),
+});
+export type CopyRefusal = z.infer<typeof copyRefusalSchema>;
+
+/**
+ * GET /admin/storage/operations/:id → data, for a tenant move (`opType`
+ * `relocate`): the fields a caller waiting for the move reads.
+ */
+export const tenantMoveOperationSchema = z.object({
+  id: z.string(),
+  /** quiescing → unquiescing → idle (finished) | failed. */
+  state: z.string(),
+  progressMessage: z.string().nullable(),
+  lastError: z.string().nullable(),
+  completedAt: z.string().nullable(),
+  params: z.object({
+    targetNode: z.string().optional(),
+    /**
+     * Set when the move finished with the tenant running on the target but
+     * Longhorn refusing its data there: every block is still on the node it
+     * came from.
+     */
+    copyBlocker: copyRefusalSchema.nullable().optional(),
+  }).nullable(),
+});
+export type TenantMoveOperation = z.infer<typeof tenantMoveOperationSchema>;

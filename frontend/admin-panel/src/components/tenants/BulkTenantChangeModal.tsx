@@ -26,7 +26,8 @@ const COPY: Readonly<Record<TenantChangeKind, { title: string; label: string; bo
     label: 'Target node',
     body: 'Each tenant is re-pinned to this node and moved there, one at a time — the same move as the '
       + 'Placement card’s “Migrate pods now”. Running workloads restart (a tenant running on another node '
-      + 'is stopped, moved and started: about a minute of downtime). Tenants already on the node are skipped.',
+      + 'is stopped, moved and started: about a minute of downtime, and the next waits until that move has '
+      + 'finished). Each row says whether the data followed. Tenants already on the node are skipped.',
   },
   plan: {
     title: 'Change subscription plan of',

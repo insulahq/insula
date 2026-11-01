@@ -145,7 +145,7 @@ describe('nodeDisks — off is a decision, not-ready is not', () => {
   });
 
   it('reads a schedulable disk in bytes', () => {
-    expect(nodeDisks(node({ allowScheduling: true }))).toEqual({ state: 'ready', disks: [{ ...small, name: 'd1' }] });
+    expect(nodeDisks(node({ allowScheduling: true }))).toEqual({ state: 'ready', disks: [{ ...small, name: 'd1', tags: [] }] });
     const healthy = [{ type: 'Ready', status: 'True' }, { type: 'Schedulable', status: 'True' }];
     expect(nodeDisks(node({}, { ...diskStatus, conditions: healthy }, {}, healthy)).state).toBe('ready');
   });
@@ -188,7 +188,7 @@ describe('nodeDisks — off is a decision, not-ready is not', () => {
       spec: { disks: { off: { allowScheduling: false }, on: { storageReserved: 45 * GIB } } },
       status: { diskStatus: { off: diskStatus, on: diskStatus } },
     };
-    expect(nodeDisks(two)).toEqual({ state: 'ready', disks: [{ ...small, name: 'on' }] });
+    expect(nodeDisks(two)).toEqual({ state: 'ready', disks: [{ ...small, name: 'on', tags: [] }] });
   });
 });
 

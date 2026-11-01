@@ -23,6 +23,7 @@
  */
 import type { CollectedFacts } from '../tenant-health/collect.js';
 import type { PodFact, ReplicaFact, TenantFact, VolumeFact } from '../tenant-health/service.js';
+import { copyRefusalText, explainCopyRefusal, type CopyRefusalContext } from './copy-refusal.js';
 
 export type PlacementStatus = 'placed' | 'misplaced' | 'unpinned' | 'unknown';
 
@@ -66,6 +67,17 @@ function formatNodes(nodes: readonly string[]): string {
   return `${nodes.slice(0, -1).join(', ')} and ${nodes[nodes.length - 1]}`;
 }
 
+/**
+ * Why Longhorn will not build `v`'s copy on `copyTarget`: the cause and what to
+ * do (copy-refusal.ts), or Longhorn's own words where the volume's tags were
+ * not read or the copy is meant for more than one node.
+ */
+function refusalOf(v: VolumeFact, copyTarget: readonly string[], refusals: CopyRefusalContext | null | undefined): string | null {
+  if (!v.scheduleFailure) return null;
+  if (!v.scheduling || copyTarget.length !== 1 || refusals === undefined) return v.scheduleFailure;
+  return copyRefusalText(explainCopyRefusal(copyTarget[0]!, v.scheduling, refusals, v.scheduleFailure));
+}
+
 /** Volumes that are this tenant's live data — not leftovers of a past PVC. */
 function tenantVolumes(tenant: TenantFact, volumes: readonly VolumeFact[]): VolumeFact[] {
   return volumes.filter((v) => v.namespace === tenant.namespace && !v.pvcRefLostAt);
@@ -78,6 +90,8 @@ export function observeTenantPlacement(
     readonly volumes: readonly VolumeFact[];
     readonly replicas: readonly ReplicaFact[];
   },
+  /** Longhorn's nodes and settings, to say why a copy is refused; undefined passes Longhorn's words on. */
+  refusals?: CopyRefusalContext | null,
 ): TenantPlacementObservation {
   const vols = tenantVolumes(tenant, input.volumes);
   const volNames = new Set(vols.map((v) => v.volumeName));
@@ -124,13 +138,13 @@ export function observeTenantPlacement(
     if (offData.length > 0) {
       // Longhorn builds the local copy on the node the volume is attached to.
       // When its scheduler refuses that replica the data never moves, however
-      // long anyone waits — say so, in Longhorn's words, instead of "data on X".
-      // Only of a volume with nothing usable there yet: a volume whose data is
-      // already local can fail to schedule something else entirely.
+      // long anyone waits — say so, and why, instead of "data on X". Only of a
+      // volume with nothing usable there yet: a volume whose data is already
+      // local can fail to schedule something else entirely.
       const copyTarget = attachedNodes.length > 0 ? attachedNodes : [primary];
       const hasCopyThere = (volumeName: string): boolean => input.replicas.some((r) => r.volumeName === volumeName
         && !r.failed && r.nodeId !== null && copyTarget.includes(r.nodeId));
-      const blocked = uniqSorted(vols.filter((v) => !hasCopyThere(v.volumeName)).map((v) => v.scheduleFailure));
+      const blocked = uniqSorted(vols.filter((v) => !hasCopyThere(v.volumeName)).map((v) => refusalOf(v, copyTarget, refusals)));
       reasons.push(dataNodes.includes(primary)
         // Both: a replica is being built elsewhere — data locality is moving
         // the volume to where a pod runs. Still not where it belongs.
@@ -151,9 +165,10 @@ export function observeTenantPlacement(
  */
 export function computePlacements(
   facts: Pick<CollectedFacts, 'tenants' | 'pods' | 'volumes' | 'replicas' | 'readError'>,
+  refusals?: CopyRefusalContext | null,
 ): TenantPlacementObservation[] {
   return facts.tenants.map((tenant) => {
-    const observed = observeTenantPlacement(tenant, facts);
+    const observed = observeTenantPlacement(tenant, facts, refusals);
     return facts.readError ? { ...observed, status: 'unknown', reasons: [] } : observed;
   });
 }

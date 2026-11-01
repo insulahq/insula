@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2, CheckCircle2, AlertTriangle, X } from 'lucide-react';
 import clsx from 'clsx';
+import type { CopyRefusal } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import NodeText from '@/components/nodes/NodeText';
 
@@ -36,6 +37,8 @@ interface StorageOperationResponse {
     readonly progressMessage: string | null;
     readonly lastError: string | null;
     readonly completedAt: string | null;
+    /** A tenant move records here why its data could not follow (contracts `tenantMoveOperationSchema`). */
+    readonly params?: { readonly copyBlocker?: CopyRefusal | null } | null;
   };
 }
 
@@ -69,6 +72,10 @@ export default function OperationProgressModal({ operationId, title, onClose, on
   const op = data?.data;
   const isTerminal = op && (op.state === 'idle' || op.state === 'failed');
   const isFailure = op?.state === 'failed';
+  // Finished, but not done: a move that left the tenant running on the target
+  // with its data still on the node it came from. Green would send the
+  // operator away from a tenant doing all its disk I/O across the network.
+  const isLeftBehind = Boolean(isTerminal && !isFailure && op?.params?.copyBlocker);
 
   // Track whether the user has already dismissed so we don't re-open
   // on late polls. Reset whenever operationId changes.
@@ -124,6 +131,8 @@ export default function OperationProgressModal({ operationId, title, onClose, on
               <div className="flex items-center gap-2 text-sm">
                 {isFailure ? (
                   <AlertTriangle size={18} className="text-red-500" />
+                ) : isLeftBehind ? (
+                  <AlertTriangle size={18} className="text-amber-500" />
                 ) : isTerminal ? (
                   <CheckCircle2 size={18} className="text-green-500" />
                 ) : (
@@ -132,10 +141,11 @@ export default function OperationProgressModal({ operationId, title, onClose, on
                 <span className={clsx(
                   'font-medium capitalize',
                   isFailure ? 'text-red-700 dark:text-red-300' :
+                  isLeftBehind ? 'text-amber-700 dark:text-amber-300' :
                   isTerminal ? 'text-green-700 dark:text-green-300' :
                   'text-gray-900 dark:text-gray-100',
                 )}>
-                  {op.state}
+                  {isLeftBehind ? 'Data not moved' : op.state}
                 </span>
                 <span className="ml-auto text-xs font-mono text-gray-500 dark:text-gray-400">
                   {op.progressPct}%
@@ -146,7 +156,7 @@ export default function OperationProgressModal({ operationId, title, onClose, on
                 <div
                   className={clsx(
                     'h-full transition-all duration-300',
-                    isFailure ? 'bg-red-500' : isTerminal ? 'bg-green-500' : 'bg-blue-500',
+                    isFailure ? 'bg-red-500' : isLeftBehind ? 'bg-amber-500' : isTerminal ? 'bg-green-500' : 'bg-blue-500',
                   )}
                   style={{ width: `${op.progressPct}%` }}
                   role="progressbar"
@@ -156,9 +166,13 @@ export default function OperationProgressModal({ operationId, title, onClose, on
                 />
               </div>
 
-              {op.progressMessage && (
+              {op.progressMessage && (isLeftBehind ? (
+                <div className="rounded-md bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-800 dark:text-amber-200" data-testid="operation-progress-left-behind">
+                  <NodeText text={op.progressMessage} />
+                </div>
+              ) : (
                 <p className="text-sm text-gray-600 dark:text-gray-300"><NodeText text={op.progressMessage} /></p>
-              )}
+              ))}
 
               {op.lastError && (
                 <div className="rounded-md bg-red-50 dark:bg-red-900/20 p-3 text-sm" data-testid="operation-progress-last-error">
@@ -175,7 +189,7 @@ export default function OperationProgressModal({ operationId, title, onClose, on
                   the operation did not finish, the source volume is the
                   fallback, and offering to delete it then would be offering to
                   destroy the recovery path. */}
-              {isTerminal && !isFailure && onSuccessSlot}
+              {isTerminal && !isFailure && !isLeftBehind && onSuccessSlot}
             </>
           )}
         </div>

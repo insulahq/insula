@@ -16,6 +16,7 @@ import { loadMailRoleOnNode, type MailRoleOnNode } from './mail-role.js';
 import { assertTaintSafeForSystem, cordonNode, moveSystemPodsOff } from './system-pods.js';
 import { movePostgresInstancesOff, type MoveOptions } from './postgres-move.js';
 import { assertNoSharedEtcdMember } from './etcd-identity.js';
+import { makeLonghornHostTagEnsurer } from '../tenant-placement/volume-pin.js';
 import {
   haOnPinnedOnlyError, haTenantsPinnedTo, PINNED_ONLY_TAINT_KEY, takesAutoPlacedTenants, TENANT_PLACEMENT_LABEL, TENANT_PLACEMENT_PINNED, tenantHostingOf,
 } from './tenant-hosting.js';
@@ -1322,36 +1323,10 @@ export interface RepinCounts {
   relocation: { started: string[]; skipped: Array<{ volumeName: string; reason: string }>; error: string | null } | null;
 }
 
-/**
- * Build the memoised Longhorn host-tag ensurer.
- *
- * Adding the per-host tag to a target Longhorn Node CR must happen exactly
- * once per target even when several tenants move to the same node, so the
- * memo lives in the closure and is shared across one re-pin batch.
- */
-export function makeLonghornHostTagEnsurer(k8s: K8sClients): (target: string) => Promise<string> {
-  const PER_HOST_TAG_PREFIX = 'node-';
-  const tagged = new Set<string>();
-  return async (target: string): Promise<string> => {
-    const hostTag = `${PER_HOST_TAG_PREFIX}${target}`;
-    if (tagged.has(target)) return hostTag;
-    const existing = await k8s.custom.getNamespacedCustomObject({
-      group: 'longhorn.io', version: 'v1beta2',
-      namespace: 'longhorn-system', plural: 'nodes', name: target,
-    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { spec?: { tags?: string[] } };
-    const currentTags = existing.spec?.tags ?? [];
-    if (!currentTags.includes(hostTag)) {
-      await k8s.custom.patchNamespacedCustomObject({
-        group: 'longhorn.io', version: 'v1beta2',
-        namespace: 'longhorn-system', plural: 'nodes', name: target,
-        body: { spec: { tags: [...currentTags, hostTag] } },
-      } as unknown as Parameters<typeof k8s.custom.patchNamespacedCustomObject>[0],
-        MERGE_PATCH);
-    }
-    tagged.add(target);
-    return hostTag;
-  };
-}
+// The per-host Longhorn tag lives beside the move's volume re-pin
+// (tenant-placement/volume-pin.ts), so a drain and a move hold a volume to a
+// node the same way.
+export { makeLonghornHostTagEnsurer };
 
 /**
  * Move one tenant's placement: Longhorn volumes, workloads, and the DB row.
