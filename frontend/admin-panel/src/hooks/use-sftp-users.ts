@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { PaginatedResponse } from '@/types/api';
+import { resortPlaceholder } from '@/hooks/resort-placeholder';
 
 /** One SFTP account with the tenant that owns it. */
 export interface AdminSftpUser {
@@ -51,5 +52,6 @@ export function useSftpUsers(params: UseSftpUsersParams = {}) {
   return useQuery({
     queryKey: ['sftp-users', tenantId ?? 'all', { limit, cursor, search, sort }],
     queryFn: () => apiFetch<PaginatedResponse<AdminSftpUser>>(`${base}${q ? `?${q}` : ''}`),
+    ...resortPlaceholder<PaginatedResponse<AdminSftpUser>>({ tenantId, limit, search }, sort, cursor),
   });
 }

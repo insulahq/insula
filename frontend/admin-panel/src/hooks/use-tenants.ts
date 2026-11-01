@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
+import { resortPlaceholder } from '@/hooks/resort-placeholder';
 import type { Tenant, PaginatedResponse } from '@/types/api';
 import { MAX_PAGE_LIMIT, type CreateTenantInput, type UpdateTenantInput, type CreateTenantResponse } from '@insula/api-contracts';
 
@@ -66,6 +67,14 @@ export function useTenants(params: ListTenantsParams = {}) {
     queryFn: () => (params.all
       ? fetchAllTenants(params.search, params.sort)
       : apiFetch<PaginatedResponse<Tenant>>(tenantsPath(params.search, params.limit, params.cursor, params.sort))),
+    // A live column (CPU, memory, …) and "All" rows per page read the whole
+    // list, a live column in name order: switching to or from either changes
+    // the rows on screen as a sort does, so the old ones stay until it lands.
+    ...resortPlaceholder<PaginatedResponse<Tenant>>(
+      { search: params.search },
+      `${params.all ? 'all ' : ''}${params.sort ?? ''}`,
+      params.cursor,
+    ),
   });
 }
 

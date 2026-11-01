@@ -49,6 +49,30 @@ the element, or below it when there is no room above — even inside tables,
 scrolling lists and dialogs, and it closes when you move away, click, scroll
 or press **Esc**.
 
+## Sorting lists
+
+Click a column header to sort a list by that column, and click it again to
+reverse the order. Headers also work from the keyboard: **Tab** onto one and
+press **Enter** or **Space**. Each list opens in its usual order, and each
+column sorts by what it shows: sizes by bytes, nodes by their alias, states
+by severity.
+
+**Paged lists sort the whole list, not the page on screen.** Tenants, Users,
+Domains, Email Accounts, Cron Jobs, SFTP Users, the Audit log and the
+notification Delivery log are read one page at a time. On these lists the
+server applies the sort to every row: text ignores case and empty values come
+last. **Next** (or **Load more**) continues in the same order, and changing the
+sort starts again from page one. While the new order loads, the table keeps the
+rows it shows and the header you clicked keeps the keyboard focus.
+
+On the Tenants list, **CPU**, **Memory**, **Storage** and **Placement** are
+live values the database does not hold. Sorting by one of them loads every
+tenant and sorts them in the browser, and the page says so.
+
+A few tables keep a fixed order on purpose, because the order itself carries
+meaning: the steps of an operation, the order lifecycle hooks run in, and a
+manifest's component order.
+
 ## Search
 
 The search box in the top bar finds two different kinds of thing at once,

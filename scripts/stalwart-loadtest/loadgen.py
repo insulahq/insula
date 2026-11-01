@@ -1052,11 +1052,19 @@ def cmd_verify_bodies(a):
                         want, _, _ = message(g, address(name))
                         if body == want:
                             local["identical"] += 1
-                        elif body.endswith(want):
+                            continue
+                        # delivered mail: the server adds trace and filter headers into the header
+                        # block, so the original body must be byte-identical and every original
+                        # header line present
+                        w_head, _, w_body = want.partition(b"\r\n\r\n")
+                        b_head, _, b_body = body.partition(b"\r\n\r\n")
+                        heads = set(b_head.split(b"\r\n"))
+                        if b_body == w_body and all(h in heads for h in w_head.split(b"\r\n")):
                             local["delivered_suffix"] += 1
                         else:
                             local["different"] += 1
-                            bad.append(f"{name}/{mbox}: message {g} differs ({len(body)} vs {len(want)} bytes)")
+                            bad.append(f"{name}/{mbox}: message {g} differs ({len(body)} vs {len(want)} bytes, "
+                                       f"body {'same' if b_body == w_body else 'DIFFERENT'})")
         finally:
             try:
                 m.logout()

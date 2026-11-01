@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { CreateDomainRequest, RefreshRouteDnsResult } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import type { Domain, PaginatedResponse } from '@/types/api';
+import { resortPlaceholder } from '@/hooks/resort-placeholder';
 
 interface ListDomainsParams {
   readonly search?: string;
@@ -52,6 +53,11 @@ export function useDomains(tenantId: string | undefined, params: ListDomainsPara
   return useQuery({
     queryKey: ['domains', tenantId ?? 'all', { search: params.search, limit: params.limit, cursor: params.cursor, sort }],
     queryFn: () => apiFetch<PaginatedResponse<Domain>>(path),
+    ...resortPlaceholder<PaginatedResponse<Domain>>(
+      { tenantId: tenantId ?? 'all', search: params.search, limit: params.limit },
+      sort,
+      params.cursor,
+    ),
     // 5s while a certificate is issuing or a domain is still pending; off
     // otherwise, so an idle list costs nothing.
     refetchInterval: (query) =>

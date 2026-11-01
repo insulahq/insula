@@ -53,27 +53,30 @@ export default function AuditLogs() {
   const [accumulated, setAccumulated] = useState<readonly AuditLogEntry[]>([]);
 
   // A cursor belongs to the order it was made in, so a sort change drops it
-  // and the rows read so far, like a filter change does.
+  // and starts again from page one. The rows read so far stay on screen
+  // until the new order arrives: the query's placeholder (hooks/
+  // resort-placeholder.ts) holds only the last page read, not all of them.
   const { sortKey, sortDirection, onSort, sortParam } = useServerSort('createdAt', 'desc', () => {
+    setAccumulated(visibleRows);
     setCursor(undefined);
-    setAccumulated([]);
     setExpandedId(null);
   });
 
   const query = useAuditLogs({ ...filters, cursor, sort: sortParam });
   const data = query.data;
+  const resorting = query.isPlaceholderData;
 
   // When the query returns, merge into accumulated. Using useMemo
   // so we only recompute when data changes.
   const visibleRows = useMemo(() => {
-    if (!data) return accumulated;
+    if (!data || resorting) return accumulated;
     if (!cursor) {
       // First page — reset accumulated
       return data.data;
     }
     // Subsequent page — concatenate
     return [...accumulated, ...data.data];
-  }, [data, cursor, accumulated]);
+  }, [data, resorting, cursor, accumulated]);
 
   const applyFilters = (next: Partial<ListAuditLogsParams>) => {
     setFilters((prev) => ({ ...prev, ...next }));

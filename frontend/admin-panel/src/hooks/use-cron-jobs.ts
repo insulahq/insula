@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { CreateCronJobRequest, CronFailureEmailInfo, UpdateCronJobRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import type { CronJob, PaginatedResponse } from '@/types/api';
+import { resortPlaceholder } from '@/hooks/resort-placeholder';
 
 interface UseCronJobsParams {
   readonly tenantId?: string;
@@ -34,6 +35,7 @@ export function useCronJobs(params: UseCronJobsParams = {}) {
   return useQuery({
     queryKey: ['cron-jobs', tenantId ?? 'all', { limit, cursor, search, sort }],
     queryFn: () => apiFetch<PaginatedResponse<CronJob>>(path),
+    ...resortPlaceholder<PaginatedResponse<CronJob>>({ tenantId, limit, search }, sort, cursor),
   });
 }
 
