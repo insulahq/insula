@@ -10,12 +10,14 @@ on:
     paths: ['backend/**', 'packages/api-contracts/**',
             'scripts/ci-route-body-validation-check.sh',
             'scripts/.route-body-cast-allowlist.txt',
+            'scripts/ci-cert-renewal-window-check.sh',
             'scripts/ci-integration-tests.sh']
   pull_request:
     branches: [development, main]
     paths: ['backend/**', 'packages/api-contracts/**',
             'scripts/ci-route-body-validation-check.sh',
             'scripts/.route-body-cast-allowlist.txt',
+            'scripts/ci-cert-renewal-window-check.sh',
             'scripts/ci-integration-tests.sh']
 
 # Least privilege (2026-07-28 security review): these workflows only read the
@@ -78,6 +80,10 @@ jobs:
       # tenant-placement (pin + priority class) or says why it is not a tenant's.
       - name: Verify tenant pods are placed through tenant-placement
         run: ./scripts/ci-tenant-pod-placement.sh
+      # Also in Infrastructure CI (manifests). Here because a Certificate can be
+      # built in any backend module, and Infrastructure CI sees only a few.
+      - name: Verify every ACME Certificate renews at a share of its lifetime
+        run: ./scripts/ci-cert-renewal-window-check.sh
 
   dns-powerdns-live:
     name: DNS record types against a live PowerDNS

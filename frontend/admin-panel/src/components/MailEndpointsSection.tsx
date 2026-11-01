@@ -8,6 +8,7 @@
  * the reason. A node that is neither does not appear — by design.
  */
 
+import { useMemo } from 'react';
 import { CheckCircle2, AlertTriangle, MinusCircle } from 'lucide-react';
 import type {
   MailEndpointNode,
@@ -18,6 +19,9 @@ import type {
 } from '@insula/api-contracts';
 import NodeName from '@/components/nodes/NodeName';
 import NodeText from '@/components/nodes/NodeText';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { sortRows, useSortable, type SortAccessors } from '@/hooks/use-sortable';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 
 interface MailEndpointsSectionProps {
   readonly endpoints: MailEndpointSet;
@@ -36,8 +40,40 @@ const EXPOSURE_LABEL: Record<MailEndpointNode['exposure'], string> = {
   haproxy: 'haproxy',
 };
 
+const TH_CLS = 'text-left font-medium';
+const TH_PAD = 'px-3 py-1.5';
+
 export default function MailEndpointsSection({ endpoints, exposure }: MailEndpointsSectionProps) {
-  const exposureByNode = new Map((exposure?.nodes ?? []).map((n) => [n.node, n]));
+  const exposureByNode = useMemo(() => new Map((exposure?.nodes ?? []).map((n) => [n.node, n])), [exposure]);
+  const nodeLabel = useNodeLabel();
+  const endpointSort = useMemo<SortAccessors<MailEndpointNode>>(() => ({
+    node: (e) => nodeLabel(e.node),
+    roles: (e) => roleLabel(e.roles, e.active),
+    exposure: (e) => EXPOSURE_LABEL[e.exposure],
+    ipv4: (e) => addressOf(e, 'ipv4'),
+    ipv6: (e) => addressOf(e, 'ipv6'),
+    ports: (e) => {
+      const x = exposureByNode.get(e.node);
+      return x ? x.ports.filter((p) => p.published).length : null;
+    },
+  }), [nodeLabel, exposureByNode]);
+  // "Publishes via" descending is the server's order: the active node (its own
+  // hostPort) first, then the haproxy nodes as the server listed them.
+  const { sortedData: sortedEndpoints, sortKey, sortDirection, onSort } =
+    useSortable(endpoints.endpoints, 'exposure', 'desc', endpointSort);
+  // The untested nodes stay a group under the tested ones, ordered by the same
+  // column where they have a value (node, role) and by name otherwise.
+  const untestedSort = useMemo<SortAccessors<MailUntestedNode>>(() => ({
+    node: (u) => nodeLabel(u.node),
+    roles: (u) => roleLabel(u.roles, false),
+  }), [nodeLabel]);
+  const sortedUntested = useMemo(
+    () => (untestedSort[sortKey] ? sortRows(endpoints.untested, sortKey, sortDirection, untestedSort) : endpoints.untested),
+    [endpoints.untested, sortKey, sortDirection, untestedSort],
+  );
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding={TH_PAD} className={TH_CLS} />
+  );
   return (
     <div className="space-y-2" data-testid="mail-endpoints-section">
       <div className="text-xs text-gray-600 dark:text-gray-400">
@@ -51,12 +87,12 @@ export default function MailEndpointsSection({ endpoints, exposure }: MailEndpoi
         <table className="w-full text-xs">
           <thead className="bg-gray-50 dark:bg-gray-900/30 text-gray-500 dark:text-gray-400">
             <tr>
-              <th className="text-left px-3 py-1.5 font-medium">Node</th>
-              <th className="text-left px-3 py-1.5 font-medium">Role</th>
-              <th className="text-left px-3 py-1.5 font-medium">Publishes via</th>
-              <th className="text-left px-3 py-1.5 font-medium">IPv4</th>
-              <th className="text-left px-3 py-1.5 font-medium">IPv6</th>
-              <th className="text-left px-3 py-1.5 font-medium">Mail ports</th>
+              {header('Node', 'node')}
+              {header('Role', 'roles')}
+              {header('Publishes via', 'exposure')}
+              {header('IPv4', 'ipv4')}
+              {header('IPv6', 'ipv6')}
+              {header('Mail ports', 'ports')}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
@@ -67,10 +103,10 @@ export default function MailEndpointsSection({ endpoints, exposure }: MailEndpoi
                 </td>
               </tr>
             )}
-            {endpoints.endpoints.map((e) => (
+            {sortedEndpoints.map((e) => (
               <EndpointRow key={e.node} endpoint={e} exposure={exposureByNode.get(e.node)} />
             ))}
-            {endpoints.untested.map((u) => <UntestedRow key={`untested-${u.node}`} node={u} />)}
+            {sortedUntested.map((u) => <UntestedRow key={`untested-${u.node}`} node={u} />)}
           </tbody>
         </table>
       </div>

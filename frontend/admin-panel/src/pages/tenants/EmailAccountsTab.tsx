@@ -6,7 +6,7 @@ import PaginationBar from '@/components/ui/PaginationBar';
 import { AdminMailboxLoginPasswordsModal } from '@/components/email/AdminMailboxLoginPasswords';
 import { useAdminMailboxes } from '@/hooks/use-admin-mailboxes';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
-import { useSortable } from '@/hooks/use-sortable';
+import { useServerSort } from '@/hooks/use-server-sort';
 import SortableHeader from '@/components/ui/SortableHeader';
 
 function StatusPill({ status }: { readonly status: string }) {
@@ -60,10 +60,14 @@ export default function EmailAccountsTab() {
     pagination.resetPagination();
   }, [debouncedSearch]);
 
+  // The server sorts the whole list; a sort change starts again from page one.
+  const { sortKey, sortDirection, onSort, sortParam } = useServerSort('fullAddress', 'asc', pagination.resetPagination);
+
   const { data, isLoading, error } = useAdminMailboxes({
     search: debouncedSearch || undefined,
     limit: pagination.limit,
     cursor: pagination.cursor,
+    sort: sortParam,
   });
 
   const [pwTarget, setPwTarget] = useState<{ id: string; fullAddress: string } | null>(null);
@@ -72,7 +76,6 @@ export default function EmailAccountsTab() {
   const totalCount = data?.pagination?.total_count ?? 0;
   const hasMore = data?.pagination?.has_more ?? false;
   const nextCursor = data?.pagination?.cursor ?? null;
-  const { sortedData, sortKey, sortDirection, onSort } = useSortable(mailboxes, 'fullAddress');
 
   const handleSearchChange = (value: string) => {
     setSearch(value);
@@ -128,7 +131,7 @@ export default function EmailAccountsTab() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {sortedData.map((mb) => (
+                  {mailboxes.map((mb) => (
                     <tr
                       key={mb.id}
                       className="transition-colors cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50"

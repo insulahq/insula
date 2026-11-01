@@ -17,8 +17,16 @@ export default function SortableHeader({ label, sortKey, currentKey, direction, 
 
   return (
     <th
-      className={`px-5 py-3 cursor-pointer select-none hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors ${className}`}
+      className={`px-5 py-3 cursor-pointer select-none hover:bg-gray-50 dark:hover:bg-gray-700/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500 transition-colors ${className}`}
       onClick={() => onSort(sortKey)}
+      // Sortable from the keyboard too: Tab reaches it, Enter or Space sorts.
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSort(sortKey); }
+      }}
+      // A column header, and which way it sorts, for assistive tech.
+      scope="col"
+      aria-sort={isActive ? (direction === 'asc' ? 'ascending' : 'descending') : 'none'}
       data-testid={`sort-${sortKey}`}
       title={title}
     >

@@ -32,6 +32,13 @@ vi.mock('./service.js', () => ({
   updateIngressSettings: vi.fn().mockResolvedValue({ ...mockIngressSettings, ingressBaseDomain: 'new.example.com' }),
 }));
 
+// Ownership is proven against real Postgres in route-ownership.integration.test.ts.
+vi.mock('./route-ownership.js', () => ({
+  assertRouteOwnedByTenant: vi.fn().mockResolvedValue(mockRoute),
+  assertDomainOwnedByTenant: vi.fn().mockResolvedValue(undefined),
+  assertRouteInTenantDomain: vi.fn().mockResolvedValue(mockRoute),
+}));
+
 const { ingressRouteRoutes } = await import('./routes.js');
 const { deleteRoute } = await import('./service.js');
 

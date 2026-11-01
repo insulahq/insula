@@ -5,12 +5,23 @@ import {
   useAdminCreateLoginPassword,
   useAdminRevokeLoginPassword,
   type AdminCreateLoginPasswordResult,
+  type AdminLoginPassword,
 } from '@/hooks/use-email';
 import { MAX_LOGIN_PASSWORDS_PER_MAILBOX } from '@insula/api-contracts';
 import { formatTimestamp } from '@/lib/format-timestamp';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
 const INPUT =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
+
+const NO_ROWS: readonly AdminLoginPassword[] = [];
+// "(no label)", "never" and "—" have no value: they sort after every real one.
+const PASSWORD_SORT: SortAccessors<AdminLoginPassword> = {
+  label: (r) => r.label || null,
+  allowedIps: (r) => (r.allowedIps.length > 0 ? r.allowedIps.join(', ') : null),
+};
+const TH_PAD = 'py-2';
 
 /**
  * An expiry date is a day in the viewer's time zone, like every other time in
@@ -58,7 +69,12 @@ export function AdminMailboxLoginPasswordsModal({
   const [revokeId, setRevokeId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const rows = data?.data ?? [];
+  const rows = data?.data ?? NO_ROWS;
+  // The mail server lists them in no particular order.
+  const { sortedData: sortedRows, sortKey, sortDirection, onSort } = useSortable(rows, 'label', 'asc', PASSWORD_SORT);
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding={TH_PAD} />
+  );
   // Webmail sessions have room of their own on the mail server and do not count.
   const loginCount = rows.filter((r) => r.kind === 'login').length;
   const atLimit = loginCount >= MAX_LOGIN_PASSWORDS_PER_MAILBOX;
@@ -160,11 +176,15 @@ export function AdminMailboxLoginPasswordsModal({
             <table className="w-full text-sm" data-testid="admin-login-passwords-table">
               <thead>
                 <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                  <th className="py-2">Label</th><th className="py-2">Created</th><th className="py-2">Expires</th><th className="py-2">Restricted to</th><th className="py-2 text-right">Actions</th>
+                  {header('Label', 'label')}
+                  {header('Created', 'createdAt')}
+                  {header('Expires', 'expiresAt')}
+                  {header('Restricted to', 'allowedIps')}
+                  <th className="py-2 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                {rows.map((r) => (
+                {sortedRows.map((r) => (
                   <tr key={r.id}>
                     <td className="py-2.5 font-medium text-gray-900 dark:text-gray-100">
                       {r.label || <span className="italic text-gray-400 dark:text-gray-500">(no label)</span>}

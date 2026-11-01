@@ -13,7 +13,7 @@ import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSelection } from '@/hooks/use-selection';
 import { useBulkRun } from '@/hooks/use-bulk-run';
 import { runCronJobBulkItem, useInvalidateCronJobQueries, type CronJobBulkAction } from '@/hooks/use-bulk-cron-jobs';
-import { useSortable } from '@/hooks/use-sortable';
+import { useServerSort } from '@/hooks/use-server-sort';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { CronOutputRow, CronOutputToggle } from '@/components/CronRunOutput';
 
@@ -65,11 +65,16 @@ export default function CronJobsTab() {
     pagination.resetPagination();
   }, [selectedTenantId, debouncedSearch]);
 
+  // The server sorts the whole cross-tenant list; a sort change starts again
+  // from page one. One tenant's listing has no server sort — see below.
+  const { sortKey, sortDirection, onSort, sortParam } = useServerSort('name', 'asc', pagination.resetPagination);
+
   const { data: cronJobsData, isLoading: cronJobsLoading, error } = useCronJobs({
     tenantId: selectedTenantId ?? undefined,
     search: debouncedSearch || undefined,
     limit: pagination.limit,
     cursor: pagination.cursor,
+    sort: sortParam,
   });
 
   const { data: tenantsData } = useTenants({ limit: 100 });
@@ -79,7 +84,8 @@ export default function CronJobsTab() {
   const totalCount = cronJobsData?.pagination?.total_count ?? 0;
   const hasMore = cronJobsData?.pagination?.has_more ?? false;
   const nextCursor = cronJobsData?.pagination?.cursor ?? null;
-  const { sortedData: sortedCronJobs, sortKey, sortDirection, onSort } = useSortable(cronJobs, 'name');
+  // Both the cross-tenant and the one-tenant endpoint sort on the server.
+  const sortedCronJobs = cronJobs;
 
   const selection = useSelection<{ id: string }>(pagination.cursor);
   const bulkRun = useBulkRun();
@@ -169,7 +175,7 @@ export default function CronJobsTab() {
                       />
                     </th>
                     <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                    <SortableHeader label="Tenant" sortKey="tenantId" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="Tenant" sortKey="tenantName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Type" sortKey="type" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Schedule" sortKey="schedule" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <th className="hidden px-5 py-3 md:table-cell">Target</th>

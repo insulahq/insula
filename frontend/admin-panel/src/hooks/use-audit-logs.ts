@@ -31,6 +31,8 @@ export interface ListAuditLogsParams {
   readonly from?: string;
   /** ISO timestamp inclusive upper bound */
   readonly to?: string;
+  /** `field:asc|desc` — the server orders (and pages) the whole list by it. */
+  readonly sort?: string;
 }
 
 export function useAuditLogs(params: ListAuditLogsParams = {}) {
@@ -45,6 +47,7 @@ export function useAuditLogs(params: ListAuditLogsParams = {}) {
   if (params.search) searchParams.set('search', params.search);
   if (params.from) searchParams.set('from', params.from);
   if (params.to) searchParams.set('to', params.to);
+  if (params.sort) searchParams.set('sort', params.sort);
 
   const qs = searchParams.toString();
   const path = `/api/v1/admin/audit-logs${qs ? `?${qs}` : ''}`;

@@ -18,9 +18,13 @@ import LocalTime from '@/components/ui/LocalTime';
 import { localZoneTitle } from '@/lib/format-timestamp';
 import { utcOffsetLabel } from '@/lib/format-traffic';
 import { useMemo, useState } from 'react';
-import UserLabel from '@/components/ui/UserLabel';
+import UserLabel, { formatUserLabel } from '@/components/ui/UserLabel';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
+import { useAdminUsers } from '@/hooks/use-admin-users';
+import { useTenantUsers } from '@/hooks/use-tenant-users';
 import { Info, RefreshCw, Shield, Plus, Trash2 } from 'lucide-react';
-import type { AuditedSecret, SecretCoverageCategory } from '@insula/api-contracts';
+import { MAX_PAGE_LIMIT, type AllowlistEntry, type AuditedSecret, type SecretCoverageCategory } from '@insula/api-contracts';
 import {
   useAddAllowlistEntry,
   useRefreshSecretsAudit,
@@ -28,6 +32,8 @@ import {
   useSecretsAudit,
   useSecretsAuditAllowlist,
 } from '@/hooks/use-system-backup';
+
+const NO_ENTRIES: readonly AllowlistEntry[] = [];
 
 export default function SecretsCoverageSection() {
   const auditQ = useSecretsAudit();
@@ -44,6 +50,27 @@ export default function SecretsCoverageSection() {
       ? audit.allSecrets
       : audit.allSecrets.filter((s) => s.category === filter);
   }, [audit, filter]);
+  // The server orders by category, then namespace/name; a stable sort on
+  // category keeps that. Sorted before the 200-row cut, so the cut shows the
+  // first 200 of the chosen order.
+  const secretsSort = useSortable<AuditedSecret>(visibleSecrets, 'category', 'asc');
+  const secretHead = { currentKey: secretsSort.sortKey, direction: secretsSort.sortDirection, onSort: secretsSort.onSort, padding: 'px-4 py-2', className: 'text-left' } as const;
+
+  // "Added by" shows a person, so it sorts by that label — the same two
+  // cached lookups UserLabel reads, no extra request.
+  const { data: admins } = useAdminUsers();
+  const { data: tenantUsers } = useTenantUsers({ limit: MAX_PAGE_LIMIT });
+  const allowlistAccessors = useMemo<SortAccessors<AllowlistEntry>>(() => {
+    const users = [...(admins?.data ?? []), ...(tenantUsers?.data ?? [])];
+    return {
+      secret: (e) => `${e.namespace}/${e.name}`,
+      addedBy: (e) => formatUserLabel(e.addedBy, users).text,
+    };
+  }, [admins, tenantUsers]);
+  const allowlistEntries = allowlistQ.data?.entries ?? NO_ENTRIES;
+  // Entries are kept in the order they were added.
+  const allowlistSort = useSortable(allowlistEntries, 'addedAt', 'asc', allowlistAccessors);
+  const allowHead = { currentKey: allowlistSort.sortKey, direction: allowlistSort.sortDirection, onSort: allowlistSort.onSort, padding: 'px-3 py-2', className: 'text-left' } as const;
 
   return (
     <section className="space-y-4" data-testid="secrets-coverage">
@@ -110,15 +137,15 @@ export default function SecretsCoverageSection() {
             <table className="min-w-full text-sm" data-testid="audit-table">
               <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
                 <tr>
-                  <th className="px-4 py-2 text-left">Namespace</th>
-                  <th className="px-4 py-2 text-left">Name</th>
-                  <th className="px-4 py-2 text-left">Category</th>
-                  <th className="px-4 py-2 text-left">Reason</th>
+                  <SortableHeader label="Namespace" sortKey="namespace" {...secretHead} />
+                  <SortableHeader label="Name" sortKey="name" {...secretHead} />
+                  <SortableHeader label="Category" sortKey="category" {...secretHead} />
+                  <SortableHeader label="Reason" sortKey="reason" {...secretHead} />
                   <th className="px-4 py-2 text-right">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                {visibleSecrets.slice(0, 200).map((s) => (
+                {secretsSort.sortedData.slice(0, 200).map((s) => (
                   <tr key={`${s.namespace}/${s.name}`}>
                     <td className="px-4 py-2 font-mono text-xs text-gray-700 dark:text-gray-200">{s.namespace}</td>
                     <td className="px-4 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{s.name}</td>
@@ -157,15 +184,15 @@ export default function SecretsCoverageSection() {
                 <table className="min-w-full text-sm" data-testid="allowlist-table">
                   <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
                     <tr>
-                      <th className="px-3 py-2 text-left">Secret</th>
-                      <th className="px-3 py-2 text-left">Reason</th>
-                      <th className="px-3 py-2 text-left">Added by</th>
-                      <th className="px-3 py-2 text-left" title={localZoneTitle()}>Added at ({utcOffsetLabel()})</th>
+                      <SortableHeader label="Secret" sortKey="secret" {...allowHead} />
+                      <SortableHeader label="Reason" sortKey="reason" {...allowHead} />
+                      <SortableHeader label="Added by" sortKey="addedBy" {...allowHead} />
+                      <SortableHeader label={`Added at (${utcOffsetLabel()})`} sortKey="addedAt" title={localZoneTitle()} {...allowHead} />
                       <th className="px-3 py-2"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                    {(allowlistQ.data?.entries ?? []).map((e) => (
+                    {allowlistSort.sortedData.map((e) => (
                       <tr key={`${e.namespace}/${e.name}`}>
                         <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{e.namespace}/{e.name}</td>
                         <td className="px-3 py-2 text-xs text-gray-700 dark:text-gray-200">{e.reason}</td>

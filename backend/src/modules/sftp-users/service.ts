@@ -1,4 +1,4 @@
-import { eq, and, desc, count, inArray, ilike, lt, or } from 'drizzle-orm';
+import { eq, and, desc, count, inArray, ilike, or } from 'drizzle-orm';
 import crypto from 'crypto';
 import bcrypt from 'bcrypt';
 import { sftpUsers, sftpAuditLog, sftpUserSshKeys, sshKeys, platformSettings, tenants } from '../../db/schema.js';
@@ -8,8 +8,9 @@ import type { CreateSftpUserInput, UpdateSftpUserInput } from './schema.js';
 import { resolveBaseDomain, filesHost } from '../../config/domains.js';
 import { getPlatformApex } from '../system-settings/platform-domain.js';
 
-import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
+
 import type { PaginationMeta } from '../../shared/response.js';
+import { encodeListCursor, listCursorCondition, listOrderBy, listSortKeySelect, resolveListSort, withoutSortKey, type SortFields } from '../../shared/list-sort.js';
 
 /** One SFTP account with the tenant that owns it, for the operator list. */
 export interface AdminSftpUserRow {
@@ -434,11 +435,22 @@ export async function listSftpAuditLog(
  * cursor shape, same search-across-the-tenant-name behaviour — so the
  * Tenants tabs behave alike.
  */
+/** Columns the admin SFTP Users list sorts by on the server — what the table shows. */
+export const ADMIN_SFTP_USER_SORT_FIELDS: SortFields = {
+  username: { expr: sftpUsers.username, kind: 'text' },
+  tenantName: { expr: tenants.name, kind: 'text' },
+  homePath: { expr: sftpUsers.homePath, kind: 'text' },
+  enabled: { expr: sftpUsers.enabled, kind: 'numeric' },
+  lastLoginAt: { expr: sftpUsers.lastLoginAt, kind: 'timestamp' },
+  createdAt: { expr: sftpUsers.createdAt, kind: 'timestamp' },
+};
+
 export async function listAllSftpUsers(
   db: Database,
-  params: { limit: number; cursor?: string; search?: string },
+  params: { limit: number; cursor?: string; sortParam?: string; search?: string },
 ): Promise<{ data: AdminSftpUserRow[]; pagination: PaginationMeta }> {
   const { limit, cursor, search } = params;
+  const sort = resolveListSort(params.sortParam, ADMIN_SFTP_USER_SORT_FIELDS, { field: 'createdAt', direction: 'desc' });
 
   const conds = [];
   if (search) {
@@ -450,8 +462,10 @@ export async function listAllSftpUsers(
       ilike(tenants.name, pattern),
     ));
   }
-  if (cursor) conds.push(lt(sftpUsers.createdAt, new Date(decodeCursor(cursor).sort)));
-  const where = conds.length > 0 ? and(...conds) : undefined;
+  // The total counts the searched set; the cursor only narrows the page.
+  const filterWhere = conds.length > 0 ? and(...conds) : undefined;
+  const after = listCursorCondition(cursor, 'sftp_user', sort, ADMIN_SFTP_USER_SORT_FIELDS, sftpUsers.id);
+  const where = after ? and(...conds, after) : filterWhere;
 
   const rows = await db
     .select({
@@ -464,27 +478,26 @@ export async function listAllSftpUsers(
       lastLoginAt: sftpUsers.lastLoginAt,
       createdAt: sftpUsers.createdAt,
       tenantName: tenants.name,
+      sortKey: listSortKeySelect(sort, ADMIN_SFTP_USER_SORT_FIELDS),
     })
     .from(sftpUsers)
     .leftJoin(tenants, eq(sftpUsers.tenantId, tenants.id))
     .where(where)
-    .orderBy(desc(sftpUsers.createdAt))
+    .orderBy(...listOrderBy(sort, ADMIN_SFTP_USER_SORT_FIELDS, sftpUsers.id))
     .limit(limit + 1);
 
   const hasMore = rows.length > limit;
-  const data = rows.slice(0, limit) as AdminSftpUserRow[];
-
-  let nextCursor: string | null = null;
-  if (hasMore && data.length > 0) {
-    const last = data[data.length - 1];
-    nextCursor = encodeCursor({ resource: 'sftp_user', sort: last.createdAt.toISOString(), id: last.id });
-  }
+  const page = rows.slice(0, limit);
+  const nextCursor = hasMore && page.length > 0
+    ? encodeListCursor('sftp_user', sort, page[page.length - 1])
+    : null;
+  const data = withoutSortKey(page) as AdminSftpUserRow[];
 
   const [{ value: total }] = await db
     .select({ value: count() })
     .from(sftpUsers)
     .leftJoin(tenants, eq(sftpUsers.tenantId, tenants.id))
-    .where(search ? where : undefined);
+    .where(filterWhere);
 
   return {
     data,

@@ -1,0 +1,12 @@
+-- A route can be switched off without losing its settings.
+--
+-- enabled = false keeps the row and everything hanging off it (redirects,
+-- security and WAF settings, protected folders, sign-in gate, mTLS, DNS
+-- records, the certificate) but the reconciler builds no router for it, so
+-- the hostname is not served until it is switched back on.
+--
+-- Separate from `status`, which says whether the route was set up. Every
+-- existing route keeps serving: the default is true.
+--
+-- Replay-safe (IF NOT EXISTS) for the non-transactional runner.
+ALTER TABLE ingress_routes ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true;

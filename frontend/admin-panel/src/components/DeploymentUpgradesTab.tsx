@@ -34,8 +34,17 @@ import {
 } from '@/hooks/use-deployment-upgrades';
 import type { AdminUpgradesGroup, AdminUpgradesDeployment } from '@insula/api-contracts';
 import StatusBadge from './ui/StatusBadge';
+import SortableHeader from './ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
 type FilterMode = 'all' | 'upgradeable' | 'stale' | 'strict';
+
+// Versions sort with numeric runs (5.10 after 5.9); "up to date" sorts after
+// every available version. Last upgraded is an ISO instant; "never" sorts last.
+const DEPLOYMENT_SORT: SortAccessors<AdminUpgradesDeployment> = {
+  available: (d) => (d.availableUpgradeCount > 0 ? d.latestReachable : null),
+};
+const TH_PAD = 'px-4 py-2';
 
 export default function DeploymentUpgradesTab() {
   const { data: groups, isLoading, isError, error } = useAdminUpgradesOverview();
@@ -150,6 +159,12 @@ function AppGroup({
   const bulkUpgrade = useBulkUpgrade();
   const [bulkTarget, setBulkTarget] = useState<string>('');
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+  // The server sends a group's deployments in no particular order.
+  const { sortedData: sortedDeployments, sortKey, sortDirection, onSort } =
+    useSortable(group.deployments, 'tenantCompanyName', 'asc', DEPLOYMENT_SORT);
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding={TH_PAD} />
+  );
 
   // Collect all distinct versions reachable from at least one deployment.
   const reachableVersions = useMemo(() => {
@@ -234,18 +249,18 @@ function AppGroup({
             <table className="w-full text-sm" data-testid={`deployments-table-${group.code}`}>
               <thead>
                 <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                  <th className="px-4 py-2">Customer</th>
-                  <th className="px-4 py-2">Deployment</th>
-                  <th className="px-4 py-2">Status</th>
-                  <th className="px-4 py-2">Current</th>
-                  <th className="px-4 py-2">Available</th>
-                  <th className="px-4 py-2">Last upgraded</th>
+                  {header('Customer', 'tenantCompanyName')}
+                  {header('Deployment', 'name')}
+                  {header('Status', 'status')}
+                  {header('Current', 'installedVersion')}
+                  {header('Available', 'available')}
+                  {header('Last upgraded', 'lastUpgradedAt')}
                   <th className="px-4 py-2">Auto</th>
                   <th className="px-4 py-2 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                {group.deployments.map((d) => (
+                {sortedDeployments.map((d) => (
                   <DeploymentRow key={d.id} dep={d} lockMode={group.lockMode} />
                 ))}
               </tbody>

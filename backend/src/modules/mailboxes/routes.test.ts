@@ -43,6 +43,8 @@ vi.mock('../../db/schema.js', () => ({
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
   },
+  // Read at import by the admin list's sort fields.
+  tenants: { id: 'id', name: 'name' },
 }));
 
 vi.mock('./service.js', () => ({

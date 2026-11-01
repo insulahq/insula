@@ -864,6 +864,17 @@ jobs:
       - name: Scan k8s/ for pinned apex literals
         run: ./scripts/ci-no-pinned-domains.sh
 
+  cert-renewal-window:
+    name: ACME Certificates renew at a share of their lifetime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # A fixed renewBefore cannot fit every lifetime (Let's Encrypt: 90 → 64
+      # days in 2027, 45 in 2028; 6-day certificates already). Backend CI runs
+      # the same script over backend code.
+      - name: Scan manifests and scripts for absolute renewBefore
+        run: ./scripts/ci-cert-renewal-window-check.sh
+
   no-hardcoded-ips:
     name: No hard-coded public IPs in K8s manifests
     runs-on: ubuntu-latest

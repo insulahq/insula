@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, RefreshCw, X, AlertOctagon } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
 /**
  * Stuck-Deprovisions admin panel.
@@ -28,6 +30,12 @@ interface StuckRow {
   readonly tenantId: string | null;
   readonly stuckForMs: number;
 }
+
+const NO_ROWS: readonly StuckRow[] = [];
+const STUCK_SORT: SortAccessors<StuckRow> = {
+  finalizers: (r) => (r.finalizers.length === 0 ? '(none)' : r.finalizers.join(', ')),
+};
+const TH_PAD = 'px-3 py-2';
 
 function useStuckDeprovisions() {
   return useQuery({
@@ -60,6 +68,12 @@ function fmtAge(ms: number): string {
 export default function StuckDeprovisionsPanel() {
   const { data, isLoading, error, refetch } = useStuckDeprovisions();
   const [confirming, setConfirming] = useState<StuckRow | null>(null);
+  // The server sends the longest-stuck namespace first.
+  const { sortedData: sortedRows, sortKey, sortDirection, onSort } =
+    useSortable(data?.data ?? NO_ROWS, 'stuckForMs', 'desc', STUCK_SORT);
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding={TH_PAD} className="text-left" />
+  );
 
   if (isLoading) {
     return (
@@ -114,14 +128,14 @@ export default function StuckDeprovisionsPanel() {
         <table className="min-w-full text-sm">
           <thead className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900/50">
             <tr>
-              <th className="text-left px-3 py-2">Namespace</th>
-              <th className="text-left px-3 py-2">Stuck for</th>
-              <th className="text-left px-3 py-2">Finalizers</th>
+              {header('Namespace', 'name')}
+              {header('Stuck for', 'stuckForMs')}
+              {header('Finalizers', 'finalizers')}
               <th className="text-right px-3 py-2">Action</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-amber-100 dark:divide-amber-900/50">
-            {rows.map((r) => (
+            {sortedRows.map((r) => (
               <tr key={r.name}>
                 <td className="px-3 py-2 font-mono text-gray-900 dark:text-gray-100">{r.name}</td>
                 <td className="px-3 py-2 text-gray-700 dark:text-gray-300">{fmtAge(r.stuckForMs)}</td>

@@ -296,13 +296,14 @@ data:
             regex: 'go_.*_bucket'
             action: drop
 
-          # Three per-certificate timestamp families (42 series each) that no
-          # rule or panel reads. The one the alert pack DOES read —
-          # certmanager_certificate_expiration_timestamp_seconds — is kept, as
-          # is certmanager_certificate_ready_status. `not_after` is the same
-          # instant as `expiration`; `renewal`/`not_before` are unused.
+          # Two per-certificate timestamp families (one series per
+          # certificate) that no rule or panel reads. The alert pack reads
+          # `expiration` and `renewal` (cert-renewal-overdue: time to expiry
+          # over cert-manager's renewal lead) and `ready_status`; those are
+          # kept. `not_after` is the same instant as `expiration`; `not_before`
+          # is unused.
           - source_labels: [__name__]
-            regex: 'certmanager_certificate_(renewal|not_before|not_after)_timestamp_seconds'
+            regex: 'certmanager_certificate_(not_before|not_after)_timestamp_seconds'
             action: drop
 
       # ── Longhorn (volume/node storage metrics, :9500) ────────────

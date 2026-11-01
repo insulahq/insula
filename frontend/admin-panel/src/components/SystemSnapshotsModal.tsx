@@ -20,7 +20,9 @@ import {
   usePitrPrechecks,
   useRestoreStatus,
 } from '@/hooks/use-postgres-restore';
-import type { RecurringJobPolicy, SystemPvcSnapshotSummary } from '@insula/api-contracts';
+import type { RecurringJobPolicy, SystemPvcSnapshotSummary, SystemSnapshotEntry } from '@insula/api-contracts';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import RestorationWizard, { type RestoreArtifact, type RestorationWizardPrecheck } from '@/components/backups/RestorationWizard';
@@ -46,6 +48,15 @@ interface SystemSnapshotsModalProps {
  */
 /** Stable fallback: a new `[]` per render would defeat the memo below. */
 const NO_JOBS: readonly RecurringJobPolicy[] = [];
+const NO_SNAPSHOTS: readonly SystemSnapshotEntry[] = [];
+
+/** The Status pill's words — the Status column sorts by them. */
+function snapshotStatusLabel(s: SystemSnapshotEntry): string {
+  if (s.markedForRemoval) return 'marked-removed';
+  return s.usable ? 'ready' : 'pending';
+}
+const SNAPSHOT_SORT: SortAccessors<SystemSnapshotEntry> = { status: snapshotStatusLabel };
+const SNAP_TH_PAD = 'py-1 pr-2';
 
 export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshotsModalProps) {
   const list = useVolumeSnapshots(volume.longhornVolumeName);
@@ -84,7 +95,12 @@ export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshot
     enabled: pitrSnap != null && volume.cnpgCluster != null,
   });
 
-  const snapshots = list.data?.data.snapshots ?? [];
+  const snapshots = list.data?.data.snapshots ?? NO_SNAPSHOTS;
+  // Newest first, as the server sends them; createdAt is an ISO instant.
+  const snapshotView = useSortable(snapshots, 'createdAt', 'desc', SNAPSHOT_SORT);
+  const snapHeader = (label: string, key: string, align: 'text-left' | 'text-right', title?: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={snapshotView.sortKey} direction={snapshotView.sortDirection} onSort={snapshotView.onSort} padding={SNAP_TH_PAD} className={align} title={title} />
+  );
   const allJobs = jobs.data?.data.jobs ?? NO_JOBS;
   // Memoised: a fresh `.filter()` array every render made the draft-reset
   // effect below fire after EVERY render — an endless render loop that also
@@ -313,16 +329,16 @@ export default function SystemSnapshotsModal({ volume, onClose }: SystemSnapshot
                 <table className="w-full text-xs" data-testid="snapshot-list-table">
                   <thead className="text-gray-500 dark:text-gray-400">
                     <tr>
-                      <th className="text-left py-1 pr-2">Name</th>
-                      <th className="text-left py-1 pr-2" title={localZoneTitle()}>Created ({utcOffsetLabel()})</th>
-                      <th className="text-right py-1 pr-2">Size</th>
-                      <th className="text-left py-1 pr-2">Status</th>
-                      <th className="text-left py-1 pr-2">Label</th>
+                      {snapHeader('Name', 'snapshotName', 'text-left')}
+                      {snapHeader(`Created (${utcOffsetLabel()})`, 'createdAt', 'text-left', localZoneTitle())}
+                      {snapHeader('Size', 'sizeBytes', 'text-right')}
+                      {snapHeader('Status', 'status', 'text-left')}
+                      {snapHeader('Label', 'userLabel', 'text-left')}
                       <th className="text-right py-1">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {snapshots.map((s) => (
+                    {snapshotView.sortedData.map((s) => (
                       <tr key={s.snapshotName} className="border-t border-gray-200/60 dark:border-gray-700/40" data-testid={`snapshot-row-${s.snapshotName}`}>
                         <td className="py-1.5 pr-2 font-mono">{s.snapshotName}</td>
                         <td className="py-1.5 pr-2 text-gray-500">{s.createdAt ? <LocalTime iso={s.createdAt} /> : '—'}</td>

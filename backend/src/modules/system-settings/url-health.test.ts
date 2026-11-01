@@ -100,25 +100,35 @@ describe('probeUrlHealth', () => {
     expect(result.ssl.status).toBe('missing');
   });
 
-  it('flags an SSL cert that is within 30 days of expiry', async () => {
+  // "Expiring soon" follows the renewal policy (certificates/renewal-policy.ts):
+  // only once half the renewal window has gone with no new certificate. A
+  // fixed 30-day mark flagged every healthy certificate on every cycle.
+  const probeAt = async (notBefore: string | undefined, notAfter: string) => {
     const deps = mockDeps({
       now: () => new Date('2026-06-15T00:00:00Z'),
       readCertificate: vi.fn().mockResolvedValue({
-        status: 'ready',
-        reason: null,
-        notAfter: '2026-07-01T00:00:00Z', // 16 days from now
-        secretName: 'platform-tls',
+        status: 'ready', reason: null, notBefore, notAfter, secretName: 'platform-tls',
       }),
     });
-    const result = await probeUrlHealth({
-      host: 'admin.example.com',
-      certSecretName: 'platform-tls',
-      certNamespace: 'platform',
-    }, deps);
-    // Still "ready" (not failed) but daysUntilExpiry surfaced
+    return probeUrlHealth({ host: 'admin.example.com', certSecretName: 'platform-tls', certNamespace: 'platform' }, deps);
+  };
+
+  it('does not flag a 90-day cert inside its renewal window (16 days left)', async () => {
+    const result = await probeAt('2026-04-02T00:00:00Z', '2026-07-01T00:00:00Z');
     expect(result.ssl.status).toBe('ready');
     expect(result.ssl.daysUntilExpiry).toBe(16);
+    expect(result.ssl.expiringSoon).toBe(false);
+  });
+
+  it('flags a 90-day cert once its renewal is overdue (10 days left)', async () => {
+    const result = await probeAt('2026-03-27T00:00:00Z', '2026-06-25T00:00:00Z');
+    expect(result.ssl.daysUntilExpiry).toBe(10);
     expect(result.ssl.expiringSoon).toBe(true);
+  });
+
+  it('judges a 45-day cert by its own lifetime: 10 days left is fine, 6 is overdue', async () => {
+    expect((await probeAt('2026-05-11T00:00:00Z', '2026-06-25T00:00:00Z')).ssl.expiringSoon).toBe(false);
+    expect((await probeAt('2026-05-07T00:00:00Z', '2026-06-21T00:00:00Z')).ssl.expiringSoon).toBe(true);
   });
 
   it('skips probes entirely when the URL is unset (host = null)', async () => {

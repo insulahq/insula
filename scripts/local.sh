@@ -1501,7 +1501,8 @@ spec:
   dnsNames:
     - sftp.insula.host
   duration: 8760h
-  renewBefore: 720h
+  # A third of the ISSUED lifetime, whatever the CA chose (backend certificates/renewal-policy.ts).
+  renewBeforePercentage: 33
 EOF
 kubectl apply -f /tmp/sftp-tls-cert.yaml'
     k3s_exec kubectl wait --for=condition=Ready certificate/sftp-gateway-tls \

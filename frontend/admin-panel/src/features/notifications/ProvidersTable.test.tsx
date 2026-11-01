@@ -234,3 +234,35 @@ describe('ProvidersTable', () => {
     });
   });
 });
+
+describe('ProvidersTable — column sorting', () => {
+  const order = () => screen.getAllByTestId(/^provider-row-/).map((r) => r.getAttribute('data-testid'));
+
+  beforeEach(() => {
+    // As the server sends them: the default provider first, then by name.
+    listMock.mockReturnValue({
+      data: {
+        data: [
+          provider({ id: 'p1', name: 'Brevo EU', isDefault: true }),
+          provider({ id: 'p2', name: 'Alpha relay', isDefault: false, providerType: 'smtp' }),
+          provider({ id: 'p3', name: 'Zulu relay', isDefault: false, providerType: 'mailgun-eu' }),
+        ],
+      },
+      isLoading: false,
+      error: null,
+    });
+  });
+
+  it('keeps the default provider first by default', () => {
+    render(<ProvidersTable />, { wrapper: createWrapper() });
+    expect(order()).toEqual(['provider-row-p1', 'provider-row-p2', 'provider-row-p3']);
+  });
+
+  it('sorts by name, and reverses on a second click', () => {
+    render(<ProvidersTable />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('sort-name'));
+    expect(order()).toEqual(['provider-row-p2', 'provider-row-p1', 'provider-row-p3']);
+    fireEvent.click(screen.getByTestId('sort-name'));
+    expect(order()).toEqual(['provider-row-p3', 'provider-row-p1', 'provider-row-p2']);
+  });
+});

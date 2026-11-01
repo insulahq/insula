@@ -91,6 +91,11 @@ import {
 } from '@/hooks/use-crowdsec';
 import type {
   NodeSecuritySnapshot,
+  DatabaseIsolationEntry,
+  Fail2banBannedIp,
+  NamespacePss,
+  PublicPortsPerNode,
+  SecurityEvent,
   CisFinding,
   CisSeverity,
   SecurityHardeningSnapshot,
@@ -116,6 +121,9 @@ import type {
   NetworkPolicyTemplateId,
 } from '@insula/api-contracts';
 import { buildHostnameRegexFromEventHost } from '@insula/api-contracts';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors, type SortDirection, type UseSortableResult } from '@/hooks/use-sortable';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 import { useTabParam } from '@/hooks/use-tab-param';
 import type { TabOf } from '@/routes/tabbed-pages';
 import NodeName from '@/components/nodes/NodeName';
@@ -233,7 +241,98 @@ export default function PosturePage() {
 
 // ─── Overview tab ───────────────────────────────────────────────────────
 
+// ─── Table sorting ──────────────────────────────────────────────────────
+
+/** What the SSH badge says, so the column sorts by it. */
+const SSH_MODE_LABEL: Record<NodeSecuritySnapshot['ssh']['restrictionMode'], string> = {
+  public: 'public',
+  'mesh-only': 'mesh only',
+  'trusted-only': 'trusted only',
+  'mesh-and-trusted': 'mesh + trusted',
+};
+
+const listText = (items: ReadonlyArray<string | number>): string | null => (items.length > 0 ? items.join(', ') : null);
+const meshProvider = (n: NodeSecuritySnapshot): string | null => (n.mesh.provider === 'none' ? null : n.mesh.provider);
+const nodeNameOf = (n: NodeSecuritySnapshot): string => n.name;
+const portsNodeNameOf = (p: PublicPortsPerNode): string => p.nodeName;
+
+const OVERVIEW_NODE_SORT: SortAccessors<NodeSecuritySnapshot> = {
+  ssh: (n) => SSH_MODE_LABEL[n.ssh.restrictionMode],
+  mesh: meshProvider,
+  critical: (n) => n.hardening.cisFindings.filter((f) => !f.passing && f.severity === 'critical').length,
+  probe: (n) => n.lastUpdatedAt,
+};
+
+const SSH_NODE_SORT: SortAccessors<NodeSecuritySnapshot> = {
+  ssh: (n) => SSH_MODE_LABEL[n.ssh.restrictionMode],
+  port: (n) => n.ssh.sshdFlags.port,
+  permitRootLogin: (n) => n.ssh.sshdFlags.permitRootLogin,
+  passwordAuthentication: (n) => n.ssh.sshdFlags.passwordAuthentication,
+  allowUsers: (n) => listText(n.ssh.sshdFlags.allowUsers),
+  // "n/a" when fail2ban's state could not be read: no count to sort by.
+  fail2ban: (n) => (n.fail2ban.dbPresent ? n.fail2ban.bannedNowCount : null),
+};
+
+const MESH_NODE_SORT: SortAccessors<NodeSecuritySnapshot> = {
+  mesh: meshProvider,
+  interfaceName: (n) => n.mesh.interfaceName,
+  interfaceIp: (n) => n.mesh.interfaceIp,
+  peerCount: (n) => n.mesh.peerCount,
+  lastHandshake: (n) => n.mesh.lastHandshakeAgeSeconds,
+};
+
+const PUBLIC_PORTS_SORT: SortAccessors<PublicPortsPerNode> = {
+  tcp: (p) => listText(p.tcp),
+  udp: (p) => listText(p.udp),
+};
+
+const DB_ISOLATION_SORT: SortAccessors<DatabaseIsolationEntry> = {
+  grantees: (d) => listText(d.connectGrantees),
+};
+
+interface PodListRow { namespace: string; name: string; reasons: ReadonlyArray<string> }
+const POD_SORT: SortAccessors<PodListRow> = { reason: (p) => listText(p.reasons) };
+
+const EVENT_SORT: SortAccessors<SecurityEvent> = {
+  resource: (e) => `${e.resourceType}${e.resourceName ? ` · ${e.resourceName}` : ''}`,
+};
+
+/**
+ * A node table sorted by the name each row shows — the operator's alias when
+ * one is set, which is what `<NodeName>` renders.
+ */
+function useNodeSort<T>(rows: readonly T[], nameOf: (row: T) => string, accessors: SortAccessors<T>): UseSortableResult<T> {
+  const nodeLabel = useNodeLabel();
+  const withNode = useMemo<SortAccessors<T>>(
+    () => ({ ...accessors, node: (r) => nodeLabel(nameOf(r)) }),
+    [accessors, nameOf, nodeLabel],
+  );
+  return useSortable(rows, 'node', 'asc', withNode);
+}
+
+/** A posture-table header cell that sorts its table. */
+function SortTh({ label, sortKey, sort, title }: {
+  label: string;
+  sortKey: string;
+  title?: string;
+  sort: { readonly sortKey: string; readonly sortDirection: SortDirection; readonly onSort: (key: string) => void };
+}) {
+  return (
+    <SortableHeader
+      label={label}
+      sortKey={sortKey}
+      currentKey={sort.sortKey}
+      direction={sort.sortDirection}
+      onSort={sort.onSort}
+      padding="px-4 py-2"
+      className="text-left"
+      title={title}
+    />
+  );
+}
+
 function OverviewTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
+  const nodeSort = useNodeSort(snapshot.nodes, nodeNameOf, OVERVIEW_NODE_SORT);
   const counts = useMemo(() => {
     let nodesPublicSSH = 0;
     let nodesWithFailingCritical = 0;
@@ -281,15 +380,15 @@ function OverviewTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
         <table className="min-w-full text-sm" data-testid="overview-nodes-table">
           <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
             <tr>
-              <th className="px-4 py-2 text-left">Node</th>
-              <th className="px-4 py-2 text-left">SSH</th>
-              <th className="px-4 py-2 text-left">Mesh</th>
-              <th className="px-4 py-2 text-left">Critical findings</th>
-              <th className="px-4 py-2 text-left">Probe</th>
+              <SortTh label="Node" sortKey="node" sort={nodeSort} />
+              <SortTh label="SSH" sortKey="ssh" sort={nodeSort} />
+              <SortTh label="Mesh" sortKey="mesh" sort={nodeSort} />
+              <SortTh label="Critical findings" sortKey="critical" sort={nodeSort} />
+              <SortTh label="Probe" sortKey="probe" sort={nodeSort} />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-            {snapshot.nodes.map((n) => (
+            {nodeSort.sortedData.map((n) => (
               <tr key={n.name}>
                 <td className="px-4 py-2 font-medium text-gray-900 dark:text-gray-100"><NodeName name={n.name} /></td>
                 <td className="px-4 py-2"><SshBadge mode={n.ssh.restrictionMode} /></td>
@@ -339,10 +438,10 @@ function OverviewTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
         )}
         <Phase2Card
           icon={ShieldAlert}
-          title="TLS certs expiring < 30d"
+          title="TLS certs overdue for renewal"
           ok={snapshot.certExpiries.length === 0}
           metric={`${snapshot.certExpiries.length} certs`}
-          note={snapshot.certExpiries.length > 0 ? `Soonest: ${snapshot.certExpiries[0].name} (${snapshot.certExpiries[0].daysRemaining}d)` : 'No urgent renewals'}
+          note={snapshot.certExpiries.length > 0 ? `Soonest: ${snapshot.certExpiries[0].name} (${snapshot.certExpiries[0].daysRemaining}d)` : 'Every certificate is renewing on schedule'}
         />
         <Phase2Card
           icon={HardDrive}
@@ -423,8 +522,9 @@ export function DatabaseIsolationCard({ isolation }: { isolation: SecurityHarden
  * four green rows on every page load trains people to stop reading it.
  */
 export function DatabaseIsolationTable({ isolation }: { isolation: SecurityHardeningSnapshot['databaseIsolation'] }) {
+  const open = isolation?.databases.filter((d) => d.publicConnect) ?? [];
+  const sort = useSortable(open, 'datname', 'asc', DB_ISOLATION_SORT);
   if (!isolation) return null;
-  const open = isolation.databases.filter((d) => d.publicConnect);
   if (open.length === 0 && isolation.atRisk.length === 0) return null;
 
   return (
@@ -440,14 +540,14 @@ export function DatabaseIsolationTable({ isolation }: { isolation: SecurityHarde
         <table className="min-w-full text-sm">
           <thead className="bg-amber-100/60 dark:bg-amber-900/30 text-amber-900 dark:text-amber-200 text-xs uppercase">
             <tr>
-              <th className="px-4 py-2 text-left">Database</th>
-              <th className="px-4 py-2 text-left">Owner</th>
+              <SortTh label="Database" sortKey="datname" sort={sort} />
+              <SortTh label="Owner" sortKey="owner" sort={sort} />
               <th className="px-4 py-2 text-left">PUBLIC CONNECT</th>
-              <th className="px-4 py-2 text-left">Explicit CONNECT grantees</th>
+              <SortTh label="Explicit CONNECT grantees" sortKey="grantees" sort={sort} />
             </tr>
           </thead>
           <tbody>
-            {open.map((d) => (
+            {sort.sortedData.map((d) => (
               <tr key={d.datname} className="border-t border-amber-200 dark:border-amber-800">
                 <td className="px-4 py-2 font-mono text-gray-900 dark:text-gray-100">{d.datname}</td>
                 <td className="px-4 py-2 text-gray-700 dark:text-gray-300">{d.owner}</td>
@@ -483,24 +583,25 @@ export function DatabaseIsolationTable({ isolation }: { isolation: SecurityHarde
 function SshTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
   const [openModalNode, setOpenModalNode] = useState<NodeSecuritySnapshot | null>(null);
   const [bannedNode, setBannedNode] = useState<NodeSecuritySnapshot | null>(null);
+  const sort = useNodeSort(snapshot.nodes, nodeNameOf, SSH_NODE_SORT);
   return (
     <section className="space-y-4">
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
         <table className="min-w-full text-sm" data-testid="ssh-table">
           <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
             <tr>
-              <th className="px-4 py-2 text-left">Node</th>
-              <th className="px-4 py-2 text-left">Mode</th>
-              <th className="px-4 py-2 text-left">Port</th>
-              <th className="px-4 py-2 text-left">PermitRootLogin</th>
-              <th className="px-4 py-2 text-left">PasswordAuth</th>
-              <th className="px-4 py-2 text-left">AllowUsers</th>
-              <th className="px-4 py-2 text-left">fail2ban (banned)</th>
+              <SortTh label="Node" sortKey="node" sort={sort} />
+              <SortTh label="Mode" sortKey="ssh" sort={sort} />
+              <SortTh label="Port" sortKey="port" sort={sort} />
+              <SortTh label="PermitRootLogin" sortKey="permitRootLogin" sort={sort} />
+              <SortTh label="PasswordAuth" sortKey="passwordAuthentication" sort={sort} />
+              <SortTh label="AllowUsers" sortKey="allowUsers" sort={sort} />
+              <SortTh label="fail2ban (banned)" sortKey="fail2ban" sort={sort} />
               <th className="px-4 py-2 text-left">Action</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-            {snapshot.nodes.map((n) => (
+            {sort.sortedData.map((n) => (
               <tr key={n.name}>
                 <td className="px-4 py-2 font-medium text-gray-900 dark:text-gray-100"><NodeName name={n.name} /></td>
                 <td className="px-4 py-2"><SshBadge mode={n.ssh.restrictionMode} /></td>
@@ -539,22 +640,23 @@ function SshTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
 // ─── Mesh tab ───────────────────────────────────────────────────────────
 
 function MeshTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
+  const sort = useNodeSort(snapshot.nodes, nodeNameOf, MESH_NODE_SORT);
   return (
     <section className="space-y-4">
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
         <table className="min-w-full text-sm" data-testid="mesh-table">
           <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
             <tr>
-              <th className="px-4 py-2 text-left">Node</th>
-              <th className="px-4 py-2 text-left">Provider</th>
-              <th className="px-4 py-2 text-left">Interface</th>
-              <th className="px-4 py-2 text-left">IP</th>
-              <th className="px-4 py-2 text-left">Peers</th>
-              <th className="px-4 py-2 text-left">Last handshake</th>
+              <SortTh label="Node" sortKey="node" sort={sort} />
+              <SortTh label="Provider" sortKey="mesh" sort={sort} />
+              <SortTh label="Interface" sortKey="interfaceName" sort={sort} />
+              <SortTh label="IP" sortKey="interfaceIp" sort={sort} />
+              <SortTh label="Peers" sortKey="peerCount" sort={sort} />
+              <SortTh label="Last handshake" sortKey="lastHandshake" sort={sort} />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-            {snapshot.nodes.map((n) => (
+            {sort.sortedData.map((n) => (
               <tr key={n.name}>
                 <td className="px-4 py-2 font-medium text-gray-900 dark:text-gray-100"><NodeName name={n.name} /></td>
                 <td className="px-4 py-2 text-gray-700 dark:text-gray-200">{n.mesh.provider === 'none' ? <span className="text-gray-400">none detected</span> : n.mesh.provider}</td>
@@ -663,6 +765,7 @@ function DeniedSourcesCrossLink() {
 }
 
 function FirewallTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
+  const sort = useNodeSort(snapshot.firewall.publicPortsPerNode, portsNodeNameOf, PUBLIC_PORTS_SORT);
   return (
     <section className="space-y-4">
       <OperatorTrustCard />
@@ -680,13 +783,13 @@ function FirewallTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
             <tr>
-              <th className="px-4 py-2 text-left">Node</th>
-              <th className="px-4 py-2 text-left">Public TCP</th>
-              <th className="px-4 py-2 text-left">Public UDP</th>
+              <SortTh label="Node" sortKey="node" sort={sort} />
+              <SortTh label="Public TCP" sortKey="tcp" sort={sort} />
+              <SortTh label="Public UDP" sortKey="udp" sort={sort} />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-            {snapshot.firewall.publicPortsPerNode.map((p) => (
+            {sort.sortedData.map((p) => (
               <tr key={p.nodeName}>
                 <td className="px-4 py-2 font-medium text-gray-900 dark:text-gray-100"><NodeName name={p.nodeName} /></td>
                 <td className="px-4 py-2 font-mono text-xs text-gray-700 dark:text-gray-200">{p.tcp.join(', ') || '—'}</td>
@@ -745,6 +848,7 @@ function HardeningTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
 
 function K8sPostureTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
   const posture = snapshot.k8sPosture;
+  const pssSort = useSortable<NamespacePss>(posture?.namespacePss ?? [], 'namespace', 'asc');
   if (!posture) {
     return (
       <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 p-4 text-sm">
@@ -768,14 +872,14 @@ function K8sPostureTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
         <table className="min-w-full text-sm" data-testid="pss-table">
           <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
             <tr>
-              <th className="px-4 py-2 text-left">Namespace</th>
-              <th className="px-4 py-2 text-left">Enforce</th>
-              <th className="px-4 py-2 text-left">Warn</th>
-              <th className="px-4 py-2 text-left">Audit</th>
+              <SortTh label="Namespace" sortKey="namespace" sort={pssSort} />
+              <SortTh label="Enforce" sortKey="enforceLevel" sort={pssSort} />
+              <SortTh label="Warn" sortKey="warnLevel" sort={pssSort} />
+              <SortTh label="Audit" sortKey="auditLevel" sort={pssSort} />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-            {posture.namespacePss.map((ns) => (
+            {pssSort.sortedData.map((ns) => (
               <tr key={ns.namespace}>
                 <td className="px-4 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{ns.namespace}</td>
                 <td className="px-4 py-2"><PssBadge level={ns.enforceLevel} /></td>
@@ -801,7 +905,8 @@ function PssBadge({ level }: { level: 'privileged' | 'baseline' | 'restricted' |
   return <span className="text-xs text-gray-400">unset</span>;
 }
 
-function PodListCard({ title, pods, testid }: { title: string; pods: ReadonlyArray<{ namespace: string; name: string; reasons: ReadonlyArray<string> }>; testid: string }) {
+function PodListCard({ title, pods, testid }: { title: string; pods: ReadonlyArray<PodListRow>; testid: string }) {
+  const sort = useSortable(pods, 'namespace', 'asc', POD_SORT);
   if (pods.length === 0) {
     return (
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-sm text-gray-500">
@@ -817,13 +922,13 @@ function PodListCard({ title, pods, testid }: { title: string; pods: ReadonlyArr
       <table className="min-w-full text-sm" data-testid={testid}>
         <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
           <tr>
-            <th className="px-4 py-2 text-left">Namespace</th>
-            <th className="px-4 py-2 text-left">Pod</th>
-            <th className="px-4 py-2 text-left">Reason</th>
+            <SortTh label="Namespace" sortKey="namespace" sort={sort} />
+            <SortTh label="Pod" sortKey="name" sort={sort} />
+            <SortTh label="Reason" sortKey="reason" sort={sort} />
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-          {pods.map((p) => (
+          {sort.sortedData.map((p) => (
             <tr key={`${p.namespace}/${p.name}`}>
               <td className="px-4 py-2 font-mono text-xs text-gray-700 dark:text-gray-200">{p.namespace}</td>
               <td className="px-4 py-2 text-gray-900 dark:text-gray-100">{p.name}</td>
@@ -1095,6 +1200,8 @@ function NetpolRemoveModal({ onClose }: { onClose: () => void }) {
 // ─── Events tab ─────────────────────────────────────────────────────────
 
 function EventsTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
+  // Newest first, as the snapshot lists them.
+  const sort = useSortable(snapshot.recentEvents, 'occurredAt', 'desc', EVENT_SORT);
   return (
     <section className="space-y-3">
       <div className="flex justify-end">
@@ -1110,15 +1217,15 @@ function EventsTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
         <table className="min-w-full text-sm" data-testid="events-table">
           <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
             <tr>
-              <th className="px-4 py-2 text-left" title={localZoneTitle()}>When ({utcOffsetLabel()})</th>
-              <th className="px-4 py-2 text-left">Resource</th>
-              <th className="px-4 py-2 text-left">Action</th>
-              <th className="px-4 py-2 text-left">Outcome</th>
-              <th className="px-4 py-2 text-left">Actor</th>
+              <SortTh label={`When (${utcOffsetLabel()})`} sortKey="occurredAt" title={localZoneTitle()} sort={sort} />
+              <SortTh label="Resource" sortKey="resource" sort={sort} />
+              <SortTh label="Action" sortKey="action" sort={sort} />
+              <SortTh label="Outcome" sortKey="outcome" sort={sort} />
+              <SortTh label="Actor" sortKey="userId" sort={sort} />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-            {snapshot.recentEvents.map((e) => (
+            {sort.sortedData.map((e) => (
               <tr key={`${e.occurredAt}-${e.resourceType}-${e.action}-${e.resourceName ?? ''}`}>
                 <td className="px-4 py-2 text-gray-700 dark:text-gray-200 font-mono text-xs"><LocalTime iso={e.occurredAt} seconds /></td>
                 <td className="px-4 py-2 text-gray-700 dark:text-gray-200">{e.resourceType}{e.resourceName ? ` · ${e.resourceName}` : ''}</td>
@@ -1465,6 +1572,9 @@ function Fail2banCell({ node, onOpen }: { node: NodeSecuritySnapshot; onOpen: ()
  *  the list is read-only. */
 function Fail2banModal({ node, onClose }: { node: NodeSecuritySnapshot; onClose: () => void }) {
   const f = node.fail2ban;
+  // The probe lists the newest ban first.
+  const sort = useSortable<Fail2banBannedIp>(f.currentlyBanned, 'bannedAt', 'desc');
+  const head = { currentKey: sort.sortKey, direction: sort.sortDirection, onSort: sort.onSort, padding: 'py-1' } as const;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
       <div className="w-full max-w-2xl rounded-lg bg-white dark:bg-gray-900 shadow-xl" data-testid="fail2ban-modal">
@@ -1484,16 +1594,16 @@ function Fail2banModal({ node, onClose }: { node: NodeSecuritySnapshot; onClose:
             <table className="min-w-full text-sm" data-testid="fail2ban-banned-table">
               <thead className="text-gray-500 dark:text-gray-400 text-xs uppercase">
                 <tr>
-                  <th className="py-1 text-left">IP</th>
-                  <th className="py-1 text-left">Jail</th>
-                  <th className="py-1 text-left">Banned</th>
-                  <th className="py-1 text-left">Expires</th>
-                  <th className="py-1 text-right">Bans</th>
+                  <SortableHeader label="IP" sortKey="ip" className="text-left" {...head} />
+                  <SortableHeader label="Jail" sortKey="jail" className="text-left" {...head} />
+                  <SortableHeader label="Banned" sortKey="bannedAt" className="text-left" {...head} />
+                  <SortableHeader label="Expires" sortKey="expiresAt" className="text-left" {...head} />
+                  <SortableHeader label="Bans" sortKey="banCount" className="text-right" {...head} />
                   <th className="py-1 text-right" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                {f.currentlyBanned.map((b) => (
+                {sort.sortedData.map((b) => (
                   <tr key={`${b.jail}:${b.ip}`}>
                     <td className="py-1.5 font-mono text-gray-900 dark:text-gray-100">{b.ip}</td>
                     <td className="py-1.5 text-gray-600 dark:text-gray-300">{b.jail}</td>

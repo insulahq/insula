@@ -1,4 +1,4 @@
-import { render as rtlRender, screen } from '@testing-library/react';
+import { render as rtlRender, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -366,5 +366,43 @@ describe('CpuSchedulingPage', () => {
       await userEvent.click(screen.getByTestId('cpu-ack-t1'));
       expect(screen.getByTestId('cpu-reapply-t1')).toBeEnabled();
     });
+  });
+});
+
+describe('CpuSchedulingPage — column sorting', () => {
+  beforeEach(() => { mockPreview.mockReset(); });
+
+  const order = () => Array.from(document.querySelectorAll('[data-testid^="cpu-migration-tenant-"]'))
+    .map((r) => r.getAttribute('data-testid'));
+
+  it('lists tenants by name, and sorts by cores freed both ways', async () => {
+    ok(preview({
+      tenants: [
+        tenant({ tenantId: 'a', tenantName: 'Beta', reclaimableMillis: 100 }),
+        tenant({ tenantId: 'b', tenantName: 'Alpha', reclaimableMillis: 900 }),
+        // An increase is the opposite of freeing: it sorts below every saving.
+        tenant({ tenantId: 'c', tenantName: 'Gamma', reclaimableMillis: 0, increasedMillis: 200 }),
+      ],
+    }));
+    render(<CpuSchedulingPage />);
+    expect(order()).toEqual(['cpu-migration-tenant-b', 'cpu-migration-tenant-a', 'cpu-migration-tenant-c']);
+    await userEvent.click(screen.getByTestId('sort-freed'));
+    expect(order()).toEqual(['cpu-migration-tenant-c', 'cpu-migration-tenant-a', 'cpu-migration-tenant-b']);
+    await userEvent.click(screen.getByTestId('sort-freed'));
+    expect(order()).toEqual(['cpu-migration-tenant-b', 'cpu-migration-tenant-a', 'cpu-migration-tenant-c']);
+  });
+
+  it('sorts an expanded tenant\'s applications by what they reserve now', async () => {
+    ok(preview({ tenants: [tenant()] }));
+    render(<CpuSchedulingPage />);
+    await userEvent.click(screen.getByTestId('cpu-migration-tenant-t1'));
+    const [, apps] = screen.getAllByRole('table');
+    // `:scope >` — the outer table's tbody is an ancestor of this whole table.
+    const names = () => Array.from(apps.querySelectorAll(':scope > tbody > tr')).map((r) => r.querySelector('td')?.textContent);
+    expect(names()).toEqual(['moodle', 'my-mariadb']);
+    await userEvent.click(within(apps).getByTestId('sort-currentMillis'));
+    expect(names()).toEqual(['my-mariadb', 'moodle']);
+    await userEvent.click(within(apps).getByTestId('sort-currentMillis'));
+    expect(names()).toEqual(['moodle', 'my-mariadb']);
   });
 });

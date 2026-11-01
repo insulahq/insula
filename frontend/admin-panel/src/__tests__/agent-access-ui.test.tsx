@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import type { McpConnection, McpConsentRequest, McpPlatformConnections, McpTokenList } from '@insula/api-contracts';
+import type { McpConnection, McpConsentRequest, McpPlatformConnections, McpToken, McpTokenList } from '@insula/api-contracts';
 
 const consent = vi.hoisted(() => ({
   request: { data: undefined as McpConsentRequest | undefined, isLoading: false, error: null as unknown },
@@ -42,7 +42,7 @@ const { default: OAuthConsent } = await import('../pages/OAuthConsent');
 const { default: ApiTokensSection } = await import('../components/settings/ApiTokensSection');
 const { default: AgentIndicator } = await import('../components/agents/AgentIndicator');
 const { default: AiAgentsPage } = await import('../pages/security/AiAgentsPage');
-const { formatEndsIn } = await import('../components/agents/AgentConnectionsTable');
+const { formatEndsIn, default: AgentConnectionsTable } = await import('../components/agents/AgentConnectionsTable');
 
 const request = (over: Partial<McpConsentRequest> = {}): McpConsentRequest => ({
   id: 'req-1', clientName: 'Claude', audience: 'admin', redirectHost: 'claude.example.test', requestedScopes: ['read', 'write'],
@@ -200,5 +200,56 @@ describe('when a connection ends', () => {
     expect(formatEndsIn('2026-10-23T12:00:00Z', now)).toBe('in 2 h');
     expect(formatEndsIn('2026-10-23T10:45:00Z', now)).toBe('in 45 min');
     expect(formatEndsIn('2026-10-23T09:00:00Z', now)).toBe('ending now');
+  });
+});
+
+describe('the agent connections table — column sorting', () => {
+  const hours = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString();
+  const rows = [
+    connection({ id: 'c1', clientName: 'Zed', expiresAt: hours(2), user: { id: 'u2', email: 'bob@example.test', fullName: 'Bob' } }),
+    connection({ id: 'c2', clientName: 'Aider', expiresAt: hours(7), user: { id: 'u3', email: 'carol@example.test', fullName: 'Carol' } }),
+    connection({ id: 'c3', clientName: 'Claude', expiresAt: hours(5), user: { id: 'u1', email: 'alice@example.test', fullName: 'Alice' } }),
+  ];
+  const order = () => screen.getAllByTestId(/^agent-connection-row-/).map((r) => r.getAttribute('data-testid'));
+
+  it('opens newest approval (latest end) first, then sorts by who it acts as both ways', () => {
+    render(<AgentConnectionsTable connections={rows} showOwner emptyText="none" />);
+    expect(order()).toEqual(['agent-connection-row-c2', 'agent-connection-row-c3', 'agent-connection-row-c1']);
+
+    fireEvent.click(screen.getByTestId('sort-owner'));
+    expect(order()).toEqual(['agent-connection-row-c3', 'agent-connection-row-c1', 'agent-connection-row-c2']);
+    fireEvent.click(screen.getByTestId('sort-owner'));
+    expect(order()).toEqual(['agent-connection-row-c2', 'agent-connection-row-c1', 'agent-connection-row-c3']);
+  });
+});
+
+describe('User settings → personal access tokens table', () => {
+  const pat = (id: string, name: string, createdAt: string, over: Partial<McpToken> = {}): McpToken => ({
+    id, kind: 'pat', name, scopes: ['read'], prefix: `ins_${id}`, createdAt, expiresAt: null, lastUsedAt: null, clientName: null, ...over,
+  });
+  const order = () => screen.getAllByTestId(/^api-token-row-/).map((r) => r.getAttribute('data-testid'));
+
+  beforeEach(() => {
+    tokens.list.data = {
+      tokens: [
+        pat('t1', 'deploy', '2026-10-01T00:00:00.000Z'),
+        pat('t2', 'ci', '2026-10-20T00:00:00.000Z', { scopes: ['read', 'write'] }),
+        pat('t3', 'alpha', '2026-09-01T00:00:00.000Z'),
+      ],
+      connections: [], endpoint: ENDPOINT, canUse: true,
+    };
+  });
+
+  it('lists the newest token first, as before', () => {
+    render(<ApiTokensSection />);
+    expect(order()).toEqual(['api-token-row-t2', 'api-token-row-t1', 'api-token-row-t3']);
+  });
+
+  it('sorts by token name, and reverses on a second click', () => {
+    render(<ApiTokensSection />);
+    fireEvent.click(screen.getByTestId('sort-name'));
+    expect(order()).toEqual(['api-token-row-t3', 'api-token-row-t2', 'api-token-row-t1']);
+    fireEvent.click(screen.getByTestId('sort-name'));
+    expect(order()).toEqual(['api-token-row-t1', 'api-token-row-t2', 'api-token-row-t3']);
   });
 });

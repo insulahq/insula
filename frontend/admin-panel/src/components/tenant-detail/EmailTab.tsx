@@ -7,7 +7,7 @@
  * the DMARC/TLS/abuse report pages — is shown read-only and links into the
  * tenant panel at that item.
  */
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -25,6 +25,16 @@ import { Card, Chip, Meter, UsageTile, formatMb, type Tone } from './ui';
 import TenantPanelLink from './TenantPanelLink';
 import { tenantPanel } from './tenant-panel-paths';
 import MailDailyChart from './MailDailyChart';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
+
+type MailDomainRow = NonNullable<ReturnType<typeof useEmailDomains>['data']>['data'][number];
+type MailboxRow = NonNullable<ReturnType<typeof useMailboxes>['data']>['data'][number];
+type MailingListRow = NonNullable<ReturnType<typeof useEmailAliases>['data']>['data'][number];
+type LiveSendLimits = NonNullable<ReturnType<typeof useTenantSendLimitsLive>['data']>['data']['domains'][number];
+
+const HEAD = { padding: 'px-5 py-2.5', className: 'font-medium' } as const;
+const HEAD_RIGHT = { padding: 'px-5 py-2.5', className: 'text-right font-medium' } as const;
 
 export default function TenantEmailTab({ tenant, tenantId }: { readonly tenant: Tenant; readonly tenantId: string }) {
   const { data: domainsRes, isLoading: domainsLoading } = useEmailDomains(tenantId);
@@ -256,6 +266,12 @@ function dnsChips(d: { readonly mxProvisioned: number; readonly spfProvisioned: 
   );
 }
 
+/** What the "Send limits on the mail server" chip says. */
+function sendLimitText(l: LiveSendLimits): string {
+  if (l.inEffect) return l.desired.blocked ? 'Blocked, as wanted' : `${l.live.hourly}/h · ${l.live.daily}/day`;
+  return l.live.hourly == null && l.live.daily == null && !l.live.blocked ? 'Missing' : `Holds ${l.live.hourly ?? '—'}/h · ${l.live.daily ?? '—'}/day`;
+}
+
 function DomainsCard({ tenantId }: { readonly tenantId: string }) {
   const { data: domainsRes } = useEmailDomains(tenantId);
   const { data: statsRes } = useTenantMailDomainStats(tenantId);
@@ -263,6 +279,23 @@ function DomainsCard({ tenantId }: { readonly tenantId: string }) {
   const domains = domainsRes?.data ?? [];
   const stat = (name: string) => statsRes?.data.domains.find((s) => s.domain === name.toLowerCase());
   const live = (name: string) => liveRes?.data.domains.find((s) => s.domain === name.toLowerCase());
+  // Live figures come from two other queries, so the accessors follow them.
+  const accessors = useMemo<SortAccessors<MailDomainRow>>(() => {
+    const statOf = (d: MailDomainRow) => statsRes?.data.domains.find((s) => s.domain === d.domainName.toLowerCase());
+    return {
+      status: (d) => (d.enabled ? 'Enabled' : 'Disabled'),
+      dns: (d) => [d.mxProvisioned, d.spfProvisioned, d.dkimProvisioned, d.dmarcProvisioned].filter(Boolean).length,
+      sendLimits: (d) => {
+        const l = liveRes?.data.domains.find((s) => s.domain === d.domainName.toLowerCase());
+        return l ? sendLimitText(l) : null;
+      },
+      sent24h: (d) => statOf(d)?.sent24h ?? 0,
+      sent7d: (d) => statOf(d)?.sent7d ?? 0,
+      held7d: (d) => (statOf(d)?.rateLimited7d ?? 0) + (statOf(d)?.quotaRejected7d ?? 0),
+    };
+  }, [statsRes, liveRes]);
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(domains, 'domainName', 'asc', accessors);
+  const sort = { currentKey: sortKey, direction: sortDirection, onSort } as const;
   return (
     <Card
       title="Mail domains"
@@ -273,18 +306,18 @@ function DomainsCard({ tenantId }: { readonly tenantId: string }) {
       <table className="w-full text-left text-[13px]">
         <thead>
           <tr className="border-b border-gray-200 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
-            <th scope="col" className="px-5 py-2.5 font-medium">Domain</th>
-            <th scope="col" className="px-5 py-2.5 font-medium">Status</th>
-            <th scope="col" className="px-5 py-2.5 font-medium">DNS records</th>
-            <th scope="col" className="px-5 py-2.5 font-medium">Send limits on the mail server</th>
-            <th scope="col" className="px-5 py-2.5 text-right font-medium">Sent, 24 h</th>
-            <th scope="col" className="px-5 py-2.5 text-right font-medium">Sent, 7 days</th>
-            <th scope="col" className="px-5 py-2.5 text-right font-medium">Held back, 7 days</th>
+            <SortableHeader label="Domain" sortKey="domainName" {...HEAD} {...sort} />
+            <SortableHeader label="Status" sortKey="status" {...HEAD} {...sort} />
+            <SortableHeader label="DNS records" sortKey="dns" {...HEAD} {...sort} />
+            <SortableHeader label="Send limits on the mail server" sortKey="sendLimits" {...HEAD} {...sort} />
+            <SortableHeader label="Sent, 24 h" sortKey="sent24h" {...HEAD_RIGHT} {...sort} />
+            <SortableHeader label="Sent, 7 days" sortKey="sent7d" {...HEAD_RIGHT} {...sort} />
+            <SortableHeader label="Held back, 7 days" sortKey="held7d" {...HEAD_RIGHT} {...sort} />
             <th scope="col" className="px-5 py-2.5"><span className="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
-          {domains.map((d) => {
+          {sortedData.map((d) => {
             const s = stat(d.domainName);
             const l = live(d.domainName);
             return (
@@ -295,9 +328,9 @@ function DomainsCard({ tenantId }: { readonly tenantId: string }) {
                 <td className="px-5 py-3">
                   {!l ? <span className="text-gray-400">—</span>
                     : l.inEffect
-                      ? <Chip tone="ok">{l.desired.blocked ? 'Blocked, as wanted' : `${l.live.hourly}/h · ${l.live.daily}/day`}</Chip>
+                      ? <Chip tone="ok">{sendLimitText(l)}</Chip>
                       : <Chip tone="warn" title={`Wanted ${l.desired.hourly}/h · ${l.desired.daily}/day${l.live.duplicates ? ` · ${l.live.duplicates} duplicate objects` : ''}`}>
-                          {l.live.hourly == null && l.live.daily == null && !l.live.blocked ? 'Missing' : `Holds ${l.live.hourly ?? '—'}/h · ${l.live.daily ?? '—'}/day`}
+                          {sendLimitText(l)}
                         </Chip>}
                 </td>
                 <td className="px-5 py-3 text-right tabular-nums">{s?.sent24h ?? 0}</td>
@@ -315,9 +348,26 @@ function DomainsCard({ tenantId }: { readonly tenantId: string }) {
   );
 }
 
+const listText = (items: readonly string[] | null | undefined): string | null => (items && items.length > 0 ? items.join(', ') : null);
+
+const MAILBOX_SORT: SortAccessors<MailboxRow> = {
+  storage: (m) => (m.mailboxType === 'send_only' ? null : m.usedMb),
+  aliases: (m) => listText(m.aliases),
+  forwards: (m) => listText(m.forwardingAddresses),
+  autoReply: (m) => (m.autoReply ? (m.autoReplySubject ? `On: “${m.autoReplySubject}”` : 'On') : 'Off'),
+};
+
+const MAILING_LIST_SORT: SortAccessors<MailingListRow> = {
+  deliversTo: (l) => listText(l.destinationAddresses),
+  recipients: (l) => l.destinationAddresses.length,
+  status: (l) => (l.enabled ? 'Enabled' : 'Disabled'),
+};
+
 function MailboxesCard({ tenantId }: { readonly tenantId: string }) {
   const { data: mailboxesRes, isLoading } = useMailboxes(tenantId);
   const mailboxes = mailboxesRes?.data ?? [];
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(mailboxes, 'fullAddress', 'asc', MAILBOX_SORT);
+  const sort = { currentKey: sortKey, direction: sortDirection, onSort } as const;
   const usedMb = mailboxes.reduce((n, m) => n + (m.usedMb ?? 0), 0);
   const quotaMb = mailboxes.reduce((n, m) => n + (m.quotaMb ?? 0), 0);
   const aliasCount = mailboxes.reduce((n, m) => n + (m.aliases?.length ?? 0), 0);
@@ -342,17 +392,17 @@ function MailboxesCard({ tenantId }: { readonly tenantId: string }) {
         <table className="w-full text-left text-[13px]">
           <thead>
             <tr className="border-b border-gray-200 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
-              <th scope="col" className="px-5 py-2.5 font-medium">Address</th>
-              <th scope="col" className="min-w-[180px] px-5 py-2.5 font-medium">Storage</th>
-              <th scope="col" className="px-5 py-2.5 font-medium">Aliases (also delivered here)</th>
-              <th scope="col" className="px-5 py-2.5 font-medium">Forwards to</th>
-              <th scope="col" className="px-5 py-2.5 font-medium">Auto-reply</th>
-              <th scope="col" className="px-5 py-2.5 font-medium">Status</th>
+              <SortableHeader label="Address" sortKey="fullAddress" {...HEAD} {...sort} />
+              <SortableHeader label="Storage" sortKey="storage" padding={HEAD.padding} className="min-w-[180px] font-medium" {...sort} />
+              <SortableHeader label="Aliases (also delivered here)" sortKey="aliases" {...HEAD} {...sort} />
+              <SortableHeader label="Forwards to" sortKey="forwards" {...HEAD} {...sort} />
+              <SortableHeader label="Auto-reply" sortKey="autoReply" {...HEAD} {...sort} />
+              <SortableHeader label="Status" sortKey="status" {...HEAD} {...sort} />
               <th scope="col" className="px-5 py-2.5"><span className="sr-only">Actions</span></th>
             </tr>
           </thead>
           <tbody>
-            {mailboxes.map((m) => {
+            {sortedData.map((m) => {
               const sendOnly = m.mailboxType === 'send_only';
               const pct = m.quotaMb > 0 ? (m.usedMb / m.quotaMb) * 100 : null;
               return (
@@ -399,6 +449,8 @@ function MailboxesCard({ tenantId }: { readonly tenantId: string }) {
 function MailingListsCard({ tenantId }: { readonly tenantId: string }) {
   const { data: aliasesRes, isLoading } = useEmailAliases(tenantId);
   const lists = aliasesRes?.data ?? [];
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(lists, 'sourceAddress', 'asc', MAILING_LIST_SORT);
+  const sort = { currentKey: sortKey, direction: sortDirection, onSort } as const;
   return (
     <Card
       title={(
@@ -419,15 +471,15 @@ function MailingListsCard({ tenantId }: { readonly tenantId: string }) {
         <table className="w-full text-left text-[13px]">
           <thead>
             <tr className="border-b border-gray-200 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
-              <th scope="col" className="px-5 py-2.5 font-medium">List address</th>
-              <th scope="col" className="px-5 py-2.5 font-medium">Delivers to</th>
-              <th scope="col" className="px-5 py-2.5 text-right font-medium">Recipients</th>
-              <th scope="col" className="px-5 py-2.5 font-medium">Status</th>
+              <SortableHeader label="List address" sortKey="sourceAddress" {...HEAD} {...sort} />
+              <SortableHeader label="Delivers to" sortKey="deliversTo" {...HEAD} {...sort} />
+              <SortableHeader label="Recipients" sortKey="recipients" {...HEAD_RIGHT} {...sort} />
+              <SortableHeader label="Status" sortKey="status" {...HEAD} {...sort} />
               <th scope="col" className="px-5 py-2.5"><span className="sr-only">Actions</span></th>
             </tr>
           </thead>
           <tbody>
-            {lists.map((l) => (
+            {sortedData.map((l) => (
               <tr key={l.id} className="border-b border-gray-100 align-top last:border-0 dark:border-gray-700" data-testid={`mailing-list-${l.id}`}>
                 <td className="px-5 py-3 font-medium text-gray-900 dark:text-gray-100">{l.sourceAddress}</td>
                 <td className="px-5 py-3">

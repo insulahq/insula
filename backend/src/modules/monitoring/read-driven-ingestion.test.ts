@@ -128,6 +128,46 @@ describe('read-driven ingestion: the allowlist matches the backend readers', () 
     expect(missing.map((n) => `${n} (read in ${[...readers.get(n)!].join(', ')})`)).toEqual([]);
   });
 
+  it('drops no metric family the backend queries at scrape time', () => {
+    // The allowlist above is the SECOND filter. A scrape job's own
+    // metric_relabel drop runs first, so a family dropped there never reaches
+    // it: the cert-manager job dropped the renewal timestamp as unused, and
+    // the rule reading it would have stayed silent with no error anywhere.
+    const scrape = yaml.load(configMapData(join(MONITORING, 'scrape-config.yaml'), 'prometheus.yml')) as {
+      scrape_configs: Array<{ job_name: string; metric_relabel_configs?: Array<{ source_labels?: string[]; regex?: string; action?: string }> }>;
+    };
+    // A job's drop rules only see the families that job scrapes. A job
+    // missing here fails the test, so the map cannot fall behind the config.
+    const JOB_FAMILIES: Record<string, readonly string[]> = {
+      vmsingle: ['vm_', 'go_', 'process_', 'flag'],
+      'kubelet-cadvisor': ['container_', 'machine_', 'kubelet_'],
+      traefik: ['traefik_', 'go_'],
+      'cert-manager': ['certmanager_', 'go_'],
+      longhorn: ['longhorn_', 'go_'],
+      flux: ['gotk_', 'controller_runtime_', 'workqueue_', 'rest_client_', 'go_'],
+      cnpg: ['cnpg_', 'go_'],
+      'platform-api': ['platform_'],
+      coredns: ['coredns_', 'go_'],
+    };
+    const dropped: string[] = [];
+    const unmapped: string[] = [];
+    for (const job of scrape.scrape_configs) {
+      const drops = (job.metric_relabel_configs ?? [])
+        .filter((r) => r.action === 'drop' && r.source_labels?.join(',') === '__name__' && r.regex);
+      if (drops.length === 0) continue;
+      const families = JOB_FAMILIES[job.job_name];
+      if (!families) { unmapped.push(job.job_name); continue; }
+      for (const r of drops) {
+        const re = new RegExp(`^(?:${r.regex})$`);
+        for (const name of readers.keys()) {
+          if (families.some((f) => name.startsWith(f)) && re.test(name)) dropped.push(`${name} (dropped by job ${job.job_name})`);
+        }
+      }
+    }
+    expect(unmapped).toEqual([]);
+    expect(dropped).toEqual([]);
+  });
+
   it('keeps nothing that no reader queries', () => {
     expect([...READ].filter((n) => !readers.has(n))).toEqual([]);
   });

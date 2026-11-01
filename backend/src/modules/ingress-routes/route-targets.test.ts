@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isRoutable, isRedirectOnly } from './route-targets.js';
+import { isRoutable, isRedirectOnly, isServed } from './route-targets.js';
 import {
   updateRedirectSettingsSchema,
   updateSecuritySettingsSchema,
@@ -39,6 +39,26 @@ describe('route target classification', () => {
     const route = { ...NOTHING, deploymentId: 'dep-1', redirectUrl: 'https://example.test/' };
     expect(isRoutable(route)).toBe(true);
     expect(isRedirectOnly(route)).toBe(false);
+  });
+});
+
+describe('a route is served only when set up, switched on and routable', () => {
+  const SERVING = { ...NOTHING, deploymentId: 'dep-1', status: 'active', enabled: true };
+
+  it('serves a set-up, switched-on route with a target', () => {
+    expect(isServed(SERVING)).toBe(true);
+    expect(isServed({ ...SERVING, deploymentId: null, redirectUrl: 'https://example.test/' })).toBe(true);
+  });
+
+  it('does not serve a switched-off route, whatever else it has', () => {
+    expect(isServed({ ...SERVING, enabled: false })).toBe(false);
+    expect(isServed({ ...SERVING, enabled: false, redirectUrl: 'https://example.test/' })).toBe(false);
+  });
+
+  it('does not serve a route that is not set up, or has nothing to serve', () => {
+    expect(isServed({ ...SERVING, status: 'pending' })).toBe(false);
+    expect(isServed({ ...SERVING, status: 'error' })).toBe(false);
+    expect(isServed({ ...SERVING, deploymentId: null })).toBe(false);
   });
 });
 

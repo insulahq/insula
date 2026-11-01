@@ -4,9 +4,9 @@
  * the operator no way to notice: it showed a bundle-id prefix but not when that
  * bundle was captured. The row must say how old the copy is.
  */
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import type { MigrationTenant } from '@insula/api-contracts';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import type { MigrationImportResult, MigrationTenant } from '@insula/api-contracts';
 import MigrationTab from '@/components/system-backup/MigrationTab';
 
 const tenant = (over: Partial<MigrationTenant>): MigrationTenant => ({
@@ -25,6 +25,8 @@ const tenant = (over: Partial<MigrationTenant>): MigrationTenant => ({
 });
 
 const idle = { data: undefined, isPending: false, error: null, reset: vi.fn(), mutate: vi.fn() };
+/** What the import mutations hold; idle unless a test sets a finished import. */
+const importState: { current: unknown } = { current: undefined };
 
 vi.mock('@/hooks/use-backup-config', () => ({
   useBackupConfigs: () => ({ data: { data: [{ id: 'cfg-1', name: 'Source' }] }, isLoading: false, error: null }),
@@ -43,7 +45,7 @@ vi.mock('@/hooks/use-migration', () => ({
       },
     },
   }),
-  useMigrationImport: () => idle,
+  useMigrationImport: () => importState.current ?? idle,
 }));
 
 describe('MigrationTab — capture time of the bundle it will import', () => {
@@ -61,5 +63,55 @@ describe('MigrationTab — capture time of the bundle it will import', () => {
     render(<MigrationTab />);
     expect(screen.queryByTestId('migration-captured-22222222-2222-4222-8222-222222222222')).toBeNull();
     expect(screen.queryByText(/Invalid Date/)).toBeNull();
+  });
+});
+
+describe('MigrationTab — column sorting', () => {
+  afterEach(() => { importState.current = undefined; });
+
+  const rowNames = (table: HTMLElement) => Array.from(table.querySelectorAll('tbody tr'))
+    .map((r) => r.querySelectorAll('td')[1]?.querySelector('div')?.textContent);
+
+  it('lists discovered tenants by name, and reverses on a click', () => {
+    render(<MigrationTab />);
+    const [table] = screen.getAllByRole('table');
+    expect(rowNames(table)).toEqual(['Acme', 'Legacy']);
+    fireEvent.click(screen.getByTestId('sort-tenantName'));
+    expect(rowNames(table)).toEqual(['Legacy', 'Acme']);
+  });
+
+  it('sorts a tenant with no capture time after every captured one', () => {
+    render(<MigrationTab />);
+    const [table] = screen.getAllByRole('table');
+    fireEvent.click(screen.getByTestId('sort-latestCreatedAt'));
+    expect(rowNames(table)).toEqual(['Acme', 'Legacy']);
+  });
+
+  it('sorts the import results by their outcome, both ways', () => {
+    const result = (over: Partial<MigrationImportResult>): MigrationImportResult => ({
+      tenantId: 'x', tenantName: 'X', bundleId: 'b', ok: true, status: 'completed', recreated: false,
+      alreadyPresent: false, cartId: null, residualGaps: [], error: null, ...over,
+    });
+    importState.current = {
+      ...idle,
+      data: {
+        data: {
+          targetConfigId: 'cfg-1', total: 3, imported: 2, failed: 1, skipped: 0, dryRun: false,
+          results: [
+            result({ tenantId: 'r1', tenantName: 'Acme', status: 'completed' }),
+            result({ tenantId: 'r2', tenantName: 'Bravo', ok: false, status: 'failed', error: 'restore failed' }),
+            result({ tenantId: 'r3', tenantName: 'Charlie', status: 'awaiting_dns' }),
+          ],
+        },
+      },
+    };
+    render(<MigrationTab />);
+    const results = screen.getAllByRole('table')[1];
+    const names = () => Array.from(results.querySelectorAll('tbody tr')).map((r) => r.querySelector('td')?.textContent);
+    expect(names()).toEqual(['Acme', 'Bravo', 'Charlie']);
+    fireEvent.click(screen.getByTestId('sort-result'));
+    expect(names()).toEqual(['Charlie', 'Acme', 'Bravo']);
+    fireEvent.click(screen.getByTestId('sort-result'));
+    expect(names()).toEqual(['Bravo', 'Acme', 'Charlie']);
   });
 });

@@ -14,6 +14,8 @@
 
 import { CERTMANAGER_GROUP, CERTMANAGER_VERSION, CERTIFICATE_PLURAL } from '../ingress-routes/traefik-types.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { RENEW_BEFORE_PERCENTAGE } from './renewal-policy.js';
 
 export type CertificateState = 'issued' | 'issuing' | 'failed' | 'unknown';
 
@@ -40,6 +42,8 @@ export interface CertificateResource {
     readonly dnsNames?: readonly string[];
     readonly secretName?: string;
     readonly issuerRef?: { readonly name?: string };
+    readonly renewBefore?: string;
+    readonly renewBeforePercentage?: number;
   };
   readonly status?: CertificateResourceStatus;
 }
@@ -176,11 +180,24 @@ export async function readCertificateHealth(
   }
 }
 
-/** All platform-managed Certificates in a namespace, classified. */
+/**
+ * All platform-managed Certificates in a namespace, classified.
+ *
+ * With `fixRenewalSchedule` (the status sweep only — never a read handler),
+ * also moves any of them still on a fixed `renewBefore` to the renewal
+ * policy (renewal-policy.ts). A tenant Certificate is otherwise rewritten
+ * only when its tenant's ingress reconciles — and a domain with no routes
+ * (a mail-only domain's wildcard) never does, so it would keep renewing at
+ * 15 days left forever. This sweep runs every minute over every domain, so
+ * it is the one path that reaches all of them. Best-effort: a failed patch
+ * is retried on the next tick and never hides the health result.
+ */
 export async function listCertificateHealth(
   k8s: K8sClients,
   namespace: string,
+  opts: { readonly fixRenewalSchedule?: boolean } = {},
 ): Promise<readonly CertificateHealth[]> {
+  let items: CertificateResource[];
   try {
     const list = (await k8s.custom.listNamespacedCustomObject({
       group: CERTMANAGER_GROUP,
@@ -189,8 +206,36 @@ export async function listCertificateHealth(
       plural: CERTIFICATE_PLURAL,
       labelSelector: 'app.kubernetes.io/managed-by=insula',
     } as never)) as { items?: CertificateResource[] };
-    return (list.items ?? []).map(classifyCertificate);
+    items = list.items ?? [];
   } catch {
     return [];
   }
+  for (const item of opts.fixRenewalSchedule ? items : []) {
+    const name = item.metadata?.name;
+    if (!name || !renewalScheduleStale(item)) continue;
+    try {
+      await k8s.custom.patchNamespacedCustomObject(
+        {
+          group: CERTMANAGER_GROUP,
+          version: CERTMANAGER_VERSION,
+          namespace,
+          plural: CERTIFICATE_PLURAL,
+          name,
+          // null deletes the field in a merge patch: cert-manager refuses
+          // renewBefore and renewBeforePercentage together.
+          body: { spec: { renewBefore: null, renewBeforePercentage: RENEW_BEFORE_PERCENTAGE } },
+        } as never,
+        MERGE_PATCH,
+      );
+    } catch {
+      // Retried on the next tick.
+    }
+  }
+  return items.map(classifyCertificate);
+}
+
+/** True when a Certificate does not renew at the policy share of its lifetime. */
+export function renewalScheduleStale(resource: CertificateResource): boolean {
+  return resource.spec?.renewBefore !== undefined
+    || resource.spec?.renewBeforePercentage !== RENEW_BEFORE_PERCENTAGE;
 }

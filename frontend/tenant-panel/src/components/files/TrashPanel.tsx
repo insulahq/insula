@@ -2,6 +2,10 @@ import { useState, useMemo } from 'react';
 import { Loader2, RotateCcw, Trash2, AlertTriangle, FolderOpen, File as FileIcon, Link2 } from 'lucide-react';
 import type { TrashEntry } from '@insula/api-contracts';
 import { useTrash, useRestoreFromTrash, usePurgeTrash, daysUntilPurge } from '@/hooks/use-trash';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
+
+const DAY_MS = 86_400_000;
 
 /**
  * Recycle bin view.
@@ -48,6 +52,20 @@ export default function TrashPanel({ onRestored }: { readonly onRestored?: () =>
     return allEntries.filter(e =>
       e.name.toLowerCase().includes(q) || (e.originalPath ?? '').toLowerCase().includes(q));
   }, [allEntries, query]);
+  // Most recently deleted first, as the bin lists them. "Removed in" sorts by
+  // the instant the entry is purged; "unknown" locations and sizes sort last.
+  const sortableEntries = useMemo(() => entries.map((e) => {
+    const deletedAtMs = Date.parse(e.deletedAt);
+    return {
+      ...e,
+      deletedAtMs,
+      purgeAtMs: deletedAtMs + retentionDays * DAY_MS,
+      originalLocation: e.originalPath ? `/${e.originalPath}` : null,
+    };
+  }), [entries, retentionDays]);
+  const { sortedData: sortedEntries, sortKey, sortDirection, onSort } = useSortable(sortableEntries, 'deletedAtMs', 'desc');
+  // SortableHeader defaults to px-5/py-3 — this table pads only on the right.
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!pl-0 !pr-3 !py-2 font-medium' };
 
   const toggle = (id: string) => setSelected((prev) => {
     const next = new Set(prev);
@@ -178,16 +196,16 @@ export default function TrashPanel({ onRestored }: { readonly onRestored?: () =>
                     data-testid="trash-select-all"
                   />
                 </th>
-                <th className="py-2 pr-3 font-medium">Name</th>
-                <th className="py-2 pr-3 font-medium">Original location</th>
-                <th className="py-2 pr-3 font-medium">Size</th>
-                <th className="py-2 pr-3 font-medium">Deleted</th>
-                <th className="py-2 pr-3 font-medium">Removed in</th>
+                <SortableHeader label="Name" sortKey="name" {...th} />
+                <SortableHeader label="Original location" sortKey="originalLocation" {...th} />
+                <SortableHeader label="Size" sortKey="sizeBytes" {...th} />
+                <SortableHeader label="Deleted" sortKey="deletedAtMs" {...th} />
+                <SortableHeader label="Removed in" sortKey="purgeAtMs" {...th} />
                 <th className="py-2 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {entries.map((entry) => {
+              {sortedEntries.map((entry) => {
                 const days = daysUntilPurge(entry.deletedAt, retentionDays);
                 const busy = busyId === entry.id;
                 return (

@@ -772,6 +772,11 @@ export async function reconcileTenantSites(
       .where(and(
         eq(ingressRoutes.deploymentId, deployment.id),
         isNotNull(ingressRoutes.siteFolder),
+        // A switched-off route gets no vhost either: otherwise a wildcard
+        // route to the same deployment would still serve its folder. Only the
+        // vhost goes — the folder stays mounted (loadSiteFoldersFor), so
+        // switching off and on is a config reload, never a pod restart.
+        eq(ingressRoutes.enabled, true),
       ));
 
     const routes: SiteRoute[] = routeRows.map((r) => ({

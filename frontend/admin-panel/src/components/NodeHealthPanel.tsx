@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Loader2, RefreshCw, AlertCircle, AlertTriangle, CheckCircle2, Wrench, Flame } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { useNodeHealth, useNodeMemoryEvents, useReconcileNodeHealth, useStalePodCounts, type NodeHealthEntry, type NodeHealthSeverity } from '@/hooks/use-node-health';
@@ -7,6 +7,9 @@ import { memoryEventBadgeClass, memoryEventLabel } from '@/lib/memory-event-labe
 import NodeName from '@/components/nodes/NodeName';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
+import { useNodeLabel } from '@/hooks/use-node-labels';
 
 const SEVERITY_BADGE: Record<NodeHealthSeverity, 'error' | 'warning' | 'healthy'> = {
   critical: 'error',
@@ -25,6 +28,12 @@ const SEVERITY_LABEL: Record<NodeHealthSeverity, string> = {
   warning: 'Warning',
   normal: 'Healthy',
 };
+
+/** Worst first — the server's order (node-health scheduler: severity, then name). */
+const SEVERITY_RANK: Record<NodeHealthSeverity, number> = { critical: 0, warning: 1, normal: 2 };
+const NO_NODES: readonly NodeHealthEntry[] = [];
+const TH_CLS = 'font-medium';
+const TH_PAD = 'px-3 py-2';
 
 function formatRelative(iso: string | null): string {
   if (!iso) return 'never';
@@ -75,6 +84,19 @@ export default function NodeHealthPanel() {
   const { data: stalePodCounts } = useStalePodCounts(true);
   const reconcile = useReconcileNodeHealth();
   const [recoveryNode, setRecoveryNode] = useState<NodeHealthEntry | null>(null);
+  const nodeLabel = useNodeLabel();
+  const nodeSort = useMemo<SortAccessors<NodeHealthEntry>>(() => ({
+    name: (n) => nodeLabel(n.name),
+    severity: (n) => SEVERITY_RANK[n.severity],
+    ready: (n) => (n.ready ? 1 : 0),
+    pressures: (n) => (n.pressures.length === 0 ? null : n.pressures.join(', ')),
+    detail: pressureSummary,
+  }), [nodeLabel]);
+  const { sortedData: sortedNodes, sortKey, sortDirection, onSort } =
+    useSortable(data?.data?.nodes ?? NO_NODES, 'severity', 'asc', nodeSort);
+  const header = (label: string, key: string, className = TH_CLS) => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding={TH_PAD} className={className} />
+  );
 
   if (isLoading) {
     return (
@@ -95,7 +117,6 @@ export default function NodeHealthPanel() {
   const summary = data?.data;
   if (!summary) return null;
 
-  const sortedNodes = summary.nodes;
   const lastTickLabel = formatRelative(summary.lastTickAt);
   const overallBadge = SEVERITY_BADGE[summary.overallSeverity];
   const OverallIcon = SEVERITY_ICON[summary.overallSeverity];
@@ -146,13 +167,13 @@ export default function NodeHealthPanel() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
               <tr>
-                <th className="px-3 py-2 font-medium">Node</th>
-                <th className="px-3 py-2 font-medium">Severity</th>
-                <th className="px-3 py-2 font-medium">Ready</th>
-                <th className="px-3 py-2 font-medium">Pressures</th>
-                <th className="px-3 py-2 font-medium">CSI drivers</th>
-                <th className="px-3 py-2 font-medium text-right">Evictions/h</th>
-                <th className="px-3 py-2 font-medium">Detail</th>
+                {header('Node', 'name')}
+                {header('Severity', 'severity')}
+                {header('Ready', 'ready')}
+                {header('Pressures', 'pressures')}
+                {header('CSI drivers', 'csiDriversPresent')}
+                {header('Evictions/h', 'evictionsLastHour', `${TH_CLS} text-right`)}
+                {header('Detail', 'detail')}
                 <th className="px-3 py-2 font-medium text-right">Recover</th>
               </tr>
             </thead>

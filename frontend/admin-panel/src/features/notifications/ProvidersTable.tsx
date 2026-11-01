@@ -31,6 +31,8 @@ import {
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import EmailChromeEditor from './EmailChromeEditor';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
 const TEST_STATUS_BADGE: Record<'success' | 'failed', string> = {
   success: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
@@ -47,6 +49,17 @@ const PROVIDER_TYPE_LABEL: Record<NotificationProviderType, string> = {
   'ntfy': 'ntfy push (topic)',
 };
 
+const NO_PROVIDERS: readonly NotificationProviderResponse[] = [];
+
+const PROVIDER_SORT: SortAccessors<NotificationProviderResponse> = {
+  type: (p) => PROVIDER_TYPE_LABEL[p.providerType],
+  smtp: (p) => `${p.smtpHost}:${p.smtpPort}`,
+  // The column shows a badge on the default only; ascending puts it first.
+  default: (p) => (p.isDefault ? 'default' : null),
+  lastTest: (p) => p.lastTestStatus,
+};
+const HEAD = { padding: 'px-4 py-2', className: 'text-left' } as const;
+
 export default function ProvidersTable() {
   const list = useNotificationProviders();
   const [editing, setEditing] = useState<NotificationProviderResponse | 'new' | null>(null);
@@ -58,7 +71,10 @@ export default function ProvidersTable() {
     try { await del.mutateAsync(p.id); } catch { /* surfaced */ }
   };
 
-  const rows = list.data?.data ?? [];
+  // The server lists the default provider first, then by name — a stable sort
+  // on the Default column keeps exactly that.
+  const { sortedData: rows, sortKey, sortDirection, onSort } = useSortable(list.data?.data ?? NO_PROVIDERS, 'default', 'asc', PROVIDER_SORT);
+  const sort = { ...HEAD, currentKey: sortKey, direction: sortDirection, onSort };
 
   return (
     <div className="space-y-4">
@@ -99,12 +115,12 @@ export default function ProvidersTable() {
         <table className="w-full text-xs">
           <thead className="text-gray-500 dark:text-gray-400">
             <tr className="border-b border-gray-200/60 dark:border-gray-700/40">
-              <th className="px-4 py-2 text-left">Name</th>
-              <th className="px-4 py-2 text-left">Type</th>
-              <th className="px-4 py-2 text-left">From</th>
-              <th className="px-4 py-2 text-left">SMTP</th>
-              <th className="px-4 py-2 text-left">Default</th>
-              <th className="px-4 py-2 text-left">Last Test</th>
+              <SortableHeader label="Name" sortKey="name" {...sort} />
+              <SortableHeader label="Type" sortKey="type" {...sort} />
+              <SortableHeader label="From" sortKey="fromAddress" {...sort} />
+              <SortableHeader label="SMTP" sortKey="smtp" {...sort} />
+              <SortableHeader label="Default" sortKey="default" {...sort} />
+              <SortableHeader label="Last Test" sortKey="lastTest" {...sort} />
               <th className="px-4 py-2 text-right">Actions</th>
             </tr>
           </thead>

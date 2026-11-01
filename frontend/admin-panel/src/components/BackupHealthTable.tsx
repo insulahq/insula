@@ -1,6 +1,8 @@
 import { Fragment, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 import type { BackupHealthSummary } from '@insula/api-contracts';
 
 interface BackupHealthTableProps {
@@ -47,6 +49,22 @@ function formatRelative(iso: string | null): string {
   const days = Math.round(hours / 24);
   return `${days}d ago`;
 }
+
+/**
+ * The State column sorts by severity — failing, never run, healthy, paused —
+ * the server's own roll-up order (backup-health `sortSummaries`), so the
+ * default view is the order the server sent. Timestamps are ISO instants,
+ * which sort as text in time order; "never" (null) sorts last.
+ */
+const STATE_SEVERITY: Record<BackupHealthSummary['state'], number> = {
+  failing: 0,
+  never_run: 1,
+  healthy: 2,
+  paused: 3,
+};
+const HEALTH_SORT: SortAccessors<BackupHealthSummary> = {
+  state: (r) => STATE_SEVERITY[r.state],
+};
 
 const CATEGORY_ORDER: ReadonlyArray<BackupHealthSummary['category']> = [
   'dr',
@@ -99,83 +117,7 @@ export default function BackupHealthTable({ summaries, isLoading }: BackupHealth
             <h3 className="mb-2 text-sm font-semibold text-gray-700 dark:text-gray-300">
               {CATEGORY_LABEL[cat]}
             </h3>
-            <div className="overflow-hidden rounded-md border border-gray-200 dark:border-gray-700">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 dark:bg-gray-800/40">
-                  <tr className="text-left text-xs text-gray-600 dark:text-gray-400">
-                    <th className="px-3 py-2 w-8" />
-                    <th className="px-3 py-2">Backup</th>
-                    <th className="px-3 py-2">State</th>
-                    <th className="px-3 py-2">Last success</th>
-                    <th className="px-3 py-2">Last failure</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                  {rows.map((row) => {
-                    const key = `${row.namespace}/${row.groupKey}`;
-                    const isOpen = expanded.has(key);
-                    const canExpand = Boolean(row.lastFailedReason);
-                    return (
-                      <Fragment key={key}>
-                        <tr
-                          className={canExpand ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/40' : ''}
-                          onClick={canExpand ? () => toggle(key) : undefined}
-                          onKeyDown={
-                            canExpand
-                              ? (e) => {
-                                  if (e.key === 'Enter' || e.key === ' ') {
-                                    e.preventDefault();
-                                    toggle(key);
-                                  }
-                                }
-                              : undefined
-                          }
-                          tabIndex={canExpand ? 0 : undefined}
-                          role={canExpand ? 'button' : undefined}
-                          aria-expanded={canExpand ? isOpen : undefined}
-                        >
-                          <td className="px-3 py-2 align-top">
-                            {canExpand ? (
-                              isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />
-                            ) : null}
-                          </td>
-                          <td className="px-3 py-2 align-top">
-                            <div className="font-medium text-gray-900 dark:text-gray-100">
-                              {row.displayName}
-                            </div>
-                            <div className="text-xs text-gray-500 dark:text-gray-400">
-                              {row.namespace}/{row.groupKey}
-                            </div>
-                          </td>
-                          <td className="px-3 py-2 align-top">
-                            <StatusBadge status={badgeStatus(row.state)} label={badgeLabel(row.state)} />
-                          </td>
-                          <td className="px-3 py-2 align-top text-gray-700 dark:text-gray-300">
-                            {formatRelative(row.lastSuccessAt)}
-                          </td>
-                          <td className="px-3 py-2 align-top text-gray-700 dark:text-gray-300">
-                            {formatRelative(row.lastFailedAt)}
-                          </td>
-                        </tr>
-                        {isOpen && row.lastFailedReason && (
-                          <tr className="bg-gray-50 dark:bg-gray-800/40">
-                            <td />
-                            <td colSpan={4} className="px-3 py-2">
-                              <div className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-                                Last failure reason
-                              </div>
-                              <pre className="whitespace-pre-wrap break-words text-xs text-gray-800 dark:text-gray-200">
-                                {row.lastFailedReason}
-                              </pre>
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <CategoryTable rows={rows} expanded={expanded} onToggle={toggle} />
           </section>
         );
       })}
@@ -186,6 +128,97 @@ export default function BackupHealthTable({ summaries, isLoading }: BackupHealth
           to a CronJob to opt in.
         </p>
       )}
+    </div>
+  );
+}
+
+/** One category's backups. Its own component: each table keeps its own sort. */
+function CategoryTable({ rows, expanded, onToggle }: {
+  readonly rows: ReadonlyArray<BackupHealthSummary>;
+  readonly expanded: ReadonlySet<string>;
+  readonly onToggle: (key: string) => void;
+}) {
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(rows, 'state', 'asc', HEALTH_SORT);
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-3 py-2" />
+  );
+  return (
+    <div className="overflow-hidden rounded-md border border-gray-200 dark:border-gray-700">
+      <table className="w-full text-sm">
+        <thead className="bg-gray-50 dark:bg-gray-800/40">
+          <tr className="text-left text-xs text-gray-600 dark:text-gray-400">
+            <th className="px-3 py-2 w-8" />
+            {header('Backup', 'displayName')}
+            {header('State', 'state')}
+            {header('Last success', 'lastSuccessAt')}
+            {header('Last failure', 'lastFailedAt')}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+          {sortedData.map((row) => {
+            const key = `${row.namespace}/${row.groupKey}`;
+            const isOpen = expanded.has(key);
+            const canExpand = Boolean(row.lastFailedReason);
+            return (
+              <Fragment key={key}>
+                <tr
+                  className={canExpand ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/40' : ''}
+                  onClick={canExpand ? () => onToggle(key) : undefined}
+                  onKeyDown={
+                    canExpand
+                      ? (e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            onToggle(key);
+                          }
+                        }
+                      : undefined
+                  }
+                  tabIndex={canExpand ? 0 : undefined}
+                  role={canExpand ? 'button' : undefined}
+                  aria-expanded={canExpand ? isOpen : undefined}
+                >
+                  <td className="px-3 py-2 align-top">
+                    {canExpand ? (
+                      isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />
+                    ) : null}
+                  </td>
+                  <td className="px-3 py-2 align-top">
+                    <div className="font-medium text-gray-900 dark:text-gray-100">
+                      {row.displayName}
+                    </div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400">
+                      {row.namespace}/{row.groupKey}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 align-top">
+                    <StatusBadge status={badgeStatus(row.state)} label={badgeLabel(row.state)} />
+                  </td>
+                  <td className="px-3 py-2 align-top text-gray-700 dark:text-gray-300">
+                    {formatRelative(row.lastSuccessAt)}
+                  </td>
+                  <td className="px-3 py-2 align-top text-gray-700 dark:text-gray-300">
+                    {formatRelative(row.lastFailedAt)}
+                  </td>
+                </tr>
+                {isOpen && row.lastFailedReason && (
+                  <tr className="bg-gray-50 dark:bg-gray-800/40">
+                    <td />
+                    <td colSpan={4} className="px-3 py-2">
+                      <div className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                        Last failure reason
+                      </div>
+                      <pre className="whitespace-pre-wrap break-words text-xs text-gray-800 dark:text-gray-200">
+                        {row.lastFailedReason}
+                      </pre>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

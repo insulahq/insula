@@ -106,6 +106,13 @@ RENAME_SETTLE_S="${RENAME_SETTLE_S:-40}"
 CURL_OPTS=(-sS -m 30)
 [[ "${CURL_INSECURE:-0}" == "1" ]] && CURL_OPTS+=(-k)
 
+# api_curl waits out the API's per-IP rate limit (429) and a brief control-plane
+# blip. A run right after another harness from the same address trips the limit;
+# that failed a step, and the cleanup's DELETE got the same 429 and left the
+# test tenant behind.
+# shellcheck source=integration-token.sh
+source "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh"
+
 PASS=0
 FAIL=0
 pass() { printf '  \033[32m✓\033[0m %s\n' "$*"; PASS=$((PASS+1)); }
@@ -124,14 +131,13 @@ trap 'cleanup_on_exit' EXIT
 # provisioning) can outlive the 30-min access-token TTL, and EVERY restore in
 # cleanup is Bearer-auth'd with `|| true`. Without a fresh token the engine
 # restore would silently 401 and LEAK the flipped engine into the next run —
-# the cross-run state leak behind roundcube-scaled-to-0. Best-effort: on a
-# failed re-mint we keep the existing token (it may still be valid).
+# the cross-run state leak behind roundcube-scaled-to-0. get_admin_token hands
+# back a token with more than 120 s left, enough for the restores, and mints
+# one only when needed. Best-effort: on a failed re-mint we keep the existing
+# token (it may still be valid).
 remint_admin_token() {
-  local resp new
-  resp=$(curl "${CURL_OPTS[@]}" -X POST "${API_BASE}/api/v1/auth/login" \
-    -H 'content-type: application/json' \
-    -d "{\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\"}" 2>/dev/null || true)
-  new=$(echo "$resp" | jq -r '.data.token // empty' 2>/dev/null || true)
+  local new
+  new=$(ADMIN_HOST="$API_BASE" get_admin_token 2>/dev/null || true)
   [[ -n "$new" ]] && ADMIN_TOKEN="$new"
 }
 
@@ -149,31 +155,36 @@ cleanup_on_exit() {
     # jq-build the body so a URL with special chars can't malform the JSON
     # (this is the safety net — it must never silently no-op).
     restore_body=$(jq -n --arg url "$ORIG_WEBMAIL_URL" '{defaultWebmailUrl:$url}')
-    curl "${opts[@]}" -X PATCH "${API_BASE}/api/v1/admin/webmail-settings" \
+    api_curl "${opts[@]}" -X PATCH "${API_BASE}/api/v1/admin/webmail-settings" \
       -H "Authorization: Bearer ${ADMIN_TOKEN}" \
       -H 'content-type: application/json' \
-      -d "$restore_body" \
-      -o /dev/null -w 'cleanup: webmail URL restore → %{http_code}\n' || true
+      -d "$restore_body" | cleanup_outcome 'webmail URL restore'
   fi
   # Restore initial engine — it's the operator-visible state.
   if [[ "$ENGINE_RESTORE_NEEDED" == "1" && -n "$INITIAL_ENGINE" && -n "${ADMIN_TOKEN:-}" ]]; then
     local opts=(-sS -m 30)
     [[ "${CURL_INSECURE:-0}" == "1" ]] && opts+=(-k)
-    curl "${opts[@]}" -X PATCH "${API_BASE}/api/v1/admin/webmail-settings" \
+    api_curl "${opts[@]}" -X PATCH "${API_BASE}/api/v1/admin/webmail-settings" \
       -H "Authorization: Bearer ${ADMIN_TOKEN}" \
       -H 'content-type: application/json' \
-      -d "{\"defaultWebmailEngine\":\"${INITIAL_ENGINE}\"}" \
-      -o /dev/null -w 'cleanup: engine restore → %{http_code}\n' || true
+      -d "{\"defaultWebmailEngine\":\"${INITIAL_ENGINE}\"}" | cleanup_outcome 'engine restore'
   fi
   if [[ -n "$TENANT_ID" && -n "${ADMIN_TOKEN:-}" ]]; then
     # Cleanup is slow — cascade deletes mailboxes, email-domains, DNS
     # records, etc. Give it 60s so a busy cluster doesn't bail mid-way.
     local opts=(-sS -m 60)
     [[ "${CURL_INSECURE:-0}" == "1" ]] && opts+=(-k)
-    curl "${opts[@]}" -X DELETE "${API_BASE}/api/v1/tenants/${TENANT_ID}" \
-      -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-      -o /dev/null -w 'cleanup: client delete %{http_code}\n' || true
+    api_curl "${opts[@]}" -X DELETE "${API_BASE}/api/v1/tenants/${TENANT_ID}" \
+      -H "Authorization: Bearer ${ADMIN_TOKEN}" | cleanup_outcome 'client delete'
   fi
+}
+
+# cleanup_outcome <step> — api_curl prints only the body: report its error code,
+# or "ok" for a success envelope.
+cleanup_outcome() {
+  local out
+  out=$(jq -r 'if .error then (.error.code // "error") else "ok" end' 2>/dev/null || echo "unparseable response")
+  echo "cleanup: $1 → ${out:-empty response}"
 }
 
 require_jq() { command -v jq >/dev/null || { echo 'jq is required'; exit 2; }; }
@@ -181,12 +192,11 @@ require_jq
 
 # ── Phase 1: admin login ────────────────────────────────────────────
 phase "1. Admin login"
-LOGIN_RESP=$(curl "${CURL_OPTS[@]}" -X POST "${API_BASE}/api/v1/auth/login" \
-  -H 'content-type: application/json' \
-  -d "{\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\"}")
-ADMIN_TOKEN=$(echo "$LOGIN_RESP" | jq -r '.data.token // empty')
+# The shared token cache: a run right after another harness reuses its token
+# instead of spending one of the login route's few attempts per window.
+ADMIN_TOKEN=$(ADMIN_HOST="$API_BASE" get_admin_token 2>/dev/null || true)
 if [[ -z "$ADMIN_TOKEN" ]]; then
-  fail "1.1 admin login — no token in response: $(echo "$LOGIN_RESP" | head -c 200)"
+  fail "1.1 admin login — /auth/login gave no token (rate-limited or bad credentials)"
   exit 1
 fi
 pass "1.1 admin login → token issued"
@@ -194,12 +204,12 @@ pass "1.1 admin login → token issued"
 api() {
   local method="$1" path="$2" body="${3:-}"
   if [[ -n "$body" ]]; then
-    curl "${CURL_OPTS[@]}" -X "$method" "${API_BASE}${path}" \
+    api_curl "${CURL_OPTS[@]}" -X "$method" "${API_BASE}${path}" \
       -H "Authorization: Bearer ${ADMIN_TOKEN}" \
       -H 'content-type: application/json' \
       -d "$body"
   else
-    curl "${CURL_OPTS[@]}" -X "$method" "${API_BASE}${path}" \
+    api_curl "${CURL_OPTS[@]}" -X "$method" "${API_BASE}${path}" \
       -H "Authorization: Bearer ${ADMIN_TOKEN}"
   fi
 }
@@ -383,7 +393,7 @@ wait_engine_setting() {
 
 flip_engine() {
   local target="$1" tag="$2"
-  curl "${CURL_OPTS[@]}" -X PATCH "${API_BASE}/api/v1/admin/webmail-settings" \
+  api_curl "${CURL_OPTS[@]}" -X PATCH "${API_BASE}/api/v1/admin/webmail-settings" \
     -H "Authorization: Bearer ${ADMIN_TOKEN}" \
     -H 'content-type: application/json' \
     -d "{\"defaultWebmailEngine\":\"${target}\"}" >/dev/null
@@ -428,7 +438,7 @@ run_sso_flow() {
   # ── Phase 8: mint webmail token ──────────────────────────────────
   phase "${tag}8. Mint webmail token (engine=${engine})"
   local tok_resp webmail_url resp_engine
-  tok_resp=$(curl "${CURL_OPTS[@]}" -X POST "${API_BASE}/api/v1/email/webmail-token" \
+  tok_resp=$(api_curl "${CURL_OPTS[@]}" -X POST "${API_BASE}/api/v1/email/webmail-token" \
     -H "Authorization: Bearer ${CLIENT_TOKEN}" \
     -H 'content-type: application/json' \
     -d "{\"mailbox_id\":\"${MAILBOX_ID}\"}")

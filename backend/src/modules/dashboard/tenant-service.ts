@@ -5,6 +5,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collect } from './section.js';
 import { describeChange } from './admin-service.js';
 import { buildTenantAlerts } from './alerts.js';
+import { autoRenewedSql, renewalAtSql } from '../certificates/renewal-policy-sql.js';
 
 interface Logger { warn?(...a: unknown[]): void }
 
@@ -116,8 +117,12 @@ export async function buildTenantSummary(
           (SELECT COUNT(*)::int FROM domains WHERE tenant_id = ${tenantId} AND status::text = 'active') AS verified,
           (SELECT COUNT(*)::int FROM ssl_certificates WHERE tenant_id = ${tenantId}
              AND COALESCE(status,'') <> 'revoked') AS certs,
-          (SELECT MIN(EXTRACT(DAY FROM (expires_at - NOW())))::int FROM ssl_certificates
-            WHERE tenant_id = ${tenantId} AND expires_at IS NOT NULL) AS nearest
+          -- Days until the earliest scheduled RENEWAL (a third of the
+          -- lifetime before expiry), not until expiry: "Renews in" said 45
+          -- days for a certificate due to renew in 15.
+          (SELECT GREATEST(0, MIN(EXTRACT(DAY FROM (${renewalAtSql('c', autoRenewedSql('c', 'cd'))} - NOW()))))::int
+             FROM ssl_certificates c LEFT JOIN domains cd ON cd.id = c.domain_id
+            WHERE c.tenant_id = ${tenantId} AND c.expires_at IS NOT NULL) AS nearest
       `);
       const x = (r.rows ?? [])[0] ?? {};
       return {
@@ -242,7 +247,8 @@ export async function buildTenantLive(
     const r = await db.execute<Record<string, string | number | null>>(sql`
       SELECT r.hostname,
              COALESCE(d.name, 'Site') AS application,
-             COALESCE(d.status::text, 'unknown') AS status,
+             -- A switched-off route serves nothing, whatever its app is doing.
+             CASE WHEN NOT r.enabled THEN 'inactive' ELSE COALESCE(d.status::text, 'unknown') END AS status,
              r.created_at,
              (SELECT COUNT(*)::int FROM waf_logs w
                WHERE w.route_id = r.id AND w.created_at > NOW() - INTERVAL '7 days' AND NOT w.detection_only) AS blocked,

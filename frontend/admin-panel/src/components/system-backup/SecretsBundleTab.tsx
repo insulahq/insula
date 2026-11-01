@@ -20,6 +20,8 @@ import {
   useTriggerSecretsBundleExport,
 } from '@/hooks/use-system-backup';
 import SecretsCoverageSection from './SecretsCoverageSection';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable } from '@/hooks/use-sortable';
 
 export default function SecretsBundleTab() {
   const manifestQ = useSecretsBundleManifest();
@@ -239,6 +241,9 @@ interface RunsHistoryPanelProps {
 }
 
 function RunsHistoryPanel({ runs, loading, onSelectRun }: RunsHistoryPanelProps) {
+  // Newest first, as the server lists them.
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(runs, 'startedAt', 'desc');
+  const head = { currentKey: sortKey, direction: sortDirection, onSort, padding: 'px-3 py-2' } as const;
   return (
     <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 space-y-3">
       <div className="flex items-center justify-between">
@@ -259,16 +264,16 @@ function RunsHistoryPanel({ runs, loading, onSelectRun }: RunsHistoryPanelProps)
           <table className="min-w-full text-sm" data-testid="runs-history-table">
             <thead className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900/40">
               <tr>
-                <th className="text-left px-3 py-2">Started</th>
-                <th className="text-left px-3 py-2">Status</th>
-                <th className="text-left px-3 py-2">Size</th>
-                <th className="text-left px-3 py-2 hidden md:table-cell">SHA256</th>
-                <th className="text-left px-3 py-2">Downloaded</th>
+                <SortableHeader label="Started" sortKey="startedAt" className="text-left" {...head} />
+                <SortableHeader label="Status" sortKey="status" className="text-left" {...head} />
+                <SortableHeader label="Size" sortKey="sizeBytes" className="text-left" {...head} />
+                <SortableHeader label="SHA256" sortKey="sha256" className="text-left hidden md:table-cell" {...head} />
+                <SortableHeader label="Downloaded" sortKey="downloadedAt" className="text-left" {...head} />
                 <th />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-              {runs.map((r) => (
+              {sortedData.map((r) => (
                 <tr key={r.id}>
                   <td className="px-3 py-2 text-gray-700 dark:text-gray-300">
                     {new Date(r.startedAt).toLocaleString()}

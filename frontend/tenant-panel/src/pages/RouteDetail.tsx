@@ -1,8 +1,8 @@
-import { useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, AlertTriangle, Info, Plus, Trash2, X, Shield, Settings,
-  ArrowLeftRight, Save, ChevronDown, ChevronRight, FolderLock,
+  ArrowLeftRight, Save, ChevronDown, ChevronRight, FolderLock, PowerOff,
 } from 'lucide-react';
 import clsx from 'clsx';
 import {
@@ -19,10 +19,16 @@ import { useDomains } from '@/hooks/use-domains';
 import OidcSection from '@/components/OidcSection';
 import { HostnameLink } from '@/components/HostnameLink';
 import LocalTime from '@/components/ui/LocalTime';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable } from '@/hooks/use-sortable';
 import { WafLogSummary } from '@/components/routes/WafLogSummary';
 import { localZoneTitle } from '@/lib/format-timestamp';
 import { utcOffsetLabel } from '@/lib/format-traffic';
 import MtlsSection from '@/components/MtlsSection';
+import ErrorPanel from '@/components/ErrorPanel';
+import RouteActiveToggle from '@/components/routes/RouteActiveToggle';
+import { extractOperatorError } from '@/lib/extract-operator-error';
+import { useUpdateIngressRoute } from '@/hooks/use-ingress-routes';
 import {
   useRouteDetail,
   useUpdateRouteRedirects,
@@ -58,6 +64,7 @@ export default function RouteDetail() {
 
   const { data: routeData, isLoading, isError } = useRouteDetail(tenantId ?? undefined, routeId);
   const route = routeData?.data;
+  const updateRoute = useUpdateIngressRoute(tenantId ?? undefined, domainId);
 
   // Fetch parent domain to determine DNS mode (needed for www redirect hint).
   const { data: domainsData } = useDomains(tenantId ?? undefined);
@@ -133,15 +140,45 @@ export default function RouteDetail() {
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="route-hostname-heading">
           <HostnameLink host={route.hostname} path={route.path} />
         </h1>
-        <span className={clsx(
-          'inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium',
-          route.status === 'active'
-            ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300'
-            : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-        )}>
-          {route.status}
-        </span>
+        {/* Set-up state, shown only when it is not the normal one. The
+            Active / Inactive pill on the right is the route's served state. */}
+        {route.status !== 'active' && (
+          <span className="inline-flex rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+            {route.status}
+          </span>
+        )}
+        <div className="ml-auto">
+          <RouteActiveToggle
+            hostname={route.hostname}
+            enabled={route.enabled}
+            isPending={updateRoute.isPending}
+            onChange={(enabled) => updateRoute.mutate({ routeId: route.id, enabled })}
+            testId="route-active-toggle"
+          />
+        </div>
       </div>
+
+      {updateRoute.error && (
+        <ErrorPanel
+          error={extractOperatorError(updateRoute.error)}
+          severity="error"
+          compact
+          testId="route-toggle-error"
+        />
+      )}
+
+      {!route.enabled && (
+        <div
+          className="flex items-start gap-2 rounded-lg border border-gray-300 bg-gray-50 px-4 py-3 text-sm text-gray-700 dark:border-gray-600 dark:bg-gray-800/60 dark:text-gray-300"
+          data-testid="route-inactive-notice"
+        >
+          <PowerOff size={16} className="mt-0.5 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden="true" />
+          <p>
+            This route is inactive: <span className="font-mono text-xs">{route.hostname}</span> is not served.
+            Its settings below are kept and can still be changed — they take effect when you activate it again.
+          </p>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
@@ -1393,6 +1430,14 @@ function WafExclusionsSection({ tenantId, routeId, hostname }: {
   const { data, isLoading, isError, error } = useRouteWafExclusions(tenantId, routeId);
   const exclusions = data?.data?.exclusions ?? [];
   const del = useDeleteRouteWafExclusion(tenantId, routeId);
+  // Oldest first, as the API lists them. "every path" (no path) sorts last.
+  const sortableExclusions = useMemo(() => exclusions.map((ex) => ({
+    ...ex,
+    createdAtMs: Date.parse(ex.createdAt),
+    scopeLabel: wafExclusionScopeLabel(ex.scope),
+  })), [exclusions]);
+  const { sortedData: sortedExclusions, sortKey, sortDirection, onSort } = useSortable(sortableExclusions, 'createdAtMs');
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!px-3 !py-2 text-left' };
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
@@ -1465,16 +1510,16 @@ function WafExclusionsSection({ tenantId, routeId, hostname }: {
               <table className="min-w-full text-xs">
                 <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-500 uppercase">
                   <tr>
-                    <th className="px-3 py-2 text-left">Rule ID</th>
-                    <th className="px-3 py-2 text-left">Path</th>
-                    <th className="px-3 py-2 text-left">Scope</th>
-                    <th className="px-3 py-2 text-left">Reason</th>
-                    <th className="px-3 py-2 text-left" title={localZoneTitle()}>Added ({utcOffsetLabel()})</th>
+                    <SortableHeader label="Rule ID" sortKey="ruleId" {...th} />
+                    <SortableHeader label="Path" sortKey="pathRegex" {...th} />
+                    <SortableHeader label="Scope" sortKey="scopeLabel" {...th} />
+                    <SortableHeader label="Reason" sortKey="reason" {...th} />
+                    <SortableHeader label={`Added (${utcOffsetLabel()})`} sortKey="createdAtMs" {...th} title={localZoneTitle()} />
                     <th className="px-3 py-2"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                  {exclusions.map((ex) => (
+                  {sortedExclusions.map((ex) => (
                     <WafExclusionRow
                       key={ex.id}
                       ex={ex}
@@ -1570,6 +1615,11 @@ function ConfirmDeleteWafExclusionModal({ ex, hostname, isDeleting, error, onCan
   );
 }
 
+/** How the Scope column names a scope — the sort key and the badge share it. */
+function wafExclusionScopeLabel(scope: WafRuleExclusionScope): string {
+  return scope === 'text_plain_as_json' ? 'text/plain as JSON' : scope;
+}
+
 function WafExclusionRow({ ex, onDelete, isDeleting }: {
   readonly ex: WafRuleExclusionEntry;
   readonly onDelete: () => void;
@@ -1587,7 +1637,7 @@ function WafExclusionRow({ ex, onDelete, isDeleting }: {
           ex.scope === 'full_disable'
             ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200'
             : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200',
-        )}>{ex.scope === 'text_plain_as_json' ? 'text/plain as JSON' : ex.scope}</span>
+        )}>{wafExclusionScopeLabel(ex.scope)}</span>
       </td>
       <td className="px-3 py-2 text-gray-700 dark:text-gray-300 max-w-[280px] truncate" title={ex.reason}>{ex.reason}</td>
       <td className="px-3 py-2 text-[11px] text-gray-500 dark:text-gray-400 whitespace-nowrap">

@@ -1,9 +1,9 @@
-import { eq, and, ilike, desc, asc, lt, gt, sql, inArray } from 'drizzle-orm';
+import { eq, and, ilike, sql, inArray, getTableColumns } from 'drizzle-orm';
 import { likePattern } from '../../shared/like-pattern.js';
 import { domains, dnsRecords, emailDomains, mailboxes, emailAliases, ingressRoutes, sslCertificates } from '../../db/schema.js';
 import { domainNotFound, duplicateEntry } from '../../shared/errors.js';
 import { ApiError } from '../../shared/errors.js';
-import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
+
 import { getTenantById } from '../tenants/service.js';
 import { assertTenantActive } from '../tenants/guards.js';
 import { getActiveServersForDomain, getProviderForServer, getDefaultGroup, getPrimaryServersForGroup, getActiveServers, getProviderGroupById } from '../dns-servers/service.js';
@@ -18,8 +18,7 @@ import type { Database } from '../../db/index.js';
 import type { CreateDomainInput, UpdateDomainInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
 import type { VerificationResult } from './verification.js';
-
-const EXPIRING_THRESHOLD_DAYS = 30;
+import { certificateExpiryState, MANAGED_CERT_PLACEHOLDER } from '../certificates/renewal-policy.js';
 
 // ─── Verification Status Helpers ─────────────────────────────────────────────
 
@@ -133,7 +132,11 @@ async function enrichWithCertInfo(
       domainId: sslCertificates.domainId,
       issuer: sslCertificates.issuer,
       subject: sslCertificates.subject,
+      notBefore: sslCertificates.notBefore,
       expiresAt: sslCertificates.expiresAt,
+      // An uploaded certificate is renewed by nobody, whatever the domain's
+      // auto-renew flag says (the upload does not clear it).
+      managed: sql<boolean>`${sslCertificates.privateKeyEncrypted} = ${MANAGED_CERT_PLACEHOLDER}`,
       status: sslCertificates.status,
       lastError: sslCertificates.lastError,
       lastErrorAt: sslCertificates.lastErrorAt,
@@ -146,7 +149,6 @@ async function enrichWithCertInfo(
 
   const certMap = new Map(certs.map((c) => [c.domainId, c]));
   const now = new Date();
-  const expiringThreshold = new Date(now.getTime() + EXPIRING_THRESHOLD_DAYS * 24 * 60 * 60 * 1000);
 
   return rows.map((row) => {
     const cert = certMap.get(row.id);
@@ -163,8 +165,16 @@ async function enrichWithCertInfo(
         tlsCertFallbackActive: false,
       };
     }
-    const expired = cert.expiresAt ? cert.expiresAt < now : false;
-    const expiring = cert.expiresAt ? !expired && cert.expiresAt < expiringThreshold : false;
+    // Judged against the certificate's own lifetime and renewal schedule
+    // (certificates/renewal-policy.ts): an auto-renewed certificate is
+    // "expiring" only once renewal is overdue, never while it is merely
+    // inside its renewal window.
+    const expiry = certificateExpiryState(
+      { notBefore: cert.notBefore, notAfter: cert.expiresAt },
+      { autoRenewed: row.sslAutoRenew === 1 && cert.managed === true, now },
+    );
+    const expired = expiry === 'expired';
+    const expiring = expiry === 'expiring';
     const isWildcard = cert.isWildcard === 1 || (cert.subject?.startsWith('*.') ?? false);
 
     // Issuance state comes FIRST: a domain whose order is failing has no
@@ -194,6 +204,7 @@ async function enrichWithCertInfo(
   });
 }
 import type { DomainDeletePreview } from '@insula/api-contracts';
+import { encodeListCursor, listCursorCondition, listOrderBy, listSortKeySelect, resolveListSort, withoutSortKey, type SortFields } from '../../shared/list-sort.js';
 
 export async function createDomain(db: Database, tenantId: string, input: CreateDomainInput & { master_ip?: string; dns_group_id?: string }, k8s?: K8sClients) {
   // Verify tenant exists
@@ -484,46 +495,45 @@ export async function getDomainById(db: Database, tenantId: string, domainId: st
   return domain;
 }
 
+/** Columns the admin Domains list sorts by on the server. The Tenant column sorts by the tenant's NAME. */
+export const ADMIN_DOMAIN_SORT_FIELDS: SortFields = {
+  domainName: { expr: domains.domainName, kind: 'text' },
+  tenantName: { expr: sql`(SELECT t.name FROM tenants t WHERE t.id = ${domains.tenantId})`, kind: 'text' },
+  status: { expr: domains.status, kind: 'text' },
+  dnsMode: { expr: domains.dnsMode, kind: 'text' },
+  sslAutoRenew: { expr: domains.sslAutoRenew, kind: 'numeric' },
+  createdAt: { expr: domains.createdAt, kind: 'timestamp' },
+};
+
 export async function listAllDomains(
   db: Database,
-  params: { limit: number; cursor?: string; sort: { field: string; direction: 'asc' | 'desc' }; search?: string },
+  params: { limit: number; cursor?: string; sortParam?: string; search?: string },
 ): Promise<{ data: typeof domains.$inferSelect[]; pagination: PaginationMeta }> {
-  const { limit, cursor, sort, search } = params;
+  const { limit, cursor, search } = params;
+  const sort = resolveListSort(params.sortParam, ADMIN_DOMAIN_SORT_FIELDS, { field: 'createdAt', direction: 'desc' });
 
   const conditions = [];
   if (search) {
     conditions.push(ilike(domains.domainName, likePattern(search)));
   }
+  const after = listCursorCondition(cursor, 'domain', sort, ADMIN_DOMAIN_SORT_FIELDS, domains.id);
+  if (after) conditions.push(after);
 
-  if (cursor) {
-    const decoded = decodeCursor(cursor);
-    conditions.push(
-      sort.direction === 'desc' ? lt(domains.createdAt, new Date(decoded.sort)) : gt(domains.createdAt, new Date(decoded.sort)),
-    );
-  }
-
-  const orderBy = sort.direction === 'desc' ? desc(domains.createdAt) : asc(domains.createdAt);
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
   const rows = await db
-    .select()
+    .select({ ...getTableColumns(domains), sortKey: listSortKeySelect(sort, ADMIN_DOMAIN_SORT_FIELDS) })
     .from(domains)
     .where(where)
-    .orderBy(orderBy)
+    .orderBy(...listOrderBy(sort, ADMIN_DOMAIN_SORT_FIELDS, domains.id))
     .limit(limit + 1);
 
   const hasMore = rows.length > limit;
-  const data = rows.slice(0, limit);
-
-  let nextCursor: string | null = null;
-  if (hasMore && data.length > 0) {
-    const last = data[data.length - 1];
-    nextCursor = encodeCursor({
-      resource: 'domain',
-      sort: last.createdAt.toISOString(),
-      id: last.id,
-    });
-  }
+  const page = rows.slice(0, limit);
+  const nextCursor = hasMore && page.length > 0
+    ? encodeListCursor('domain', sort, page[page.length - 1])
+    : null;
+  const data = withoutSortKey(page);
 
   const countConditions = [];
   if (search) {
@@ -547,46 +557,36 @@ export async function listAllDomains(
 export async function listDomains(
   db: Database,
   tenantId: string,
-  params: { limit: number; cursor?: string; sort: { field: string; direction: 'asc' | 'desc' }; search?: string },
+  params: { limit: number; cursor?: string; sortParam?: string; search?: string },
 ): Promise<{ data: typeof domains.$inferSelect[]; pagination: PaginationMeta }> {
-  const { limit, cursor, sort, search } = params;
+  const { limit, cursor, search } = params;
+  // Same fields as the admin list (its Tenant column is constant here).
+  const sort = resolveListSort(params.sortParam, ADMIN_DOMAIN_SORT_FIELDS, { field: 'createdAt', direction: 'desc' });
 
   const conditions = [eq(domains.tenantId, tenantId)];
   if (search) {
     conditions.push(ilike(domains.domainName, likePattern(search)));
   }
-
-  if (cursor) {
-    const decoded = decodeCursor(cursor);
-    conditions.push(
-      sort.direction === 'desc' ? lt(domains.createdAt, new Date(decoded.sort)) : gt(domains.createdAt, new Date(decoded.sort)),
-    );
-  }
-
-  const orderBy = sort.direction === 'desc' ? desc(domains.createdAt) : asc(domains.createdAt);
-  const where = and(...conditions);
+  // The total counts the tenant's (searched) domains; the cursor only narrows the page.
+  const filterWhere = and(...conditions);
+  const after = listCursorCondition(cursor, 'domain', sort, ADMIN_DOMAIN_SORT_FIELDS, domains.id);
+  const where = after ? and(...conditions, after) : filterWhere;
 
   const rows = await db
-    .select()
+    .select({ ...getTableColumns(domains), sortKey: listSortKeySelect(sort, ADMIN_DOMAIN_SORT_FIELDS) })
     .from(domains)
     .where(where)
-    .orderBy(orderBy)
+    .orderBy(...listOrderBy(sort, ADMIN_DOMAIN_SORT_FIELDS, domains.id))
     .limit(limit + 1);
 
   const hasMore = rows.length > limit;
-  const data = rows.slice(0, limit);
+  const page = rows.slice(0, limit);
+  const nextCursor = hasMore && page.length > 0
+    ? encodeListCursor('domain', sort, page[page.length - 1])
+    : null;
+  const data = withoutSortKey(page);
 
-  let nextCursor: string | null = null;
-  if (hasMore && data.length > 0) {
-    const last = data[data.length - 1];
-    nextCursor = encodeCursor({
-      resource: 'domain',
-      sort: last.createdAt.toISOString(),
-      id: last.id,
-    });
-  }
-
-  const [countResult] = await db.select({ count: sql<number>`count(*)` }).from(domains).where(where);
+  const [countResult] = await db.select({ count: sql<number>`count(*)` }).from(domains).where(filterWhere);
 
   const enriched = await enrichWithCertInfo(db, data);
   return {

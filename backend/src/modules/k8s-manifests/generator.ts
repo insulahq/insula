@@ -10,6 +10,7 @@ import { getTenantDiskLimits } from '../tenant-disk/limits.js';
 // SYSTEM_CPU_RESERVE / SYSTEM_MEMORY_RESERVE removed — quota is now
 // plan-exact and file-manager is exempt via priorityClassName.
 import type { GenerateManifestInput } from '@insula/api-contracts';
+import { RENEW_BEFORE_PERCENTAGE } from '../certificates/renewal-policy.js';
 
 export interface ManifestFile {
   readonly filename: string;
@@ -343,7 +344,8 @@ export async function generateTenantManifests(
           spec: {
             secretName: domainToSecretName(domain.domainName),
             duration: '2160h',
-            renewBefore: '720h',
+            // A third of the issued lifetime — certificates/renewal-policy.ts.
+            renewBeforePercentage: RENEW_BEFORE_PERCENTAGE,
             privateKey: {
               algorithm: 'ECDSA',
               size: 256,

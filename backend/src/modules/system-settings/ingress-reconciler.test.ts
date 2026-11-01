@@ -378,7 +378,8 @@ function mockDeps(
 ): IngressReconcileDeps {
   return {
     readIngressRoute: vi.fn().mockResolvedValue(currentIngress ?? null),
-    readCertificate: vi.fn().mockResolvedValue(currentCert ?? null),
+    // A live Certificate is on the renewal policy unless a test says otherwise.
+    readCertificate: vi.fn().mockResolvedValue(currentCert ? { renewBeforePercentage: 33, ...currentCert } : null),
     applyIngressRoute: vi.fn().mockResolvedValue(undefined),
     applyCertificate: vi.fn().mockResolvedValue(undefined),
   };
@@ -460,6 +461,36 @@ describe('reconcileIngressHosts', () => {
     expect(result.changed).toBe(false);
     expect(deps.applyIngressRoute).not.toHaveBeenCalled();
     expect(deps.applyCertificate).not.toHaveBeenCalled();
+  });
+
+  it('re-applies a live Certificate still on a fixed renewBefore, moving it to the policy share', async () => {
+    // Not seeded from a manifest: without this the Certificate kept
+    // `renewBefore: 720h` until the panel hostnames next changed.
+    const deps = mockDeps(
+      {
+        routes: [
+          { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true, downloadMiddlewares: ['crowdsec'] },
+          { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null, uploadCarveOut: true, wafAdminCarveOut: true, downloadCarveOut: true, downloadMiddlewares: ['crowdsec'] },
+        ],
+        tlsSecret: 'platform-tls',
+      },
+      {
+        dnsNames: ['admin.example.com', 'my.example.com'],
+        secretName: 'platform-tls',
+        issuerName: 'letsencrypt-prod-http01',
+        renewBefore: '720h',
+        renewBeforePercentage: null,
+      },
+    );
+    const result = await reconcileIngressHosts({
+      adminPanelUrl: 'https://admin.example.com',
+      tenantPanelUrl: 'https://my.example.com',
+      tlsSecretName: 'platform-tls',
+    }, deps);
+    expect(result.changed).toBe(true);
+    const body = (deps.applyCertificate as ReturnType<typeof vi.fn>).mock.calls[0][0] as { spec: Record<string, unknown> };
+    expect(body.spec.renewBeforePercentage).toBe(33);
+    expect(body.spec).not.toHaveProperty('renewBefore');
   });
 
   it('re-applies when the live IngressRoute predates the download carve-out', async () => {

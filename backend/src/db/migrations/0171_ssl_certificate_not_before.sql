@@ -1,0 +1,13 @@
+-- When the current certificate's validity starts (X.509 notBefore).
+--
+-- With expires_at it gives the certificate's own lifetime, which decides when
+-- a panel may call it "expiring" (certificates/renewal-policy.ts): once half
+-- of its renewal window has passed without a new certificate. A fixed day
+-- count cannot be right for every lifetime, and public CA lifetimes are
+-- shrinking (Let's Encrypt: 90 → 64 days in 2027, 45 days in 2028).
+--
+-- NULL until the certificate status sweep (or an upload) next reads the
+-- certificate; the policy assumes a 90-day lifetime meanwhile.
+--
+-- Replay-safe (IF NOT EXISTS) for the non-transactional runner.
+ALTER TABLE ssl_certificates ADD COLUMN IF NOT EXISTS not_before timestamp;

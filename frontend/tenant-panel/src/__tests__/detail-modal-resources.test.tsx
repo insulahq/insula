@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -58,14 +58,14 @@ function deployment(over: Record<string, unknown> = {}) {
   } as never;
 }
 
-function renderModal(dep = deployment()) {
+function renderModal(dep = deployment(), catalog: Record<string, unknown> = {}) {
   return render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <MemoryRouter>
         <InstalledAppDetailModal
           open
           deployment={dep}
-          catalogEntry={{ id: 'c1', name: 'WordPress', type: 'application', components: [], parameters: [], volumes: [] } as never}
+          catalogEntry={{ id: 'c1', name: 'WordPress', type: 'application', components: [], parameters: [], volumes: [], ...catalog } as never}
           tenantId="t1"
           onClose={() => {}}
           onToggleStatus={() => {}}
@@ -128,6 +128,37 @@ describe('Resource breakdown', () => {
   it('is not shown for a custom app — the API refuses it, and the refusal was printed as an error', () => {
     renderModal(deployment({ source: 'custom', catalogEntryId: null, customSpec: { sourceMode: 'simple', services: {} } }));
     expect(screen.queryByTestId('resource-breakdown')).not.toBeInTheDocument();
+  });
+});
+
+describe('Components and volumes tables', () => {
+  const bodyOrder = (testId: string) => Array.from(screen.getByTestId(testId).querySelectorAll('tbody > tr'))
+    .map((tr) => tr.querySelector('td')?.textContent);
+
+  it('lists components by name, and sorts by type either way', () => {
+    renderModal(deployment(), { components: [
+      { name: 'web', type: 'deployment', image: 'wordpress:6' },
+      { name: 'cron', type: 'cronjob', image: 'wordpress:6' },
+      { name: 'db', type: 'statefulset', image: 'mariadb:11' },
+    ] });
+    expect(bodyOrder('components-table')).toEqual(['cron', 'db', 'web']);
+    fireEvent.click(within(screen.getByTestId('components-table')).getByTestId('sort-type'));
+    expect(bodyOrder('components-table')).toEqual(['cron', 'web', 'db']);
+    fireEvent.click(within(screen.getByTestId('components-table')).getByTestId('sort-type'));
+    expect(bodyOrder('components-table')).toEqual(['db', 'web', 'cron']);
+  });
+
+  it('lists volumes by local path, and sorts by container path either way', () => {
+    renderModal(deployment({ volumePaths: [
+      { k8sPath: 'apps/blog/wp-content', containerPath: '/var/www/html/wp-content' },
+      { k8sPath: 'apps/blog/config', containerPath: '/etc/wordpress' },
+      { k8sPath: 'apps/blog/uploads', containerPath: '/var/www/uploads' },
+    ] }), { volumes: [{ local_path: '.', container_path: '/var/www/html' }] });
+    expect(bodyOrder('volumes-table')).toEqual(['/apps/blog/config', '/apps/blog/uploads', '/apps/blog/wp-content']);
+    fireEvent.click(within(screen.getByTestId('volumes-table')).getByTestId('sort-containerPath'));
+    expect(bodyOrder('volumes-table')).toEqual(['/apps/blog/config', '/apps/blog/wp-content', '/apps/blog/uploads']);
+    fireEvent.click(within(screen.getByTestId('volumes-table')).getByTestId('sort-containerPath'));
+    expect(bodyOrder('volumes-table')).toEqual(['/apps/blog/uploads', '/apps/blog/wp-content', '/apps/blog/config']);
   });
 });
 

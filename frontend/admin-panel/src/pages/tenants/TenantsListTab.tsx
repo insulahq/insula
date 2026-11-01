@@ -28,13 +28,30 @@ import {
   type TenantBulkAction,
   type TenantChangeItem,
 } from '@/hooks/use-bulk-tenants';
-import { useSortable } from '@/hooks/use-sortable';
+import { sortRows } from '@/hooks/use-sortable';
+import { useServerSort } from '@/hooks/use-server-sort';
 import SortableHeader from '@/components/ui/SortableHeader';
 import BulkTenantChangeModal, { type TenantChangeKind } from '@/components/tenants/BulkTenantChangeModal';
 import { useAllTenantMetrics, type ResourceMetrics } from '@/hooks/use-resource-metrics';
 import { useNodeLabel } from '@/hooks/use-node-labels';
 import { formatMetricsCpu, formatMetricsBytes, isMetricValue, METRIC_UNAVAILABLE } from '@/lib/format-metrics';
 import { tenantSortAccessors } from '@/lib/tenant-list-sort';
+
+/**
+ * Columns the server cannot order by — live readings (CPU / memory / storage
+ * in use) and the node on screen (placement, see lib/tenant-list-sort.ts).
+ * Sorting by one reads every tenant and orders them here, unpaged; every other
+ * column the server sorts and pages through. Value: how the note names it.
+ */
+const LIVE_SORT_LABELS: Readonly<Record<string, string>> = {
+  cpu: 'CPU in use',
+  memory: 'memory in use',
+  storage: 'storage in use',
+  placement: 'placement',
+};
+
+/** The server order a live sort starts from, so tenants with equal values read alphabetically. */
+const LIVE_SORT_BASE = 'name:asc';
 
 export default function TenantsListTab() {
   const [search, setSearch] = useState('');
@@ -50,12 +67,18 @@ export default function TenantsListTab() {
     pagination.resetPagination();
   }, [debouncedSearch]);
 
-  // "All" rows per page reads every page of the list; the table then sorts
-  // all of them, not only the 20 it happened to receive.
-  const showAll = pagination.limit === ALL_ROWS;
+  // The server sorts the whole list and pages through it in that order; a
+  // sort change starts again from page one (a cursor belongs to its order).
+  const { sortKey, sortDirection, onSort, sortParam } = useServerSort('name', 'asc', pagination.resetPagination);
+  const liveSortLabel: string | undefined = LIVE_SORT_LABELS[sortKey];
+  const liveSort = liveSortLabel !== undefined;
+  // "All" rows per page reads every page of the list, in the server's order.
+  // A live sort reads them all too: the order it needs exists only here.
+  const showAll = liveSort || pagination.limit === ALL_ROWS;
+  const serverSort = liveSort ? LIVE_SORT_BASE : sortParam;
   const { data, isLoading, error } = useTenants(showAll
-    ? { search: debouncedSearch || undefined, all: true }
-    : { search: debouncedSearch || undefined, limit: pagination.limit, cursor: pagination.cursor });
+    ? { search: debouncedSearch || undefined, all: true, sort: serverSort }
+    : { search: debouncedSearch || undefined, limit: pagination.limit, cursor: pagination.cursor, sort: serverSort });
 
   const tenants = useMemo(() => data?.data ?? [], [data]);
   const totalCount = data?.pagination?.total_count ?? 0;
@@ -66,10 +89,14 @@ export default function TenantsListTab() {
   const { data: metricsData, isLoading: metricsLoading } = useAllTenantMetrics(tenantIds);
   const metricsMap: Record<string, ResourceMetrics | null> = useMemo(() => metricsData?.data ?? {}, [metricsData]);
   const nodeLabel = useNodeLabel();
-  // Every column sorts by what it shows — metrics by the in-use figure,
+  // A live column sorts by what it shows — metrics by the in-use figure,
   // placement by the node name on screen (see lib/tenant-list-sort.ts).
+  // Any other column arrives in the server's order and is shown as it came.
   const sortAccessors = useMemo(() => tenantSortAccessors(metricsMap, nodeLabel), [metricsMap, nodeLabel]);
-  const { sortedData: sortedTenants, sortKey, sortDirection, onSort } = useSortable(tenants, 'name', 'asc', sortAccessors);
+  const sortedTenants = useMemo(
+    () => (liveSort ? sortRows(tenants, sortKey, sortDirection, sortAccessors) : tenants),
+    [liveSort, tenants, sortKey, sortDirection, sortAccessors],
+  );
 
   // "Login as tenant" straight from the list — the same impersonation action as
   // the tenant detail header, without the detour through it. `pendingLoginId`
@@ -356,17 +383,29 @@ export default function TenantsListTab() {
                 </tbody>
               </table>
             </div>
-            <PaginationBar
-              totalCount={totalCount}
-              pageSize={pagination.limit}
-              pageIndex={pagination.pageIndex}
-              hasPrevPage={pagination.hasPrevPage}
-              hasNextPage={hasMore}
-              onNext={() => nextCursor && pagination.goNext(nextCursor)}
-              onPrev={pagination.goPrev}
-              onPageSizeChange={pagination.setPageSize}
-              allowAll
-            />
+            {liveSort ? (
+              <p
+                className="border-t border-gray-200 px-4 py-3 text-sm text-gray-600 dark:border-gray-700 dark:text-gray-400"
+                data-testid="tenants-live-sort-note"
+              >
+                {hasMore
+                  ? `Sorted by ${liveSortLabel}, a live value: showing the first ${tenants.length} of ${totalCount} tenants.`
+                  : `Sorted by ${liveSortLabel}, a live value: showing all ${tenants.length} tenants.`}
+                {' '}Sort by another column to page through them.
+              </p>
+            ) : (
+              <PaginationBar
+                totalCount={totalCount}
+                pageSize={pagination.limit}
+                pageIndex={pagination.pageIndex}
+                hasPrevPage={pagination.hasPrevPage}
+                hasNextPage={hasMore}
+                onNext={() => nextCursor && pagination.goNext(nextCursor)}
+                onPrev={pagination.goPrev}
+                onPageSizeChange={pagination.setPageSize}
+                allowAll
+              />
+            )}
           </>
         )}
       </div>

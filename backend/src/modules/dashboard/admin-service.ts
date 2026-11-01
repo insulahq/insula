@@ -11,7 +11,9 @@ import {
 import { readCpuReservation, buildCpuReservationAlert, buildCpuReservationNotice } from './cpu-reservation.js';
 import { buildBackupClasses } from './backup-classes.js';
 import { buildWebDefence } from './web-defence.js';
+import { loadNodeLossFacts, worstNodeLoss } from './node-loss.js';
 import { readNodeMemoryStats, type NodeMemoryStats } from '../node-health/kubelet-disk.js';
+import { autoRenewedSql, renewalOverdueSql } from '../certificates/renewal-policy-sql.js';
 
 interface Logger { warn?(...a: unknown[]): void }
 
@@ -46,17 +48,22 @@ export async function buildAdminSummary(
           SELECT COUNT(*)::int AS issued,
                  -- is_wildcard is an INTEGER flag, so it needs an explicit
                  -- comparison: CASE WHEN requires a boolean predicate.
-                 SUM(CASE WHEN is_wildcard = 1 THEN 1 ELSE 0 END)::int AS wildcards,
-                 MIN(EXTRACT(DAY FROM (expires_at - NOW())))::int AS nearest_days,
-                 SUM(CASE WHEN last_error IS NOT NULL THEN 1 ELSE 0 END)::int AS failing
-            FROM ssl_certificates
-           WHERE COALESCE(status,'') <> 'revoked'
+                 SUM(CASE WHEN s.is_wildcard = 1 THEN 1 ELSE 0 END)::int AS wildcards,
+                 MIN(EXTRACT(DAY FROM (s.expires_at - NOW())))::int AS nearest_days,
+                 SUM(CASE WHEN s.last_error IS NOT NULL THEN 1 ELSE 0 END)::int AS failing,
+                 -- Overdue by the renewal policy (half the renewal window gone,
+                 -- or expired), measured against each certificate's lifetime.
+                 SUM(CASE WHEN ${renewalOverdueSql('s', autoRenewedSql('s', 'd'))} THEN 1 ELSE 0 END)::int AS overdue
+            FROM ssl_certificates s
+            LEFT JOIN domains d ON d.id = s.domain_id
+           WHERE COALESCE(s.status,'') <> 'revoked'
         `);
         const x = (r.rows ?? [])[0] ?? {};
         return {
           issued: Number(x.issued ?? 0), wildcards: Number(x.wildcards ?? 0),
           nearestExpiryDays: x.nearest_days == null ? null : Number(x.nearest_days),
           failing: Number(x.failing ?? 0),
+          overdue: Number(x.overdue ?? 0),
         };
       }, { logger }),
       collect('updates', async () => {
@@ -429,6 +436,20 @@ export async function buildAdminLive(
 
   const cluster = await collect('cluster', async () => {
     const nodes = nodesSection.data ?? [];
+    // The capacity test below removes the largest node; what a loss would
+    // affect is judged separately, from what depends on each node. Started now,
+    // read at the end, so it runs alongside the Longhorn reads.
+    const nodeLossPending = nodes.length > 1
+      ? loadNodeLossFacts(db, k8s, nodes.map((n) => ({ name: n.name, cpuTotal: n.cpu.total })))
+        .then(worstNodeLoss)
+        .catch((err: unknown) => {
+          logger?.warn?.(
+            { err: err instanceof Error ? err.message : String(err) },
+            'dashboard: tenant or mail placement unreadable — the failover line will not name a worst case',
+          );
+          return null;
+        })
+      : Promise.resolve(null);
 
     // Storage comes from Longhorn, which is the only thing that knows what a
     // volume actually holds. Left at zeros it rendered "0.0 GB in use of 0.0",
@@ -540,6 +561,7 @@ export async function buildAdminLive(
     const biggest = nodes.reduce<AdminNode | null>(
       (a, b) => (a === null || b.cpu.total > a.cpu.total ? b : a), null);
     const mem = clusterMemoryUsage(nodes);
+    const nodeLoss = await nodeLossPending;
     return {
       cpu: {
         inUse: sumUsage((n) => n.cpu.inUse), committed: cpuReq,
@@ -559,6 +581,7 @@ export async function buildAdminLive(
       survivesSingleNodeLoss: nodes.length > 1
         && (cpuTotal - (biggest?.cpu.total ?? 0)) >= cpuReq,
       worstNode: biggest?.name ?? null,
+      worstNodeLoss: nodeLoss,
     };
   }, { logger });
 

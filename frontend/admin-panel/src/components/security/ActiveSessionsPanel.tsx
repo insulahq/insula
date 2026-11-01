@@ -19,6 +19,11 @@ import {
   useUserSessions,
   type ActiveSession,
 } from '@/hooks/use-admin-sessions';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable } from '@/hooks/use-sortable';
+
+const NO_SESSIONS: ReadonlyArray<ActiveSession> = [];
+const TH_PAD = 'py-2 pr-3';
 
 export interface ActiveSessionsPanelProps {
   readonly userId: string;
@@ -45,6 +50,12 @@ export default function ActiveSessionsPanel({
   const revokeOne = useRevokeSession(userId);
   const revokeAll = useBulkRevokeSessions(userId);
   const [confirmBulk, setConfirmBulk] = useState(false);
+  // Oldest first, as the server lists them; the instants are ISO text.
+  const { sortedData: sortedSessions, sortKey, sortDirection, onSort } =
+    useSortable(sessions ?? NO_SESSIONS, 'issuedAt', 'asc');
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding={TH_PAD} />
+  );
 
   const currentSessionId = isSelf ? meSessions?.currentSessionId ?? null : null;
 
@@ -129,17 +140,17 @@ export default function ActiveSessionsPanel({
           <table className="w-full text-xs" data-testid="active-sessions-table">
             <thead>
               <tr className="text-left text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
-                <th className="py-2 pr-3">Issued</th>
-                <th className="py-2 pr-3">Last used</th>
-                <th className="py-2 pr-3">Expires</th>
-                <th className="py-2 pr-3">IP</th>
-                <th className="py-2 pr-3">Panel</th>
-                <th className="py-2 pr-3">User agent</th>
+                {header('Issued', 'issuedAt')}
+                {header('Last used', 'lastUsedAt')}
+                {header('Expires', 'expiresAt')}
+                {header('IP', 'ipAddress')}
+                {header('Panel', 'panel')}
+                {header('User agent', 'userAgent')}
                 <th className="py-2 pr-3 text-right"></th>
               </tr>
             </thead>
             <tbody>
-              {sessions.map((s) => {
+              {sortedSessions.map((s) => {
                 const isCurrent = s.id === currentSessionId;
                 return (
                   <tr

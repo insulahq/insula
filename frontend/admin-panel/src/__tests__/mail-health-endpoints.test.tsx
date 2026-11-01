@@ -139,3 +139,36 @@ describe('MailHealthDetailsModal — mail endpoints', () => {
     expect(screen.queryByText('Mail port exposure')).not.toBeInTheDocument();
   });
 });
+
+describe('MailHealthDetailsModal — blocklist table sorting', () => {
+  const probe = (node: string, ip: string, list: string, zone: string, severity: 'ok' | 'warning' | 'fail') => ({
+    severity, assertion: 'not listed', actual: null, expected: null, remediation: null, ip, node, family: 'ipv4' as const,
+    list, zone, listed: severity === 'fail', reasonTxt: null, lookupUrl: null,
+  });
+
+  beforeEach(() => {
+    mockApiFetch.mockReset();
+    mockApiFetch.mockResolvedValue({ data: { ...HEALTH, components: { ...HEALTH.components, deliverability: {
+      ...HEALTH.components.deliverability!,
+      blocklists: [
+        probe('node-1', '203.0.113.11', 'Spamhaus ZEN', 'zen.spamhaus.org', 'ok'),
+        probe('node-1', '203.0.113.11', 'Barracuda', 'b.barracudacentral.org', 'fail'),
+        probe('node-2', '203.0.113.12', 'SpamCop', 'bl.spamcop.net', 'warning'),
+      ],
+    } } } });
+  });
+
+  it('keeps each node’s checks together, then sorts Status worst first and back', async () => {
+    renderModal();
+    const table = (await screen.findByText('Barracuda')).closest('table') as HTMLElement;
+    const lists = () => Array.from(table.querySelectorAll('tbody > tr'))
+      .map((tr) => tr.querySelectorAll('td')[2]?.firstChild?.textContent);
+    expect(lists()).toEqual(['Spamhaus ZEN', 'Barracuda', 'SpamCop']);
+
+    within(table).getByTestId('sort-severity').click();
+    expect(await screen.findByText('Barracuda')).toBeDefined();
+    await vi.waitFor(() => expect(lists()).toEqual(['Barracuda', 'SpamCop', 'Spamhaus ZEN']));
+    within(table).getByTestId('sort-severity').click();
+    await vi.waitFor(() => expect(lists()).toEqual(['Spamhaus ZEN', 'SpamCop', 'Barracuda']));
+  });
+});

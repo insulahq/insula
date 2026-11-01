@@ -9,13 +9,24 @@ interface ListTenantsParams {
   readonly cursor?: string;
   /** Every tenant, read page by page — the list's "All" rows-per-page. */
   readonly all?: boolean;
+  /**
+   * `field:asc|desc` — the server orders (and pages) the whole list by it.
+   * A cursor belongs to the sort it was made under: change one, drop the other.
+   */
+  readonly sort?: string;
 }
 
-function tenantsPath(search: string | undefined, limit: number | undefined, cursor: string | undefined): string {
+function tenantsPath(
+  search: string | undefined,
+  limit: number | undefined,
+  cursor: string | undefined,
+  sort: string | undefined,
+): string {
   const searchParams = new URLSearchParams();
   if (search) searchParams.set('search', search);
   if (limit) searchParams.set('limit', String(limit));
   if (cursor) searchParams.set('cursor', cursor);
+  if (sort) searchParams.set('sort', sort);
   const qs = searchParams.toString();
   return `/api/v1/tenants${qs ? `?${qs}` : ''}`;
 }
@@ -24,17 +35,20 @@ function tenantsPath(search: string | undefined, limit: number | undefined, curs
 const MAX_PAGES_FOR_ALL = 100;
 
 /**
- * Every tenant matching `search`, as one page. The API caps a page at
- * MAX_PAGE_LIMIT, so "All" follows the cursor rather than asking for a bigger
- * page the API would refuse.
+ * Every tenant matching `search`, as one page, in the server's `sort` order.
+ * The API caps a page at MAX_PAGE_LIMIT, so "All" follows the cursor rather
+ * than asking for a bigger page the API would refuse.
  */
-export async function fetchAllTenants(search: string | undefined): Promise<PaginatedResponse<Tenant>> {
+export async function fetchAllTenants(
+  search: string | undefined,
+  sort?: string,
+): Promise<PaginatedResponse<Tenant>> {
   const rows: Tenant[] = [];
   let cursor: string | undefined;
   let total = 0;
   let more = false;
   for (let page = 0; page < MAX_PAGES_FOR_ALL; page += 1) {
-    const res = await apiFetch<PaginatedResponse<Tenant>>(tenantsPath(search, MAX_PAGE_LIMIT, cursor));
+    const res = await apiFetch<PaginatedResponse<Tenant>>(tenantsPath(search, MAX_PAGE_LIMIT, cursor, sort));
     rows.push(...res.data);
     total = res.pagination?.total_count ?? rows.length;
     more = Boolean(res.pagination?.has_more && res.pagination.cursor);
@@ -50,8 +64,8 @@ export function useTenants(params: ListTenantsParams = {}) {
   return useQuery({
     queryKey: ['tenants', params],
     queryFn: () => (params.all
-      ? fetchAllTenants(params.search)
-      : apiFetch<PaginatedResponse<Tenant>>(tenantsPath(params.search, params.limit, params.cursor))),
+      ? fetchAllTenants(params.search, params.sort)
+      : apiFetch<PaginatedResponse<Tenant>>(tenantsPath(params.search, params.limit, params.cursor, params.sort))),
   });
 }
 

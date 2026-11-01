@@ -7,11 +7,13 @@
  * exclusions your site needs, then enforce. The latest-events list below it
  * shows single requests; this shows what to decide.
  */
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import { WAF_LOG_SUMMARY_WINDOWS, type WafLogSummaryRow } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
 import LocalTime from '@/components/ui/LocalTime';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable } from '@/hooks/use-sortable';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import { utcOffsetLabel } from '@/lib/format-traffic';
 import { localZoneTitle } from '@/lib/format-timestamp';
@@ -31,6 +33,14 @@ export function WafLogSummary({ tenantId, routeId, onExclude }: {
   const [sinceSeconds, setSinceSeconds] = useState<(typeof WAF_LOG_SUMMARY_WINDOWS)[number]>(604_800);
   const { data, isLoading, isError, error } = useRouteWafLogSummary(tenantId, routeId, sinceSeconds);
   const summary = data?.data;
+  // Biggest group first, as the API ranks them (and truncates: the note below
+  // says so, so a re-sort is over a set the page names).
+  const rows = useMemo(
+    () => (summary?.rows ?? []).map((r) => ({ ...r, lastSeenAtMs: Date.parse(r.lastSeenAt) })),
+    [summary],
+  );
+  const { sortedData: sortedRows, sortKey, sortDirection, onSort } = useSortable(rows, 'requests', 'desc');
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!px-3 !py-2 text-left' };
 
   return (
     <div className="rounded-lg border border-gray-200 dark:border-gray-700" data-testid="waf-summary">
@@ -62,16 +72,16 @@ export function WafLogSummary({ tenantId, routeId, onExclude }: {
           <table className="min-w-full text-xs">
             <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-500 dark:text-gray-400 uppercase">
               <tr>
-                <th className="px-3 py-2 text-left">Rule</th>
-                <th className="px-3 py-2 text-left">Path</th>
-                <th className="px-3 py-2 text-left">Requests</th>
-                <th className="px-3 py-2 text-left">IPs</th>
-                <th className="px-3 py-2 text-left whitespace-nowrap" title={localZoneTitle()}>Last seen ({utcOffsetLabel()})</th>
+                <SortableHeader label="Rule" sortKey="ruleId" {...th} />
+                <SortableHeader label="Path" sortKey="path" {...th} />
+                <SortableHeader label="Requests" sortKey="requests" {...th} />
+                <SortableHeader label="IPs" sortKey="sourceIps" {...th} />
+                <SortableHeader label={`Last seen (${utcOffsetLabel()})`} sortKey="lastSeenAtMs" {...th} className={`${th.className} whitespace-nowrap`} title={localZoneTitle()} />
                 <th className="px-3 py-2" />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-              {summary.rows.map((r) => (
+              {sortedRows.map((r) => (
                 <tr key={`${r.ruleId}|${r.path}`} data-testid={`waf-summary-row-${r.ruleId}-${r.path}`}>
                   <td className="px-3 py-2 text-gray-900 dark:text-gray-100">
                     <span className="font-mono">{r.ruleId}</span>

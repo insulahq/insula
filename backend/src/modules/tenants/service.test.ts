@@ -193,7 +193,7 @@ describe('listTenants — the Plan column', () => {
       { id: 't2', name: 'B', createdAt: new Date('2026-01-02'), planName: null },
     ];
     const { db, calls } = sequencedSelectDb([rows, [{ count: 2 }]]);
-    const result = await listTenants(db, { limit: 20, sort: { field: 'createdAt', direction: 'desc' } });
+    const result = await listTenants(db, { limit: 20 });
 
     expect(result.data.map((r) => r.planName)).toEqual(['Starter', null]);
     expect(result.pagination.total_count).toBe(2);

@@ -31,6 +31,11 @@ export const ingressRouteResponseSchema = z.object({
   isApex: z.number(),
   tlsMode: z.enum(['auto', 'custom', 'none']),
   status: z.string(),
+  /**
+   * False when the route is switched off: the hostname is not served, but
+   * every setting, its DNS records and its certificate are kept.
+   */
+  enabled: z.boolean(),
   // Redirect settings
   forceHttps: z.boolean(),
   wwwRedirect: z.enum(['none', 'add-www', 'remove-www']),
@@ -172,6 +177,8 @@ export const updateIngressRouteSchema = z
     service_port: z.number().int().min(1).max(65535).nullable().optional(),
     site_folder: siteFolderField,
     app_root: appRootField,
+    /** Switch the route off (false) or back on (true). Its settings are kept either way. */
+    enabled: z.boolean().optional(),
   })
   .refine(
     (v) => !(v.deployment_id && v.private_worker_id),

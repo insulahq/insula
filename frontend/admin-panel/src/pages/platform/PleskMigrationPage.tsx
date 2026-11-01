@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { ServerCog, Plus, Loader2, AlertCircle, Trash2, RefreshCw, X, ShieldCheck, ShieldAlert, ArrowRightCircle, CheckCircle2, CircleDashed, CircleAlert, MinusCircle } from 'lucide-react';
 import {
   usePleskSources,
@@ -13,6 +13,8 @@ import {
 import { useTenants } from '@/hooks/use-tenants';
 import type { PleskSourceResponse, PleskSubscription, PleskMigrationResponse, PleskMigrationLeg } from '@insula/api-contracts';
 import { formatBytes } from '@/lib/format-bytes';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
 const INPUT = 'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
@@ -195,29 +197,38 @@ function InventoryTable({ subscriptions, sourceId, migrations }: {
   readonly sourceId: string;
   readonly migrations: readonly PleskMigrationResponse[];
 }) {
+  // Latest migration per subscription (rows arrive newest-first).
+  const latestFor = (name: string) => migrations.find((m) => m.subscriptionName === name) ?? null;
+  const accessors = useMemo<SortAccessors<PleskSubscription>>(() => ({
+    domains: (s) => s.domains.length,
+    mailboxes: (s) => s.mailboxes.length,
+    databases: (s) => s.databases.length,
+    // No migration yet shows a Migrate button: nothing to order by.
+    migration: (s) => migrations.find((m) => m.subscriptionName === s.name)?.status ?? null,
+  }), [migrations]);
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(subscriptions, 'name', 'asc', accessors);
+  const sort = { currentKey: sortKey, direction: sortDirection, onSort } as const;
   if (subscriptions.length === 0) {
     return <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">No subscriptions found.</p>;
   }
-  const th = 'py-1.5 pr-4 text-left text-xs font-medium text-gray-500 dark:text-gray-400';
+  const th = 'text-left text-xs font-medium text-gray-500 dark:text-gray-400';
   const td = 'py-1.5 pr-4 text-sm text-gray-700 dark:text-gray-300';
-  // Latest migration per subscription (rows arrive newest-first).
-  const latestFor = (name: string) => migrations.find((m) => m.subscriptionName === name) ?? null;
   return (
     <div className="mt-3 rounded-lg border border-gray-100 dark:border-gray-700 overflow-x-auto">
       <table className="w-full" data-testid="inventory-table">
         <thead className="bg-gray-50 dark:bg-gray-900/40">
           <tr>
-            <th className={`${th} pl-3`}>Subscription</th>
-            <th className={th}>Domains</th>
-            <th className={th}>Mailboxes</th>
-            <th className={th}>Databases</th>
-            <th className={th}>Mail size</th>
-            <th className={th}>Cron</th>
-            <th className={`${th} pr-3 text-right`}>Migration</th>
+            <SortableHeader label="Subscription" sortKey="name" padding="py-1.5 pr-4" className={`${th} pl-3`} {...sort} />
+            <SortableHeader label="Domains" sortKey="domains" padding="py-1.5 pr-4" className={th} {...sort} />
+            <SortableHeader label="Mailboxes" sortKey="mailboxes" padding="py-1.5 pr-4" className={th} {...sort} />
+            <SortableHeader label="Databases" sortKey="databases" padding="py-1.5 pr-4" className={th} {...sort} />
+            <SortableHeader label="Mail size" sortKey="mailBytes" padding="py-1.5 pr-4" className={th} {...sort} />
+            <SortableHeader label="Cron" sortKey="cronCount" padding="py-1.5 pr-4" className={th} {...sort} />
+            <SortableHeader label="Migration" sortKey="migration" padding="py-1.5 pr-4" className={`${th} pr-3 text-right`} {...sort} />
           </tr>
         </thead>
         <tbody>
-          {subscriptions.map((s) => (
+          {sortedData.map((s) => (
             <SubscriptionRow
               key={s.name}
               sub={s}

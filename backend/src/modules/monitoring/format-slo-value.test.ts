@@ -16,7 +16,7 @@ describe('formatSloValue', () => {
   });
 
   it('renders a NEGATIVE duration readably (already-expired certificate)', () => {
-    // cert-expiry emits `expiration - now`, which is negative once expired.
+    // mail-cert-expiry emits seconds to expiry, which is negative once expired.
     expect(formatSloValue(-2 * 86400, 'seconds')).toBe('-2.0d');
     expect(formatSloValue(-90 * 86400, 'seconds')).toBe('-90.0d');
     expect(formatSloValue(-0.5, 'seconds')).toBe('-500ms');

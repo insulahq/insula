@@ -34,6 +34,7 @@ import { useSslCert, useUploadSslCert, useDeleteSslCert } from '@/hooks/use-ssl-
 import CertDownloadSection from '@/components/CertDownloadSection';
 import ErrorPanel from '@/components/ErrorPanel';
 import RouteOperationStatus, { type RouteOperation, type RouteRemovalResult } from '@/components/routes/RouteOperationStatus';
+import RouteActiveToggle from '@/components/routes/RouteActiveToggle';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import FolderPickerDialog from '@/components/FolderPickerDialog';
 
@@ -771,6 +772,9 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
   const ingressBaseDomain = ingressBaseData?.data?.ingressBaseDomain ?? '';
   const createRoute = useCreateIngressRoute(tenantId, domainId);
   const updateRoute = useUpdateIngressRoute(tenantId, domainId);
+  // Its own mutation, so an inline target or folder edit started while a
+  // switch is in flight cannot overwrite what the status line reports.
+  const toggleRoute = useUpdateIngressRoute(tenantId, domainId);
   const deleteRoute = useDeleteIngressRoute(tenantId, domainId);
 
   const [subdomain, setSubdomain] = useState('');
@@ -810,6 +814,9 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
   } | null>(null);
   /** Route awaiting confirmation to have its document root cleared. */
   const [clearDocRootRoute, setClearDocRootRoute] = useState<{ id: string; hostname: string } | null>(null);
+  /** Route being switched on or off, and why the last switch failed. */
+  const [togglingRouteId, setTogglingRouteId] = useState<string | null>(null);
+  const [toggleError, setToggleError] = useState<unknown>(null);
 
   const rawRoutes = routesData?.data ?? [];
   const [routeQuery, setRouteQuery] = useState('');
@@ -922,8 +929,23 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
   // moved while it did.
   const pendingOnPage: RouteOperation | null =
     deleteRoute.isPending ? { kind: 'remove', hostname: hostnameOf(deleteRoute.variables) }
+    : toggleRoute.isPending
+      ? { kind: toggleRoute.variables?.enabled ? 'activate' : 'deactivate', hostname: hostnameOf(toggleRoute.variables?.routeId) }
     : updateRoute.isPending ? { kind: 'update', hostname: hostnameOf(updateRoute.variables?.routeId) }
     : null;
+
+  const handleToggleActive = async (routeId: string, enabled: boolean) => {
+    setTogglingRouteId(routeId);
+    setToggleError(null);
+    setRemoval(null);
+    try {
+      await toggleRoute.mutateAsync({ routeId, enabled });
+    } catch (err) {
+      setToggleError(err);
+    } finally {
+      setTogglingRouteId(null);
+    }
+  };
 
   const handleDeleteRoute = (routeId: string) => {
     const hostname = hostnameOf(routeId);
@@ -1079,6 +1101,15 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
 
       <RouteOperationStatus pending={pendingOnPage} removal={removal} />
 
+      {toggleError !== null && (
+        <ErrorPanel
+          error={extractOperatorError(toggleError)}
+          severity="error"
+          compact
+          testId="route-toggle-error"
+        />
+      )}
+
       {deleteRoute.error && (
         <ErrorPanel
           error={extractOperatorError(deleteRoute.error)}
@@ -1142,13 +1173,14 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                     {dnsMode !== 'primary' && <th className="px-4 py-3">CNAME Target</th>}
                     <SortableHeader label="Deployment" sortKey="deploymentName" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="px-4 py-3" />
                     <th className="px-4 py-3">TLS</th>
+                    <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                   {visibleRoutes.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="px-4 py-6 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="routes-no-match">
+                      <td colSpan={7} className="px-4 py-6 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="routes-no-match">
                         No routes match “{routeQuery}”.
                       </td>
                     </tr>
@@ -1165,7 +1197,10 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                     >
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
-                          <span className="font-medium text-blue-600 dark:text-blue-400">{route.hostname}</span>
+                          <span className={clsx(
+                            'font-medium',
+                            route.enabled ? 'text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-gray-400',
+                          )}>{route.hostname}</span>
                           {route.isApex ? (
                             <span className="inline-flex rounded bg-amber-50 dark:bg-amber-900/20 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300">apex</span>
                           ) : null}
@@ -1339,6 +1374,16 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                           {route.tlsMode !== 'none' && <Lock size={10} />}
                           {route.tlsMode === 'auto' ? 'Auto (TLS)' : route.tlsMode === 'custom' ? 'Custom' : 'None'}
                         </span>
+                      </td>
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                        <RouteActiveToggle
+                          hostname={route.hostname}
+                          enabled={route.enabled}
+                          isPending={togglingRouteId === route.id}
+                          disabled={togglingRouteId !== null || removingThis}
+                          onChange={(enabled) => void handleToggleActive(route.id, enabled)}
+                          testId={`route-active-toggle-${route.id}`}
+                        />
                       </td>
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         {removingThis ? (

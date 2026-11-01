@@ -12,6 +12,131 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **An ingress route can be switched off without losing its settings.** The tenant panel's
+  Ingress Routes list has a Status column with an **Active / Inactive** pill per route, and the
+  same pill sits top right on the route's own page. The pill says the state in words and colour,
+  green **Active** or grey **Inactive**, and clicking it switches the route. Switching off asks
+  first, because the site goes offline; switching on does not. While a route is inactive its
+  hostname gets no router: visitors get Traefik's `404 page not found`, and over HTTPS the
+  browser first warns about the certificate (no certificate is presented for an unserved
+  hostname). Everything else is
+  kept and stays editable: redirects, security and WAF settings, protected folders, sign-in,
+  mTLS, its DNS records and its certificate, which cert-manager keeps renewing. Switching it back
+  on rebuilds the same router. The route page says when a route is inactive, the tenant
+  dashboard's Sites list shows it as `inactive`, and the admin panel's domain page marks it
+  **Inactive** (read-only there). API: `PATCH /tenants/:tenantId/domains/:domainId/routes/:routeId`
+  takes `enabled`, and every route response carries it. Migration 0170 adds the column, `true`
+  for every existing route.
+
+- **Sortable columns on the remaining tables of both panels.** About 70 tables in the
+  admin and tenant panels that list records now sort by clicking a header. Examples include
+  backup health, node health, storage usage, sessions, API tokens, snapshots, the security
+  posture tables, CPU scheduling, mailbox login passwords, the trash, custom containers, the
+  WAF summary and exclusions, and installed-app components. Each opens in the order it
+  showed before, and each column sorts by what it shows (sizes by bytes, nodes by their
+  alias, states by severity). Left unsorted on purpose:
+  - tables whose order carries meaning: operation steps, hook execution order, a manifest's
+    component order;
+  - key/value detail tables and editable form rows;
+  - lists the server caps or pages: TLS and abuse reports, DMARC senders, mTLS
+    certificates, a private worker's audit trail, the Applications page's installed
+    deployments, and two tenant-detail lists that show only their first 20 rows. These
+    need server-side sorting first.
+
+  Sort headers are now keyboard-operable (Tab, then Enter or Space) and tell assistive
+  technology which column sorts which way.
+
+### Security
+
+- **A tenant can no longer list, change or delete another tenant's ingress routes.** The route
+  list, update and delete handlers under `/tenants/:tenantId/domains/:domainId/routes` checked
+  the tenant id in the URL against the caller but took the domain and route ids on trust (only
+  create checked the domain). Anyone who knew another tenant's domain or route id could list
+  that domain's routes, retarget, re-folder or delete a route, or point their own route at
+  another tenant's deployment. All three now check that the domain belongs to the tenant and
+  the route to that domain, and an update checks that a new deployment target belongs to the
+  tenant too; each answers 404 otherwise. The ids are random UUIDs that the panels never show to
+  another tenant, which limited the exposure. To look for past use, check the audit log for
+  `PATCH` or `DELETE` on `…/domains/:domainId/routes/:routeId` whose tenant id does not own the
+  domain in the path.
+
+### Fixed
+
+- **Clicking a column header sorts the whole list, not the page on screen.** The admin
+  panel's paged tables (Tenants, Users, Domains, Email Accounts, Cron Jobs) fetched 20 rows
+  at a time from a server that always ordered by creation date, then sorted those 20 rows in
+  the browser: sorting 140 tenants by name ordered one page of them. These lists now sort on
+  the server. The API takes `sort=<field>:asc|desc` with an allow-list per endpoint
+  (`INVALID_SORT_FIELD` otherwise, as `docs/architecture/API_PAGINATION_STRATEGY.md`
+  specified), text compares case-insensitively, empty values come last, and the next page
+  continues the same order (keyset cursor on the sort key and the row id). Changing the
+  sort starts again from page one, and a cursor made under another sort is refused.
+  - On the Tenants list, CPU, Memory, Storage and Placement are live values the database
+    does not hold. Sorting by one of them loads every tenant and sorts them in the browser,
+    and the page says so.
+  - The Tenant column of Domains and Cron Jobs sorts by the tenant's name. It sorted by
+    the tenant id.
+  - The same applies with a tenant picked on those two tabs.
+  - SFTP Users, the Audit log and the notification Delivery log get sortable headers on the
+    same terms.
+  - Fixed along the way:
+    - The delivery log's Next button was always disabled (it read a field the API never
+      sent).
+    - The audit log's and the tenant domain list's total shrank on every page, and so did
+      the SFTP users' total while searching.
+    - Paging by creation date could skip or repeat rows created in the same millisecond.
+  - A cursor from before the upgrade is refused once with `INVALID_CURSOR`. The panels then
+    start from page one.
+
+
+- **A healthy certificate no longer shows an amber "expiring" warning.** Tenant certificates
+  renewed 15 days before expiry (`renewBefore: 360h`) while the panels turned a certificate
+  amber at 30 days left, so every certificate sat amber for half a month of each cycle — one
+  tenant had several at once. Renewal and the warning are now both shares of the certificate's
+  own lifetime, so they stay right as certificate authorities shorten lifetimes (Let's Encrypt:
+  90 → 64 days on 2027-02-10, 45 days on 2028-02-16; 6-day certificates already exist).
+  - Every Certificate the platform obtains from Let's Encrypt renews with
+    `renewBeforePercentage: 33`, a third of the issued lifetime left (~30 days today), as Let's
+    Encrypt advises. This covers tenant domains, the platform's own hostnames, the
+    suspended page, private-worker tunnels, the webmail and Stalwart admin ingresses, and the
+    dev overlays. Existing Certificates move on the next reconcile. The ones from
+    `reconcile: disabled` seed manifests are patched by the reconciler that keeps their
+    hostnames. The minute-by-minute certificate status sweep also moves any tenant
+    Certificate still on a fixed schedule, which reaches domains no ingress reconcile
+    touches (a mail-only domain's wildcard). A certificate that already has less than a
+    third left renews right away, once.
+  - "Expiring" (amber on the Domains lists, the admin "certificate expiring" notification
+    and dashboard alert, the admin dashboard's red nearest-expiry, the posture card,
+    platform URL health) now means renewal is overdue: less than half of the renewal window
+    is left. A certificate someone uploaded, which nobody renews, still turns amber 30 days
+    ahead, even on a domain still flagged auto-renew. Migration 0171 stores each
+    certificate's notBefore to measure its lifetime.
+  - The monitoring rule `cert-expiry` (14 days left) is replaced by `cert-renewal-overdue`:
+    time to expiry over cert-manager's own renewal lead, firing below 0.5. cert-manager's
+    renewal-time metric is now scraped and kept (it was dropped as unused); a new test fails
+    when a scrape job drops a metric family a rule reads. Migration 0172 moves an operator's
+    on/off choice to the new rule (a seconds threshold cannot be a ratio, so it is dropped)
+    and removes the retired rule's alert rows. vmsingle reads its metric allowlist only
+    at start, so on an upgraded cluster the new rule has data from vmsingle's next daily
+    recycle (or a SIGHUP to it); until then it cannot fire. The panels, the admin
+    notification and the dashboards use the database and work at once.
+  - The tenant dashboard's **Renews in** counts to the renewal, not to expiry.
+  - The rule lives in one module (`certificates/renewal-policy.ts`, with an SQL form for the
+    dashboards). The new CI guard `ci-cert-renewal-window-check.sh` (Backend and
+    Infrastructure CI) fails any absolute `renewBefore` in backend code, manifests or
+    scripts, and any percentage that differs from the policy.
+
+- **The dashboard's Failover line names the node whose loss would do the most harm.** It named
+  the node with the most CPU as the worst case — on one cluster a node that had just joined,
+  which no tenant and no part of mail used, while another held most tenants and the mail
+  secondary. It now says what depends on the node: "Worst case is sv3 (23 tenants + mail
+  secondary would be affected)". A tenant on local storage counts on every node with its
+  workloads or data; an HA tenant only where it runs. Mail that could not fail over ranks
+  first, as "all mail (no failover)". Whether the cluster survives is still the capacity test,
+  and a warning still names the largest node.
+
 ## [2026.10.23] - 2026-10-31
 
 ### Added

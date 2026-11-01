@@ -283,3 +283,30 @@ describe('NodeDrainDeleteModal — Drain tenants', () => {
   });
 });
 
+
+describe('NodeDrainDeleteModal — non-system pods sorting', () => {
+  type Pod = DrainImpact['nonSystemPods'][number];
+  const pod = (name: string, namespace: string, tenantId: string | null, tenantName: string | null): Pod => ({
+    namespace, name, tenantId, tenantName, pinnedToThisNode: false, workloadKind: null, workloadName: null,
+  });
+
+  beforeEach(() => {
+    impact = { ...makeImpact([]), nonSystemPods: [
+      pod('a-web', 'tenant-z', 't-z', 'Zeta'),
+      pod('m-debug', 'kube-public', null, null),
+      pod('z-app', 'tenant-a', 't-a', 'Alpha'),
+    ] };
+  });
+
+  it('opens by the tenant each row shows (namespace when there is none), then sorts by pod both ways', () => {
+    renderModal();
+    const table = screen.getByText('a-web').closest('table') as HTMLElement;
+    const pods = () => Array.from(table.querySelectorAll('tbody > tr')).map((tr) => tr.querySelectorAll('td')[1]?.textContent);
+    expect(pods()).toEqual(['z-app', 'm-debug', 'a-web']);
+
+    fireEvent.click(within(table).getByTestId('sort-name'));
+    expect(pods()).toEqual(['a-web', 'm-debug', 'z-app']);
+    fireEvent.click(within(table).getByTestId('sort-name'));
+    expect(pods()).toEqual(['z-app', 'm-debug', 'a-web']);
+  });
+});

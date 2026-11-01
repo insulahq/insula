@@ -17,12 +17,20 @@
  */
 import { useState } from 'react';
 import { Shield, Plus, Trash2, RefreshCw, AlertCircle } from 'lucide-react';
-import type { TrustedProxySource } from '@insula/api-contracts';
+import type { TrustedProxyRange, TrustedProxySource } from '@insula/api-contracts';
 import {
   useCreateTrustedProxy,
   useDeleteTrustedProxy,
   useTrustedProxies,
 } from '@/hooks/use-trusted-proxies';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
+
+/** System, bootstrap, operator — the server's order (then CIDR), kept by the Source column. */
+const SOURCE_RANK: Record<TrustedProxySource, number> = { system: 0, bootstrap: 1, operator: 2 };
+const RANGE_SORT: SortAccessors<TrustedProxyRange> = { source: (r) => SOURCE_RANK[r.source] };
+const NO_RANGES: readonly TrustedProxyRange[] = [];
+const TH_PAD = 'py-2 pr-3';
 
 export default function TrustedProxiesCard() {
   const { data, isLoading, error, refetch, isFetching } = useTrustedProxies();
@@ -32,6 +40,11 @@ export default function TrustedProxiesCard() {
   const [cidr, setCidr] = useState('');
   const [description, setDescription] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+  const { sortedData: sortedRanges, sortKey, sortDirection, onSort } =
+    useSortable(data?.ranges ?? NO_RANGES, 'source', 'asc', RANGE_SORT);
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding={TH_PAD} />
+  );
 
   const onAdd = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
@@ -132,15 +145,15 @@ export default function TrustedProxiesCard() {
           <table className="w-full text-xs" data-testid="trusted-proxies-table">
             <thead>
               <tr className="text-left text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
-                <th className="py-2 pr-3">CIDR</th>
-                <th className="py-2 pr-3">Description</th>
-                <th className="py-2 pr-3">Source</th>
-                <th className="py-2 pr-3">Added by</th>
+                {header('CIDR', 'cidr')}
+                {header('Description', 'description')}
+                {header('Source', 'source')}
+                {header('Added by', 'createdByEmail')}
                 <th className="py-2 pr-3"></th>
               </tr>
             </thead>
             <tbody>
-              {data.ranges.map((r) => (
+              {sortedRanges.map((r) => (
                 <tr
                   key={r.id ?? `${r.source}-${r.cidr}`}
                   className="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50"

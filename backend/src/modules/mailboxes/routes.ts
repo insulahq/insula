@@ -1,14 +1,26 @@
 import type { FastifyInstance } from 'fastify';
 import crypto from 'node:crypto';
-import { eq, and, desc, lt, sql, or, ilike } from 'drizzle-orm';
+import { eq, and, sql, or, ilike } from 'drizzle-orm';
 import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { createMailboxSchema, updateMailboxSchema, mailboxAccessSchema } from '@insula/api-contracts';
 import { mailboxes, tenants, emailDomains, domains, auditLogs } from '../../db/schema.js';
 import * as service from './service.js';
 import { success, paginated } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { parsePaginationParams, encodeCursor, decodeCursor } from '../../shared/pagination.js';
+import { parsePaginationParams } from '../../shared/pagination.js';
 import type { JwtPayload } from '../../middleware/auth.js';
+import { encodeListCursor, listCursorCondition, listOrderBy, listSortKeySelect, resolveListSort, withoutSortKey, type SortFields } from '../../shared/list-sort.js';
+
+/** Columns the admin Email Accounts list sorts by on the server — every column it shows. */
+const ADMIN_MAILBOX_SORT_FIELDS: SortFields = {
+  fullAddress: { expr: mailboxes.fullAddress, kind: 'text' },
+  tenantName: { expr: tenants.name, kind: 'text' },
+  mailboxType: { expr: mailboxes.mailboxType, kind: 'text' },
+  status: { expr: mailboxes.status, kind: 'text' },
+  quotaMb: { expr: mailboxes.quotaMb, kind: 'numeric' },
+  usedMb: { expr: mailboxes.usedMb, kind: 'numeric' },
+  createdAt: { expr: mailboxes.createdAt, kind: 'timestamp' },
+};
 
 export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
   // ─── Admin cross-tenant mailbox list ───
@@ -24,8 +36,9 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
       onRequest: [requireRole('super_admin', 'admin', 'support', 'read_only')],
     }, async (request) => {
       const query = request.query as Record<string, unknown>;
-      const { limit, cursor } = parsePaginationParams(query);
+      const { limit, cursor, sortParam } = parsePaginationParams(query);
       const search = typeof query.search === 'string' && query.search.length > 0 ? query.search : undefined;
+      const sort = resolveListSort(sortParam, ADMIN_MAILBOX_SORT_FIELDS, { field: 'createdAt', direction: 'desc' });
 
       // postmaster@ is the PLATFORM's address on a tenant's domain — it exists
       // to receive DMARC/TLS reports, has no owner to support and no quota an
@@ -46,12 +59,8 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
         if (orExpr) filters.push(orExpr);
       }
 
-      const cursorConds = [];
-      if (cursor) {
-        const decoded = decodeCursor(cursor);
-        cursorConds.push(lt(mailboxes.createdAt, new Date(decoded.sort)));
-      }
-      const allConds = [...filters, ...cursorConds];
+      const after = listCursorCondition(cursor, 'mailbox', sort, ADMIN_MAILBOX_SORT_FIELDS, mailboxes.id);
+      const allConds = after ? [...filters, after] : [...filters];
       const where = allConds.length === 0
         ? undefined
         : allConds.length === 1 ? allConds[0] : and(...allConds);
@@ -75,27 +84,22 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
           updatedAt: mailboxes.updatedAt,
           tenantName: tenants.name,
           emailDomain: domains.domainName,
+          sortKey: listSortKeySelect(sort, ADMIN_MAILBOX_SORT_FIELDS),
         })
         .from(mailboxes)
         .leftJoin(tenants, eq(mailboxes.tenantId, tenants.id))
         .leftJoin(emailDomains, eq(mailboxes.emailDomainId, emailDomains.id))
         .leftJoin(domains, eq(emailDomains.domainId, domains.id))
         .where(where)
-        .orderBy(desc(mailboxes.createdAt))
+        .orderBy(...listOrderBy(sort, ADMIN_MAILBOX_SORT_FIELDS, mailboxes.id))
         .limit(limit + 1);
 
       const hasMore = rows.length > limit;
-      const data = rows.slice(0, limit);
-
-      let nextCursor: string | null = null;
-      if (hasMore && data.length > 0) {
-        const last = data[data.length - 1];
-        nextCursor = encodeCursor({
-          resource: 'mailbox',
-          sort: last.createdAt.toISOString(),
-          id: last.id,
-        });
-      }
+      const page = rows.slice(0, limit);
+      const nextCursor = hasMore && page.length > 0
+        ? encodeListCursor('mailbox', sort, page[page.length - 1])
+        : null;
+      const data = withoutSortKey(page);
 
       const countWhere = filters.length === 0
         ? undefined
