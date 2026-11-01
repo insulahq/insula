@@ -600,6 +600,11 @@ What the drill found beyond the shapes:
    write + rename and no fsync, and had rewritten it in the second before the cut. The server booted
    with empty peer sets and could not rejoin etcd for ≈ 55 min, until the sets were restored by hand
    (1 of 2 cuts on that server). This is the deadlock the file exists to prevent (`nft.go`).
+   **Fixed** on development (`bbb563a7a`): the file is synced before the rename and the directory
+   after it, and is no longer replaced while the members are unchanged (it was every 30 s). Drill
+   on the same server, cut the moment a replace lands, the file read before k3s starts: 3 of 3
+   cuts left it 0 bytes with the old reconciler, 0 of 5 with the new one (plus 1 of 1 intact on an
+   ext4 server).
 4. A planned move to a server that was NotReady minutes earlier fails its preflight after 300 s.
    Right after a move, enabling email on a domain failed with a JMAP 401 for ≈ 30 s while the
    credentials were re-synchronised.
@@ -757,3 +762,6 @@ date, not deleted.
   stopped accepting for 181 s; C on Garage lost nothing but degraded for ≈ 12 min; B lost no body
   despite the missing fsync. Platform findings: the failover's dependence on platform-api and the
   platform database, the firewall peers file left empty by a power cut, the planned-move preflight.
+- 2026-11-01 — Staging finding 3 (the firewall peers file left empty by a power cut) fixed in
+  firewall-reconciler and re-drilled: 3 of 3 cuts emptied the file with the old reconciler, 0 of 6
+  with the new one.

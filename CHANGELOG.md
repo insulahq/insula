@@ -72,7 +72,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   boot with the file empty: no peer could reach it, and it stayed `NotReady` until the members
   were restored by hand. This was 55 minutes on a lab server running Rocky Linux on XFS. The
   reconciler now leaves the file alone while the members are unchanged. When they change, it
-  syncs the new file before renaming it into place and syncs the directory after.
+  syncs the new file before renaming it into place and syncs the directory after. On that lab
+  server, three power cuts each landing the moment a replace happened left the file empty with
+  the old reconciler, and none of five did with the new one.
 
 - **Clicking a column header sorts the whole list, not the page on screen.** The admin
   panel's paged tables (Tenants, Users, Domains, Email Accounts, Cron Jobs) fetched 20 rows
