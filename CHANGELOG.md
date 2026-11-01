@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.11.1-rc.2] - 2026-11-01
-
 ### Added
 
 - **An ingress route can be switched off without losing its settings.** The tenant panel's
