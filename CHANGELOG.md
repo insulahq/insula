@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.1] - 2026-11-01
+
 ### Added
 
 - **An ingress route can be switched off without losing its settings.** The tenant panel's
@@ -105,7 +107,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     - Paging by creation date could skip or repeat rows created in the same millisecond.
   - A cursor from before the upgrade is refused once with `INVALID_CURSOR`. The panels then
     start from page one.
-
 
 - **A healthy certificate no longer shows an amber "expiring" warning.** Tenant certificates
   renewed 15 days before expiry (`renewBefore: 360h`) while the panels turned a certificate
