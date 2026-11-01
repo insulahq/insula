@@ -13,6 +13,8 @@ import { utcOffsetLabel } from '@/lib/format-traffic';
 import { CheckCircle2, XCircle, Clock, AlertTriangle } from 'lucide-react';
 import type { DrDrillRun } from '@insula/api-contracts';
 import { useDrDrillRuns, useDrDrillSummary } from '@/hooks/use-system-backup';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable } from '@/hooks/use-sortable';
 
 export default function DrDrillRunsSection() {
   const runsQ = useDrDrillRuns();
@@ -20,6 +22,9 @@ export default function DrDrillRunsSection() {
 
   const runs = runsQ.data ?? [];
   const summary = summaryQ.data;
+  // Newest first, as the server sends the rolling window.
+  const { sortedData: sortedRuns, sortKey, sortDirection, onSort } = useSortable<DrDrillRun>(runs, 'startedAt', 'desc');
+  const head = { currentKey: sortKey, direction: sortDirection, onSort, padding: 'px-3 py-2', className: 'text-left' } as const;
 
   return (
     <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 space-y-3" data-testid="dr-drill-runs">
@@ -70,17 +75,17 @@ export default function DrDrillRunsSection() {
         <table className="min-w-full text-sm" data-testid="dr-drill-runs-table">
           <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 text-xs uppercase">
             <tr>
-              <th className="px-3 py-2 text-left" title={localZoneTitle()}>When ({utcOffsetLabel()})</th>
-              <th className="px-3 py-2 text-left">Status</th>
-              <th className="px-3 py-2 text-left">Trigger</th>
-              <th className="px-3 py-2 text-left">Duration</th>
-              <th className="px-3 py-2 text-left">Secrets restored</th>
-              <th className="px-3 py-2 text-left">Failure</th>
-              <th className="px-3 py-2 text-left">Runner</th>
+              <SortableHeader label={`When (${utcOffsetLabel()})`} sortKey="startedAt" title={localZoneTitle()} {...head} />
+              <SortableHeader label="Status" sortKey="status" {...head} />
+              <SortableHeader label="Trigger" sortKey="trigger" {...head} />
+              <SortableHeader label="Duration" sortKey="durationSeconds" {...head} />
+              <SortableHeader label="Secrets restored" sortKey="secretsRestoredCount" {...head} />
+              <SortableHeader label="Failure" sortKey="failureReason" {...head} />
+              <SortableHeader label="Runner" sortKey="runner" {...head} />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-            {runs.map((r) => (
+            {sortedRuns.map((r) => (
               <tr key={r.id}>
                 <td className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-gray-200">
                   <LocalTime iso={r.startedAt} seconds />

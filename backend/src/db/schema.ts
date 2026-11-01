@@ -1305,6 +1305,9 @@ export const ingressRoutes = pgTable('ingress_routes', {
   isApex: integer('is_apex').notNull().default(0),
   tlsMode: tlsModeEnum().notNull().default('auto'),
   status: ingressStatusEnum().notNull().default('pending'),
+  // Migration 0170 — false switches the route off: no router is built for it,
+  // while every setting below (and its DNS records and certificate) is kept.
+  enabled: boolean('enabled').notNull().default(true),
   // ── Redirect settings ──
   forceHttps: integer('force_https').notNull().default(1),
   wwwRedirect: wwwRedirectEnum('www_redirect').notNull().default('none'),
@@ -2524,6 +2527,9 @@ export const sslCertificates = pgTable('ssl_certificates', {
   caBundle: text('ca_bundle'),
   issuer: varchar('issuer', { length: 500 }),
   subject: varchar('subject', { length: 500 }),
+  // Migration 0171 — the current certificate's notBefore. With expiresAt it
+  // gives the lifetime that certificates/renewal-policy.ts measures against.
+  notBefore: timestamp('not_before'),
   expiresAt: timestamp('expires_at'),
   // ── Issuance state (0082) ──
   // Presence of a TLS Secret used to be the ONLY signal, so a

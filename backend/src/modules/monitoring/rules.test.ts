@@ -290,3 +290,17 @@ describe('SLO_RULES — ratios must not mix metric families', () => {
     expect(SLO_RULES.filter((r) => r.expr.includes('_bucket')).length).toBeGreaterThan(0);
   });
 });
+
+describe('cert-renewal-overdue', () => {
+  // Replaced `cert-expiry` (fixed 14 days), which a short-lived certificate
+  // would trip on every cycle. The value is the share of the renewal window
+  // left, so the rule fits any lifetime.
+  it('measures the share of the renewal window left, against cert-manager\'s own renewal time', () => {
+    const rule = ruleById('cert-renewal-overdue')!;
+    expect(rule.unit).toBe('ratio');
+    expect(rule.threshold).toBe(0.5);
+    expect(rule.expr).toContain('certmanager_certificate_renewal_timestamp_seconds');
+    expect(renderExpr(rule, null)).toMatch(/\) < 0\.5$/);
+    expect(ruleById('cert-expiry')).toBeUndefined();
+  });
+});

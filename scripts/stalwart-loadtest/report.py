@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""report.py <results-dir> — markdown tables from one lt.sh run (ADR-065 evaluation).
+
+Reads <variant>/<phase>.json (load generator), phases.jsonl (phase windows), samples.jsonl
+(kubelet CPU/memory every 5 s), sizes.jsonl, backups.jsonl, restarts.jsonl, migrations.jsonl.
+CPU per phase = the sum of positive deltas of each container's cumulative CPU inside the
+phase window (a restarted container's counter starts again at zero).
+"""
+import datetime
+import json
+import os
+import re
+import sys
+from collections import defaultdict
+
+GROUPS = {"stalwart": "stalwart", "postgres": "postgres", "rclone": "s3", "valkey": "valkey",
+          "meilisearch": "search", "migrate": "migrate", "loadgen": "loadgen"}
+STORES = ("postgres", "s3", "valkey", "search")  # what a variant runs besides Stalwart itself
+
+
+def stores_of(v):
+    """The store containers variant v runs on: PostgreSQL stays up between variants, and its idle
+    CPU and memory must not be charged to a RocksDB variant."""
+    s = set()
+    if v.startswith(("v1-pg", "mig-pg")):
+        s.add("postgres")
+    if v == "v1-pg-s3":  # v1-pg-s3remote's S3 runs on another machine, outside the samples
+        s.add("s3")
+    if v == "v1-pg-cluster":
+        s.add("valkey")
+    if v == "v1-pg-meili":
+        s.add("search")
+    return s
+VARIANTS = ["v016-rocks", "v1-rocks", "v1-pg", "v1-pg-fs", "v1-pg-meili", "v1-pg-s3", "v1-pg-s3remote",
+            "v1-pg-cluster"]
+GIB = 2 ** 30
+
+
+def jsonl(path):
+    if not os.path.exists(path):
+        return []
+    out = []
+    for line in open(path):
+        line = line.strip()
+        if line:
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                pass
+    return out
+
+
+def samples(d):
+    """samples.jsonl, plus samples-<node>.jsonl from one sampler per node (multi-node runs)."""
+    out = jsonl(f"{d}/samples.jsonl")
+    for f in sorted(os.listdir(d)):
+        if f.startswith("samples-") and f.endswith(".jsonl"):
+            out += jsonl(f"{d}/{f}")
+    return out
+
+
+class Run:
+    def __init__(self, d):
+        self.d = d
+        self.windows = {}
+        for e in jsonl(f"{d}/phases.jsonl"):
+            key = (e["variant"], e["phase"])
+            w = self.windows.setdefault(key, [None, None])
+            w[0 if e["event"] == "start" else 1] = e["t"]
+        self.samples = defaultdict(list)  # (pod, container) → [(t, cpu_ns, ws, rss)]
+        for s in samples(d):
+            if "pod" in s and s.get("cpu_ns") is not None:
+                self.samples[(s["pod"], s["container"])].append((s["t"], s["cpu_ns"], s.get("ws") or 0,
+                                                                  s.get("rss") or 0))
+        self.sizes = jsonl(f"{d}/sizes.jsonl")
+
+    def phase(self, v, p):
+        f = f"{self.d}/{v}/{p}.json"
+        if not os.path.exists(f):
+            return None
+        try:
+            return json.load(open(f))
+        except ValueError:
+            return None
+
+    def usage(self, v, p, mem="ws"):
+        """{group: (cpu_seconds, peak memory bytes)} inside the phase window. mem="ws" is the working
+        set (what the cgroup limit sees, page cache included), "rss" the process's own memory: with
+        FileSystem blobs the two differ by the blob files' page cache (0.19 vs 1.98 GiB on DEV)."""
+        w = self.windows.get((v, p))
+        if not w or None in w:
+            return {}
+        out = defaultdict(lambda: [0.0, 0])
+        for (pod, c), xs in self.samples.items():
+            g = GROUPS.get(c)
+            if g is None:
+                continue
+            prev = None
+            for t, cpu, ws, rss in xs:
+                if t < w[0] - 5 or t > w[1] + 5:
+                    prev = (t, cpu) if t < w[0] else prev
+                    continue
+                if prev is not None and cpu >= prev[1]:
+                    out[g][0] += (cpu - prev[1]) / 1e9
+                out[g][1] = max(out[g][1], rss if mem == "rss" else ws)
+                prev = (t, cpu)
+        return {g: (round(c, 1), m) for g, (c, m) in out.items()}
+
+    def throughput(self, v, p):
+        """[(interval_mid_t, ops_per_s)] from a phase's 30 s progress lines and its start time."""
+        f, d = f"{self.d}/{v}/{p}.log", self.phase(v, p)
+        if not os.path.exists(f) or not d or not d.get("started"):
+            return []
+        t0 = datetime.datetime.fromisoformat(d["started"]).timestamp()
+        out, prev = [], (0, 0)
+        for line in open(f):
+            m = re.search(r" (\d+) ops, \d+ errors, (\d+)s", line)
+            if m and int(m[2]) > prev[1]:
+                n, s = int(m[1]), int(m[2])
+                out.append((t0 + (s + prev[1]) / 2, (n - prev[0]) / (s - prev[1])))
+                prev = (n, s)
+        return out
+
+    def size(self, v, label):
+        for s in reversed(self.sizes):
+            if s["variant"] == v and s["label"] == label:
+                return s
+        return None
+
+
+def lat(d, op, q="p95"):
+    try:
+        return d["latency_ms"][op][q]
+    except (KeyError, TypeError):
+        return None
+
+
+def fmt(x, nd=1):
+    if x is None:
+        return "–"
+    if isinstance(x, float):
+        return f"{x:.{nd}f}"
+    return str(x)
+
+
+def gib(b):
+    return "–" if b is None else f"{b / GIB:.2f}"
+
+
+def table(head, rows):
+    out = ["| " + " | ".join(head) + " |", "|" + "|".join("---" for _ in head) + "|"]
+    out += ["| " + " | ".join(fmt(c) for c in r) + " |" for r in rows]
+    return "\n".join(out)
+
+
+def store_bytes(s):
+    """Everything the variant keeps on disk: data dir, blob dir, PostgreSQL volume, S3."""
+    if not s:
+        return None
+    total = (s.get("data_bytes") or 0) + (s.get("blob_bytes") or 0)
+    if s.get("pg"):  # the database, not the volume: pg_wal holds up to max_wal_size (4 GB here)
+        total += s["pg"].get("db_bytes") or 0                    # even when empty — its own column
+    if s.get("s3"):
+        total += s["s3"].get("bytes") or 0
+    if s.get("search"):
+        total += s["search"].get("bytes") or 0
+    return total
+
+
+def main():
+    r = Run(sys.argv[1])
+    vs = [v for v in VARIANTS if os.path.isdir(f"{r.d}/{v}")]
+    migs = sorted(x for x in os.listdir(r.d) if x.startswith("mig-") and os.path.isdir(f"{r.d}/{x}"))
+    out = [f"# Stalwart store evaluation — run {os.path.basename(r.d.rstrip('/'))}", ""]
+    env = f"{r.d}/environment.txt"
+    if os.path.exists(env):
+        out += ["```", open(env).read().strip(), "```", ""]
+
+    rows = []
+    for v in vs:
+        a, s = r.phase(v, "append"), r.phase(v, "smtp")
+        ua = r.usage(v, "append")
+        cpu = sum(c for g, (c, _) in ua.items() if g == "stalwart" or g in stores_of(v))
+        n = (a or {}).get("messages") or 0
+        peaks = {"ws": 0, "rss": 0, "pg": 0}
+        for ph in ("append", "smtp", "imap-read", "jmap-read", "big", "mixed"):
+            for mem in ("ws", "rss"):
+                peaks[mem] = max(peaks[mem], r.usage(v, ph, mem).get("stalwart", (0, 0))[1])
+            peaks["pg"] = max(peaks["pg"], r.usage(v, ph).get("postgres", (0, 0))[1])
+        rows.append([v, (a or {}).get("msg_per_s"), (a or {}).get("mb_per_s"), lat(a, "append", "p50"),
+                     lat(a, "append"), round(cpu / n * 1000, 1) if n else None,
+                     (s or {}).get("accept_msg_per_s"), (s or {}).get("stored_msg_per_s"),
+                     lat(s, "deliver", "p50"), lat(s, "deliver"),
+                     f"{gib(peaks['rss'])} / {gib(peaks['ws'])}",
+                     gib(peaks["pg"]) if "postgres" in stores_of(v) else "–"])
+    out += ["## Ingest", "", table(["variant", "APPEND msg/s", "MB/s", "p50 ms", "p95 ms",
+                                    "CPU-s / 1k msgs", "SMTP accepted msg/s", "stored msg/s",
+                                    "deliver p50 ms", "p95 ms", "Stalwart peak RSS / working set GiB",
+                                    "PG peak GiB"], rows), "",
+            "Peaks over ingest, reads and the mixed load. The working set includes page cache (blob files on "
+            "a FileSystem store) and is what the container limit counts.", ""]
+
+    for kind, ops in (("imap", ["select", "fetch_headers", "fetch_body", "search_subject", "search_body",
+                                "store_flag", "login"]),
+                      ("jmap", ["list_mailbox", "open_email", "search_text", "thread", "set_keyword"])):
+        rows = []
+        for v, p in [(v, p) for v in vs + migs for p in (f"{kind}-read", f"{kind}-read-analyzed")]:
+            d = r.phase(v, p)
+            if not d:
+                continue
+            errs = sum(d.get("errors", {}).values())
+            # ops/s alone ranks the load generator once it saturates (one Python process ≈ one
+            # core), so the server's CPU per operation is the comparable figure
+            u, w = r.usage(v, p), r.windows.get((v, p))
+            n = (d.get("ops_per_s") or 0) * (d.get("duration_s") or 0)
+            cpu_ms = round(u["stalwart"][0] / n * 1000, 2) if n and "stalwart" in u else None
+            store_ms = round(sum(u[g][0] for g in stores_of(v) if g in u) / n * 1000, 2) if n else None
+            gen = round(u["loadgen"][0] / (w[1] - w[0]), 2) if w and None not in w and "loadgen" in u else None
+            rows.append([v + (" (after ANALYZE)" if p.endswith("-analyzed") else ""), d.get("ops_per_s"), cpu_ms,
+                         store_ms, gen]
+                        + [f"{fmt(lat(d, o, 'p50'), 2)} / {fmt(lat(d, o), 2)}" for o in ops] + [errs])
+        out += [f"## {kind.upper()} reads (ms, p50 / p95)", "",
+                table(["variant", "ops/s", "Stalwart CPU-ms / op", "stores CPU-ms / op", "load generator cores"]
+                      + ops + ["errors"],
+                      rows), ""]
+
+    ops = ["select_cold", "fetch_all_flags", "search_body_rare", "search_subject", "jmap_query_total",
+           "jmap_query_deep", "jmap_search_text"]
+    rows = []
+    for v in vs + migs:
+        for p in ("big", "big-cold"):
+            d = r.phase(v, p)
+            if d:
+                h = d.get("hits") or {}
+                hits = "/".join("–" if not h.get(o) else str(min(h[o])) for o in ("search_body_rare",
+                                                                                   "jmap_search_text"))
+                rows.append([f"{v} ({'after restart' if p == 'big-cold' else 'warm'})",
+                             d.get("messages_inbox")] + [lat(d, o, "max") for o in ops] + [hits])
+    out += ["## Large mailbox (ms, worst of the samples)", "",
+            table(["variant", "messages"] + ops + ["fewest rare-term hits IMAP/JMAP"], rows), ""]
+
+    rows = []
+    for v in vs:
+        d = r.phase(v, "mixed")
+        if d:
+            rows.append([v, d.get("smtp_sent"), lat(d, "smtp_deliver"), lat(d, "imap_fetch_body"),
+                         lat(d, "imap_search_body"), lat(d, "jmap_list_mailbox"), lat(d, "jmap_search_text"),
+                         sum(d.get("errors", {}).values())])
+    out += ["## Mixed load (p95 ms; SMTP 5 msg/s + 8 IMAP + 8 JMAP clients)", "",
+            table(["variant", "SMTP sent", "SMTP deliver", "IMAP fetch body", "IMAP search body",
+                   "JMAP list", "JMAP search", "errors"], rows), ""]
+
+    rows = []
+    for v in vs:
+        s = r.size(v, "after-smtp")
+        a, sm = r.phase(v, "append"), r.phase(v, "smtp")
+        raw = ((a or {}).get("bytes") or 0) + ((sm or {}).get("bytes") or 0)
+        if not s or not raw:
+            continue
+        pg = s.get("pg") or {}
+        total = store_bytes(s)
+        e = r.size(v, "empty") or {}
+        wal = (pg.get("wal_bytes") or 0) - ((e.get("pg") or {}).get("wal_bytes") or 0)
+        rows.append([v, gib(raw), gib(s.get("data_bytes")), gib(s.get("blob_bytes")), s.get("blob_files"),
+                     gib(pg.get("db_bytes")), gib(wal) if pg else "–", gib(pg.get("pg_wal_dir_bytes")),
+                     gib((s.get("s3") or {}).get("bytes")), gib((s.get("search") or {}).get("bytes")),
+                     gib(total), round(total / raw, 2)])
+    out += ["## Storage after ingest (GiB)", "",
+            table(["variant", "raw mail", "data dir", "blob dir", "blob files", "PG database",
+                   "WAL written", "pg_wal dir", "S3", "search", "store total", "store / raw"], rows), "",
+            "Store total = data dir + blob dir + PG database + S3 + search index; the pg_wal directory is a "
+            "fixed allowance on top (up to max_wal_size).", ""]
+
+    labels = ["before-delete", "after-delete", "after-purge", "after-purge-10min", "after-sample-release",
+              "after-vacuum", "after-reappend", "after-vacuum-full"]
+    rows = []
+    for v in vs:
+        d = r.phase(v, "delete")
+        row = [v, gib(((d or {}).get("deleted") or {}).get("bytes"))]
+        row += [gib(store_bytes(r.size(v, lab))) for lab in labels]
+        rows.append(row)
+    out += ["## Deleting half of every mailbox (total on disk, GiB)", "",
+            table(["variant", "raw deleted"] + labels, rows), ""]
+
+    rows = []
+    restarts = {x["variant"]: x["restart_seconds"] for x in jsonl(f"{r.d}/restarts.jsonl")}
+    for b in jsonl(f"{r.d}/backups.jsonl"):
+        if b["bytes"] < 2 ** 20:  # the data volume of a store kept elsewhere, or a failed copy
+            continue
+        rows.append([b["variant"], b["kind"], gib(b["bytes"]), b["seconds"],
+                     round(b["bytes"] / max(float(b["seconds"]), 0.1) / 1e6, 1), restarts.get(b["variant"])])
+    out += ["## Full copy of the store, restart", "",
+            table(["variant", "copy", "GiB", "seconds", "MB/s", "restart to ready s"], rows), ""]
+
+    mig = jsonl(f"{r.d}/migrations.jsonl")
+    if mig:
+        rows = [[m.get("variant"), m.get("step") or ", ".join(k for k in m if k != "variant"),
+                 m.get("seconds", m.get("window_seconds", m.get("index_rebuild_seconds"))), m.get("rc", "")]
+                for m in mig]
+        out += ["## Migration", "", table(["migration", "step", "seconds", "rc"], rows), ""]
+        for mv in migs:
+            w = r.windows.get((mv, "run-1-live"))
+            tp = r.throughput(mv, "mixed-during-copy")
+            if w and None not in w and tp:
+                inside = [x for t, x in tp if w[0] <= t <= w[1]]
+                after = [x for t, x in tp if t > w[1] + 15]
+                if inside and after:
+                    a, b = sum(inside) / len(inside), sum(after) / len(after)
+                    out.append(f"- {mv}: client ops/s while the live copy ran {a:.0f}, after it {b:.0f} "
+                               f"({a / b:.0%}; copy {w[1] - w[0]:.0f} s)")
+            c = r.phase(mv, "compare")
+            if c:
+                out.append(f"- {mv}: sample compare {c.get('checked_messages')} messages, ok={c.get('ok')}, "
+                           f"differences={c.get('differences')}")
+            d = r.phase(mv, "mixed-during-copy")
+            base = r.phase("v016-rocks", "mixed")
+            if d and base:
+                out.append(f"- {mv}: p95 during the live copy vs. without — SMTP "
+                           f"{lat(d, 'smtp_deliver')} / {lat(base, 'smtp_deliver')} ms, IMAP fetch "
+                           f"{lat(d, 'imap_fetch_body')} / {lat(base, 'imap_fetch_body')} ms, JMAP list "
+                           f"{lat(d, 'jmap_list_mailbox')} / {lat(base, 'jmap_list_mailbox')} ms")
+            u = r.usage(mv, "run-1-live")
+            if u:
+                out.append(f"- {mv}: live copy used migrate {u.get('migrate', ('–',))[0]} CPU-s, peak "
+                           f"{gib(u.get('migrate', (0, None))[1])} GiB")
+        out.append("")
+
+    v = "v1-pg-cluster"
+    if os.path.isdir(f"{r.d}/{v}"):
+        rows = []
+        for p in ("idle-a-to-a", "idle-a-to-b", "idle-b-to-a"):
+            d = r.phase(v, p)
+            if d:
+                rows.append([p, lat(d, "idle_notice", "p50"), lat(d, "idle_notice"),
+                             (d.get("latency_ms", {}).get("idle_notice") or {}).get("n"),
+                             sum(d.get("errors", {}).values())])
+        f = r.phase(v, "smtp-failover") or {}
+        out += ["## Two-node cluster", "", table(["IDLE probe", "p50 ms", "p95 ms", "notices", "missed"], rows),
+                "", f"- SMTP with one pod deleted during the ingest: accepted {f.get('accepted')}, stored "
+                    f"{f.get('stored')}, session errors {sum(f.get('errors', {}).values()) if f else '–'}", ""]
+    print("\n".join(out))
+
+
+if __name__ == "__main__":
+    main()

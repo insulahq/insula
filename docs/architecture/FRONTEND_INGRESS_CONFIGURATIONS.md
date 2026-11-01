@@ -386,7 +386,7 @@ metadata:
 spec:
   secretName: frontend-tls-domain
   duration: 2160h  # 90 days
-  renewBefore: 360h  # 15 days before expiry
+  renewBeforePercentage: 33  # a third of the issued lifetime (certificates/renewal-policy.ts)
   commonName: panel.platform.com
   dnsNames:
   - panel.platform.com
@@ -407,7 +407,7 @@ metadata:
 spec:
   secretName: frontend-tls-ip
   duration: 2160h  # 90 days
-  renewBefore: 360h
+  renewBeforePercentage: 33  # a third of the issued lifetime (certificates/renewal-policy.ts)
   commonName: "*.panel-ip.k8s-platform.test"
   dnsNames:
   - "*.panel-ip.k8s-platform.test"

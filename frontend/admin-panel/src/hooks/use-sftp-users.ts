@@ -20,6 +20,11 @@ interface UseSftpUsersParams {
   readonly limit?: number;
   readonly cursor?: string;
   readonly search?: string;
+  /**
+   * `field:asc|desc` — the server orders (and pages) the whole list by it.
+   * Only the cross-tenant listing sorts; a one-tenant listing ignores it.
+   */
+  readonly sort?: string;
 }
 
 /**
@@ -32,16 +37,19 @@ interface UseSftpUsersParams {
  */
 export function useSftpUsers(params: UseSftpUsersParams = {}) {
   const { tenantId, limit, cursor, search } = params;
+  // The per-tenant endpoint has no server sort, so it is never sent there.
+  const sort = tenantId ? undefined : params.sort;
   const qs = new URLSearchParams();
   if (limit) qs.set('limit', String(limit));
   if (cursor) qs.set('cursor', cursor);
   if (search) qs.set('search', search);
+  if (sort) qs.set('sort', sort);
 
   const base = tenantId ? `/api/v1/tenants/${tenantId}/sftp-users` : '/api/v1/admin/sftp-users';
   const q = qs.toString();
 
   return useQuery({
-    queryKey: ['sftp-users', tenantId ?? 'all', { limit, cursor, search }],
+    queryKey: ['sftp-users', tenantId ?? 'all', { limit, cursor, search, sort }],
     queryFn: () => apiFetch<PaginatedResponse<AdminSftpUser>>(`${base}${q ? `?${q}` : ''}`),
   });
 }

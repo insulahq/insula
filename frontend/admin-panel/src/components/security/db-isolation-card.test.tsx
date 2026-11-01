@@ -8,7 +8,7 @@
  * because it actively discourages the person who would otherwise go look.
  */
 
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
 import { DatabaseIsolationCard, DatabaseIsolationTable } from '../../pages/PosturePage';
 
@@ -111,5 +111,29 @@ describe('DatabaseIsolationTable', () => {
       />,
     );
     expect(screen.getByText(/roundcube → platform/)).toBeTruthy();
+  });
+});
+
+describe('DatabaseIsolationTable — column sorting', () => {
+  it('lists open databases by name, and sorts by owner both ways', () => {
+    render(
+      <DatabaseIsolationTable
+        isolation={{
+          databases: [
+            { datname: 'platform', owner: 'beta', publicConnect: true, connectGrantees: [] },
+            { datname: 'crowdsec', owner: 'gamma', publicConnect: true, connectGrantees: [] },
+            { datname: 'stalwart', owner: 'alpha', publicConnect: true, connectGrantees: [] },
+          ],
+          atRisk: [],
+        }}
+      />,
+    );
+    const panel = screen.getByTestId('db-isolation-detail');
+    const names = () => Array.from(panel.querySelectorAll('tbody tr')).map((r) => r.querySelector('td')?.textContent);
+    expect(names()).toEqual(['crowdsec', 'platform', 'stalwart']);
+    fireEvent.click(screen.getByTestId('sort-owner'));
+    expect(names()).toEqual(['stalwart', 'platform', 'crowdsec']);
+    fireEvent.click(screen.getByTestId('sort-owner'));
+    expect(names()).toEqual(['crowdsec', 'platform', 'stalwart']);
   });
 });

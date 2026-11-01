@@ -877,8 +877,27 @@ test_10_aaaa_vs_stack() {
   done
 }
 
+# A terminating pod still has phase Running, so every selector above lists it,
+# but it stops answering within seconds — and the platform's own pods pause 5 s
+# before they stop, on purpose. Probed right after a rollout it reads as a
+# broken network path (staging, after an upgrade: 3 FAILs against the API pod
+# being replaced, 39/39 a minute later). Wait until none is left; 60 s at most.
+wait_for_terminating_pods() {
+  local ns n=0 i
+  for i in $(seq 1 30); do
+    n=0
+    for ns in platform traefik calico-system; do
+      n=$(( n + $(kubectl -n "$ns" get pods "${RUNNING[@]}" -o jsonpath='{range .items[*]}{.metadata.deletionTimestamp}{"\n"}{end}' 2>/dev/null | grep -c . || true) ))
+    done
+    [[ $n -eq 0 ]] && return 0
+    sleep 2
+  done
+  emit "run.settle" INFO "$n pod(s) still terminating after 60s — testing anyway"
+}
+
 # ─ run ──────────────────────────────────────────────────────────────
 emit "run.start" INFO "run_id=$RUN_ID hostnames=$HOSTNAMES skip=${SKIP:-none}"
+wait_for_terminating_pods
 test_1_external_ips
 test_2_ingress_to_backend
 test_3_pod_to_pod

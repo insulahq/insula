@@ -1,7 +1,7 @@
 # ADR-065: Stalwart v1 is a planned mail migration, not a version bump
 
 **Status**: PROPOSED — a living record, revised as upstream releases and our own drills change the facts
-**Date**: 2026-10-30 · **Last reviewed**: 2026-10-30
+**Date**: 2026-10-30 · **Last reviewed**: 2026-10-31
 **Related**: ADR-026 (email system), ADR-030 (mail server selection), ADR-031 (role-based multi-node),
 ADR-039 (Bulwark webmail), ADR-042 (Stalwart logical export), ADR-044 / ADR-061 (mailbox backup),
 ADR-046 (blob store stays RocksDB), ADR-064 (upgrade procedure). Registry: `security/components.yaml`
@@ -64,10 +64,16 @@ v1.0.4. Items marked *(reported)* come from upstream notes and are still to be m
    was raised twice after OOM kills; RocksDB `blobSize` 16834 → 4096 and `cacheSize` 128 MiB →
    engine default (the basis of ADR-046); the default in-memory store becomes process-local;
    jemalloc replaces glibc malloc (our `MALLOC_ARENA_MAX` tuning becomes moot); metric names
-   become `stalwart_*` with unit suffixes (the admin mail summary reads them).
+   become `stalwart_*` with unit suffixes (the admin mail summary reads them). *Measured on DEV
+   (2026-10-31):* v1 on RocksDB held 1.56 GiB resident at 4.4 GB of mail, against 1.15 GiB for 0.16,
+   with a working set of 1.97 GiB; on PostgreSQL, Stalwart itself stays at 0.1–0.4 GiB. Round 2,
+   counting everything that cannot be reclaimed: 0.16 1.14 GiB, v1 RocksDB 1.62 GiB, v1 on
+   PostgreSQL 0.25–0.4 GiB plus PostgreSQL 0.4–1.0 GiB, and both ran at full speed in
+   512 MiB + 768 MiB.
 8. **What users notice** *(reported)*: OAuth tokens are not migrated — everyone signed in through
    single sign-on, or with a password and a second factor, signs in again; DAV clients re-sync
-   once; full-text search is incomplete until the index is rebuilt. Bulwark ≥ 1.18.0 works with
+   once; full-text search is incomplete until the index is rebuilt (measured: 83–102 s per 4.6 GB on
+   DEV). Bulwark ≥ 1.18.0 works with
    both versions and needs its *Auto-configure OAuth* step after the switch (Bulwark 1.18.0
    release notes).
 9. **Backups and the standby are version-bound.** Every existing mailbox backup snapshot and the
@@ -80,7 +86,7 @@ v1.0.4. Items marked *(reported)* come from upstream notes and are still to be m
 
 1. **Hold 0.16** (`watch.hold: below 1.0`) until every condition below holds.
 2. **The migration is a guided, operator-started action with a maintenance window** — not part of
-   an automatic platform upgrade. *(Proposed; awaiting the operator's decision.)* It runs: a disk
+   an automatic platform upgrade. *(Decided by the operator, 2026-10-30.)* It runs: a disk
    preflight for a second store copy; the platform's own answers for `prepare` that keep today's
    behaviour; repeated `run` while mail stays up; then the window — Stalwart at 0 replicas,
    `run --final`, `verify`, switch to v1, health checks, Bulwark OAuth registration; the 0.16
@@ -92,12 +98,29 @@ v1.0.4. Items marked *(reported)* come from upstream notes and are still to be m
 4. **It ships in its own release** with a `### BREAKING` section describing the window and the
    re-sign-in.
 5. **The deployment shape is decided before the migration is built** — moving to v1 already
-   copies every byte, so it is the cheapest moment to change the store engine. Proposed: option B
-   below (PostgreSQL data store on a dedicated CNPG cluster, one Stalwart pod), with multi-node
-   (option C) as a later opt-in. *(Proposed; a mail-architecture change, so it needs the operator's
-   decision.)*
+   copies every byte, so it is the cheapest moment to change the store engine. ~~Proposed: option B
+   below (PostgreSQL data store on a dedicated CNPG cluster, message bodies and attachments as
+   files on a volume, one Stalwart pod), with multi-node (option C) as a later opt-in.~~
+   *(Superseded 2026-10-31 by the second evaluation round.)* Proposed now: **option A** — v1 on
+   RocksDB, the shape the platform runs today (one pod, local volume, warm standby, automatic
+   failover); option C stays under evaluation and replaces A only if a multi-node power-cut drill
+   proves an advantage A cannot reach. The bar, set by the operator (2026-10-31): changing today's
+   architecture needs clear and proven advantages — true HA may be one — and no or few setbacks.
+   *(The operator decides; the evidence and the reasoning are in* Store evaluation, *round 2.
+   Open.)*
 6. **The v1 integration is built for v1, not ported field by field** — see *v1 capabilities to
    adopt from the start*.
+7. **Deleted mail and deleted accounts are retained as briefly as possible.** *(Decided by the
+   operator, 2026-10-31.)* Whatever v1 keeps of a message or an account after its owner deleted it
+   — spam-classifier training samples, the time until the expunge and blob clean-up run, archives —
+   is set to the shortest value that works, and the platform removes what Stalwart leaves behind
+   (*Store evaluation*, round 2). Measured on v1.0.1, that means: `SpamClassifier.model` =
+   `Disabled` (no training samples at all) — or, if the classifier's value is shown to be worth it,
+   a short `holdSamplesFor` and the platform destroying an account's samples when it deletes the
+   mailbox, because Stalwart's account deletion leaves them; `expungeSchedule` and
+   `blobCleanupSchedule` hourly; `archiveDeletedItemsFor` / `archiveDeletedAccountsFor` left off.
+   Store-level copies (standby generations, restic store snapshots, CNPG base backups and WAL) keep
+   deleted mail for their own retention, which then sets the real horizon.
 
 ## Conditions to lift the hold
 
@@ -134,7 +157,8 @@ Upstream: `stalw.art/docs` (cluster/*, storage/*, install/store), `stalwart-migr
   page benchmarks three nodes on one PostgreSQL plus Redis). Known limits: full-text indexing caps a
   field at 250k characters and stems only languages whose text-search config is installed; Stalwart
   never vacuums, so the blob table shrinks only with `VACUUM FULL` / `pg_repack`; a 16–32
-  connection pool per node.
+  connection pool per node; and, measured here, full-text search that reads a whole large account
+  while the GIN pending lists are full (*Store evaluation*, finding 1).
 - **The migration can change the engine in the same step**: the tool reads and writes RocksDB,
   SQLite, PostgreSQL, MySQL and FoundationDB and "the source and target may use different data
   store backends". Blobs stored inside the source data store go into the target data store. Doing it
@@ -146,21 +170,400 @@ Upstream: `stalw.art/docs` (cluster/*, storage/*, install/store), `stalwart-migr
 
 | Option | Requires | HA | Risk |
 |---|---|---|---|
-| **A** v1, one pod, RocksDB | RocksDB→RocksDB copy; keep the standby and store backups | active-passive standby | least change now; a later cluster needs a full offline export/import |
-| **B** v1, one pod, PostgreSQL on a **dedicated** CNPG cluster, blobs and search `Default` | a second CNPG `Cluster` (not `system-db`: its connection budget and volume are sized for the platform), a database owned by the stalwart role | the pod reschedules anywhere; data HA through CNPG failover when it runs ≥ 2 instances | PostgreSQL performance at our scale unmeasured; full-text limits; every CNPG instance and base backup carries all mail bytes; standby/DR modules rewritten |
+| **A** v1, one pod, RocksDB (proposed, round 2) | RocksDB→RocksDB copy; keep the standby and store backups | active-passive standby | least change now; memory needs cache caps; a later cluster needs a full offline export/import |
+| **B** v1, one pod, PostgreSQL on a **dedicated** CNPG cluster, search `Default`, blobs in the data store or as files on a volume (~~recommended~~, not recommended after round 2) | a second CNPG `Cluster` (not `system-db`: its connection budget and volume are sized for the platform), a database owned by the stalwart role | the pod reschedules anywhere; data HA through CNPG failover when it runs ≥ 2 instances | the search plan on large mailboxes (*Store evaluation*, finding 1); with blobs inside, every CNPG instance, base backup and WAL archive carries all mail bytes; with blobs as files, a second volume backed up in step with the database; standby/DR modules rewritten |
 | **C** B + several Stalwart pods + Valkey (Sentinel) as in-memory store and coordinator | B, Valkey (the dormant `k8s/base/valkey/` has Sentinel), HAProxy to every pod | active-active | most moving parts; changes mail port exposure (CLAUDE.md rule 4) |
 | **D** FoundationDB | a self-built image (no official one), an FDB cluster of ≥ 3 nodes | self-replicating | an image we would build and sign; impossible on one-server installs |
 
-**Proposed: B in the v1 migration, C later as an opt-in** — B→C needs no data migration (set the
-in-memory store and coordinator, then scale). B keeps the official image and AGPL, needs no S3 and
-runs unchanged on a one-server install (one CNPG instance, one pod). Design point: on an install
-with more than one server, the mail database runs ≥ 2 instances even with HA mode off, or B loses
-today's standby fast path *(inferred)*.
+~~**Proposed: B in the v1 migration, C later as an opt-in**~~ *(superseded 2026-10-31: A is proposed, see* Store evaluation, round 2*)* — B→C needs no data-store migration (set
+the in-memory store and coordinator, then scale); blobs kept as files move to S3 first. B keeps the
+official image and AGPL, needs no S3 and runs unchanged on a one-server install (one CNPG instance,
+one pod). Design point: on an install with more than one server, the mail database runs ≥ 2
+instances even with HA mode off, or B loses today's standby fast path *(inferred)*.
 
-**Gates before B is accepted:** a PostgreSQL stress test on the same corpus as ADR-046's RocksDB
-evaluation (ingest rate, FETCH latency, database and WAL growth, vacuum behaviour); a timed
+**Gates before B is accepted:** ~~a PostgreSQL stress test on the same corpus as ADR-046's RocksDB
+evaluation (ingest rate, FETCH latency, database and WAL growth, vacuum behaviour)~~ — done on DEV
+(2026-10-31, *Store evaluation*), which adds four gates of its own; a timed
 migration of a production-sized copy into PostgreSQL; ADR-030's swap triggers re-read for a second
 settings-schema break and private upstream test suites.
+
+## Store evaluation
+
+The evidence for the deployment shape (Decision 5) and for where message bodies and attachments live.
+Harness: `scripts/stalwart-loadtest/` (`lt.sh`, `loadgen.py`, `report.py`), run on DEV in a throwaway
+namespace with production's Stalwart limits (1 CPU, 2 GiB) and launcher.
+
+- **Corpus:** deterministic, identical for every variant — 50 mailboxes × 600 messages plus one
+  mailbox of 25,000 (≈ 55,000 messages, 4.4 GB; mean 78 KB, median 7.7 KB; 20 % with an attachment of
+  median 150 KB, base64 of random bytes). Production for scale (2026-10-31): 145 mailboxes, 45.6 GB by
+  quota accounting, largest 13.9 GB, 11 over 1 GB — DEV holds about a tenth of it, so the results are
+  per-GB figures to extrapolate, and the production-sized drill stays a staging condition.
+- **Variants:** 0.16.27 on RocksDB (today); v1 on RocksDB; v1 on PostgreSQL (dedicated CNPG, PG 18,
+  1 CPU / 2 GiB) with blobs in PostgreSQL, on a FileSystem volume, in an on-cluster S3, in an S3 on
+  another machine; with FS blobs and the index in Meilisearch; a two-node v1 cluster on
+  PostgreSQL + Valkey.
+- **Measured per variant:** ingest by IMAP APPEND and by SMTP (incl. queue and spam filter), IMAP and
+  JMAP read mixes, large-mailbox operations warm and after a restart, a mixed load, CPU-seconds and
+  peak memory per phase, store size per GB of mail and WAL written, the cost of a full copy (tar /
+  `pg_basebackup`), restart time, and the space after deleting half of every mailbox (purge,
+  autovacuum, `VACUUM`, re-ingest, `VACUUM FULL`).
+- **Migration:** `stalwart-migrate` from the loaded 0.16 store to v1 RocksDB and to v1 PostgreSQL —
+  a live copy under load, a delta, the final run, `verify --full`, v1 start, a UID/body-hash sample
+  comparison, the search-index rebuild, and a rollback after v1 has served mail.
+
+The test lifts Stalwart's per-account request limits and inbound throttles, which would otherwise
+measure themselves. Their defaults are what real clients meet, and the platform sets none of them:
+HTTP (JMAP) 1,000 requests/min per account, anonymous HTTP 100/min per IP, IMAP 2,000 requests/min
+per account; SMTP 5 messages/s per sender IP and **25/hour per sender domain and recipient**. The rate
+limits are keyed on the account a token belongs to, so Bulwark's master-user impersonation does not
+pool its users into one budget *(from source, v1.0.1)*.
+
+**Migration mechanics, confirmed at small scale (Docker, 2026-10-31):** `prepare` runs unattended
+when every question takes its recommended answer (four questions on a platform-shaped store:
+categories, changed defaults, OAuth client registration, new permissions; 48 dropped role
+permissions and OIDC-provider fields reported as warnings); the live copy reads the 0.16 store from a
+**read-only** mount; `run --final` spends a fixed 30 s watching the source change counters before it
+copies; `verify --full` found no mismatch; v1 started on the copy with UIDVALIDITY, UIDs, counts and
+body hashes unchanged.
+
+### Results (DEV, 2026-10-31)
+
+Run `r1031` (4 h 48 min) and a follow-up `r1031b` (Meilisearch, a gentler copy, the failover) on
+the single-node DEV cluster (6 vCPU, 12 GB, `local-path` on NVMe), next to DEV's own platform
+(~1.3 cores). Stalwart 1 CPU / 2 GiB, PostgreSQL 18.6 1 CPU / 2 GiB; S3 remote =
+versitygw on another lab VM. Every phase ran with 0 errors except where noted. The full tables
+(`report.py`) and the 2,044 logged slow statements with their plans are kept with the run.
+
+| | 0.16 RocksDB | v1 RocksDB | v1 PG, blobs in PG | v1 PG, blobs on FS | v1 PG, blobs in remote S3 |
+|---|---:|---:|---:|---:|---:|
+| IMAP APPEND, msg/s (Stalwart + store CPU-s per 1k) | 126 (7.9) | 315 (3.2) | 258 (5.0) | 381 (4.0) | 318 (4.7†) |
+| SMTP delivery incl. spam filter, msg/s stored | 35 | 120 | 201 | 303 | 225 |
+| IMAP reads, ops/s (bound by logins: ≈ 400 ms of password hashing each) | 324 | 768 | 799 | 791 | 733 |
+| JMAP reads, ops/s | 456 | 2,867‡ | 1,572 | 1,749 | 281§ |
+| JMAP CPU per op, Stalwart + store (ms) | 2.4 | 0.3 | 0.9 | 0.8 | 4.4§ |
+| `FETCH 1:* (FLAGS)` over 17,500 messages | 1.3–1.6 s | 55 ms | 55–65 ms | 56 ms | 58–61 ms |
+| mixed load p95: SMTP / IMAP fetch / JMAP search (ms) | 923 / 85 / 79 | 96 / 60 / 56 | 117 / 55 / 102 | 90 / 47 / 96 | 120 / 56 / 155 |
+| peak memory, Stalwart RSS / working set (GiB) | 1.15 / 1.29 | 1.56 / 1.97 | 0.42 / 0.42 | 0.19 / 1.98¶ | 0.14 / 0.16 |
+| peak memory, PostgreSQL working set (GiB) | – | – | 1.79 | 0.98 | 0.94 |
+| store size ÷ raw mail | 1.0 | 1.1 | 1.1 | 1.1 | 1.1 |
+| PostgreSQL database per GB of mail | – | – | 1.15 GB | 0.17 GB | 0.17 GB |
+| WAL written per GB ingested | – | – | 1.9 GB | 0.5 GB | 0.5 GB |
+
+† the remote S3's own CPU is not counted. ‡ the load generator (one Python process) was at a full
+core, so this is a floor. § a planner effect, not the S3 (finding 1 below); the on-cluster S3 variant
+read at 1,642 ops/s. ¶ page cache of the blob files, reclaimable, but counted against the
+container limit. The on-cluster S3 (`rclone serve s3`) is left out of the table: it cost more CPU
+than the mail server (156 msg/s, 10.4 CPU-s per 1k) and stands for no deployment.
+
+**v1 against 0.16 on the same store and limits:** 2.5× the APPEND rate at 40 % of the CPU, 3.4× the
+SMTP rate, 2.4× IMAP and ≥ 6× JMAP reads, SMTP p95 under mixed load 923 → 96 ms, a full-mailbox flag
+fetch 24× faster — and 35 % more resident memory on RocksDB (1.56 against 1.15 GiB at 4.4 GB of
+mail, a working set of 1.97 GiB against the 2 GiB limit: the larger caches of finding 7, now
+measured). On PostgreSQL, Stalwart itself stays at 0.1–0.4 GiB and PostgreSQL holds the cache.
+
+**Migration (`stalwart-migrate` 1.0.4, 4.6 GB / 55,000 messages / 52 accounts):**
+
+| step | → v1 RocksDB | → v1 PostgreSQL (blobs in PG) |
+|---|---:|---:|
+| live copy while 0.16 serves | 50 s (≈ 97 MB/s) | 142 s (≈ 36 MB/s) |
+| clients' throughput during the live copy | 56 % | 80 % |
+| delta run | 7 s | 4 s |
+| window: 0.16 stopped → `run --final` → `verify --full` → v1 ready | 73 s (38 + 9 + start) | 114 s (56 + 45 + start) |
+| search index rebuilt after the switch | 83 s | 102 s |
+| rollback after v1 took 300 new messages | 85 s, then 0.16 served the same mail | – |
+| WAL written by the copy | – | 7.2 GB (1.4 × the data) |
+
+`verify --full` found 0 mismatches and a UID/body-hash sample of 1,040 messages matched after every
+switch and after the rollback. The live copy took 1.2–1.4 cores and ≤ 1.6 GiB, and slowed clients
+through the shared disk, not the CPU (the node used 2.8 of 6 cores; Stalwart fell from 1.0 to 0.6
+cores). `stalwart-migrate` rate-limits record reads (`--max-ops-per-sec`) but not blobs, which only
+`--blob-concurrency` bounds (default: the write slots, at least 16). A second PostgreSQL migration
+with `--concurrency 2 --blob-concurrency 2` took the same time (137 s — PostgreSQL's CPU sets the
+pace) and kept clients at 87 % instead of 80 %; into RocksDB, where the disk sets the pace, the
+knob should matter more (not measured). Its window was 110 s, `verify --full` again clean.
+
+**Two-node cluster** (PostgreSQL + Valkey, both pods active): IDLE notifications crossed nodes in
+5–6 ms p50 / 46 ms p95, 40 of 40; IMAP 1,308 and JMAP 1,687 ops/s on two 1-CPU pods against one
+PostgreSQL CPU. With one pod deleted 30 s into a 20,000-message SMTP ingest, all 19,995 accepted
+messages were stored; the other 5 got `421 4.3.0 Server shutting down` (a temporary failure that
+senders retry) and 4 sessions were cut.
+
+**Findings that shape the design:**
+
+1. **Full-text search on PostgreSQL degrades on large mailboxes while the GIN pending lists are
+   full.** In both migrated stores and two of seven ingested ones, JMAP text search took ~100 ms p50
+   / 1.7–2.0 s p95, PostgreSQL sat at its CPU limit and every other request queued (254–281 reads/s
+   against ~1,600). All 2,036 statements logged over 1 s were searches in the 26,099-message
+   mailbox: v1 ORs `@@` over seven tsvector columns, each tsquery in a sub-select, and PostgreSQL
+   read the whole account through the primary key and evaluated the seven matches per row. The
+   cause, isolated on a fresh store: right after the ingest each GIN index held ≈ 7,100 entries in
+   its fast-update pending list, and the planner chose the account scan — 645 ms for one search, 257
+   reads/s; a plain `VACUUM` (which merges the pending lists) turned the same query into a BitmapOr
+   over the GIN indexes — 1.35 ms, 1,282 reads/s, search p95 49 ms. `ANALYZE` alone changed nothing
+   (migrated store: 268 → 272 reads/s). The fast runs are the ones autovacuum had vacuumed before
+   the reads *(inferred for the earlier runs)*; in steady state new mail refills the lists up to
+   `gin_pending_list_limit` (4 MB per index) between vacuums, so large mailboxes can flip back.
+   Production's largest mailbox is 13.9 GB. Switching the pending lists off (`fastupdate = off` on
+   the eight GIN indexes) is no fix: ingest fell from 248 to 174 msg/s, the index queue fell behind
+   (34,400 of 55,000 messages indexed when the ingest ended), and with empty lists the planner still
+   took the account scan until an `ANALYZE` (on a partly indexed table, so weaker evidence) — the
+   plan depends on the pending lists and on fresh statistics. What holds: a `VACUUM (ANALYZE)` of
+   the search tables as a cutover step after the index rebuild, and an autovacuum on them aggressive
+   enough to keep the lists short (per-table insert thresholds, a smaller `gin_pending_list_limit`)
+   — to be proven on staging with production-sized mailboxes. The query shape (a filter evaluated
+   per row of a large account whenever the GIN path looks dearer) is upstream's to fix; worth
+   reporting. Diagnostic: `scripts/stalwart-loadtest/pgplan.sh`.
+2. **Deleted mail keeps its disk space — for 180 days.** v1 links the body of every unencrypted
+   message appended to INBOX over IMAP or JMAP to a spam-classifier training sample, and so for mail
+   a user marks Junk / not Junk, replies to sent mail, mail from address-book senders and spam with
+   ≥ 2 RBL hits. The sample keeps the blob for `SpamClassifier.holdSamplesFor`, **180 days** by
+   default, and deleting the message leaves the sample. The corpus made 47,500 samples (exactly its
+   INBOX appends); deleting half of every mailbox and purging freed nothing in any v1 variant. For a
+   tenant this is also a data-protection matter: mail they deleted stays on disk, and in every
+   store-level backup, for half a year. Destroying the samples (`x:SpamTrainingSample`) and purging
+   freed the blobs; a shorter hold takes effect for new samples after a restart (both checked in
+   Docker). IMAP migrations (imapsync) and mailbox restores are appends, so they create samples in
+   bulk. SMTP deliveries do not, except for the cases above.
+3. **Freeing space after a deletion is a sequence.** The index queue processes the deletion (8,750
+   in < 30 s), a per-account purge drops the message and its blob link (46 tasks, 5 minutes), and
+   only then can a blob purge delete the blob; the scheduled blob clean-up runs daily at 04:00
+   (`DataRetention.blobCleanupSchedule`). The index queue is the search store's queue: with the index
+   in a Meilisearch that lagged behind, 1,272 deletions were still queued when the samples were
+   released, and only a third of the deleted mail's blobs came free. On PostgreSQL the database
+   file then shrinks only with `VACUUM FULL` / `pg_repack` (as reported); RocksDB compacts on its
+   own (5.30 → 5.06 GB while 0.6 GB of new mail arrived).
+4. **Meilisearch as the search store is not a fit at this budget.** With v1 on PostgreSQL and FS
+   blobs, moving the index to Meilisearch (v1.56, 1 CPU / 2 GiB on top) gave the fastest ingest (433
+   APPEND / 327 SMTP msg/s) and fast queries — but Meilisearch indexed ≈ 14 messages/s at its CPU
+   and memory limits, so 25 minutes after the ingest it held 21,284 of ~60,000 messages and every
+   search in the large mailbox found nothing; its index, holding part of the mail, was already 0.96
+   GB against ≈ 0.53 GB for PostgreSQL's index of all of it. At that rate a migration's rebuild of
+   production's index takes on the order of half a day. v1 also creates the Meilisearch indexes with
+   typo tolerance on, so a search for a token returns every token one letter off (`zq197x`: 1 exact
+   match and 22 neighbours — an invoice number would list its neighbours); switching it off per
+   index restores exact matches and survives restarts (Docker).
+5. **WAL is the hidden size of blobs-in-PostgreSQL.** Every mail byte goes through WAL (1.9× on
+   ingest, 1.4× on the migration copy) — into archived WAL in the backup target and onto every
+   replica. With blobs outside, WAL is 0.5× and the database a sixth of the mail. `pg_wal` itself
+   holds up to `max_wal_size` (4 GB here) even when idle.
+6. **Base backups: copy fast, start slow.** `pg_basebackup` copied 830 MB in 2.6–3.4 s with a fast
+   checkpoint (5.9 GB in 11 s for a migrated store with every mail byte inside), and took
+   453–504 s with the default spread checkpoint, which paces itself over
+   `checkpoint_completion_target × checkpoint_timeout` before copying. CNPG's backups default to the
+   spread form (`immediateCheckpoint: false`).
+
+**At production's size** (45.6 GB, 145 mailboxes; DEV disk speeds, so a lower bound for a VPS):
+any engine stores ≈ 50 GB; with blobs in PostgreSQL the database is ≈ 52 GB plus `pg_wal`, and every
+CNPG instance and base backup carries it; with blobs on a volume or in S3 the database is ≈ 8 GB. The
+live copy takes ≈ 8 min to RocksDB and ≈ 21 min to PostgreSQL (one PostgreSQL CPU); the window is
+≈ 3 min (RocksDB) to ≈ 10 min (PostgreSQL, mostly `verify --full`), and search is incomplete for
+another ≈ 14–17 min. A migration into PostgreSQL writes ≈ 65 GB of WAL. These are linear
+extrapolations; the staging drill with a production-sized copy remains a condition.
+
+~~**Recommendation for Decision 5**~~ *(superseded the same day by the round-2 recommendation below)*: **option B with message bodies and
+attachments as files** — one v1 pod; data and search index in PostgreSQL on a dedicated CNPG
+cluster; blobs on their own volume next to the pod.
+
+- It was the fastest shape (381 APPEND / 303 SMTP msg/s, mixed-load p95 90 / 47 / 96 ms) at
+  0.8 ms of CPU per JMAP read.
+- It keeps the database at a sixth of the mail (≈ 8 GB for production), so CNPG base backups take
+  seconds, WAL is 0.5× the mail and PostgreSQL stays near 1 GiB.
+- Bodies become immutable, content-addressed files that the existing restic tooling backs up
+  incrementally.
+- Stalwart itself needs ≈ 0.2 GiB; the blob files' page cache counts against its limit but is
+  reclaimable.
+
+The cost: the blob volume is single-writer, so a later multi-node step (C) moves the blobs to S3,
+and a restore must pair a database point with a blob snapshot no older than it — a blob missing
+from the snapshot is lost mail, an extra blob is only purged.
+
+- **Blobs in PostgreSQL** (B as first proposed) is the simplest store — one engine, CNPG HA covers
+  everything — but at production's size the database is ≈ 52 GB. That carries into every replica,
+  base backup and WAL archive: 1.9× on ingest and ≈ 65 GB during the migration. PostgreSQL also
+  reached 1.79 of its 2 GiB. It suits small installs.
+- **Blobs in S3** is the multi-node path (C): close to file speed with a real S3 (318 / 225 msg/s),
+  but it needs an S3 service on every install. It belongs to the opt-in.
+- **A (v1 on RocksDB)** had the fastest JMAP reads, no search-plan risk and the shortest window
+  (73 s). But its memory grows with the store (1.56 GiB resident at 4.4 GB of mail), so cache caps
+  are mandatory. It keeps the file-level copies of a running RocksDB that upstream calls
+  inconsistent, and a later move to PostgreSQL is a full offline export/import.
+- **Search** stays in PostgreSQL (`Default`). Meilisearch is not worth a second stateful service at
+  this budget (finding 4).
+
+Gates added for B by the evaluation:
+
+1. The search-plan mitigation (finding 1), proven on staging with production-sized mailboxes.
+2. A decided `holdSamplesFor` and a way to release the samples of deleted mail (finding 2).
+3. A backup and standby design that pairs CNPG points with blob snapshots.
+4. The staging drill with a production-sized copy, timed.
+
+### Round 2 (DEV, 2026-10-31, `r1031e`)
+
+What the operator found missing from the first round:
+- the memory of the extra services, replicas included;
+- the total storage of each shape against today's store;
+- backup and restore speed, and IMAP against JMAP for both now that v1's JMAP is faster;
+- message-body storage that more than one node can use.
+
+Harness: `scripts/stalwart-loadtest/r2.sh` on top of `lt.sh`, reported by `report2.py`. Same corpus,
+limits and node as round 1; PostgreSQL now archives WAL to the lab S3 through the barman-cloud
+plugin, as the platform's `system-db` does. Memory is what a component holds and cannot give back
+(process memory + PostgreSQL's shared buffers, which the kubelet's RSS leaves out + kernel memory,
+read from each container's cgroup); page cache comes on top and is reclaimed under pressure.
+Production for scale: its 0.16 store measured **51.5 GB on disk** (its mail node, read-only, 2026-10-31;
+45.6 GB by quota accounting), i.e. ≈ 49.8 GB of mail.
+
+**Throughput and memory** (Stalwart 1 CPU; limits 2 GiB / 2 GiB unless noted; mixed-load p95 =
+SMTP delivery / IMAP fetch / JMAP search):
+
+| shape | APPEND msg/s | SMTP stored msg/s | IMAP / JMAP reads ops/s | mixed p95 ms | memory held, GiB |
+|---|---:|---:|---|---|---|
+| 0.16 RocksDB (today) | 173 | 31 | 324 / 456 (round 1) | 792 / 71 / 68 | Stalwart 1.14 |
+| v1 RocksDB (A) | 317 | 118 | 768 / 2,867 (round 1) | 98 / 60 / 56 | Stalwart 1.62 (working set 1.98 of 2) |
+| v1 PG, blobs in PG | 246 | 184 | 799 / 1,572 (round 1) | 119 / 76 / 99 | 0.35 + PG 0.98 = 1.33 |
+| v1 PG, blobs as files (B) | 366 | 290 | 791 / 1,749 (round 1) | 120 / 63 / 94 | 0.39 + PG 0.75 = 1.14 |
+| — limits 1 GiB / 1 GiB | 361 | 289 | 791 / 1,476 | 97 / 55 / 103 | 0.35 + 0.46 = 0.81 |
+| — limits 512 MiB / 768 MiB | 368 | 286 | 750 / 1,380 | 81 / 54 / 182 | 0.33 + 0.39 = 0.72 |
+| — PG ×3, asynchronous replicas | 293 | 194 | 775 / 1,404 | 111 / 64 / 97 | 0.26 + PG 0.73 + 0.61 + 0.61 = 2.21 |
+| — PG ×3, one synchronous standby | 284 | 186 | 782 / 1,420 | 120 / 64 / 97 | 0.25 + PG 1.97 = 2.22 |
+| — blobs on a Longhorn RWO volume | 362 | 286 | 789 / 1,449 | 112 / 66 / 94 | 0.40 + 0.76 (+ instance manager ≈ 0.2, shared) |
+| C: 2 pods, blobs on Longhorn RWX, Valkey + Sentinel ×3 | 218 | 162 | 1,231 / 1,339 | 157 / 67 / 95 | 2 × 0.24 + PG 0.88 + Valkey 0.03 + share-manager 0.55–0.62 ≈ 2.0 |
+| v1 PG, blobs in Garage (1 node) | 309 | 210 | 766 / 1,410 | 129 / 73 / 91 | 0.18 + PG 0.77 + Garage 0.17 = 1.12 |
+
+All on one node: PostgreSQL's replicas and Longhorn's share-manager compete with the primary for
+the same CPU and disk, so their throughput cost is an upper bound and network latency between
+servers is not in it (the staging drill below measures that). Valkey with Sentinel is cheap
+(≈ 10 MB per pod; the platform's dormant manifest allows 96 Mi). PostgreSQL's barman sidecar held
+≈ 0. v1 on PostgreSQL ran at full speed in 512 MiB + 768 MiB; v1 on RocksDB held 1.62 GiB at a
+tenth of production's mail.
+
+**Total storage at rest** (allocated blocks, `du -B1`; scaled to production's 49.8 GB of mail;
+`pg_wal` is a fixed allowance up to `max_wal_size`, 4 GB here, per instance):
+
+| shape | ÷ mail | at production's size | with today's HA / the shape's own redundancy |
+|---|---:|---:|---:|
+| 0.16 RocksDB (today) | 1.04 | 51.5 GB (measured) | + standby copy 51.5 GB = ≈ 103 GB |
+| v1 RocksDB (A) | 1.05 | 52 GB | + standby copy = ≈ 104 GB |
+| v1 PG, blobs in PG | 1.16 | 58 GB + WAL ≤ 4.6 GB | 3 instances: ≈ 174 GB + 3 × WAL |
+| v1 PG, blobs as files (B) | 1.18 | 59 GB (files 50 + database 9) + WAL ≤ 4 GB | 3 instances + files on Longhorn ×2: ≈ 127 GB + 3 × WAL; + Garage ×3: ≈ 177 GB + 3 × WAL |
+
+Blobs as files do not save storage against blobs in PostgreSQL (58 against 59 GB): they move it out
+of the database, its WAL, replicas and base backups. Production holds ≈ 680,000 messages by the
+DEV ratio (60,001 files for 4.38 GB).
+
+**Mailbox backup and restore, with the platform's own tools** (`images/tenant-backup-tools`, the
+large mailbox of 25,000 messages / five of ≈ 900 one after another; through the master account, as
+production does — `addr%master` works on v1 unchanged):
+
+| msg/s | 0.16 | v1 RocksDB | v1 PG, blobs in PG | v1 PG, files |
+|---|---|---|---|---|
+| IMAP backup (`imap-sync.py`, production) | 1,736 / 1,216 | 2,358 / 1,509 | 1,825 / 1,078 | 2,016 / 1,348 |
+| IMAP restore (`imap-restore.py` MULTIAPPEND, 4 connections, production) | 322 / 94 | **1,880 / 385** | 1,016 / 325 | 1,029 / 370 |
+| JMAP backup (`jmap-sync.py`, 8 workers) | 1,562 / 1,074 | 1,770 / 1,305 | 1,527 / 1,107 | 1,600 / 1,107 |
+| JMAP restore (`jmap-restore.py`, 16 workers, upload quota raised) | 180 / 176 | 458 / 234 | 300 / 259 | 402 / 355 |
+| restored identical, IMAP / JMAP | 6/6 · 2/6 | 6/6 · 2/6 | 6/6 · 2/6 | 6/6 · 2/6 |
+
+*Identical* = every folder's messages, flags, keywords, INTERNALDATE and sizes. IMAP stays the right
+engine on v1, by a wider margin than on 0.16 (4× JMAP on restore). The JMAP engine:
+- restores nothing past v1's and 0.16's per-account upload quota (1,000 files or 50 MB of uploaded,
+  not yet imported blobs; HTTP 429). On 0.16 at the default it imported 3,669 of 23,650 messages.
+  The platform's JMAP fallback is broken for any mailbox above that today.
+- captures at most 20,000 messages per mailbox and run (by design of `jmap-sync.py`): the large
+  mailbox came back with 20,000 of 25,000.
+- still loses a nested folder with non-ASCII characters (ADR-044's finding, unchanged on v1).
+
+restic per mailbox (2.14 GB of Maildir → 1.92 GB repository) took 21–24 s for the six, the same on
+every server. Restores into another account store their own copy of delivered mail (no dedup with
+the original).
+
+**Store-level backup and restore** (the standby and disaster recovery):
+
+| copy | files | GB | first | after +500 mails | restore |
+|---|---:|---:|---:|---:|---:|
+| restic of the 0.16 RocksDB directory (today's `stalwart-snapshot`) | 260 | 5.05 | 34 s | 1.3 s | 15 s |
+| restic of the v1 RocksDB directory | 264 | 5.00 | 32 s | 2.8 s | 16 s |
+| restic of v1's blob files | 62,658 | 4.33 | 30 s | 3.2 s | 17 s |
+| CNPG base backup to S3 (barman-cloud, gzip, immediate checkpoint), database of the files shape | – | 1.33 | 102 s | – | 61 s (new cluster) |
+| the same, blobs in PostgreSQL | – | 1.73 | 72 s | – | 61 s |
+
+ADR-046's concern about walking a file per message held up less than feared at this scale: an
+incremental restic of 62,658 files took 3.2 s (≈ 35 s for production's ≈ 680,000, linear). A CNPG base
+backup ran at ≈ 17–24 MB/s to the lab S3: ≈ 40 min for production's mail inside PostgreSQL.
+
+**Deleting mail and accounts:**
+- **An account deletion keeps the account's mail.** `x:Account/set destroy` runs a
+  `DestroyAccount` task that clears the account's data, OAuth grants and public keys, but not its
+  spam-classifier training samples, which live in the registry. A restored account (mail
+  appended into INBOX and Junk) left 731 of its messages as samples in every v1 shape (873 in the
+  smoke run); the blob purge after the deletion freed nothing. Releasing the account's samples
+  (`x:SpamTrainingSample/set destroy`, filtered by `accountId`) freed whatever no other account
+  shared. Deleting half of every mailbox freed 0.9 GB of 4.4 GB of blob files only after all 68,575
+  samples were released.
+- Restores and imports create samples in bulk: 21,806 for 28,773 restored messages.
+- **With the classifier off** (`SpamClassifier.model` = `Disabled`), v1 kept no sample of anything:
+  deleted mail and a deleted account were freed by the next purge. Hourly `expungeSchedule` and
+  `blobCleanupSchedule` were accepted (the default is daily at 00:00 and 04:00). The account purge
+  ran ≈ 5 min after it was queued, in every shape.
+- 0.16 freed nothing visible within 3 min of an account deletion: RocksDB compacts later.
+
+**Findings of round 2:**
+
+1. **v1's FileSystem blob store does not fsync** (`File::create` + `write_all` + `flush`, no
+   temporary file and rename; `crates/store/src/backend/fs/mod.rs` at v1.0.1). PostgreSQL commits
+   the message durably while its body may still sit in the page cache — up to the kernel's 30 s
+   dirty expiry. A power cut in that window can leave messages without a body. A pod crash loses
+   nothing, because the page cache survives it. RocksDB and blobs inside PostgreSQL keep body and
+   metadata in one log. *(From source; the staging power-cut drill is to measure it.)*
+2. **Blob files on Longhorn RWO cost nothing measurable** (362 / 286 msg/s against 366 / 290 on
+   `local-path`), unlike RocksDB on Longhorn (3–7× worse latency, ADR-046's reason for `local-path`).
+3. **Longhorn RWX (NFS) costs 40 % of the write rate and 0.55–0.62 GiB** for the share-manager, a
+   single NFS server pod per volume that moves on node loss; `rwx-volume-fast-failover` and
+   `node-down-pod-deletion-policy` are off and `do-nothing` on the lab (Longhorn 1.13.0).
+4. **Longhorn reserves a volume's size** (60 Gi did not fit beside DEV's platform volumes;
+   `local-path` does not enforce it).
+5. Today's failover, from the code (`dr-watcher.ts`, `migration.ts`, `standby-replicate.sh`): with
+   production's settings (auto-failover on, threshold 300 s, one secondary — read from production,
+   2026-10-31) mail is down ≈ 7–9 min on a node loss and loses what arrived after the last standby
+   pass (≈ 300 s plus the pass), which is never counted: the failover's verification checks domains
+   and accounts, not messages. Measured on staging drills: 3–5 min at a 60 s threshold; the data
+   loss has never been measured.
+
+**Recommendation for Decision 5, round 2** (supersedes the one above; the operator decides). The bar
+(operator, 2026-10-31): changing today's architecture needs clear, proven advantages and no or few
+setbacks. Against that bar:
+
+- **Migrate to v1 on RocksDB (A) and keep today's architecture** — one pod on a local volume, the
+  warm standby, the store snapshots, `dr-watcher`. v1 alone delivers the gains: against 0.16, 1.8×
+  the APPEND rate, 3.8× SMTP, 5.8× the mailbox restore, ≥ 6× JMAP reads, a mixed-load SMTP p95 of
+  98 ms instead of 792. Storage stays at ≈ 52 GB, and every proven recovery path is kept. Its
+  setbacks are known and bounded:
+  - memory: 1.62 GiB held at a tenth of production's mail, so cache caps are mandatory (finding 7);
+  - the failover is unchanged: minutes of downtime and minutes of mail lost;
+  - the file-level copy of a running RocksDB stays (upstream calls it inconsistent).
+- **B (PostgreSQL, one pod) does not meet the bar.** On one node it brings no availability gain over
+  A. Its advantages — 2.5× A's SMTP rate, ≈ 0.5 GiB less memory, small database backups — come with:
+  - a second stateful system with its own backups and WAL: +15 % storage plus a WAL allowance;
+  - the search-plan risk on large mailboxes (round 1, finding 1);
+  - slower JMAP reads and restores than A (1,029 against 1,880 msg/s);
+  - a migration window ≈ 3× as long at production's size (≈ 10 against ≈ 3 min);
+  - with blobs as files, two stores that must be backed up and failed over together, plus the body
+    durability gap (round 2, finding 1).
+- **C is the only shape with an advantage A cannot reach**: no mail lost when a node fails (one
+  synchronous standby) and no failover wait (other pods keep serving). That is **not yet proven**:
+  the staging power-cut drill could not run (one staging server would not boot). It costs:
+  - three PostgreSQL instances: ≈ 2 GiB of memory held together;
+  - a shared body store: Longhorn RWX (−40 % writes, +0.6 GiB, an NFS server pod that moves on
+    failure) or Garage at replication factor 3 (3× the body storage, an S3 service on every install);
+  - Valkey (cheap);
+  - pods on every server, which changes mail port exposure;
+  - ≈ 127–177 GB of storage against today's ≈ 103 GB.
+
+**What would make C the recommendation:** a drill on staging that powers off a server under SMTP
+delivery and shows no accepted message lost, no body missing, and mail served within seconds — run
+against today's failover on the same staging, measured the same way (`failover-probe.py`: steady
+delivery, the time nothing was accepted, the accepted messages missing afterwards). That drill
+replaces round 1's gates 1–4 for C; for A, round 1's gates reduce to the timed production-sized
+migration and the cache caps.
 
 ## v1 capabilities to adopt from the start
 
@@ -168,13 +571,24 @@ The management API keeps its v0.16 shape (the JMAP `x:` registry); the work is t
 behaviour behind it. Adopt with the migration:
 
 - **Explicit memory budget and cache sizes** (`SystemSettings.maxBufferedMemory`, `Cache.*`): the
-  upstream defaults add up to more than a 2 GiB container *(reported)*.
+  upstream defaults add up to more than a 2 GiB container *(reported)*; on RocksDB v1 was at
+  1.56 GiB resident with a tenth of production's mail (measured).
+- **The spam classifier's sample hold** (`SpamClassifier.holdSamplesFor`, 180 days by default):
+  a value chosen deliberately, applied with a restart, and the samples of mail a tenant deletes —
+  and of bulk imports and restores into INBOX — released (`x:SpamTrainingSample`), or deleted
+  mail stays on disk and in backups for half a year (*Store evaluation*, finding 2). Decision 7
+  makes it `Disabled` unless the classifier earns its place; the mailbox-deletion path destroys the
+  account's samples in either case, because `DestroyAccount` leaves them (round 2).
+- **The JMAP upload quota** (`Jmap.uploadQuota` 50 MB, `maxUploadCount` 1000, per account, also on
+  0.16): raised if the JMAP backup engine is kept at all — at the default its restore fails above
+  1,000 messages; IMAP stays the engine (round 2).
 - **The new task model** (Retry → Stalled → Failed, no update/destroy while a task runs): the ACME
   renewal clean-up in `stalwart-domain-reconciler.ts` relies on destroying a running task, which v1
   refuses; Stalled/Failed tasks belong in mail health.
 - **Search index queue and limits** (`x:IndexQueueStatus`, `Search.maxExtract*`,
   `maxConcurrentIndexTasks`): the index is rebuilt after cutover — a cutover and health signal, and
-  limits for small nodes.
+  limits for small nodes. On PostgreSQL the cutover ends with `VACUUM (ANALYZE)` of the search
+  tables, and their autovacuum is tuned so the GIN pending lists stay short (finding 1).
 - **The new metrics** (`stalwart_*` with unit suffixes, OpenMetrics): rewrite the mail summary's
   parser; consider scraping Stalwart from VictoriaMetrics directly.
 - **`Http.clientIpSource` + `forwardedHops`:** browser JMAP reaches Stalwart through Traefik, so
@@ -185,9 +599,11 @@ behaviour behind it. Adopt with the migration:
 - **One `outboundReportDomain`** for every report type, replacing per-report sender settings.
 - **Per-message limits** (`maxFlagsPerEmail`, `maxMailboxesPerEmail`, `maxHeaderSize`): exercise
   restore and imapsync against them.
-- **A decision on OAuth for mail clients:** v1 advertises OAuth through client autoconfiguration,
-  while `/auth`, `/login` and `/.well-known/oauth-*` sit behind the admin gate — expose them, or stop
-  advertising *(inferred conflict)*.
+- **OAuth for mail clients:** the operator prefers to expose it; the impact is in *OAuth for mail
+  clients* below. ~~v1 advertises OAuth through client autoconfiguration while the endpoints sit
+  behind the admin gate *(inferred conflict)*~~ — not a conflict (2026-10-31): mail clients get the
+  platform's own autoconfig and autodiscover, which offer passwords only; v1's PACC document (with
+  its `oauth-public` profile) is not routed to clients.
 - **Rebuild rather than port:** drop the legacy `Principal/*` translation in `stalwart-jmap/client.ts`
   and talk to `x:Account` / `x:Domain` directly, checked against the server's `/api/schema/{hash}`;
   a v1 path for `bootstrap.sh` and the bootstrap plan; a least-privilege `ApiKey` for platform-api
@@ -205,10 +621,55 @@ evidence for each Stalwart bump from here on.
 
 ## Open decisions (operator)
 
-- Migration trigger: an operator-started action with a window (recommended), or automatic within a
-  platform upgrade.
-- Deployment shape: option B now (recommended), A, or straight to C.
-- OAuth for mail clients: expose Stalwart's OAuth endpoints, or stop advertising them.
+- ~~Migration trigger~~ — decided 2026-10-30: an operator-started action with a window.
+- Deployment shape: ~~the store evaluation (2026-10-31) recommends B with message bodies and
+  attachments as files, search in PostgreSQL~~ — round 2 (same day, against the operator's bar)
+  recommends A, v1 on RocksDB in today's architecture, with C still to prove itself in a
+  multi-node power-cut drill; the operator decides.
+- ~~Retention of deleted mail and accounts~~ — decided 2026-10-31: as short as possible
+  (Decision 7).
+- OAuth for mail clients: the operator prefers exposing it (2026-10-30), subject to the impact below.
+  What remains to decide is the coupling: a login-password revoke also revokes the mailbox's OAuth
+  grants (recommended), and whether the tenant panel lists connected applications.
+
+## OAuth for mail clients
+
+Verified on v1.0.1 with `scripts/stalwart-loadtest/oauth-probe.py` (2026-10-31): a login password
+issued the way `login-passwords/service.ts` does it, a public client registered over RFC 7591,
+authorization code with PKCE, then the token over JMAP and IMAP.
+
+- **No tenant-panel account is needed.** The sign-in page is Stalwart's own, and it accepts the
+  mailbox address and a **login password** (`authenticate_login` → `authenticate_basic`, which takes
+  app passwords). Nobody needs the hidden primary password (ADR-049), so the credential model stays
+  as it is: the tenant admin issues a login password, the user signs in once with it, the device then
+  holds a token instead of the password. The token works for JMAP (Bearer) and IMAP
+  (`AUTH=XOAUTH2`/`OAUTHBEARER`, both advertised next to `PLAIN` after STARTTLS).
+- **An OAuth session outlives the login password it was opened with.** After the login password was
+  revoked, Basic auth with it failed (401), but the access token kept working for JMAP and IMAP, and
+  the refresh token kept issuing new ones. A grant records the account, client, scopes and IP — not
+  the credential (`NewOAuthGrant`); its tokens are bound to a hash of the *primary* password
+  (`credential_version`). A login password's expiry and IP allow-list therefore do not limit the
+  session either. Destroying the grant (`x:OAuthGrant`, "connected applications") cut access
+  immediately and the refresh was refused. Re-randomising the primary password would end every
+  session of the mailbox at once *(from source: `assert_credential_version`)*.
+- **Lifetimes** (v1 defaults): access token 1 h, refresh token 30 days and renewed on use — a client
+  that syncs monthly never signs in again.
+- **Second factor:** login passwords skip TOTP, so a sign-in with one is single-factor — the same as
+  an IMAP login with it today. No change, no gain.
+- **Registration:** v1 always accepts anonymous RFC 7591 registration of public clients, under the
+  anonymous HTTP rate limit (100 requests/min per IP by default); dynamically registered clients must
+  declare their scopes and may not use the device-code grant.
+- **Exposure:** `/auth/*`, `/api/auth`, `/.well-known/oauth-authorization-server`,
+  `/.well-known/openid-configuration` and the sign-in web UI must be reachable on the mail hostname
+  over HTTPS, outside the admin gate — an internet-facing login form behind the WAF and Stalwart's
+  `authBanRate`.
+
+**What exposing it requires from the platform:** a login-password revoke that also destroys the
+mailbox's grants (all of them — a grant does not say which credential opened it); grants destroyed on
+mailbox suspend and delete; optionally a per-mailbox list of connected applications in the tenant
+panel (client name, created, last used, IP — all in `x:OAuthGrant`); an OAuth entry in the
+autoconfig/autodiscover templates once the endpoints are public; the routes above with the WAF in
+front. Bulwark's own OAuth (first-party, cluster-internal) is separate and needs none of this.
 
 ## Keeping this record current
 
@@ -222,3 +683,18 @@ date, not deleted.
 
 - 2026-10-30 — Created from the v1.0.1 / stalwart-migrate v1.0.4 assessment; added the deployment-shape
   and store-engine research (options A–D, proposed B) and the v1 capabilities to adopt.
+- 2026-10-31 — Operator decisions recorded: the migration is operator-started; the deployment shape
+  waits for the store evaluation; OAuth exposure preferred. OAuth impact verified on v1.0.1 (login
+  passwords sign in; a session outlives its login password); the autoconfig "conflict" struck.
+- 2026-10-31 — Store evaluation run on DEV (`r1031`, follow-up `r1031b`, plan experiments
+  `r1031c`/`d`): results, six findings (search plan on PostgreSQL, 180-day spam-sample hold, the
+  delete → purge sequence, Meilisearch, WAL volume, base-backup checkpoints), production
+  extrapolation, and a recommendation for Decision 5 (B with blobs as files). Findings 7 and 8
+  partly measured; option B's risks, gates and the open decision updated.
+- 2026-10-31 — Operator decision: deleted mail and accounts retained as briefly as possible
+  (Decision 7). Round 2 of the store evaluation on DEV (`r1031e`): memory of every component
+  including PostgreSQL replicas, Valkey with Sentinel, Garage and Longhorn's share-manager; total
+  storage against production's measured 0.16 store (51.5 GB); the platform's own mailbox backup and
+  restore with both engines; store-level backup and restore; account and mail deletion; blob files
+  on Longhorn RWO/RWX and in Garage. Against the operator's bar for changing the architecture, the
+  recommendation for Decision 5 changed from B to A; C waits for a multi-node power-cut drill.

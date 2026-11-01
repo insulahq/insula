@@ -19,6 +19,7 @@
 import type * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
 import { MERGE_PATCH } from './k8s-patch.js';
+import { RENEW_BEFORE_PERCENTAGE } from '../modules/certificates/renewal-policy.js';
 
 const TRAEFIK_GROUP = 'traefik.io';
 const TRAEFIK_VERSION = 'v1alpha1';
@@ -134,13 +135,24 @@ export async function reconcileIngressRouteHost(
 
 interface CertificateLike {
   readonly metadata?: { readonly annotations?: Record<string, string> };
-  readonly spec?: { readonly dnsNames?: string[] };
+  readonly spec?: {
+    readonly dnsNames?: string[];
+    readonly renewBefore?: string;
+    readonly renewBeforePercentage?: number;
+  };
 }
 
 /**
  * Reconcile a cert-manager Certificate so its dnsNames are exactly
  * `[expectedHost]`, re-stamping `reconcile: disabled`. cert-manager re-issues
  * the TLS Secret when the SANs change (HTTP-01 needs DNS for the new host).
+ *
+ * Also keeps its renewal on the platform schedule (renewal-policy.ts). These
+ * Certificates come from `reconcile: disabled` seed manifests, so Flux never
+ * updates an existing one — this is the only path that moves a cluster
+ * installed with a fixed `renewBefore` onto `renewBeforePercentage`. The
+ * merge patch nulls `renewBefore`: cert-manager refuses both set at once.
+ *
  * Idempotent; returns null when the Certificate is absent.
  */
 export async function reconcileCertificateDnsName(
@@ -167,8 +179,10 @@ export async function reconcileCertificateDnsName(
   const previousHost = dnsNames[0] ?? null;
   const annotationMissing =
     (current.metadata?.annotations ?? {})[FLUX_RECONCILE_KEY] !== 'disabled';
+  const renewalStale = current.spec?.renewBefore !== undefined
+    || current.spec?.renewBeforePercentage !== RENEW_BEFORE_PERCENTAGE;
 
-  if (previousHost === expectedHost && dnsNames.length === 1 && !annotationMissing) {
+  if (previousHost === expectedHost && dnsNames.length === 1 && !annotationMissing && !renewalStale) {
     return { expectedHost, previousHost, patched: false };
   }
 
@@ -179,7 +193,10 @@ export async function reconcileCertificateDnsName(
       namespace: ref.namespace,
       plural: CERT_PLURAL,
       name: ref.name,
-      body: { metadata: { annotations: { ...FLUX_RECONCILE_DISABLED } }, spec: { dnsNames: [expectedHost] } },
+      body: {
+        metadata: { annotations: { ...FLUX_RECONCILE_DISABLED } },
+        spec: { dnsNames: [expectedHost], renewBefore: null, renewBeforePercentage: RENEW_BEFORE_PERCENTAGE },
+      },
     } as unknown as Parameters<typeof custom.patchNamespacedCustomObject>[0],
     MERGE_PATCH,
   );

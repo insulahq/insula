@@ -194,7 +194,7 @@ metadata:
 spec:
   secretName: platform-tls-secret
   duration: 2160h  # 90 days
-  renewBefore: 720h  # 30 days before expiry
+  renewBeforePercentage: 33  # a third of the issued lifetime (certificates/renewal-policy.ts)
   commonName: platform.example.com
   issuerRef:
     name: letsencrypt-prod

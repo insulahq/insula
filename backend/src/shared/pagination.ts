@@ -32,6 +32,8 @@ export function parsePaginationParams(query: Record<string, unknown>): {
   limit: number;
   cursor: string | undefined;
   sort: { field: string; direction: 'asc' | 'desc' };
+  /** The `sort` value exactly as sent, undefined when absent — for resolveListSort. */
+  sortParam: string | undefined;
 } {
   const parsed = Number(query.limit);
   const rawLimit = Number.isFinite(parsed) && parsed > 0 ? parsed : 20;
@@ -42,5 +44,6 @@ export function parsePaginationParams(query: Record<string, unknown>): {
   const [field = 'created_at', dir = 'desc'] = sortParam.split(':');
   const direction = dir === 'asc' ? 'asc' : 'desc';
 
-  return { limit, cursor, sort: { field, direction } };
+  const rawSort = typeof query.sort === 'string' && query.sort !== '' ? query.sort : undefined;
+  return { limit, cursor, sort: { field, direction }, sortParam: rawSort };
 }

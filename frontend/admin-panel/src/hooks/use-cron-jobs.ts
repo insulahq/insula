@@ -8,15 +8,22 @@ interface UseCronJobsParams {
   readonly limit?: number;
   readonly cursor?: string;
   readonly search?: string;
+  /**
+   * `field:asc|desc` — the server orders (and pages) the whole list by it.
+   * Sent to both the cross-tenant and the one-tenant listing; both sort on the server.
+   */
+  readonly sort?: string;
 }
 
 export function useCronJobs(params: UseCronJobsParams = {}) {
   const { tenantId, limit, cursor, search } = params;
+  const sort = params.sort;
 
   const searchParams = new URLSearchParams();
   if (limit) searchParams.set('limit', String(limit));
   if (cursor) searchParams.set('cursor', cursor);
   if (search) searchParams.set('search', search);
+  if (sort) searchParams.set('sort', sort);
 
   const qs = searchParams.toString();
   const basePath = tenantId
@@ -25,7 +32,7 @@ export function useCronJobs(params: UseCronJobsParams = {}) {
   const path = `${basePath}${qs ? `?${qs}` : ''}`;
 
   return useQuery({
-    queryKey: ['cron-jobs', tenantId ?? 'all', { limit, cursor, search }],
+    queryKey: ['cron-jobs', tenantId ?? 'all', { limit, cursor, search, sort }],
     queryFn: () => apiFetch<PaginatedResponse<CronJob>>(path),
   });
 }

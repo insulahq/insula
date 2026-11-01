@@ -47,6 +47,7 @@ import {
 import { readCertificateHealth, shouldFallBack } from './status.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { RENEW_BEFORE_PERCENTAGE } from './renewal-policy.js';
 
 export interface CertLogger {
   info: (obj: unknown, msg?: string) => void;
@@ -357,8 +358,12 @@ function buildCertificateResource(params: {
         kind: 'ClusterIssuer',
         group: 'cert-manager.io',
       },
-      duration: '2160h', // 90 days (Let's Encrypt max)
-      renewBefore: '360h', // 15 days before expiry
+      // A request only: the CA decides the real lifetime (Let's Encrypt
+      // ignores it), and renewal below follows whatever was issued.
+      duration: '2160h',
+      // Renew with a third of the ISSUED lifetime left — see
+      // renewal-policy.ts. A fixed `renewBefore` cannot fit every lifetime.
+      renewBeforePercentage: RENEW_BEFORE_PERCENTAGE,
     },
   };
 }

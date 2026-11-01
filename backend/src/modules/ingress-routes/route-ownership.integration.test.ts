@@ -7,6 +7,10 @@
  * itself in the URL and tenant A's ids after it, could list A's directory
  * users, add a login to A's protected folder, disable or delete A's users,
  * reset their passwords, and read A's WAF log.
+ *
+ * The domain-scoped route handlers had the same gap: list, update and delete
+ * under `/tenants/:tenantId/domains/:domainId/routes` took the domain and
+ * route ids on trust, and an update took any tenant's deployment as a target.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -17,7 +21,7 @@ import { errorHandler } from '../../middleware/error-handler.js';
 import { registerAuth } from '../../middleware/auth.js';
 import { closeTestDb, cleanTables, getTestDb, isDbAvailable, runMigrations } from '../../test-helpers/db.js';
 import { seedDomain, seedPlan, seedRegion, seedTenant } from '../../test-helpers/fixtures.js';
-import { ingressRoutes, routeAuthUsers, wafLogs } from '../../db/schema.js';
+import { deployments, ingressRoutes, routeAuthUsers, wafLogs } from '../../db/schema.js';
 import { createDirUser, createProtectedDir } from './protected-dirs-service.js';
 
 const dbAvailable = await isDbAvailable();
@@ -25,7 +29,7 @@ const dbAvailable = await isDbAvailable();
 describe.skipIf(!dbAvailable)('tenant route ownership — protected directories and WAF logs (integration)', () => {
   let app: FastifyInstance;
   const db = () => getTestDb();
-  const ids = { a: '', b: '', routeA: '', routeB: '', dirA: '', userA: '' };
+  const ids = { a: '', b: '', domainA: '', domainB: '', routeA: '', routeB: '', deploymentA: '', dirA: '', userA: '' };
   let tokenA = '';
   let tokenB = '';
 
@@ -34,7 +38,7 @@ describe.skipIf(!dbAvailable)('tenant route ownership — protected directories 
     const domain = await seedDomain(db(), tenant.id, { domainName: host });
     const routeId = randomUUID();
     await db().insert(ingressRoutes).values({ id: routeId, domainId: domain.id, hostname: host, ingressCname: 'unused.example.test' });
-    return { tenantId: tenant.id, routeId };
+    return { tenantId: tenant.id, domainId: domain.id, routeId };
   };
 
   beforeAll(async () => {
@@ -60,7 +64,13 @@ describe.skipIf(!dbAvailable)('tenant route ownership — protected directories 
     const plan = await seedPlan(db());
     const a = await seedSite(region.id, plan.id, 'a.example.test');
     const b = await seedSite(region.id, plan.id, 'b.example.test');
-    Object.assign(ids, { a: a.tenantId, b: b.tenantId, routeA: a.routeId, routeB: b.routeId });
+    Object.assign(ids, {
+      a: a.tenantId, b: b.tenantId, domainA: a.domainId, domainB: b.domainId, routeA: a.routeId, routeB: b.routeId,
+    });
+    ids.deploymentA = randomUUID();
+    await db().insert(deployments).values({
+      id: ids.deploymentA, tenantId: a.tenantId, name: 'site-a', status: 'running',
+    } as typeof deployments.$inferInsert);
     const dir = await createProtectedDir(db(), a.routeId, a.tenantId, { path: '/private', realm: 'A only' });
     ids.dirA = dir.id;
     const user = await createDirUser(db(), dir.id, a.routeId, a.tenantId, 'alice', 'correct-horse-battery');
@@ -76,9 +86,10 @@ describe.skipIf(!dbAvailable)('tenant route ownership — protected directories 
     tokenB = sign(b.tenantId);
   });
 
-  const call = (token: string, method: 'GET' | 'POST' | 'DELETE', url: string, payload?: object) =>
+  const call = (token: string, method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, payload?: object) =>
     app.inject({ method, url: `/api/v1${url}`, headers: { authorization: `Bearer ${token}` }, ...(payload ? { payload } : {}) });
   const userRow = async () => (await db().select().from(routeAuthUsers).where(eq(routeAuthUsers.id, ids.userA)))[0];
+  const routeRow = async (id: string) => (await db().select().from(ingressRoutes).where(eq(ingressRoutes.id, id)))[0];
 
   it('tenant B is refused every read and write on tenant A\'s route, directory and users', async () => {
     const before = await userRow();
@@ -116,5 +127,40 @@ describe.skipIf(!dbAvailable)('tenant route ownership — protected directories 
     expect((await userRow())?.enabled).toBeFalsy();
     expect((await call(tokenA, 'POST', `${A}/protected-dirs/${ids.dirA}/users/${ids.userA}/change-password`, { password: 'alice-new-password' })).statusCode).toBe(200);
     expect((await call(tokenA, 'DELETE', `${A}/protected-dirs/${ids.dirA}/users/${ids.userA}`)).statusCode).toBe(204);
+  });
+
+  it('tenant B cannot list, change or delete tenant A\'s routes through the domain-scoped paths', async () => {
+    const before = await routeRow(ids.routeA);
+    const B = `/tenants/${ids.b}`;
+    const attempts: Array<[string, 'GET' | 'PATCH' | 'DELETE', string, object?]> = [
+      ['list A\'s domain', 'GET', `${B}/domains/${ids.domainA}/routes`],
+      ['change via A\'s domain', 'PATCH', `${B}/domains/${ids.domainA}/routes/${ids.routeA}`, { tls_mode: 'none' }],
+      ['change via B\'s own domain', 'PATCH', `${B}/domains/${ids.domainB}/routes/${ids.routeA}`, { tls_mode: 'none' }],
+      ['delete via A\'s domain', 'DELETE', `${B}/domains/${ids.domainA}/routes/${ids.routeA}`],
+      ['delete via B\'s own domain', 'DELETE', `${B}/domains/${ids.domainB}/routes/${ids.routeA}`],
+    ];
+    for (const [label, method, url, payload] of attempts) {
+      const res = await call(tokenB, method, url, payload);
+      expect(res.statusCode, `${label}: ${res.body}`).toBe(404);
+      expect(res.body, label).not.toContain('a.example.test');
+    }
+    expect(await routeRow(ids.routeA)).toEqual(before);
+  });
+
+  it('a route cannot be pointed at another tenant\'s deployment', async () => {
+    const res = await call(tokenB, 'PATCH', `/tenants/${ids.b}/domains/${ids.domainB}/routes/${ids.routeB}`, { deployment_id: ids.deploymentA });
+    expect(res.statusCode, res.body).toBe(404);
+    expect(res.json().error.code).toBe('DEPLOYMENT_NOT_FOUND');
+    expect((await routeRow(ids.routeB))?.deploymentId).toBeNull();
+  });
+
+  it('tenant A still lists, changes and deletes its own routes', async () => {
+    const A = `/tenants/${ids.a}/domains/${ids.domainA}/routes`;
+    expect((await call(tokenA, 'GET', A)).json().data.map((r: { id: string }) => r.id)).toEqual([ids.routeA]);
+    const patched = await call(tokenA, 'PATCH', `${A}/${ids.routeA}`, { deployment_id: ids.deploymentA });
+    expect(patched.statusCode, patched.body).toBe(200);
+    expect(patched.json().data.deploymentId).toBe(ids.deploymentA);
+    expect((await call(tokenA, 'DELETE', `${A}/${ids.routeA}`)).statusCode).toBe(200);
+    expect(await routeRow(ids.routeA)).toBeUndefined();
   });
 });

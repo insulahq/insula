@@ -436,6 +436,17 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                         and this row already edits the route's target inline. */}
                     <div className="flex items-center gap-2" data-testid={`route-link-${route.id}`}>
                       <span className="font-medium text-gray-900 dark:text-gray-100">{route.hostname}</span>
+                      {/* Read-only here: switching a route on or off is the
+                          tenant's, in the tenant panel. */}
+                      {!route.enabled && (
+                        <span
+                          className="inline-flex rounded-full border border-gray-300 bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-600 dark:border-gray-600 dark:bg-gray-700/60 dark:text-gray-300"
+                          title="Switched off in the tenant panel: not served, settings kept"
+                          data-testid={`route-inactive-${route.id}`}
+                        >
+                          Inactive
+                        </span>
+                      )}
                       {route.isApex ? (
                         <span className="inline-flex rounded bg-amber-50 dark:bg-amber-900/20 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300">apex</span>
                       ) : null}

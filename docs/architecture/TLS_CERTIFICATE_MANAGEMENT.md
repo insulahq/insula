@@ -143,7 +143,7 @@ metadata:
 spec:
   secretName: {client-id}-{domain-slug}-wildcard-tls
   duration: 2160h        # 90 days
-  renewBefore: 720h      # Renew 30 days before expiry
+  renewBeforePercentage: 33   # Renew with a third of the issued lifetime left
   commonName: "*.{domain}"
   dnsNames:
   - "*.{domain}"
@@ -164,13 +164,42 @@ metadata:
 spec:
   secretName: {client-id}-{hostname-slug}-tls
   duration: 2160h
-  renewBefore: 720h
+  renewBeforePercentage: 33
   dnsNames:
   - "{hostname}"
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
 ```
+
+### Renewal schedule and "expiring"
+
+Every Certificate the platform obtains from an ACME CA renews with
+`renewBeforePercentage: 33` — a third of the **issued** lifetime left, computed
+by cert-manager from the certificate's real notBefore/notAfter. Never a fixed
+`renewBefore`: Let's Encrypt's default profile goes from 90 to 64 days on
+2027-02-10 and to 45 days on 2028-02-16, and its opt-in profiles already issue
+45- and 6-day certificates. A fixed duration is wrong for some of those. A
+`renewBefore` at or above the lifetime renews forever.
+
+The panels call an auto-renewed certificate **expiring** (amber) only when its
+renewal is overdue: less than half of the renewal window (a sixth of its
+lifetime) is left. A renewal that works is never seen.
+
+| Lifetime | Renews at (left) | Amber below (left) |
+|----------|------------------|--------------------|
+| 90 days  | ~30 days         | ~15 days           |
+| 64 days  | ~21 days         | ~10.5 days         |
+| 45 days  | ~15 days         | ~7.4 days          |
+| 6 days   | ~2 days          | ~1 day             |
+
+An uploaded certificate (nobody renews it) turns amber 30 days before expiry.
+One module holds the rule: `backend/src/modules/certificates/renewal-policy.ts`
+(and `renewal-policy-sql.ts` for the dashboards). The lifetime comes from
+`ssl_certificates.not_before` (migration 0171). The CI guard
+`ci-cert-renewal-window-check.sh` fails any absolute `renewBefore` in backend
+code, manifests or scripts. It allows only self-signed internal chains and
+vendored upstream manifests.
 
 ### Ingress TLS Reference
 
@@ -488,7 +517,7 @@ nginx -s reload
 
 #### Renewal behaviour
 
-The download endpoint always returns the **currently active certificate**. When cert-manager renews the Let's Encrypt certificate (30 days before expiry), the Kubernetes Secret is updated automatically. The next call to the download endpoint returns the new certificate with no change required on the caller's side.
+The download endpoint always returns the **currently active certificate**. When cert-manager renews the Let's Encrypt certificate (with a third of its lifetime left), the Kubernetes Secret is updated automatically. The next call to the download endpoint returns the new certificate with no change required on the caller's side.
 
 For external servers that need to pick up renewals automatically, the recommended pattern is a cron job or systemd timer that fetches the cert daily and reloads the web server only if the certificate has changed:
 
@@ -572,22 +601,22 @@ Custom certificate expiry alerts fire even when auto-renewal is disabled — the
 groups:
 - name: certificates
   rules:
-  - alert: CertExpiryWarning
-    expr: platform_cert_expiry_days < 30
+  # The platform's rule pack (backend/src/modules/monitoring/rules.ts,
+  # `cert-renewal-overdue`). The value is the share of the certificate's
+  # renewal window still left — 1 at cert-manager's renewal point, 0.5 when
+  # half of it has gone without a renewal, below 0 once expired — so it fits
+  # any CA lifetime. A fixed "< N days" fires on every cycle of a short-lived
+  # certificate.
+  - alert: CertRenewalOverdue
+    expr: >-
+      ((certmanager_certificate_expiration_timestamp_seconds - time())
+        / (certmanager_certificate_expiration_timestamp_seconds
+           - certmanager_certificate_renewal_timestamp_seconds)) < 0.5
     for: 1h
-    labels:
-      severity: warning
-    annotations:
-      summary: "Certificate expiring in {{ $value }} days"
-      description: "Domain {{ $labels.domain }} (client {{ $labels.tenant_id }})"
-
-  - alert: CertExpiryCritical
-    expr: platform_cert_expiry_days < 7
-    for: 0m
     labels:
       severity: critical
     annotations:
-      summary: "Certificate expiring in {{ $value }} days — URGENT"
+      summary: "Certificate renewal overdue ({{ $value }} of the renewal window left)"
 
   - alert: CertRenewalFailed
     expr: increase(platform_cert_renewal_failures_total[1h]) > 0

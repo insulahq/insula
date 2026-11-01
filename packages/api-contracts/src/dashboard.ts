@@ -165,6 +165,29 @@ export const adminNodeSchema = z.object({
 });
 export type AdminNode = z.infer<typeof adminNodeSchema>;
 
+/**
+ * What losing one node would affect.
+ *
+ * `tenants`: active customer tenants that depend on the node. One on local
+ * storage with workloads, volumes or data there stays down until the node is
+ * back; one on HA storage counts where it runs or has its volume attached,
+ * and restarts on another node.
+ * `mail`: the node's part in mail. `active` is where mail runs now;
+ * `secondary`/`tertiary` are failover targets; `standby` holds a standby copy
+ * without being one (the primary, while mail runs on a failover node).
+ * `staysDown`: losing the node leaves mail down until it is back — mail runs
+ * there and cannot fail over (automatic failover off, or no usable target).
+ */
+export const nodeLossSchema = z.object({
+  node: z.string(),
+  tenants: z.number().int(),
+  mail: z.object({
+    role: z.enum(['active', 'secondary', 'tertiary', 'standby']),
+    staysDown: z.boolean(),
+  }).nullable(),
+});
+export type NodeLoss = z.infer<typeof nodeLossSchema>;
+
 export const adminDashboardSummarySchema = z.object({
   generatedAt: z.string(),
   alerts: section(z.array(dashboardAlertSchema)),
@@ -210,6 +233,8 @@ export const adminDashboardSummarySchema = z.object({
   certificates: section(z.object({
     issued: z.number(), wildcards: z.number(),
     nearestExpiryDays: z.number().nullable(), failing: z.number(),
+    /** Certificates whose renewal is overdue by the renewal policy (half the renewal window gone, or expired). */
+    overdue: z.number(),
   })),
   database: section(z.object({
     archivingHealthy: z.boolean(), walBytes: z.number().nullable(),
@@ -253,8 +278,15 @@ export const adminDashboardLiveSchema = z.object({
       imagesAndOther: z.number(),
     }).nullable(),
     nodeCount: z.number(),
+    /** Whether the other nodes have room for the requests of the largest one. */
     survivesSingleNodeLoss: z.boolean(),
+    /** The largest node by CPU: the one the capacity test removes. */
     worstNode: z.string().nullable(),
+    /**
+     * The node whose loss would affect the most, judged by what depends on it
+     * rather than by its size. Null when that could not be read.
+     */
+    worstNodeLoss: nodeLossSchema.nullable(),
   })),
   nodes: section(z.array(adminNodeSchema)),
   mail: section(z.object({
@@ -298,6 +330,7 @@ export type AdminDashboardLive = z.infer<typeof adminDashboardLiveSchema>;
 export const tenantSiteSchema = z.object({
   host: z.string(),
   application: z.string(),
+  /** The application's deployment status, or `inactive` when the route itself is switched off. */
   status: z.string(),
   tlsState: z.enum(['valid', 'pending', 'expired', 'none']),
   tlsDaysRemaining: z.number().nullable(),
@@ -328,6 +361,7 @@ export const tenantDashboardSummarySchema = z.object({
   })),
   domains: section(z.object({
     domains: z.number(), verified: z.number(),
+    /** Days until the earliest scheduled renewal (a third of the lifetime before expiry), 0 when due. */
     certificates: z.number(), nearestRenewalDays: z.number().nullable(),
   })),
   backups: section(z.object({

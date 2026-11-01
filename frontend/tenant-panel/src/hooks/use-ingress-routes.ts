@@ -49,8 +49,10 @@ export function useUpdateIngressRoute(tenantId: string | undefined, domainId: st
         `/api/v1/tenants/${tenantId}/domains/${domainId}/routes/${routeId}`,
         { method: 'PATCH', body: JSON.stringify(input) },
       ),
-    onSuccess: () => {
+    onSuccess: (_res, { routeId }) => {
       queryClient.invalidateQueries({ queryKey: ['ingress-routes', tenantId, domainId] });
+      // The route's own page reads it through GET /routes/:id.
+      queryClient.invalidateQueries({ queryKey: ['route-detail', tenantId, routeId] });
       queryClient.invalidateQueries({ queryKey: ['dns-records'] });
     },
   });

@@ -307,3 +307,31 @@ describe('TenantUsersTab', () => {
     });
   });
 });
+
+describe('TenantUsersTab — column sorting', () => {
+  const user = (id: string, fullName: string, roleName: string) => ({
+    id, fullName, email: `${fullName.toLowerCase()}@c1.com`, roleName, status: 'active',
+    createdAt: '2026-01-01T00:00:00Z', lastLoginAt: null,
+  });
+  const order = () => screen.getAllByTestId(/^tenant-users-edit-u/).map((b) => b.getAttribute('data-testid'));
+
+  beforeEach(() => {
+    mockedUseAdminSubUsers.mockReturnValue({
+      data: { data: [user('u2', 'Bob', 'tenant_user'), user('u3', 'Carol', 'tenant_admin'), user('u1', 'Alice', 'tenant_user')] },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useAdminSubUsers>);
+  });
+
+  it('opens by name, then sorts by the role label both ways', async () => {
+    const u = userEvent.setup();
+    render(<TenantUsersTab tenantId="c1" />, { wrapper: createWrapper() });
+    expect(order()).toEqual(['tenant-users-edit-u1', 'tenant-users-edit-u2', 'tenant-users-edit-u3']);
+
+    // "Admin" before "Member".
+    await u.click(screen.getByTestId('sort-roleName'));
+    expect(order()).toEqual(['tenant-users-edit-u3', 'tenant-users-edit-u2', 'tenant-users-edit-u1']);
+    await u.click(screen.getByTestId('sort-roleName'));
+    expect(order()).toEqual(['tenant-users-edit-u2', 'tenant-users-edit-u1', 'tenant-users-edit-u3']);
+  });
+});

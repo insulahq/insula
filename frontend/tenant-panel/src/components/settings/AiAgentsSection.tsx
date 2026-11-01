@@ -7,15 +7,17 @@
  * agents — or, for a tenant admin, every agent connected to the account — and
  * any of them can be disconnected. The provider can switch tenant agents off.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Bot, Check, Copy, Loader2, Unplug } from 'lucide-react';
 import {
   MCP_CONNECTION_MAX_SECONDS, MCP_OAUTH_TOKEN_TTL_SECONDS, type McpConnection, type McpScope,
 } from '@insula/api-contracts';
 import ErrorPanel from '@/components/ErrorPanel';
+import SortableHeader from '@/components/ui/SortableHeader';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import { formatRelativeTime } from '@/lib/format-relative-time';
 import { useRevokeTenantAgent, useTenantAgents } from '@/hooks/use-ai-agents';
+import { useSortable } from '@/hooks/use-sortable';
 
 const card = 'rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-gray-700 dark:bg-gray-800';
 const btn = 'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium disabled:opacity-50';
@@ -107,6 +109,19 @@ export default function AiAgentsSection() {
   const loaded = Boolean(data);
   const accessMinutes = Math.round(MCP_OAUTH_TOKEN_TTL_SECONDS / 60);
   const connectionHours = Math.round(MCP_CONNECTION_MAX_SECONDS / 3600);
+  // Newest connection first, as the API lists them. An agent never active
+  // ("—") sorts as the oldest activity.
+  const connections = useMemo(() => (data?.connections ?? []).map((c) => ({
+    ...c,
+    createdAtMs: Date.parse(c.createdAt),
+    actsAs: c.user.fullName,
+    scopeList: c.scopes.join(' '),
+    lastUsedAtMs: c.lastUsedAt ? Date.parse(c.lastUsedAt) : 0,
+    expiresAtMs: Date.parse(c.expiresAt),
+  })), [data]);
+  const { sortedData: sortedConnections, sortKey, sortDirection, onSort } = useSortable(connections, 'createdAtMs', 'desc');
+  // SortableHeader defaults to px-5/py-3 — this table pads right and below only.
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!pl-0 !pr-3 !pt-0 !pb-2 font-medium' };
 
   // The header's agent chip links to #ai-agents; the router does not scroll to it.
   useEffect(() => {
@@ -163,16 +178,16 @@ export default function AiAgentsSection() {
               <table className="w-full text-left text-sm">
                 <thead>
                   <tr className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                    <th className="pb-2 pr-3 font-medium">Agent</th>
-                    {data.view === 'tenant' && <th className="pb-2 pr-3 font-medium">Acts as</th>}
-                    <th className="pb-2 pr-3 font-medium">Scopes</th>
-                    <th className="hidden pb-2 pr-3 font-medium md:table-cell">Last active</th>
-                    <th className="pb-2 pr-3 font-medium">Ends</th>
+                    <SortableHeader label="Agent" sortKey="clientName" {...th} />
+                    {data.view === 'tenant' && <SortableHeader label="Acts as" sortKey="actsAs" {...th} />}
+                    <SortableHeader label="Scopes" sortKey="scopeList" {...th} />
+                    <SortableHeader label="Last active" sortKey="lastUsedAtMs" {...th} className={`hidden md:table-cell ${th.className}`} />
+                    <SortableHeader label="Ends" sortKey="expiresAtMs" {...th} />
                     <th className="pb-2" />
                   </tr>
                 </thead>
                 <tbody>
-                  {data.connections.map((c) => <AgentRow key={c.id} agent={c} showUser={data.view === 'tenant'} />)}
+                  {sortedConnections.map((c) => <AgentRow key={c.id} agent={c} showUser={data.view === 'tenant'} />)}
                 </tbody>
               </table>
             </div>

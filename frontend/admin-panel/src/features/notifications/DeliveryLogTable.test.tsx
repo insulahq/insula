@@ -90,7 +90,7 @@ function createWrapper() {
 beforeEach(() => {
   vi.clearAllMocks();
   listMock.mockReturnValue({
-    data: { data: SEED_DELIVERIES, pagination: { nextCursor: null, limit: 50 } },
+    data: { data: SEED_DELIVERIES, pagination: { cursor: null, has_more: false, page_size: 50 } },
     isLoading: false,
     isFetching: false,
     error: null,
@@ -152,7 +152,7 @@ describe('DeliveryLogTable', () => {
 
   it('renders empty state when no deliveries match', () => {
     listMock.mockReturnValue({
-      data: { data: [], pagination: { nextCursor: null, limit: 50 } },
+      data: { data: [], pagination: { cursor: null, has_more: false, page_size: 50 } },
       isLoading: false,
       isFetching: false,
       error: null,
@@ -167,6 +167,39 @@ describe('DeliveryLogTable', () => {
     expect(screen.getByTestId('pagination-prev')).toBeDisabled();
   });
 
+  it('pagination next follows the opaque cursor the API returns', async () => {
+    const user = userEvent.setup();
+    listMock.mockReturnValue({
+      data: { data: SEED_DELIVERIES, pagination: { cursor: 'opaque-cursor', has_more: true, page_size: 50 } },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    });
+    render(<DeliveryLogTable />, { wrapper: createWrapper() });
+    await user.click(screen.getByTestId('pagination-next'));
+    const calls = listMock.mock.calls as Array<[{ cursor?: string; sort?: string }]>;
+    expect(calls[calls.length - 1][0]).toMatchObject({ cursor: 'opaque-cursor', sort: 'queuedAt:desc' });
+  });
+
+  it('a column header sorts on the server and starts again from page one', async () => {
+    const user = userEvent.setup();
+    listMock.mockReturnValue({
+      data: { data: SEED_DELIVERIES, pagination: { cursor: 'opaque-cursor', has_more: true, page_size: 50 } },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    });
+    render(<DeliveryLogTable />, { wrapper: createWrapper() });
+    await user.click(screen.getByTestId('pagination-next'));
+    await user.click(screen.getByTestId('sort-status'));
+    const calls = listMock.mock.calls as Array<[{ cursor?: string; sort?: string }]>;
+    expect(calls[calls.length - 1][0]).toMatchObject({ cursor: undefined, sort: 'status:asc' });
+    await user.click(screen.getByTestId('sort-status'));
+    expect(calls[calls.length - 1][0]).toMatchObject({ cursor: undefined, sort: 'status:desc' });
+    // Actions is not a sortable column.
+    expect(screen.queryByTestId('sort-actions')).not.toBeInTheDocument();
+  });
+
   it('retry button: only present for email failed/dlq rows', () => {
     listMock.mockReturnValue({
       data: { data: [
@@ -174,7 +207,7 @@ describe('DeliveryLogTable', () => {
         { ...SEED_DELIVERIES[0], id: 'd-failed', status: 'failed' as const, channel: 'email' as const },
         { ...SEED_DELIVERIES[0], id: 'd-dlq', status: 'dlq' as const, channel: 'email' as const },
         { ...SEED_DELIVERIES[0], id: 'd-in-app-failed', status: 'failed' as const, channel: 'in_app' as const },
-      ], pagination: { nextCursor: null, limit: 50 } },
+      ], pagination: { cursor: null, has_more: false, page_size: 50 } },
       isLoading: false,
       isFetching: false,
       error: null,
@@ -189,7 +222,7 @@ describe('DeliveryLogTable', () => {
   it('retry button: clicking calls the mutation with the delivery id', async () => {
     const user = userEvent.setup();
     listMock.mockReturnValue({
-      data: { data: [{ ...SEED_DELIVERIES[0], id: 'd-fail', status: 'failed' as const, channel: 'email' as const }], pagination: { nextCursor: null, limit: 50 } },
+      data: { data: [{ ...SEED_DELIVERIES[0], id: 'd-fail', status: 'failed' as const, channel: 'email' as const }], pagination: { cursor: null, has_more: false, page_size: 50 } },
       isLoading: false,
       isFetching: false,
       error: null,

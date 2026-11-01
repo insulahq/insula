@@ -6,12 +6,13 @@
  * still being issued.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   classifyCertificate,
   shouldFallBack,
   FALLBACK_GRACE_MS,
   type CertificateResource,
+  listCertificateHealth,
 } from './status.js';
 import { pickDomainCertificate } from './cert-reconciler.js';
 
@@ -134,5 +135,44 @@ describe('pickDomainCertificate', () => {
   it('matches legacy certs that predate the domain-id label', () => {
     const certs = [health('legacy-cert', ['example.test', '*.example.test'])];
     expect(pickDomainCertificate(certs, 'd1', 'example.test')?.name).toBe('legacy-cert');
+  });
+});
+
+describe('listCertificateHealth — moving a fixed renewBefore to the renewal policy', () => {
+  // A domain with no route (a mail-only wildcard) is never rewritten by an
+  // ingress reconcile, so the status sweep is the path that moves it.
+  const cert = (name: string, spec: Record<string, unknown>) => ({
+    metadata: { name, labels: { 'app.kubernetes.io/managed-by': 'insula' } },
+    spec: { dnsNames: [`*.${name}.example.test`], secretName: `${name}-tls`, issuerRef: { name: 'letsencrypt-prod-dns01' }, ...spec },
+    status: { conditions: [{ type: 'Ready', status: 'True' }], notAfter: '2027-01-01T00:00:00Z' },
+  });
+  const k8sWith = (items: unknown[]) => {
+    const patch = vi.fn(async () => ({}));
+    const k8s = {
+      custom: { listNamespacedCustomObject: vi.fn(async () => ({ items })), patchNamespacedCustomObject: patch },
+    } as never;
+    return { k8s, patch };
+  };
+
+  it('patches only Certificates off the policy, removing renewBefore — when the sweep asks', async () => {
+    const { k8s, patch } = k8sWith([cert('old', { renewBefore: '360h' }), cert('new', { renewBeforePercentage: 33 })]);
+    const health = await listCertificateHealth(k8s, 'tenant-a', { fixRenewalSchedule: true });
+    expect(health).toHaveLength(2);
+    expect(patch).toHaveBeenCalledTimes(1);
+    const [args] = patch.mock.calls[0] as unknown as [{ name: string; body: { spec: Record<string, unknown> } }];
+    expect(args.name).toBe('old');
+    expect(args.body.spec).toEqual({ renewBefore: null, renewBeforePercentage: 33 });
+  });
+
+  it('never writes from a plain read', async () => {
+    const { k8s, patch } = k8sWith([cert('old', { renewBefore: '360h' })]);
+    await listCertificateHealth(k8s, 'tenant-a');
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it('a failed patch does not hide the health result', async () => {
+    const { k8s, patch } = k8sWith([cert('old', { renewBefore: '360h' })]);
+    patch.mockRejectedValueOnce(new Error('apiserver timeout'));
+    expect(await listCertificateHealth(k8s, 'tenant-a', { fixRenewalSchedule: true })).toHaveLength(1);
   });
 });

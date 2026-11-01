@@ -1,11 +1,27 @@
+import { useMemo } from 'react';
 import { AlertTriangle, Info, Pin } from 'lucide-react';
-import { useResourceBreakdown } from '@/hooks/use-deployments';
+import { useResourceBreakdown, type ResourceBreakdown as Breakdown } from '@/hooks/use-deployments';
 import { useResourceAvailability as useTenantCpuModel } from '@/hooks/use-resource-availability';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 interface ResourceBreakdownProps {
   readonly tenantId: string;
   readonly deploymentId: string;
 }
+
+const QUANTITY_SUFFIX: Readonly<Record<string, number>> = {
+  '': 1, m: 1e-3, k: 1e3, M: 1e6, G: 1e9, T: 1e12, Ki: 2 ** 10, Mi: 2 ** 20, Gi: 2 ** 30, Ti: 2 ** 40,
+};
+
+/** A Kubernetes quantity ("450m", "1.5", "512Mi") as a plain number, so "1Gi" sorts above "900Mi". */
+function quantityValue(quantity: string): number | null {
+  const match = /^([0-9]*\.?[0-9]+)([a-zA-Z]*)$/.exec(quantity.trim());
+  const factor = match ? QUANTITY_SUFFIX[match[2]] : undefined;
+  return match && factor !== undefined ? Number(match[1]) * factor : null;
+}
+
+const NO_COMPONENTS: Breakdown['components'] = [];
 
 /**
  * ADR-037 surface: shows how the deployment-level CPU/memory budget is
@@ -26,6 +42,17 @@ export function ResourceBreakdown({ tenantId, deploymentId }: ResourceBreakdownP
   // them, and nothing ever was.
   const { data: tenantCpuData } = useTenantCpuModel(tenantId);
   const tieredCpu = tenantCpuData?.data?.cpuModel === 'tiered';
+  // Before the early returns (Rules of Hooks). Manifest order carries no
+  // meaning, so by name; CPU and memory sort by quantity, not by their text.
+  const components = data?.data?.components ?? NO_COMPONENTS;
+  const sortableComponents = useMemo(() => components.map((c) => ({
+    ...c,
+    weightValue: c.pinned ? null : c.weight,
+    cpuValue: quantityValue(c.cpu),
+    memoryValue: quantityValue(c.memory),
+  })), [components]);
+  const { sortedData: sortedComponents, sortKey, sortDirection, onSort } = useSortable(sortableComponents, 'name');
+  const th = { currentKey: sortKey, direction: sortDirection, onSort };
 
   if (isLoading) {
     return <div className="text-xs text-gray-400 dark:text-gray-500">Loading breakdown…</div>;
@@ -65,14 +92,14 @@ export function ResourceBreakdown({ tenantId, deploymentId }: ResourceBreakdownP
         <table className="w-full text-xs">
           <thead>
             <tr className="text-left text-gray-500 dark:text-gray-400">
-              <th className="pb-1 pr-2 font-normal">Component</th>
-              <th className="pb-1 px-2 font-normal text-right">Weight</th>
-              <th className="pb-1 px-2 font-normal text-right">{tieredCpu ? 'CPU share' : 'CPU baseline'}</th>
-              <th className="pb-1 pl-2 font-normal text-right">Memory</th>
+              <SortableHeader label="Component" sortKey="name" {...th} className="!pl-0 !pr-2 !pt-0 !pb-1 font-normal" />
+              <SortableHeader label="Weight" sortKey="weightValue" {...th} className="!px-2 !pt-0 !pb-1 font-normal text-right" />
+              <SortableHeader label={tieredCpu ? 'CPU share' : 'CPU baseline'} sortKey="cpuValue" {...th} className="!px-2 !pt-0 !pb-1 font-normal text-right" />
+              <SortableHeader label="Memory" sortKey="memoryValue" {...th} className="!pl-2 !pr-0 !pt-0 !pb-1 font-normal text-right" />
             </tr>
           </thead>
           <tbody>
-            {breakdown.components.map((c) => (
+            {sortedComponents.map((c) => (
               <tr
                 key={c.name}
                 className="border-t border-gray-200 dark:border-gray-700/50 text-gray-700 dark:text-gray-300"

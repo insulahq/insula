@@ -13,7 +13,7 @@ title = "insula secret scan"
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "Intentional placeholders, dev/test fixtures, and doc values — not real secrets."
 regexes = [
   # Placeholder identifiers used throughout committed files.
@@ -71,3 +71,16 @@ paths = [
   '''scripts/local\.sh''',              # local DinD setup; prints dummy dev creds
   '''scripts/spike-.*\.sh''',           # throwaway spike fixtures
 ]
+
+# Sortable table headers: `sortKey="…"` names a column's row field (camelCase),
+# never a credential. generic-api-key reads `Key="<identifier>"` as an
+# assignment and flags the longer field names (`observedP95Millis`). The panels
+# have ~100 such headers, so a line-pinned .gitleaksignore fingerprint per hit
+# would break whenever a line moved. Scoped to that exact attribute shape, in
+# panel .tsx files only.
+[[allowlists]]
+description = "SortableHeader sortKey attributes in the panels"
+condition = "AND"
+regexTarget = "line"
+regexes = ['''sortKey=["'][A-Za-z][A-Za-z0-9_.]*["']''']
+paths = ['''^frontend/(admin|tenant)-panel/src/.*\.tsx$''']

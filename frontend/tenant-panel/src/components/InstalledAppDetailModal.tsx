@@ -53,6 +53,8 @@ import { describeDeploymentError } from '@/lib/describe-deployment-error';
 import { cpuCeilingCores, cpuCores, formatCpuCeiling } from '@/lib/cpu-ceiling';
 import { useResourceMetrics } from '@/hooks/use-resource-metrics';
 import { formatGiB, resourceBarColor, resourcePercent, resourceRatio } from '@/lib/resource-usage';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 import type { Deployment, CatalogEntry } from '@/types/api';
 
 interface ComponentEntry {
@@ -136,6 +138,69 @@ const typeBadgeColors: Record<string, string> = {
   cronjob: 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
   job: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
 };
+
+// The detail tables below are their own components so their sort hooks run
+// unconditionally — the modal renders them after its `!open` guard. Manifest
+// order carries no meaning, so each starts on its first column.
+const DETAIL_TH = '!px-3 !py-2';
+
+function ComponentsTable({ components }: { readonly components: readonly ComponentEntry[] }) {
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(components, 'name');
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: DETAIL_TH };
+  return (
+    <table className="w-full text-sm" data-testid="components-table">
+      <thead>
+        <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+          <SortableHeader label="Name" sortKey="name" {...th} />
+          <SortableHeader label="Type" sortKey="type" {...th} />
+          <SortableHeader label="Image" sortKey="image" {...th} />
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+        {sortedData.map((comp) => (
+          <tr key={comp.name ?? comp.image}>
+            <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{comp.name ?? '-'}</td>
+            <td className="px-3 py-2">
+              <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${typeBadgeColors[comp.type ?? ''] ?? typeBadgeColors.job}`}>
+                {comp.type ?? 'unknown'}
+              </span>
+            </td>
+            <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{comp.image ?? '-'}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+interface VolumeRow {
+  readonly key: string | undefined;
+  readonly localPath: string;
+  readonly containerPath: string | null;
+}
+
+function VolumesTable({ rows }: { readonly rows: readonly VolumeRow[] }) {
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(rows, 'localPath');
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: DETAIL_TH };
+  return (
+    <table className="w-full text-sm" data-testid="volumes-table">
+      <thead>
+        <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+          <SortableHeader label="Local Path" sortKey="localPath" {...th} />
+          <SortableHeader label="Container Path" sortKey="containerPath" {...th} />
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+        {sortedData.map((vol) => (
+          <tr key={vol.key}>
+            <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{vol.localPath}</td>
+            <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vol.containerPath ?? '-'}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
 
 interface InstalledAppDetailModalProps {
   readonly open: boolean;
@@ -782,28 +847,7 @@ export default function InstalledAppDetailModal({
               Components
             </h3>
             <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    <th className="px-3 py-2">Name</th>
-                    <th className="px-3 py-2">Type</th>
-                    <th className="px-3 py-2">Image</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {components.map((comp) => (
-                    <tr key={comp.name ?? comp.image}>
-                      <td className="px-3 py-2 font-medium text-gray-900 dark:text-gray-100">{comp.name ?? '-'}</td>
-                      <td className="px-3 py-2">
-                        <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${typeBadgeColors[comp.type ?? ''] ?? typeBadgeColors.job}`}>
-                          {comp.type ?? 'unknown'}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{comp.image ?? '-'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <ComponentsTable components={components} />
             </div>
           </div>
         )}
@@ -816,41 +860,29 @@ export default function InstalledAppDetailModal({
               Volumes
             </h3>
             <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    <th className="px-3 py-2">Local Path</th>
-                    <th className="px-3 py-2">Container Path</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {(() => {
-                    // Backend-computed paths are authoritative — they resolve the
-                    // manifest's local_path against the deployment's storage root.
-                    const deploymentVolumePaths = deployment.volumePaths;
-                    if (deploymentVolumePaths && deploymentVolumePaths.length > 0) {
-                      return deploymentVolumePaths.map((vp) => (
-                        <tr key={vp.containerPath ?? vp.k8sPath}>
-                          <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{absPath(vp.k8sPath)}</td>
-                          <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vp.containerPath ?? '-'}</td>
-                        </tr>
-                      ));
-                    }
-                    // Fallback for responses without volumePaths. The catalog's
-                    // `local_path` is relative to the deployment's storage root and
-                    // is literally "." for most entries — rendering it raw is what
-                    // put a bare "." in this column.
-                    return volumes.map((vol) => (
-                      <tr key={vol.container_path ?? vol.local_path}>
-                        <td className="px-3 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">
-                          {joinTenantPath(deployment.storagePath, vol.local_path)}
-                        </td>
-                        <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{vol.container_path ?? '-'}</td>
-                      </tr>
-                    ));
-                  })()}
-                </tbody>
-              </table>
+              <VolumesTable
+                rows={(() => {
+                  // Backend-computed paths are authoritative — they resolve the
+                  // manifest's local_path against the deployment's storage root.
+                  const deploymentVolumePaths = deployment.volumePaths;
+                  if (deploymentVolumePaths && deploymentVolumePaths.length > 0) {
+                    return deploymentVolumePaths.map((vp) => ({
+                      key: vp.containerPath ?? vp.k8sPath,
+                      localPath: absPath(vp.k8sPath),
+                      containerPath: vp.containerPath ?? null,
+                    }));
+                  }
+                  // Fallback for responses without volumePaths. The catalog's
+                  // `local_path` is relative to the deployment's storage root and
+                  // is literally "." for most entries — rendering it raw is what
+                  // put a bare "." in this column.
+                  return volumes.map((vol) => ({
+                    key: vol.container_path ?? vol.local_path,
+                    localPath: joinTenantPath(deployment.storagePath, vol.local_path),
+                    containerPath: vol.container_path ?? null,
+                  }));
+                })()}
+              />
             </div>
           </div>
         )}

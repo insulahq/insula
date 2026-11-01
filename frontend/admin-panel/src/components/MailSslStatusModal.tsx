@@ -24,6 +24,8 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ShieldCheck, RefreshCw, AlertTriangle, Loader2, X } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
 interface CertInfo {
   subject: string;
@@ -66,6 +68,26 @@ const LISTENER_LABELS: Record<ListenerStatus['listener'], string> = {
   'webmail-https': 'Webmail (HTTPS port 443)',
 };
 
+/**
+ * The order the backend probes the listeners in (email-ssl-status
+ * `LISTENER_SPECS`, then webmail) — the order the table has always shown, so
+ * the Listener column sorts by it. A listener this list does not know sorts last.
+ */
+const PROBE_ORDER: readonly string[] = [
+  'smtp', 'submissions', 'submission', 'imap', 'imaps', 'pop3s', 'managesieve', 'webmail-https',
+];
+const LISTENER_SORT: SortAccessors<ListenerStatus> = {
+  listener: (s) => {
+    const i = PROBE_ORDER.indexOf(s.listener);
+    return i === -1 ? null : i;
+  },
+  issuer: (s) => s.cert?.issuer ?? null,
+  expires: (s) => s.cert?.notAfter ?? null,
+  status: (s) => (s.connected ? 'OK' : 'FAIL'),
+};
+const TH_CLS = 'text-left font-medium';
+const TH_PAD = 'px-2 py-1.5';
+
 export default function MailSslStatusModal({ onClose }: { readonly onClose: () => void }) {
   const [probeEnabled, setProbeEnabled] = useState(false);
 
@@ -88,6 +110,11 @@ export default function MailSslStatusModal({ onClose }: { readonly onClose: () =
 
   const statuses = data?.data?.listeners ?? [];
   const probedHost = data?.data?.host;
+  const { sortedData: sortedStatuses, sortKey, sortDirection, onSort } =
+    useSortable(statuses, 'listener', 'asc', LISTENER_SORT);
+  const header = (label: string, key: string) => (
+    <SortableHeader label={label} sortKey={key} currentKey={sortKey} direction={sortDirection} onSort={onSort} padding={TH_PAD} className={TH_CLS} />
+  );
 
   return (
     <div
@@ -168,15 +195,15 @@ export default function MailSslStatusModal({ onClose }: { readonly onClose: () =
               >
                 <thead className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
                   <tr>
-                    <th className="px-2 py-1.5 text-left font-medium">Listener</th>
-                    <th className="px-2 py-1.5 text-left font-medium">TLS</th>
-                    <th className="px-2 py-1.5 text-left font-medium">Issuer</th>
-                    <th className="px-2 py-1.5 text-left font-medium">Expires</th>
-                    <th className="px-2 py-1.5 text-left font-medium">Status</th>
+                    {header('Listener', 'listener')}
+                    {header('TLS', 'tlsProtocol')}
+                    {header('Issuer', 'issuer')}
+                    {header('Expires', 'expires')}
+                    {header('Status', 'status')}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {statuses.map((s) => (
+                  {sortedStatuses.map((s) => (
                     <ListenerRow key={s.port} status={s} />
                   ))}
                 </tbody>

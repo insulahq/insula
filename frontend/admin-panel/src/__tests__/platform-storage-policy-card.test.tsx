@@ -126,3 +126,33 @@ describe('PlatformStoragePolicyCard — immediate modal open', () => {
     });
   });
 });
+
+describe('PlatformStoragePolicyCard — volume table sorting', () => {
+  const volume = (namespace: string, pvcName: string, volumeName: string, currentReplicas: number) => ({
+    namespace, pvcName, volumeName, currentReplicas, desiredReplicas: 3, healthy: true, phase: 'attached',
+    replicaNodes: ['sv1'], hasOffSystemReplica: false, kind: 'statefulset' as const,
+  });
+
+  beforeEach(() => {
+    const base = policyResponse('local');
+    mockUsePolicy.mockReturnValue({
+      data: { data: { ...base.data.data, clusterState: { ...base.data.data.clusterState, volumes: [
+        volume('platform', 'postgres-1', 'pvc-b', 1),
+        volume('mail', 'stalwart-data', 'pvc-a', 3),
+        volume('platform', 'postgres-2', 'pvc-c', 2),
+      ] } } },
+    });
+  });
+
+  const order = () => screen.getAllByTestId(/^replica-nodes-/).map((c) => c.getAttribute('data-testid'));
+
+  it('opens by PVC name, then sorts by current replicas both ways', () => {
+    renderCard();
+    expect(order()).toEqual(['replica-nodes-pvc-a', 'replica-nodes-pvc-b', 'replica-nodes-pvc-c']);
+
+    fireEvent.click(screen.getByTestId('sort-currentReplicas'));
+    expect(order()).toEqual(['replica-nodes-pvc-b', 'replica-nodes-pvc-c', 'replica-nodes-pvc-a']);
+    fireEvent.click(screen.getByTestId('sort-currentReplicas'));
+    expect(order()).toEqual(['replica-nodes-pvc-a', 'replica-nodes-pvc-c', 'replica-nodes-pvc-b']);
+  });
+});

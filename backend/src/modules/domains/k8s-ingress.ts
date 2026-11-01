@@ -35,7 +35,7 @@ import {
   REDIRECT_SINK_SERVICE_NAME,
   REDIRECT_SINK_PORT,
 } from './redirect-sink.js';
-import { isRoutable, isRedirectOnly } from '../ingress-routes/route-targets.js';
+import { isRoutable, isRedirectOnly, isServed } from '../ingress-routes/route-targets.js';
 import type { RouteTargetFields } from '../ingress-routes/route-targets.js';
 import { buildAllRouteSpecs, buildMiddlewaresForRoute } from '../ingress-routes/annotation-sync.js';
 import { reconcileTenantSites } from '../multihost/reconciler.js';
@@ -285,11 +285,14 @@ export async function reconcileIngress(
   const suppressedDomainIds = new Set(
     tenantDomains.filter((d) => d.suppressPublicIngress).map((d) => d.id),
   );
+  // A switched-off route (enabled=false) is left out here and in
+  // buildAllRouteSpecs alike: no router, no Middlewares. Its row, DNS records
+  // and certificate stay, so switching it back on rebuilds the same thing.
+  // (The auto-migrate check above still counts it — it exists.)
   const updatedRoutes = updatedAllRoutes.filter(
     r =>
       domainIds.includes(r.domainId)
-      && isRoutable(r)
-      && r.status === 'active'
+      && isServed(r)
       && !suppressedDomainIds.has(r.domainId),
   );
 
@@ -965,6 +968,8 @@ export async function currentRouteMiddlewareNames(
   const allRoutes = await db.select().from(ingressRoutes);
   for (const route of allRoutes) {
     if (!domainIdSet.has(route.domainId)) continue;
+    // A switched-off route wants no Middlewares — it has no router to use them.
+    if (!route.enabled) continue;
     // Settings still decide: a route whose force-HTTPS (or HSTS, or rate
     // limit) was turned OFF produces no name here, so its Middleware is still
     // swept. This only protects Middlewares the current settings still want.

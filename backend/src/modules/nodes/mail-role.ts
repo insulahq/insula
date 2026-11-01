@@ -81,6 +81,27 @@ export function mailRoleOnNode(
   };
 }
 
+/** The stored mail placement, or null when there is no settings row. Throws when it cannot be read. */
+export async function readMailPlacementFacts(db: Database): Promise<MailPlacementFacts | null> {
+  const { systemSettings } = await import('../../db/schema.js');
+  const [row] = await db.select({
+    active: systemSettings.mailActiveNode,
+    primary: systemSettings.mailPrimaryNode,
+    secondary: systemSettings.mailSecondaryNode,
+    tertiary: systemSettings.mailTertiaryNode,
+    auto: systemSettings.mailAutoFailoverEnabled,
+    threshold: systemSettings.mailFailoverThresholdSeconds,
+  }).from(systemSettings).where(eq(systemSettings.id, 'system'));
+  if (!row) return null;
+  return {
+    activeNode: row.active ?? row.primary ?? null,
+    secondaryNode: row.secondary ?? null,
+    tertiaryNode: row.tertiary ?? null,
+    autoFailoverEnabled: row.auto,
+    failoverThresholdSeconds: row.threshold,
+  };
+}
+
 /**
  * Read the placement and the nodes, then judge. Null when mail is not placed
  * here or the facts cannot be read — a drain must not fail over a notice.
@@ -91,24 +112,10 @@ export async function loadMailRoleOnNode(
   node: string,
 ): Promise<MailRoleOnNode | null> {
   try {
-    const { systemSettings } = await import('../../db/schema.js');
-    const [row] = await db.select({
-      active: systemSettings.mailActiveNode,
-      primary: systemSettings.mailPrimaryNode,
-      secondary: systemSettings.mailSecondaryNode,
-      tertiary: systemSettings.mailTertiaryNode,
-      auto: systemSettings.mailAutoFailoverEnabled,
-      threshold: systemSettings.mailFailoverThresholdSeconds,
-    }).from(systemSettings).where(eq(systemSettings.id, 'system'));
-    if (!row) return null;
+    const facts = await readMailPlacementFacts(db);
+    if (!facts) return null;
     const live = await k8s.core.listNode();
-    return mailRoleOnNode(node, {
-      activeNode: row.active ?? row.primary ?? null,
-      secondaryNode: row.secondary ?? null,
-      tertiaryNode: row.tertiary ?? null,
-      autoFailoverEnabled: row.auto,
-      failoverThresholdSeconds: row.threshold,
-    }, (live.items ?? []) as MailLiveNode[]);
+    return mailRoleOnNode(node, facts, (live.items ?? []) as MailLiveNode[]);
   } catch (err) {
     console.warn(`[nodes] mail role for ${node} could not be read:`, (err as Error).message);
     return null;

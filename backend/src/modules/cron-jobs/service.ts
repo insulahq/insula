@@ -1,18 +1,14 @@
-import { eq, and, desc, lt, sql, ilike, or } from 'drizzle-orm';
+import { eq, and, sql, ilike, or, getTableColumns } from 'drizzle-orm';
 import { cronJobs, tenants } from '../../db/schema.js';
 import { getTenantById } from '../tenants/service.js';
 import { ApiError, tenantNotFound } from '../../shared/errors.js';
-import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
+
 import type { Database } from '../../db/index.js';
 import { runAndRecord, type CronSchedulerDeps } from './scheduler.js';
 import type { CreateCronJobInput, UpdateCronJobInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
-import {
-  CRON_FAILURE_EMAILS_PER_TENANT_PER_DAY,
-  failureEmailRecipientMissing,
-  type BulkIdResult,
-  type CronFailureEmailInfo,
-} from '@insula/api-contracts';
+import { CRON_FAILURE_EMAILS_PER_TENANT_PER_DAY, failureEmailRecipientMissing, type BulkIdResult, type CronFailureEmailInfo } from '@insula/api-contracts';
+import { encodeListCursor, listCursorCondition, listOrderBy, listSortKeySelect, resolveListSort, withoutSortKey, type SortFields } from '../../shared/list-sort.js';
 
 export async function createCronJob(db: Database, tenantId: string, input: CreateCronJobInput) {
   await getTenantById(db, tenantId);
@@ -53,11 +49,25 @@ export async function getCronJobById(db: Database, tenantId: string, cronJobId: 
 
 export type AdminCronJobRow = typeof cronJobs.$inferSelect & { tenantName: string | null };
 
+/** Columns the admin Cron Jobs list sorts by on the server. The Tenant column sorts by NAME. */
+export const ADMIN_CRON_JOB_SORT_FIELDS: SortFields = {
+  name: { expr: cronJobs.name, kind: 'text' },
+  // A subquery, not the joined column: the per-tenant list does not join tenants.
+  tenantName: { expr: sql`(SELECT t.name FROM tenants t WHERE t.id = ${cronJobs.tenantId})`, kind: 'text' },
+  type: { expr: cronJobs.type, kind: 'text' },
+  schedule: { expr: cronJobs.schedule, kind: 'text' },
+  enabled: { expr: cronJobs.enabled, kind: 'numeric' },
+  lastRunAt: { expr: cronJobs.lastRunAt, kind: 'timestamp' },
+  lastRunStatus: { expr: cronJobs.lastRunStatus, kind: 'text' },
+  createdAt: { expr: cronJobs.createdAt, kind: 'timestamp' },
+};
+
 export async function listAllCronJobs(
   db: Database,
-  params: { limit: number; cursor?: string; search?: string },
+  params: { limit: number; cursor?: string; sortParam?: string; search?: string },
 ): Promise<{ data: AdminCronJobRow[]; pagination: PaginationMeta }> {
   const { limit, cursor, search } = params;
+  const sort = resolveListSort(params.sortParam, ADMIN_CRON_JOB_SORT_FIELDS, { field: 'createdAt', direction: 'desc' });
 
   const filters = [];
   if (search) {
@@ -65,13 +75,8 @@ export async function listAllCronJobs(
     filters.push(or(ilike(cronJobs.name, pattern), ilike(cronJobs.url, pattern), ilike(tenants.name, pattern)));
   }
 
-  const cursorConds = [];
-  if (cursor) {
-    const decoded = decodeCursor(cursor);
-    cursorConds.push(lt(cronJobs.createdAt, new Date(decoded.sort)));
-  }
-
-  const allConds = [...filters, ...cursorConds];
+  const after = listCursorCondition(cursor, 'cron_job', sort, ADMIN_CRON_JOB_SORT_FIELDS, cronJobs.id);
+  const allConds = after ? [...filters, after] : [...filters];
   const where = allConds.length > 0 ? and(...allConds) : undefined;
 
   const rows = await db
@@ -100,25 +105,20 @@ export async function listAllCronJobs(
       createdAt: cronJobs.createdAt,
       updatedAt: cronJobs.updatedAt,
       tenantName: tenants.name,
+      sortKey: listSortKeySelect(sort, ADMIN_CRON_JOB_SORT_FIELDS),
     })
     .from(cronJobs)
     .leftJoin(tenants, eq(cronJobs.tenantId, tenants.id))
     .where(where)
-    .orderBy(desc(cronJobs.createdAt))
+    .orderBy(...listOrderBy(sort, ADMIN_CRON_JOB_SORT_FIELDS, cronJobs.id))
     .limit(limit + 1);
 
   const hasMore = rows.length > limit;
-  const data = rows.slice(0, limit) as AdminCronJobRow[];
-
-  let nextCursor: string | null = null;
-  if (hasMore && data.length > 0) {
-    const last = data[data.length - 1];
-    nextCursor = encodeCursor({
-      resource: 'cron_job',
-      sort: last.createdAt.toISOString(),
-      id: last.id,
-    });
-  }
+  const page = rows.slice(0, limit);
+  const nextCursor = hasMore && page.length > 0
+    ? encodeListCursor('cron_job', sort, page[page.length - 1])
+    : null;
+  const data = withoutSortKey(page) as AdminCronJobRow[];
 
   // Count uses filters only (no cursor) so total_count reflects the
   // full filtered set, not the remaining-after-cursor slice.
@@ -143,35 +143,28 @@ export async function listAllCronJobs(
 export async function listCronJobs(
   db: Database,
   tenantId: string,
-  params: { limit: number; cursor?: string },
+  params: { limit: number; cursor?: string; sortParam?: string },
 ): Promise<{ data: typeof cronJobs.$inferSelect[]; pagination: PaginationMeta }> {
   const { limit, cursor } = params;
+  const sort = resolveListSort(params.sortParam, ADMIN_CRON_JOB_SORT_FIELDS, { field: 'createdAt', direction: 'desc' });
 
   const conditions = [eq(cronJobs.tenantId, tenantId)];
-  if (cursor) {
-    const decoded = decodeCursor(cursor);
-    conditions.push(lt(cronJobs.createdAt, new Date(decoded.sort)));
-  }
+  const after = listCursorCondition(cursor, 'cron_job', sort, ADMIN_CRON_JOB_SORT_FIELDS, cronJobs.id);
+  if (after) conditions.push(after);
 
   const rows = await db
-    .select()
+    .select({ ...getTableColumns(cronJobs), sortKey: listSortKeySelect(sort, ADMIN_CRON_JOB_SORT_FIELDS) })
     .from(cronJobs)
     .where(and(...conditions))
-    .orderBy(desc(cronJobs.createdAt))
+    .orderBy(...listOrderBy(sort, ADMIN_CRON_JOB_SORT_FIELDS, cronJobs.id))
     .limit(limit + 1);
 
   const hasMore = rows.length > limit;
-  const data = rows.slice(0, limit);
-
-  let nextCursor: string | null = null;
-  if (hasMore && data.length > 0) {
-    const last = data[data.length - 1];
-    nextCursor = encodeCursor({
-      resource: 'cron_job',
-      sort: last.createdAt.toISOString(),
-      id: last.id,
-    });
-  }
+  const page = rows.slice(0, limit);
+  const nextCursor = hasMore && page.length > 0
+    ? encodeListCursor('cron_job', sort, page[page.length - 1])
+    : null;
+  const data = withoutSortKey(page);
 
   const [countResult] = await db
     .select({ count: sql<number>`count(*)` })

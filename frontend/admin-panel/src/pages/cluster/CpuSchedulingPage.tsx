@@ -8,6 +8,8 @@ import {
 } from '@/hooks/use-cpu-migration-actions';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
 /**
  * Cluster → CPU scheduling (ADR-062 R1).
@@ -43,6 +45,27 @@ const BLOCKER_TEXT: Record<CpuMigrationBlocker, string> = {
 
 const cores = (millis: number): string => (millis / 1000).toFixed(2);
 
+type CpuMigrationDeployment = CpuMigrationTenant['deployments'][number];
+
+/** What the Verdict chip says. */
+function verdictLabel(t: CpuMigrationTenant): string {
+  if (t.pendingCpuChange) return 'change not applied';
+  if (t.schedulingMode === 'tiered') return 'tiered';
+  return t.migratesCleanly ? 'migrates cleanly' : 'needs review';
+}
+
+const TENANT_SORT: SortAccessors<CpuMigrationTenant> = {
+  // Freed shows −reclaimed and/or +increased; net cores handed back orders both.
+  freed: (t) => t.reclaimableMillis - t.increasedMillis,
+  verdict: verdictLabel,
+};
+
+const DEPLOYMENT_SORT: SortAccessors<CpuMigrationDeployment> = {
+  tier: (d) => TIER_LABEL[d.proposedTier],
+};
+
+const TENANT_HEAD = { padding: 'px-3 py-2' } as const;
+
 function Stat({ label, value, sub, tone }: {
   label: string; value: string; sub?: string; tone?: 'plain' | 'good';
 }) {
@@ -62,6 +85,9 @@ function Stat({ label, value, sub, tone }: {
 
 function TenantRow({ t }: { t: CpuMigrationTenant }) {
   const [open, setOpen] = useState(false);
+  // The preview lists each tenant's applications by name.
+  const deploymentSort = useSortable(t.deployments, 'name', 'asc', DEPLOYMENT_SORT);
+  const dHead = { currentKey: deploymentSort.sortKey, direction: deploymentSort.sortDirection, onSort: deploymentSort.onSort } as const;
   // Blockers, each attributed to what caused it. A bare "a custom container
   // pins its own CPU" against a tenant with five applications tells an
   // operator the cause but not the subject, which is half an answer.
@@ -166,15 +192,15 @@ function TenantRow({ t }: { t: CpuMigrationTenant }) {
             <table className="w-full text-xs">
               <thead className="text-gray-500 dark:text-gray-400">
                 <tr>
-                  <th className="py-1 text-left font-medium">Application</th>
-                  <th className="py-1 text-right font-medium">Reserves now</th>
-                  <th className="py-1 text-right font-medium">Would reserve</th>
-                  <th className="py-1 pl-6 text-left font-medium">Tier</th>
+                  <SortableHeader label="Application" sortKey="name" padding="py-1" className="text-left font-medium" {...dHead} />
+                  <SortableHeader label="Reserves now" sortKey="currentMillis" padding="py-1" className="text-right font-medium" {...dHead} />
+                  <SortableHeader label="Would reserve" sortKey="proposedMillis" padding="py-1" className="text-right font-medium" {...dHead} />
+                  <SortableHeader label="Tier" sortKey="tier" padding="py-1 pl-6" className="text-left font-medium" {...dHead} />
                   <th className="py-1 pl-3 text-left font-medium">&nbsp;</th>
                 </tr>
               </thead>
               <tbody>
-                {t.deployments.map((d) => (
+                {deploymentSort.sortedData.map((d) => (
                   <tr key={d.id} className="border-t border-gray-200 dark:border-gray-700">
                     <td className="py-1 text-gray-800 dark:text-gray-200">{d.name}</td>
                     <td className="py-1 text-right font-mono tabular-nums">{cores(d.currentMillis)}</td>
@@ -335,6 +361,9 @@ export default function CpuSchedulingPage() {
     ? Math.round((p.reservedMillis / p.allocatableMillis) * 100) : null;
   const usedPct = p && p.allocatableMillis > 0 && p.usedMillis !== null
     ? Math.round((p.usedMillis / p.allocatableMillis) * 100) : null;
+  // The preview lists tenants by name.
+  const { sortedData: tenants, sortKey, sortDirection, onSort } = useSortable(p?.tenants ?? [], 'tenantName', 'asc', TENANT_SORT);
+  const head = { ...TENANT_HEAD, currentKey: sortKey, direction: sortDirection, onSort };
 
   return (
     <div className="space-y-6" data-testid="cpu-scheduling-page">
@@ -397,18 +426,18 @@ export default function CpuSchedulingPage() {
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500 dark:bg-gray-900/40 dark:text-gray-400">
                 <tr>
-                  <th className="px-3 py-2 text-left font-medium">Tenant</th>
-                  <th className="px-3 py-2 text-left font-medium">Plan</th>
-                  <th className="px-3 py-2 text-right font-medium">Reserves now</th>
-                  <th className="px-3 py-2 text-right font-medium">Would reserve</th>
-                  <th className="px-3 py-2 text-right font-medium">Freed</th>
-                  <th className="px-3 py-2 text-right font-medium">Burst ceiling</th>
-                  <th className="px-3 py-2 text-right font-medium">Peak used (p95)</th>
-                  <th className="px-3 py-2 text-left font-medium">Verdict</th>
+                  <SortableHeader label="Tenant" sortKey="tenantName" className="text-left font-medium" {...head} />
+                  <SortableHeader label="Plan" sortKey="planCode" className="text-left font-medium" {...head} />
+                  <SortableHeader label="Reserves now" sortKey="currentMillis" className="text-right font-medium" {...head} />
+                  <SortableHeader label="Would reserve" sortKey="proposedMillis" className="text-right font-medium" {...head} />
+                  <SortableHeader label="Freed" sortKey="freed" className="text-right font-medium" {...head} />
+                  <SortableHeader label="Burst ceiling" sortKey="proposedCeilingCores" className="text-right font-medium" {...head} />
+                  <SortableHeader label="Peak used (p95)" sortKey="observedP95Millis" className="text-right font-medium" {...head} />
+                  <SortableHeader label="Verdict" sortKey="verdict" className="text-left font-medium" {...head} />
                 </tr>
               </thead>
               <tbody>
-                {p.tenants.map((t) => <TenantRow key={t.tenantId} t={t} />)}
+                {tenants.map((t) => <TenantRow key={t.tenantId} t={t} />)}
                 {p.tenants.length === 0 && (
                   <tr><td colSpan={8} className="px-3 py-6 text-center text-gray-500 dark:text-gray-400">No tenants.</td></tr>
                 )}

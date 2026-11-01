@@ -2,7 +2,7 @@ import { AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
 
 /** A route change the server is still working on. */
 export interface RouteOperation {
-  readonly kind: 'add' | 'update' | 'remove';
+  readonly kind: 'add' | 'update' | 'remove' | 'activate' | 'deactivate';
   readonly hostname: string;
 }
 
@@ -17,6 +17,8 @@ const DOING: Record<RouteOperation['kind'], (hostname: string) => string> = {
   add: (h) => `Adding ${h} — creating its ingress rule and publishing its DNS records…`,
   update: (h) => `Updating ${h} — applying the change to its ingress rule…`,
   remove: (h) => `Removing ${h} — withdrawing its DNS records and updating the ingress…`,
+  activate: (h) => `Activating ${h} — putting its ingress rule back…`,
+  deactivate: (h) => `Deactivating ${h} — taking its ingress rule down; its settings are kept…`,
 };
 
 /**

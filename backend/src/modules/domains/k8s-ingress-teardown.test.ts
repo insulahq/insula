@@ -80,4 +80,18 @@ describe('reconcileIngress — a tenant that serves nothing', () => {
     await reconcileIngress(makeDb([domain], []).db, k8s, 't1', NS);
     expect(deleted(custom)).toEqual(expect.arrayContaining(EVERYTHING));
   });
+
+  it('its only route switched off: the same, and nothing is applied for it', async () => {
+    const { k8s, custom } = makeK8s();
+    const domain = { id: 'd1', tenantId: 't1', domainName: 'shop.example.test', deploymentId: null, suppressPublicIngress: false };
+    const route = {
+      id: 'abcd1234-0000-0000-0000-000000000000', domainId: 'd1', hostname: 'shop.example.test', path: '/',
+      deploymentId: 'dep-1', privateWorkerId: null, redirectUrl: null, status: 'active', enabled: false,
+      forceHttps: 1, wwwRedirect: 'none', servicePort: null,
+    };
+    await reconcileIngress(makeDb([domain], [route]).db, k8s, 't1', NS);
+    expect(deleted(custom)).toEqual(expect.arrayContaining(EVERYTHING));
+    expect(custom.createNamespacedCustomObject).not.toHaveBeenCalled();
+    expect(custom.replaceNamespacedCustomObject).not.toHaveBeenCalled();
+  });
 });

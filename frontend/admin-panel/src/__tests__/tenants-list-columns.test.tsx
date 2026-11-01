@@ -1,7 +1,8 @@
 /**
  * Admin → Tenants → List: no email addresses in the table, a Plan column,
- * every column sortable, and the Change placement / Change plan bulk actions
- * (SYSTEM tenant excluded, one tenant at a time through the shared runner).
+ * every column sortable (live columns here, the rest by the server), and the
+ * Change placement / Change plan bulk actions (SYSTEM tenant excluded, one
+ * tenant at a time through the shared runner).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
@@ -30,9 +31,14 @@ const TENANTS = [
   },
 ];
 
+const { tenantsParams } = vi.hoisted(() => ({ tenantsParams: [] as Array<Record<string, unknown>> }));
 vi.mock('@/hooks/use-tenants', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/hooks/use-tenants')>()),
-  useTenants: () => ({ data: { data: TENANTS, pagination: {} }, isLoading: false, error: null }),
+  // The rows arrive in this order whatever is asked: the server's order.
+  useTenants: (params: Record<string, unknown>) => {
+    tenantsParams.push(params);
+    return { data: { data: TENANTS, pagination: {} }, isLoading: false, error: null };
+  },
 }));
 
 const metricOf = (cpu: number) => ({
@@ -94,7 +100,10 @@ const rowNames = (): string[] => within(screen.getByTestId('tenants-table'))
   .map((r) => (r.querySelector('td:nth-child(2) span')?.textContent ?? '').trim());
 
 describe('TenantsListTab — columns', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tenantsParams.length = 0;
+  });
 
   it('shows no email address anywhere in the table', () => {
     renderList();
@@ -108,25 +117,32 @@ describe('TenantsListTab — columns', () => {
     expect(screen.getByTestId('tenant-plan-t-2').textContent).toBe('Basic');
   });
 
-  it('makes every column sortable, each changing the order', () => {
+  it('makes every column sortable: live columns order every tenant here, the rest the server orders', () => {
     renderList();
-    expect(rowNames()).toEqual(['Alpha GmbH', 'Bravo Ltd', 'SYSTEM']);
+    // A server-sorted column shows the rows in the order they arrived.
+    expect(rowNames()).toEqual(['Bravo Ltd', 'Alpha GmbH', 'SYSTEM']);
+    expect(tenantsParams.at(-1)).toMatchObject({ sort: 'name:asc', limit: 20 });
     const keys = ['name', 'status', 'cpu', 'memory', 'storage', 'placement', 'storageTier', 'planName', 'subscriptionExpiresAt'];
     for (const key of keys) expect(screen.getByTestId(`sort-${key}`)).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('sort-cpu')); // 0.5, 1, 2 — numeric
     expect(rowNames()).toEqual(['Bravo Ltd', 'SYSTEM', 'Alpha GmbH']);
+    // Every tenant, not a page: the order exists only in the browser.
+    expect(tenantsParams.at(-1)).toEqual({ search: undefined, all: true, sort: 'name:asc' });
     fireEvent.click(screen.getByTestId('sort-cpu'));
     expect(rowNames()).toEqual(['Alpha GmbH', 'SYSTEM', 'Bravo Ltd']);
 
     fireEvent.click(screen.getByTestId('sort-placement')); // node-2 < node-10, auto last
     expect(rowNames()).toEqual(['Alpha GmbH', 'Bravo Ltd', 'SYSTEM']);
 
-    fireEvent.click(screen.getByTestId('sort-planName'));
-    expect(rowNames()[2]).toBe('Bravo Ltd'); // Basic, Basic, Pro
-
     fireEvent.click(screen.getByTestId('sort-memory')); // 8, 9, 9.5
     expect(rowNames()).toEqual(['Alpha GmbH', 'SYSTEM', 'Bravo Ltd']);
+
+    // Back to a server column: asked of the server, paged again, shown as sent.
+    fireEvent.click(screen.getByTestId('sort-planName'));
+    expect(tenantsParams.at(-1)).toMatchObject({ sort: 'planName:asc', limit: 20, cursor: undefined });
+    expect(tenantsParams.at(-1)).not.toHaveProperty('all');
+    expect(rowNames()).toEqual(['Bravo Ltd', 'Alpha GmbH', 'SYSTEM']);
   });
 });
 

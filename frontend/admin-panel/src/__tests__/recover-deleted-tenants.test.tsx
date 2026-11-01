@@ -155,3 +155,33 @@ describe('the "Tenant was deleted" banner', () => {
     expect(await screen.findByTestId('tenant-deleted-unrecoverable')).toHaveTextContent('cannot be recovered');
   });
 });
+
+describe('Backups → Tenants: deleted tenants card sorting', () => {
+  const OLDER: RecoverableTenant = {
+    ...GONE, tenantId: '99999999-2222-4333-8444-555555555555', name: 'AAA Corp',
+    deletedAt: '2026-09-20T09:00:00.000Z', bundleCount: 3, keptUntil: null,
+  };
+  const order = () => screen.getAllByTestId(/^deleted-tenant-/).map((r) => r.getAttribute('data-testid'));
+
+  it('opens newest delete first, then sorts by name both ways', async () => {
+    api([OLDER, GONE, ACME]);
+    renderAt('/backups/tenants', <DeletedTenantsCard />);
+    await screen.findByTestId(`deleted-tenant-${GONE.tenantId}`);
+    expect(order()).toEqual([`deleted-tenant-${GONE.tenantId}`, `deleted-tenant-${OLDER.tenantId}`]);
+
+    fireEvent.click(screen.getByTestId('sort-name'));
+    expect(order()).toEqual([`deleted-tenant-${OLDER.tenantId}`, `deleted-tenant-${GONE.tenantId}`]);
+    fireEvent.click(screen.getByTestId('sort-name'));
+    expect(order()).toEqual([`deleted-tenant-${GONE.tenantId}`, `deleted-tenant-${OLDER.tenantId}`]);
+  });
+
+  it('sorts "Recoverable until" with "no expiry" after every date', async () => {
+    const NEWER: RecoverableTenant = { ...OLDER, deletedAt: '2026-10-20T09:00:00.000Z' };
+    api([NEWER, GONE]);
+    renderAt('/backups/tenants', <DeletedTenantsCard />);
+    await screen.findByTestId(`deleted-tenant-${GONE.tenantId}`);
+    expect(order()).toEqual([`deleted-tenant-${NEWER.tenantId}`, `deleted-tenant-${GONE.tenantId}`]);
+    fireEvent.click(screen.getByTestId('sort-keptUntil'));
+    expect(order()).toEqual([`deleted-tenant-${GONE.tenantId}`, `deleted-tenant-${NEWER.tenantId}`]);
+  });
+});

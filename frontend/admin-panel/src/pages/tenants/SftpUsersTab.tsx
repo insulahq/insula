@@ -18,6 +18,8 @@ import clsx from 'clsx';
 import PaginationBar from '@/components/ui/PaginationBar';
 import { useSftpUsers } from '@/hooks/use-sftp-users';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
+import { useServerSort } from '@/hooks/use-server-sort';
+import SortableHeader from '@/components/ui/SortableHeader';
 import { formatRelativeTime } from '@/lib/format-relative-time';
 
 export default function SftpUsersTab() {
@@ -37,10 +39,15 @@ export default function SftpUsersTab() {
     // — a cursor from the previous result set means nothing in this one.
   }, [debouncedSearch]);
 
+  // The server sorts the whole list — newest account first until a column is
+  // picked — and a sort change starts again from page one, for the same reason.
+  const { sortKey, sortDirection, onSort, sortParam } = useServerSort('createdAt', 'desc', pagination.resetPagination);
+
   const { data, isLoading, error } = useSftpUsers({
     search: debouncedSearch || undefined,
     limit: pagination.limit,
     cursor: pagination.cursor,
+    sort: sortParam,
   });
 
   const users = data?.data ?? [];
@@ -87,11 +94,11 @@ export default function SftpUsersTab() {
               <table className="w-full" data-testid="sftp-users-table">
                 <thead>
                   <tr className="border-b border-gray-100 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:border-gray-700 dark:text-gray-400">
-                    <th className="px-5 py-3">Username</th>
-                    <th className="px-5 py-3">Tenant</th>
-                    <th className="hidden px-5 py-3 md:table-cell">Home path</th>
-                    <th className="px-5 py-3">Status</th>
-                    <th className="hidden px-5 py-3 lg:table-cell">Last login</th>
+                    <SortableHeader label="Username" sortKey="username" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="Tenant" sortKey="tenantName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="Home path" sortKey="homePath" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
+                    <SortableHeader label="Status" sortKey="enabled" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="Last login" sortKey="lastLoginAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />
                   </tr>
                 </thead>
                 <tbody>

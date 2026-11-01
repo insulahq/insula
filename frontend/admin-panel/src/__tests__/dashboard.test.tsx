@@ -56,7 +56,7 @@ function live(over: Partial<AdminDashboardLive> = {}): AdminDashboardLive {
       memory: { inUse: 9.69, committed: 9.79, total: 14.36, unit: 'GiB', kind: 'reserve' as const },
       storage: { inUse: 178, committed: 160, total: 540, unit: 'GB', kind: 'consume' as const },
       storageBreakdown: { tenants: 33, mail: 38, system: 2.7, imagesAndOther: 25 },
-      nodeCount: 1, survivesSingleNodeLoss: false, worstNode: 'sv1',
+      nodeCount: 1, survivesSingleNodeLoss: false, worstNode: 'sv1', worstNodeLoss: null,
     }),
     nodes: okSection([]),
     mail: okSection({ sent7d: 332, queueDepth: 0, queueReachable: true, mailboxes: 72, emailDomains: 19, rateLimited7d: 0, overQuotaMailboxes: 0 }),
@@ -293,7 +293,7 @@ describe('Operator console — capacity', () => {
           memory: { inUse: 15.2, cache: 5.8, committed: 15.84, total: 43.08, unit: 'GiB', kind: 'reserve' as const },
           storage: { inUse: 178, committed: 160, total: 540, unit: 'GB', kind: 'consume' as const },
           storageBreakdown: { tenants: 33, mail: 38, system: 2.7, imagesAndOther: 25 },
-          nodeCount: 3, survivesSingleNodeLoss: true, worstNode: 'sv1',
+          nodeCount: 3, survivesSingleNodeLoss: true, worstNode: 'sv1', worstNodeLoss: null,
         }),
       }) }, isLoading: false,
     });
@@ -315,7 +315,7 @@ describe('Operator console — capacity', () => {
           memory: { inUse: 15.2, cache: 5.8, committed: 40, total: 43.08, unit: 'GiB', kind: 'reserve' as const },
           storage: { inUse: 178, committed: 160, total: 540, unit: 'GB', kind: 'consume' as const },
           storageBreakdown: { tenants: 33, mail: 38, system: 2.7, imagesAndOther: 25 },
-          nodeCount: 3, survivesSingleNodeLoss: true, worstNode: 'sv1',
+          nodeCount: 3, survivesSingleNodeLoss: true, worstNode: 'sv1', worstNodeLoss: null,
         }),
       }) }, isLoading: false,
     });

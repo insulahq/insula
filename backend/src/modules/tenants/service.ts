@@ -1,10 +1,11 @@
-import { eq, ilike, and, or, isNull, sql, desc, asc, lt, gt, getTableColumns, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { eq, ilike, and, or, isNull, sql, getTableColumns, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { likePattern, likePrefixPattern } from '../../shared/like-pattern.js';
 import bcrypt from 'bcrypt';
-import { tenants, domains, deployments, cronJobs, users, hostingPlans, clusterNodes, regions, tenantPlacementState } from '../../db/schema.js';
+import { tenants, users, hostingPlans, clusterNodes, regions, tenantPlacementState } from '../../db/schema.js';
 import { tenantNotFound } from '../../shared/errors.js';
 import { ApiError } from '../../shared/errors.js';
-import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
+
+import { encodeListCursor, listCursorCondition, listOrderBy, listSortKeySelect, resolveListSort, withoutSortKey, type SortFields } from '../../shared/list-sort.js';
 import { generateStrongPassword } from '../../shared/password.js';
 import { assertNotSystem } from '../system-tenant/guards.js';
 import type { Database } from '../../db/index.js';
@@ -857,58 +858,60 @@ export function tenantSearchCondition(term: string): SQL {
   return or(...clauses) as SQL;
 }
 
+/**
+ * Columns the admin Tenants list can be sorted by on the server. CPU, memory,
+ * storage and placement are live readings the database does not hold — the
+ * panel sorts those over the whole list it loads instead.
+ */
+export const TENANT_SORT_FIELDS: SortFields = {
+  name: { expr: tenants.name, kind: 'text' },
+  status: { expr: tenants.status, kind: 'text' },
+  storageTier: { expr: tenants.storageTier, kind: 'text' },
+  planName: { expr: hostingPlans.name, kind: 'text' },
+  subscriptionExpiresAt: { expr: tenants.subscriptionExpiresAt, kind: 'timestamp' },
+  createdAt: { expr: tenants.createdAt, kind: 'timestamp' },
+};
+
 export async function listTenants(
   db: Database,
-  params: { limit: number; cursor?: string; sort: { field: string; direction: 'asc' | 'desc' }; search?: string },
+  params: { limit: number; cursor?: string; sortParam?: string; search?: string },
 ): Promise<{ data: TenantListRow[]; pagination: PaginationMeta }> {
-  const { limit, cursor, sort, search } = params;
+  const { limit, cursor, search } = params;
+  const sort = resolveListSort(params.sortParam, TENANT_SORT_FIELDS, { field: 'createdAt', direction: 'desc' });
 
   const conditions: SQL[] = [];
   if (search && search.trim() !== '') {
     conditions.push(tenantSearchCondition(search));
   }
-
-  if (cursor) {
-    const decoded = decodeCursor(cursor);
-    const sortCol = tenants.createdAt; // Default sort column
-    conditions.push(
-      sort.direction === 'desc' ? lt(sortCol, new Date(decoded.sort)) : gt(sortCol, new Date(decoded.sort)),
-    );
-  }
-
-  const orderBy = sort.direction === 'desc' ? desc(tenants.createdAt) : asc(tenants.createdAt);
-  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  // The total counts the searched set; the cursor only narrows the page.
+  const filterWhere = conditions.length > 0 ? and(...conditions) : undefined;
+  const after = listCursorCondition(cursor, 'tenant', sort, TENANT_SORT_FIELDS, tenants.id);
+  const where = after ? and(...conditions, after) : filterWhere;
 
   // The plan NAME rides along for the list's Plan column — joined here rather
   // than looked up per row by the panel. LEFT join: a tenant whose plan row is
   // gone still lists, with a null name.
   const rows = await db
-    .select({ ...getTableColumns(tenants), planName: hostingPlans.name })
+    .select({ ...getTableColumns(tenants), planName: hostingPlans.name, sortKey: listSortKeySelect(sort, TENANT_SORT_FIELDS) })
     .from(tenants)
     .leftJoin(hostingPlans, eq(hostingPlans.id, tenants.planId))
     .where(where)
-    .orderBy(orderBy)
+    .orderBy(...listOrderBy(sort, TENANT_SORT_FIELDS, tenants.id))
     .limit(limit + 1);
 
   const hasMore = rows.length > limit;
-  const data = rows.slice(0, limit);
-
-  let nextCursor: string | null = null;
-  if (hasMore && data.length > 0) {
-    const last = data[data.length - 1];
-    nextCursor = encodeCursor({
-      resource: 'tenant',
-      sort: last.createdAt.toISOString(),
-      id: last.id,
-    });
-  }
+  const page = rows.slice(0, limit);
+  const nextCursor = hasMore && page.length > 0
+    ? encodeListCursor('tenant', sort, page[page.length - 1])
+    : null;
+  const data = withoutSortKey(page);
 
   // Joined like the rows: the search matches the plan's name.
   const [countResult] = await db
     .select({ count: sql<number>`count(*)` })
     .from(tenants)
     .leftJoin(hostingPlans, eq(hostingPlans.id, tenants.planId))
-    .where(where);
+    .where(filterWhere);
 
   return {
     data,

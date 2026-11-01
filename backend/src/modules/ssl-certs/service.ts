@@ -9,12 +9,14 @@ import type { UploadSslCertInput } from '@insula/api-contracts';
 function parseCertInfo(pem: string): {
   readonly issuer: string;
   readonly subject: string;
+  readonly notBefore: Date;
   readonly expiresAt: Date;
 } {
   const cert = new crypto.X509Certificate(pem);
   return {
     issuer: cert.issuer,
     subject: cert.subject,
+    notBefore: new Date(cert.validFrom),
     expiresAt: new Date(cert.validTo),
   };
 }
@@ -121,6 +123,7 @@ export async function uploadCert(
     caBundle: input.ca_bundle ?? null,
     issuer: certInfo.issuer,
     subject: certInfo.subject,
+    notBefore: certInfo.notBefore,
     expiresAt: certInfo.expiresAt,
   });
 

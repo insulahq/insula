@@ -101,7 +101,7 @@ export function formatSloValue(value: number, unit: SloRule['unit'] = 'count'): 
 }
 
 /**
- * Duration formatter. Handles NEGATIVE values (a `cert-expiry` alert on an
+ * Duration formatter. Handles NEGATIVE values (a `mail-cert-expiry` alert on an
  * already-expired certificate yields `expiration - now < 0`) by scaling the
  * magnitude and keeping the sign — otherwise `-172800` rendered as the
  * unreadable `-172800000ms`, exactly the raw-number regression this avoids.
@@ -341,15 +341,22 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     unit: 'ratio',
   },
   {
-    id: 'cert-expiry',
-    name: 'Certificate expiring',
-    description: 'A cert-manager certificate expires within the threshold window (seconds).',
+    // Replaced `cert-expiry` (a fixed 14 days left). The value is the share
+    // of the certificate's renewal window still left — time to expiry over
+    // cert-manager's own renewal lead — so the rule fits any CA lifetime:
+    // 1 at the renewal point, 0.5 when half the window is gone (the
+    // panels' "expiring", certificates/renewal-policy.ts), below 0 once
+    // expired. A healthy certificate renews at 1 and never reaches $T.
+    id: 'cert-renewal-overdue',
+    name: 'Certificate renewal overdue',
+    description: 'A cert-manager certificate has less than the threshold share of its renewal window left (0.5 = half the window gone without a renewal). Measured against its own lifetime.',
     severity: 'critical',
-    expr: '(certmanager_certificate_expiration_timestamp_seconds - time()) < $T',
+    expr: '((certmanager_certificate_expiration_timestamp_seconds - time())'
+      + ' / (certmanager_certificate_expiration_timestamp_seconds - certmanager_certificate_renewal_timestamp_seconds)) < $T',
     subjectLabels: ['namespace', 'name'],
-    threshold: 14 * 86400,
+    threshold: 0.5,
     forSeconds: 3600,
-    unit: 'seconds',
+    unit: 'ratio',
   },
   {
     id: 'cert-not-ready',
@@ -611,7 +618,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
   {
     id: 'mail-cert-expiry',
     name: 'Mail TLS certificate expiring',
-    description: 'The served mail TLS certificate expires within the threshold window (seconds). Reads the platform-served-cert gauge (mail TLS is issued outside cert-manager), which cert-expiry does not cover.',
+    description: 'The served mail TLS certificate expires within the threshold window (seconds). Reads the platform-served-cert gauge (mail TLS is issued outside cert-manager), which cert-renewal-overdue does not cover.',
     severity: 'critical',
     // `>= 0` filter drops the -1 "probe inconclusive" sentinel; the
     // self-signed bootstrap cert reports a year-4096 expiry so it never

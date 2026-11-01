@@ -2,6 +2,8 @@ import { useState, useMemo } from 'react';
 import UserLabel from '@/components/ui/UserLabel';
 import { ScrollText, Search, ChevronDown, ChevronRight, Loader2, X } from 'lucide-react';
 import { useAuditLogs, type AuditLogEntry, type ListAuditLogsParams } from '@/hooks/use-audit-logs';
+import { useServerSort } from '@/hooks/use-server-sort';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 /**
  * Phase 7: Audit log viewer page.
@@ -16,6 +18,8 @@ import { useAuditLogs, type AuditLogEntry, type ListAuditLogsParams } from '@/ho
  *   - Inline filter bar with action / resource / method / search /
  *     date range inputs plus Clear filters
  *   - Cursor-based "Load more" button (no prev, matches the API)
+ *   - Column headers that sort the whole log on the server (newest
+ *     first by default); a new sort starts again from the first page
  *   - Per-row expand drawer showing the full changes JSON and
  *     all request metadata
  *   - Color-coded action-type and method badges
@@ -48,7 +52,15 @@ export default function AuditLogs() {
   // Accumulated rows across cursor pages
   const [accumulated, setAccumulated] = useState<readonly AuditLogEntry[]>([]);
 
-  const query = useAuditLogs({ ...filters, cursor });
+  // A cursor belongs to the order it was made in, so a sort change drops it
+  // and the rows read so far, like a filter change does.
+  const { sortKey, sortDirection, onSort, sortParam } = useServerSort('createdAt', 'desc', () => {
+    setCursor(undefined);
+    setAccumulated([]);
+    setExpandedId(null);
+  });
+
+  const query = useAuditLogs({ ...filters, cursor, sort: sortParam });
   const data = query.data;
 
   // When the query returns, merge into accumulated. Using useMemo
@@ -269,13 +281,13 @@ export default function AuditLogs() {
               <thead>
                 <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
                   <th className="w-8 px-2" />
-                  <th className="px-4 py-3">When</th>
-                  <th className="px-4 py-3">Action</th>
-                  <th className="px-4 py-3">Resource</th>
-                  <th className="hidden px-4 py-3 md:table-cell">Method</th>
-                  <th className="hidden px-4 py-3 lg:table-cell">Path</th>
-                  <th className="hidden px-4 py-3 xl:table-cell">Actor</th>
-                  <th className="hidden px-4 py-3 xl:table-cell">IP</th>
+                  <SortableHeader label="When" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-3" />
+                  <SortableHeader label="Action" sortKey="actionType" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-3" />
+                  <SortableHeader label="Resource" sortKey="resourceType" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-3" />
+                  <SortableHeader label="Method" sortKey="httpMethod" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-3" className="hidden md:table-cell" />
+                  <SortableHeader label="Path" sortKey="httpPath" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-3" className="hidden lg:table-cell" />
+                  <SortableHeader label="Actor" sortKey="actorId" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-3" className="hidden xl:table-cell" title="Sorted by actor ID" />
+                  <SortableHeader label="IP" sortKey="ipAddress" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-3" className="hidden xl:table-cell" />
                 </tr>
               </thead>
               <tbody>

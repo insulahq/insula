@@ -18,7 +18,7 @@ import {
   type DomainBulkAction,
   type DomainBulkItem,
 } from '@/hooks/use-bulk-domains';
-import { useSortable } from '@/hooks/use-sortable';
+import { useServerSort } from '@/hooks/use-server-sort';
 import SortableHeader from '@/components/ui/SortableHeader';
 
 export default function DomainsTab() {
@@ -34,9 +34,13 @@ export default function DomainsTab() {
     pagination.resetPagination();
   }, [debouncedSearch, selectedTenantId]);
 
+  // The server sorts the whole cross-tenant list; a sort change starts again
+  // from page one. One tenant's listing has no server sort — see below.
+  const { sortKey, sortDirection, onSort, sortParam } = useServerSort('domainName', 'asc', pagination.resetPagination);
+
   const { data: domainsData, isLoading: domainsLoading, error: domainsError } = useDomains(
     selectedTenantId ?? undefined,
-    { search: debouncedSearch || undefined, limit: pagination.limit, cursor: pagination.cursor },
+    { search: debouncedSearch || undefined, limit: pagination.limit, cursor: pagination.cursor, sort: sortParam },
   );
 
   const { data: tenantsData } = useTenants({ limit: 100 });
@@ -46,7 +50,8 @@ export default function DomainsTab() {
   const totalCount = domainsData?.pagination?.total_count ?? 0;
   const hasMore = domainsData?.pagination?.has_more ?? false;
   const nextCursor = domainsData?.pagination?.cursor ?? null;
-  const { sortedData: sortedDomains, sortKey, sortDirection, onSort } = useSortable(domains, 'domainName');
+  // Both the cross-tenant and the one-tenant endpoint sort on the server.
+  const sortedDomains = domains;
 
   const selection = useSelection<{ id: string }>(pagination.cursor);
   const bulkRun = useBulkRun();
@@ -127,7 +132,7 @@ export default function DomainsTab() {
                       />
                     </th>
                     <SortableHeader label="Domain Name" sortKey="domainName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                    <SortableHeader label="Tenant" sortKey="tenantId" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                    <SortableHeader label="Tenant" sortKey="tenantName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                     <SortableHeader label="DNS Mode" sortKey="dnsMode" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
                     <SortableHeader label="SSL" sortKey="sslAutoRenew" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden lg:table-cell" />

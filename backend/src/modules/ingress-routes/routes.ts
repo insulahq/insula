@@ -33,6 +33,7 @@ import {
 } from './protected-dirs-service.js';
 import { deleteProtectedDirIngress } from './annotation-sync.js';
 import { routeDnsWarning } from './dns-warning.js';
+import { assertDomainOwnedByTenant, assertRouteInTenantDomain } from './route-ownership.js';
 import type { DeleteIngressRouteResult } from '@insula/api-contracts';
 import { reconcileIngress } from '../domains/k8s-ingress.js';
 import { ensureDomainCertificate } from '../certificates/service.js';
@@ -117,7 +118,10 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { domainId } = request.params as { domainId: string };
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
+    // requireTenantAccess proves the caller may act for :tenantId only; the
+    // domain id is checked here, or any tenant could list another's routes.
+    await assertDomainOwnedByTenant(app.db, domainId, tenantId);
     const routes = await listRoutesForDomain(app.db, domainId);
     // Same serialiser as GET /routes/:id and the settings PATCHes. This list
     // used to return raw Drizzle rows, so the identical resource came back
@@ -183,15 +187,16 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
     schema: {
       tags: ['Ingress Routes'],
-      summary: 'Update an ingress route (assign workload, change TLS mode)',
+      summary: 'Update an ingress route (assign workload, change TLS mode, switch it on or off)',
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
+    const { tenantId, domainId, routeId } = request.params as { tenantId: string; domainId: string; routeId: string };
     const parsed = updateIngressRouteSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
     }
+    await assertRouteInTenantDomain(app.db, routeId, domainId, tenantId);
 
     const updated = await updateRoute(app.db, routeId, {
       deploymentId: parsed.data.deployment_id,
@@ -201,6 +206,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       servicePort: parsed.data.service_port,
       siteFolder: parsed.data.site_folder,
       appRoot: parsed.data.app_root,
+      enabled: parsed.data.enabled,
     }, tenantId);
     await triggerReconcile(tenantId);
     return success(mapRouteToResponse(updated));
@@ -215,7 +221,8 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       security: [{ bearerAuth: [] }],
     },
   }, async (request) => {
-    const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
+    const { tenantId, domainId, routeId } = request.params as { tenantId: string; domainId: string; routeId: string };
+    await assertRouteInTenantDomain(app.db, routeId, domainId, tenantId);
     const { dnsLeftovers } = await deleteRoute(app.db, routeId);
     await triggerReconcile(tenantId);
     const result: DeleteIngressRouteResult = {

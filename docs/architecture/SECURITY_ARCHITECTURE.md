@@ -255,7 +255,7 @@ iptables -A INPUT -p tcp --dport 6443 -j DROP
 | Component | Implementation |
 | --- | --- |
 | **Certificate provisioning** | cert-manager + Let's Encrypt (automatic) |
-| **Certificate renewal** | Automatic 30 days before expiry |
+| **Certificate renewal** | Automatic with a third of the certificate's lifetime left (`renewBeforePercentage: 33`; ~30 days for 90-day certificates) |
 | **Self-signed fallback** | Dev/test environments only |
 | **TLS version** | TLS 1.2+ (configured in NGINX Ingress Controller) |
 | **Cipher suites** | Strong ciphers only (no weak/deprecated algorithms) |

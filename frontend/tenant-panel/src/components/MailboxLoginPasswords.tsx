@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { Key, Plus, Trash2, Loader2, AlertCircle, X, Copy, CheckCircle } from 'lucide-react';
 import {
   useLoginPasswords,
@@ -8,6 +8,8 @@ import {
 } from '@/hooks/use-email';
 import { MAX_LOGIN_PASSWORDS_PER_MAILBOX } from '@insula/api-contracts';
 import { formatTimestamp } from '@/lib/format-timestamp';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 
 const INPUT =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -68,6 +70,17 @@ export function MailboxLoginPasswordsModal({
   // Webmail sessions have room of their own on the mail server and do not count.
   const loginCount = rows.filter((r) => r.kind === 'login').length;
   const atLimit = loginCount >= MAX_LOGIN_PASSWORDS_PER_MAILBOX;
+  // The mail server lists them in no particular order, so by label. Dates sort
+  // by their instant; "never" expires last.
+  const sortableRows = useMemo(() => rows.map((r) => ({
+    ...r,
+    createdAtMs: r.createdAt ? Date.parse(r.createdAt) : null,
+    expiresAtMs: r.expiresAt ? Date.parse(r.expiresAt) : null,
+    restrictedTo: r.allowedIps.length > 0 ? r.allowedIps.join(', ') : null,
+  })), [rows]);
+  const { sortedData: sortedRows, sortKey, sortDirection, onSort } = useSortable(sortableRows, 'label');
+  // SortableHeader defaults to px-5/py-3 — this table has no side padding.
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!px-0 !py-2' };
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
@@ -175,15 +188,15 @@ export function MailboxLoginPasswordsModal({
             <table className="w-full text-sm" data-testid="login-passwords-table">
               <thead>
                 <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                  <th className="py-2">Label</th>
-                  <th className="py-2">Created</th>
-                  <th className="py-2">Expires</th>
-                  <th className="py-2">Restricted to</th>
+                  <SortableHeader label="Label" sortKey="label" {...th} />
+                  <SortableHeader label="Created" sortKey="createdAtMs" {...th} />
+                  <SortableHeader label="Expires" sortKey="expiresAtMs" {...th} />
+                  <SortableHeader label="Restricted to" sortKey="restrictedTo" {...th} />
                   <th className="py-2 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                {rows.map((r) => (
+                {sortedRows.map((r) => (
                   <tr key={r.id} data-testid={`login-password-row-${r.id}`}>
                     <td className="py-2.5 font-medium text-gray-900 dark:text-gray-100">
                       {r.label || <span className="italic text-gray-400 dark:text-gray-500">(no label)</span>}

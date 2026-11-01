@@ -238,7 +238,7 @@ export const reservedHostnameCollisionSchema = z.object({
 });
 export type ReservedHostnameCollision = z.infer<typeof reservedHostnameCollisionSchema>;
 
-/** Phase 2.5.3 — TLS cert expiry < 30d. */
+/** Phase 2.5.3 — a TLS certificate whose renewal is overdue (half its renewal window gone, or expired). */
 export const certExpirySchema = z.object({
   name: z.string(),
   namespace: z.string(),

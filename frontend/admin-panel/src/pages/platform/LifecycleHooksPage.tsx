@@ -11,6 +11,10 @@ import {
 import ErrorPanel from '@/components/ErrorPanel';
 import TenantAutomationCard from '@/components/lifecycle/TenantAutomationCard';
 import { extractOperatorError } from '@/lib/extract-operator-error';
+import SortableHeader from '@/components/ui/SortableHeader';
+import { useSortable } from '@/hooks/use-sortable';
+
+const STATS_HEAD = { padding: 'px-4 py-2' } as const;
 
 const STATE_BADGE: Record<LifecycleHookRunRow['state'], string> = {
   pending: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
@@ -33,6 +37,10 @@ export default function LifecycleHooksSettings() {
   const retry = useRetryHookRun();
   const reset = useResetHookBreaker();
   const stats = useMemo(() => summariseHookStats(list.data?.data), [list.data]);
+  // summariseHookStats orders by hook name. (The per-transition runs below are
+  // NOT sortable: they are listed in execution order on purpose.)
+  const statsSort = useSortable(stats, 'hookName', 'asc');
+  const head = { ...STATS_HEAD, currentKey: statsSort.sortKey, direction: statsSort.sortDirection, onSort: statsSort.onSort };
 
   const onRetry = async (runId: string): Promise<void> => {
     try { await retry.mutateAsync(runId); } catch { /* surfaced */ }
@@ -81,11 +89,11 @@ export default function LifecycleHooksSettings() {
         <table className="w-full text-xs">
           <thead className="text-gray-500 dark:text-gray-400">
             <tr className="border-b border-gray-200/60 dark:border-gray-700/40">
-              <th className="text-left px-4 py-2">Hook</th>
-              <th className="text-right px-4 py-2">Total</th>
-              <th className="text-right px-4 py-2">OK</th>
-              <th className="text-right px-4 py-2">Failed</th>
-              <th className="text-right px-4 py-2">Success</th>
+              <SortableHeader label="Hook" sortKey="hookName" className="text-left" {...head} />
+              <SortableHeader label="Total" sortKey="total" className="text-right" {...head} />
+              <SortableHeader label="OK" sortKey="ok" className="text-right" {...head} />
+              <SortableHeader label="Failed" sortKey="failed" className="text-right" {...head} />
+              <SortableHeader label="Success" sortKey="successRatePct" className="text-right" {...head} />
               <th className="text-right px-4 py-2">Actions</th>
             </tr>
           </thead>
@@ -93,7 +101,7 @@ export default function LifecycleHooksSettings() {
             {stats.length === 0 && (
               <tr><td colSpan={6} className="px-4 py-3 text-center text-gray-500">No hook runs in the loaded window.</td></tr>
             )}
-            {stats.map((s) => (
+            {statsSort.sortedData.map((s) => (
               <tr key={s.hookName} className="border-t border-gray-200/60 dark:border-gray-700/40">
                 <td className="px-4 py-2 font-mono text-gray-900 dark:text-gray-100">{s.hookName}</td>
                 <td className="px-4 py-2 text-right tabular-nums">{s.total}</td>

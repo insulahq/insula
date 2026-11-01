@@ -341,7 +341,7 @@ metadata:
 spec:
   secretName: frontend-tls
   duration: 2160h  # 90 days
-  renewBefore: 360h  # 15 days
+  renewBeforePercentage: 33  # a third of the issued lifetime (certificates/renewal-policy.ts)
   commonName: panel.platform.com
   dnsNames:
   - panel.platform.com

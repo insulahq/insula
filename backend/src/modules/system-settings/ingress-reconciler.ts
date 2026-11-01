@@ -24,6 +24,7 @@ import {
   proxySigninMiddlewareName,
   type ProxyPanel,
 } from '../oidc/panel-proxy-names.js';
+import { RENEW_BEFORE_PERCENTAGE } from '../certificates/renewal-policy.js';
 
 // ─── Public types ────────────────────────────────────────────────────────
 
@@ -83,6 +84,9 @@ export interface CertificateCurrentSpec {
   readonly dnsNames: ReadonlyArray<string>;
   readonly secretName: string | null;
   readonly issuerName: string | null;
+  /** Renewal fields — compared so a cluster installed with a fixed renewBefore moves to the policy. */
+  readonly renewBefore?: string | null;
+  readonly renewBeforePercentage?: number | null;
 }
 
 export interface IngressReconcileDeps {
@@ -536,7 +540,8 @@ export function buildCertificateBody(
     spec: {
       secretName: opts.secretName,
       duration: '2160h',
-      renewBefore: '720h',
+      // A third of the issued lifetime — certificates/renewal-policy.ts.
+      renewBeforePercentage: RENEW_BEFORE_PERCENTAGE,
       privateKey: {
         algorithm: 'ECDSA',
         size: 256,
@@ -625,7 +630,12 @@ export async function reconcileIngressHosts(
       currentCert.dnsNames.length === desiredHosts.length &&
       currentCert.dnsNames.every((h, i) => h === desiredHosts[i]) &&
       currentCert.secretName === input.tlsSecretName &&
-      currentCert.issuerName === issuerName;
+      currentCert.issuerName === issuerName &&
+      // Without this the Certificate kept a fixed `renewBefore` until the
+      // hostnames next changed: this object is not seeded from a manifest,
+      // so nothing else rewrites it (certificates/renewal-policy.ts).
+      (currentCert.renewBefore ?? null) === null &&
+      currentCert.renewBeforePercentage === RENEW_BEFORE_PERCENTAGE;
   }
 
   if (routesUnchanged && certUnchanged) {
@@ -759,6 +769,8 @@ function defaultDeps(opts: IngressReconcileOptions): IngressReconcileDeps {
           dnsNames: ((spec.dnsNames as string[]) ?? []).slice(),
           secretName: (spec.secretName as string | undefined) ?? null,
           issuerName: ((spec.issuerRef as { name?: string } | undefined)?.name) ?? null,
+          renewBefore: (spec.renewBefore as string | undefined) ?? null,
+          renewBeforePercentage: (spec.renewBeforePercentage as number | undefined) ?? null,
         };
       } catch (err: unknown) {
         if (isK8sNotFound(err)) return null;
