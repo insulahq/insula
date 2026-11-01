@@ -12,6 +12,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every node publishes its public address, so every server serves ingress.** On a cluster
+  installed without `--cluster-network-cidr`, `bootstrap.sh` gave a node an ExternalIP only when
+  the node also had a global IPv6. An IPv4-only node, or one whose IPv6 is a ULA, got none. The
+  platform reads the ExternalIP as the node's public address: ingress discovery builds the ingress
+  addresses, and so the tenant apex records, from it, and the Traefik Service's external IPs come
+  from it. Such servers never served ingress. On lab staging, the two servers that joined after
+  the first had none.
+  - Fresh installs now always pass `--node-external-ip` with the node's public IPv4, plus its
+    global IPv6 when there is one. This applies to servers and workers alike.
+  - Host migration `2026.11.2/0001` does the same for existing nodes. It acts only on a node
+    whose k3s sets no external IP and whose pinned node IP is the address the host reaches the
+    internet from. There it writes a k3s config drop-in and restarts k3s once; pods keep running.
+    A server restarts only while every other server is Ready, so the cluster keeps its etcd
+    quorum. If k3s does not come back within 4 minutes, the migration removes the drop-in again.
+  - Nodes on a private underlay, and nodes that already publish an external IP, are left alone.
+    Every production node already publishes one.
+  - The published address is the one the node reaches the internet from. Behind NAT that is a
+    private address, and the node cannot see its NAT address. Bootstrap and the migration say
+    so; the ingress address override on Cluster → Ingress & TLS always wins over the
+    discovered one.
+
 ## [2026.11.1] - 2026-11-01
 
 ### Added

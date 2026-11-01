@@ -51,6 +51,14 @@ The **Edit** button on a node card opens a modal where you set:
     - **None** — no nginx here; workloads still run, but public traffic is
       served by the system servers.
 
+    A node's public IP is its Kubernetes *ExternalIP*, which the installer
+    sets on every node. On a node installed directly on its network it is the
+    address the node reaches the internet from. The platform builds its
+    ingress addresses, and so the tenant apex records, from these. A node
+    behind NAT cannot see its NAT address and publishes its private one. The
+    installer warns about that; set the ingress address on
+    **Cluster → Ingress & TLS**, which overrides the discovered addresses.
+
 ### Draining and removing a node
 
 Each card has **Drain Tenants** and **Delete** (via the drain-delete modal).

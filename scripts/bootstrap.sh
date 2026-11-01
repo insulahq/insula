@@ -4194,6 +4194,34 @@ detect_public_ipv4() {
   return 1
 }
 
+# public_underlay_node_args <public-v4> <node-v6|""> <global-v6|""> — the address flags a
+# public-underlay node is installed with: --node-ip carries the node's underlay address(es), and
+# --node-external-ip publishes the public v4, plus the v6 only when it is global.
+#
+# --node-external-ip is unconditional here. The Node's ExternalIP is what the platform reads as
+# "this node serves the public": ingress-nodes/discovery.ts builds the ingress addresses (and so
+# the tenant apex records) from it, and the ingress-external-ips CronJob builds the Traefik
+# Service's externalIPs from it. Passing the flag only when a global v6 existed left every
+# IPv4-only (or ULA-v6) node without an ExternalIP, and ingress discovery published only the
+# servers installed before that; on lab staging the two servers that joined later never served
+# ingress. Calico is unaffected: it autodetects from the InternalIP.
+public_underlay_node_args() {
+  local v4="$1" node_v6="$2" public_v6="$3"
+  printf -- '--node-ip=%s%s --node-external-ip=%s%s' \
+    "$v4" "${node_v6:+,${node_v6}}" "$v4" "${public_v6:+,${public_v6}}"
+}
+
+# warn_if_private_external_ipv4 <v4> — a public-underlay node publishes the address it reaches the
+# internet from. On a LAN or lab install a private address is exactly what clients use; behind NAT
+# it is not, and the node cannot see its NAT address. Say so, and name the setting that fixes it:
+# the admin panel's ingress address override always wins over the discovered addresses.
+warn_if_private_external_ipv4() {
+  case "$1" in
+    10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*|100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*)
+      warn "ExternalIP ${1} is a private address. If clients reach this node through NAT, set the ingress address in the admin panel (Cluster → Ingress & TLS); it overrides the discovered one." ;;
+  esac
+}
+
 # Detect THIS server's public IPv6 (best-effort). Returns the address
 # on stdout, exit 0; returns nothing + exit 1 if no global-scope v6 is
 # bound to a non-VPN interface. Used by select_cluster_issuer() to
@@ -4817,15 +4845,12 @@ install_k3s_server() {
     if [[ -z "$public_ip" ]]; then
       error "Could not detect a non-VPN public IPv4 address. Set --cluster-network-cidr <CIDR> to pin the underlay manually."
     fi
-    log "  public-underlay mode: --node-ip=${public_ip}"
-    # --node-external-ip is set explicitly under dual-stack so the Node object
-    # carries BOTH public families. ingress-external-ips reads ExternalIP to
-    # build the Traefik Service's externalIPs, and without the v6 here it would
-    # publish a v4-only list on a dual-stack cluster.
-    node_pin="--node-ip=${public_ip}${node_ipv6:+,${node_ipv6}} --advertise-address=${public_ip}"
-    if [[ -n "$node_public_ipv6" ]]; then
-      node_pin="${node_pin} --node-external-ip=${public_ip},${node_public_ipv6}"
-    fi
+    log "  public-underlay mode: --node-ip=${public_ip} --node-external-ip=${public_ip}${node_public_ipv6:+,${node_public_ipv6}}"
+    # Both families when the host has a global v6: ingress-external-ips copies
+    # ExternalIP onto the Traefik Service, so a v4-only list there would leave a
+    # dual-stack cluster's ingress v4-only.
+    node_pin="$(public_underlay_node_args "$public_ip" "$node_ipv6" "$node_public_ipv6") --advertise-address=${public_ip}"
+    warn_if_private_external_ipv4 "$public_ip"
     tls_sans="${tls_sans} --tls-san=${public_ip}"
   fi
 
@@ -5211,11 +5236,9 @@ install_k3s_worker() {
     if [[ -z "$public_ip" ]]; then
       error "Could not detect a non-VPN public IPv4 address. Set --cluster-network-cidr <CIDR> to pin the underlay manually."
     fi
-    log "  public-underlay mode: --node-ip=${public_ip}"
-    exec_args="agent --node-ip=${public_ip}${node_ipv6:+,${node_ipv6}}"
-    if [[ -n "$node_public_ipv6" ]]; then
-      exec_args="${exec_args} --node-external-ip=${public_ip},${node_public_ipv6}"
-    fi
+    log "  public-underlay mode: --node-ip=${public_ip} --node-external-ip=${public_ip}${node_public_ipv6:+,${node_public_ipv6}}"
+    exec_args="agent $(public_underlay_node_args "$public_ip" "$node_ipv6" "$node_public_ipv6")"
+    warn_if_private_external_ipv4 "$public_ip"
   fi
 
   # Stamp the platform-required labels at k3s-agent ExecStart time.

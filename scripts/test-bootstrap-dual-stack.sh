@@ -41,8 +41,10 @@ sed -n '/^detect_public_ipv6()/,/^}/p'            "$BOOTSTRAP" >> "$WORK/helpers
 sed -n '/^probe_ipv6_egress()/,/^}/p'             "$BOOTSTRAP" >> "$WORK/helpers.sh"
 sed -n '/^hold_for_operator()/,/^}/p'             "$BOOTSTRAP" >> "$WORK/helpers.sh"
 sed -n '/^resolve_dual_stack()/,/^}/p'            "$BOOTSTRAP" >> "$WORK/helpers.sh"
+sed -n '/^public_underlay_node_args()/,/^}/p'     "$BOOTSTRAP" >> "$WORK/helpers.sh"
 for fn in detect_node_ipv6 resolve_cluster_network_ipv6 resolve_same_link_ipv6 resolve_dual_stack_node_ipv6 \
-          cluster_cidr_args detect_public_ipv6 probe_ipv6_egress hold_for_operator resolve_dual_stack; do
+          cluster_cidr_args detect_public_ipv6 probe_ipv6_egress hold_for_operator resolve_dual_stack \
+          public_underlay_node_args; do
   grep -q "^${fn}()" "$WORK/helpers.sh" || { echo "FAIL: could not extract ${fn}() from $BOOTSTRAP" >&2; exit 1; }
 done
 # error() is called by the helpers on the refuse paths. It is FATAL in
@@ -206,15 +208,15 @@ echo "dual-stack emits both families on servers AND workers"
 
 has "$server_block" 'node_pin="--node-ip=${private_ip}${node_ipv6:+,${node_ipv6}}' \
   "server pinned-underlay node-ip gains the v6 family"
-has "$server_block" 'node_pin="--node-ip=${public_ip}${node_ipv6:+,${node_ipv6}}' \
-  "server public-underlay node-ip gains the v6 family"
+has "$server_block" 'node_pin="$(public_underlay_node_args "$public_ip" "$node_ipv6" "$node_public_ipv6")' \
+  "server public-underlay takes its address flags from public_underlay_node_args"
 worker_block=$(sed -n '/^install_k3s_worker()/,/^}/p' "$BOOTSTRAP")
 has "$worker_block" 'resolve_dual_stack_node_ipv6' \
   "worker resolves a v6 node address too (a v4-only worker cannot join)"
 has "$worker_block" '--node-ip=${private_ip}${node_ipv6:+,${node_ipv6}}' \
   "worker pinned-underlay node-ip gains the v6 family"
-has "$worker_block" '--node-ip=${public_ip}${node_ipv6:+,${node_ipv6}}' \
-  "worker public-underlay node-ip gains the v6 family"
+has "$worker_block" 'exec_args="agent $(public_underlay_node_args "$public_ip" "$node_ipv6" "$node_public_ipv6")' \
+  "worker public-underlay takes its address flags from public_underlay_node_args"
 
 echo
 echo "--node-external-ip PUBLISHES, so it takes a global v6 — never a ULA"
@@ -411,6 +413,27 @@ if [[ -n "$rs_line" && -n "$val_line" && "$rs_line" -lt "$val_line" ]]; then
 else
   bad "resolve_dual_stack must run before the v6 CIDR validation (resolve=$rs_line validate=$val_line)"
 fi
+
+echo
+echo "a public-underlay node always publishes an ExternalIP"
+# Lab staging: the servers that joined an IPv4-only (ULA-v6) public-underlay
+# cluster had no ExternalIP, because the flag was passed only with a global v6.
+# Ingress discovery and ingress-external-ips read ExternalIP only, so those
+# servers never served ingress.
+check "IPv4-only: the public v4 is the ExternalIP" \
+  "--node-ip=203.0.113.5 --node-external-ip=203.0.113.5" \
+  "$(run_helper public_underlay_node_args 203.0.113.5 '' '')"
+check "dual-stack on a ULA: --node-ip gets the ULA, the ExternalIP stays v4" \
+  "--node-ip=203.0.113.5,fd00:5e:1::130 --node-external-ip=203.0.113.5" \
+  "$(run_helper public_underlay_node_args 203.0.113.5 fd00:5e:1::130 '')"
+check "dual-stack with a global v6: both families on both flags" \
+  "--node-ip=203.0.113.5,2001:db8:9::7 --node-external-ip=203.0.113.5,2001:db8:9::7" \
+  "$(run_helper public_underlay_node_args 203.0.113.5 2001:db8:9::7 2001:db8:9::7)"
+for blk in server worker; do
+  b=$([[ $blk == server ]] && echo "$server_block" || echo "$worker_block")
+  hasnt "$b" 'if [[ -n "$node_public_ipv6" ]]; then' \
+    "${blk}: the ExternalIP no longer depends on a global v6"
+done
 
 echo
 printf 'dual-stack: %d passed, %d failed\n' "$pass" "$fail"
