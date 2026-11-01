@@ -113,7 +113,7 @@ function errText(err: unknown): string {
  * Put back the selectors a hold changed. Never throws: returns one line per
  * volume it could not put back, empty when all went back.
  */
-export async function releaseVolumeHold(k8s: K8sClients, hold: VolumeHold): Promise<string[]> {
+export async function undoVolumeHold(k8s: K8sClients, hold: VolumeHold): Promise<string[]> {
   const left: string[] = [];
   for (const v of hold.changed) {
     await setSelector(k8s, v.volumeName, v.previous).catch((err: unknown) => {
@@ -149,10 +149,53 @@ export async function holdTenantVolumes(
       await setSelector(k8s, v.volumeName, [hostTag]);
       changed.push(v);
     } catch (err) {
-      const left = await releaseVolumeHold(k8s, { target, changed });
+      const left = await undoVolumeHold(k8s, { target, changed });
       throw new Error(`could not hold volume ${v.volumeName} to ${target}: ${errText(err)}`
         + (left.length > 0 ? `; and could not put back ${left.join('; ')}` : ''));
     }
   }
   return { target, changed };
+}
+
+/**
+ * The volumes that carry a platform node tag, with the selector each would
+ * keep without it. Pure. Every live volume of the namespace, whatever its
+ * tier: a drain's re-pin tags HA volumes too. A tag that is not the platform's
+ * (set by hand in Longhorn) stays.
+ */
+export function volumesToRelease(
+  volumes: LhList<LhVolumeRaw>,
+  namespace: string,
+): Array<HeldVolume & { readonly next: readonly string[] }> {
+  return (volumes.items ?? [])
+    .filter((v) => v.status?.kubernetesStatus?.namespace === namespace && !v.status?.kubernetesStatus?.lastPVCRefAt)
+    .flatMap((v) => {
+      const volumeName = v.metadata?.name;
+      const previous = v.spec?.nodeSelector ?? [];
+      const next = previous.filter((t) => !t.startsWith(HOST_TAG_PREFIX));
+      return volumeName && next.length !== previous.length ? [{ volumeName, previous, next }] : [];
+    });
+}
+
+/**
+ * Take the platform's node tag off the tenant's volumes — Auto, no node holds
+ * them: Longhorn may place a copy anywhere, and the pods follow the data
+ * (pod-placement.ts resolveAutoPlacement). Moves nothing: an existing replica
+ * stays where it is. Returns what it changed; throws on the first volume it
+ * cannot change, after putting back the ones it had.
+ */
+export async function releaseTenantVolumes(k8s: K8sClients, namespace: string): Promise<VolumeHold> {
+  const pending = volumesToRelease(await lhList<LhVolumeRaw>(k8s, 'volumes'), namespace);
+  const changed: HeldVolume[] = [];
+  for (const v of pending) {
+    try {
+      await setSelector(k8s, v.volumeName, v.next);
+      changed.push({ volumeName: v.volumeName, previous: v.previous });
+    } catch (err) {
+      const left = await undoVolumeHold(k8s, { target: '', changed });
+      throw new Error(`could not take the node tag off volume ${v.volumeName}: ${errText(err)}`
+        + (left.length > 0 ? `; and could not put back ${left.join('; ')}` : ''));
+    }
+  }
+  return { target: '', changed };
 }

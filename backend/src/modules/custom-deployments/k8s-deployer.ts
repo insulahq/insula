@@ -37,7 +37,7 @@ import type {
 } from './schema.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { boundTenantPodDisk } from '../tenant-disk/pod-bounds.js';
-import { TENANT_DEFAULT_PRIORITY_CLASS, tenantPodScheduling } from '../tenant-placement/pod-placement.js';
+import { TENANT_DEFAULT_PRIORITY_CLASS, resolveAutoPlacement, tenantPodScheduling } from '../tenant-placement/pod-placement.js';
 
 const CLIENT_PVC_VOLUME_NAME = 'tenant-storage';
 
@@ -94,8 +94,14 @@ const INIT_DIRS_IMAGE = 'busybox:1.37';
 
 export async function deployCustomDeployment(
   k8s: K8sClients,
-  input: DeployCustomInput,
+  requested: DeployCustomInput,
 ): Promise<void> {
+  // An Auto tenant's pods follow its data (pod-placement.ts resolveAutoPlacement).
+  const placed = await resolveAutoPlacement(k8s, requested.namespace, {
+    nodeName: requested.nodeName ?? null,
+    storageTier: requested.storageTier ?? null,
+  });
+  const input: DeployCustomInput = { ...requested, nodeName: placed.nodeName };
   // Multi-service supported (PR-3). The validator enforces the
   // 10-service cap and depends_on integrity; the deployer just
   // renders k8s primitives per service.

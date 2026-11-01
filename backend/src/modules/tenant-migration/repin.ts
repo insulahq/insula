@@ -1,6 +1,6 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
-import { holdTenantVolumes, releaseVolumeHold } from '../tenant-placement/volume-pin.js';
+import { holdTenantVolumes, undoVolumeHold } from '../tenant-placement/volume-pin.js';
 
 const HOSTNAME_LABEL = 'kubernetes.io/hostname';
 const RESTARTED_AT_ANNOTATION = 'insula.host/restarted-at';
@@ -26,7 +26,7 @@ export async function repinTenant(
   try {
     return await repinDeployments(k8s, namespace, nodeName, opts);
   } catch (err) {
-    const left = await releaseVolumeHold(k8s, hold);
+    const left = await undoVolumeHold(k8s, hold);
     if (left.length === 0) throw err;
     throw new Error(`${err instanceof Error ? err.message : String(err)}; and could not put back the volume `
       + `selectors: ${left.join('; ')}`);

@@ -103,6 +103,31 @@ describe('File Manager K8s Lifecycle', () => {
         expect(patch).toEqual({ spec: { replicas: 1, template: { spec: { nodeSelector: { 'kubernetes.io/hostname': 'node-b' } } } } });
       });
 
+      it('pins a RECREATED file manager to the data node too — the recreate replaces the pod anyway', async () => {
+        // Lab staging: an image drift recreated it unpinned, it landed on the other
+        // server and sat in ContainerCreating, unable to attach the volume.
+        withLonghorn(['node-a']);
+        const drifted = fullSpec(1);
+        drifted.spec.template.spec.containers[0]!.image = 'file-manager:old';
+        (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue(drifted);
+        (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
+        const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+        await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest', 1);
+        expect(mockK8s.apps.deleteNamespacedDeployment).toHaveBeenCalled();
+        expect(createdNodeSelector()).toEqual({ 'kubernetes.io/hostname': 'node-a' });
+      });
+
+      it('while a move copies the volume (two replicas), starts where the tenant\'s workloads are pinned', async () => {
+        withLonghorn(['node-a', 'node-b']);
+        (mockK8s.apps as unknown as Record<string, unknown>).listNamespacedDeployment = vi.fn().mockResolvedValue({ items: [
+          { metadata: { name: 'file-manager' }, spec: { template: { spec: { nodeSelector: { 'kubernetes.io/hostname': 'node-a' } } } } },
+          { metadata: { name: 'web' }, spec: { template: { spec: { nodeSelector: { 'kubernetes.io/hostname': 'node-b' } } } } },
+        ] });
+        const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+        await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest');
+        expect(createdNodeSelector()).toEqual({ 'kubernetes.io/hostname': 'node-b' });
+      });
+
       it('never touches the placement of a RUNNING file manager', async () => {
         // Some callers (SFTP) reach this while the file manager serves a user;
         // a pin change there would mean delete + recreate under them.

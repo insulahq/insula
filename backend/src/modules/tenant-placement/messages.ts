@@ -60,7 +60,9 @@ export function misplacedMessage(placements: readonly NamedPlacement[]): AdminTe
     const why = p.reasons.length > 0 ? p.reasons.join(', ') : `on ${nodes(p.actualNodes)}`;
     // When the reconciler first SAW it — not when the data moved, which it cannot know.
     const since = p.misplacedSince ? ` (seen since ${formatUtcMinute(p.misplacedSince)})` : '';
-    return `${p.tenantName}: primary node ${p.primaryNode ?? '—'}, but ${why}${since}.`;
+    // Auto has no primary node: what is wrong is that pods and data are apart.
+    const against = p.primaryNode ? `primary node ${p.primaryNode}` : 'Auto';
+    return `${p.tenantName}: ${against}, but ${why}${since}.`;
   });
   // A refused copy does not resolve by waiting, and "move it back" is not the
   // only way out — the operator needs to hear that it is stuck. Why, and what

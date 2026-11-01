@@ -138,3 +138,19 @@ export const tenantMoveOperationSchema = z.object({
   }).nullable(),
 });
 export type TenantMoveOperation = z.infer<typeof tenantMoveOperationSchema>;
+
+/**
+ * POST /admin/tenants/:id/unpin → data. Auto: the tenant's pin is taken off
+ * and nothing moves. Its volume loses the platform's node tag, and on the
+ * Local tier its pods stay on the node holding its data.
+ */
+export const unpinTenantResultSchema = z.object({
+  tenantId: z.string(),
+  /** The pin it had; null when it was on Auto already. */
+  previousPin: z.string().nullable(),
+  /** The node holding its data, which its pods stay on; null when unknown (no data yet, or an HA tenant). */
+  runsOn: z.string().nullable(),
+  /** Volumes whose node tag was taken off. */
+  volumesReleased: z.array(z.string()),
+});
+export type UnpinTenantResult = z.infer<typeof unpinTenantResultSchema>;

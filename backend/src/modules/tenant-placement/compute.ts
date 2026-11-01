@@ -20,6 +20,10 @@
  * HA tier: pods may legitimately fail over, so the rule is softer — workloads
  *   and attachment on the primary node, and a replica there. Anything else is
  *   reported, not acted on.
+ * Auto (no primary node), local tier: no node is right or wrong, but the pods
+ *   and the data belong on ONE host (pod-placement.ts resolveAutoPlacement).
+ *   Running on one node with the data on another is reported like a tenant
+ *   away from its primary node: it does all its disk I/O across the network.
  */
 import type { CollectedFacts } from '../tenant-health/collect.js';
 import type { PodFact, ReplicaFact, TenantFact, VolumeFact } from '../tenant-health/service.js';
@@ -121,7 +125,10 @@ export function observeTenantPlacement(
   };
 
   const primary = tenant.pinnedNode;
-  if (!primary) return { ...base, status: 'unpinned', reasons: [] };
+  if (!primary) {
+    const split = tenant.storageTier === 'local' ? autoSplitReason(vols, input.replicas, running, attachedNodes, dataNodes, refusals) : null;
+    return split ? { ...base, status: 'misplaced', reasons: [split] } : { ...base, status: 'unpinned', reasons: [] };
+  }
 
   const reasons: string[] = [];
   const offWorkload = workloadNodes.filter((n) => n !== primary);
@@ -156,6 +163,33 @@ export function observeTenantPlacement(
   }
 
   return { ...base, status: reasons.length > 0 ? 'misplaced' : 'placed', reasons };
+}
+
+/**
+ * Why an Auto tenant's pods and data are not on one host, or null when they
+ * are (or nothing runs, or there is no data yet). Pure.
+ */
+function autoSplitReason(
+  vols: readonly VolumeFact[],
+  replicas: readonly ReplicaFact[],
+  running: readonly string[],
+  attachedNodes: readonly string[],
+  dataNodes: readonly string[],
+  refusals: CopyRefusalContext | null | undefined,
+): string | null {
+  if (running.length === 0 || dataNodes.length === 0) return null;
+  const offData = dataNodes.filter((n) => !running.includes(n));
+  if (offData.length === 0) return null;
+  const where = `running on ${formatNodes(running)}`;
+  if (dataNodes.some((n) => running.includes(n))) return `${where}, its data being copied there from ${formatNodes(offData)}`;
+  const copyTarget = attachedNodes.length > 0 ? attachedNodes : running;
+  const names = new Set(vols.map((v) => v.volumeName));
+  const hasCopyThere = (volumeName: string): boolean => replicas.some((r) => r.volumeName === volumeName
+    && names.has(r.volumeName) && !r.failed && r.nodeId !== null && copyTarget.includes(r.nodeId));
+  const blocked = uniqSorted(vols.filter((v) => !hasCopyThere(v.volumeName)).map((v) => refusalOf(v, copyTarget, refusals)));
+  return blocked.length > 0
+    ? `${where}, data on ${formatNodes(offData)}; ${COPY_BLOCKED_MARK} ${formatNodes(copyTarget)}: ${blocked.join('; ')}`
+    : `${where}, data on ${formatNodes(offData)}`;
 }
 
 /**

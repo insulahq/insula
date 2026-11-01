@@ -21,16 +21,35 @@ import { resolveTenantDataNode } from '../tenant-placement/data-node.js';
  * nodes keeps the scheduler's freedom (the preferred pod affinity still draws
  * it to a running workload). Undefined when nothing is known — the old,
  * unpinned behaviour.
+ *
+ * Two replicas also exist on the Local tier while a move copies the volume.
+ * The node the tenant's workloads are pinned to settles that: it is where the
+ * data is going. Without it a file manager started mid-copy went unpinned,
+ * landed on the other node and sat in ContainerCreating there, unable to
+ * attach a volume that was attached elsewhere (lab staging).
  */
 async function resolveFmDataNode(k8s: K8sClients, namespace: string): Promise<string | undefined> {
   const choice = await resolveTenantDataNode(k8s, {
     namespace,
     pvcName: `${namespace}-storage`,
-    pinNode: null,
+    pinNode: await workloadPin(k8s, namespace),
     unambiguousOnly: true,
     logger: { warn: (msg) => console.warn(`[file-manager] ${msg}`) },
   });
   return choice.node ?? undefined;
+}
+
+/** The node the tenant's own Deployments are pinned to, or null. Never throws. */
+async function workloadPin(k8s: K8sClients, namespace: string): Promise<string | null> {
+  try {
+    const list = await k8s.apps.listNamespacedDeployment({ namespace });
+    for (const d of list.items ?? []) {
+      if (d.metadata?.name === FM_NAME) continue;
+      const node = d.spec?.template?.spec?.nodeSelector?.['kubernetes.io/hostname'];
+      if (node) return node;
+    }
+  } catch { /* unpinned, as without a pin */ }
+  return null;
 }
 
 const FM_NAME = 'file-manager';
@@ -179,7 +198,10 @@ export async function ensureFileManagerRunning(
   // to that node. Only resolved for a create — an existing Deployment keeps
   // the recreate semantics below unchanged (see the scale-up branch for the
   // replicas=0 case).
-  const createNode = targetNode ?? (deployExists ? undefined : await resolveFmDataNode(k8s, namespace));
+  // A recreate (spec drift) needs the data node as much as a first create: it
+  // replaces the pod anyway, and an unpinned one can land where the volume
+  // cannot attach.
+  const createNode = targetNode ?? await resolveFmDataNode(k8s, namespace);
 
   const deployBody = {
       namespace,
@@ -205,8 +227,9 @@ export async function ensureFileManagerRunning(
               automountServiceAccountToken: false,
               // Gap G2: hard-pin FM to the operator-chosen node so it lands
               // on the same node as the tenant workloads and shares the RWO
-              // `tenant-storage` PVC. Only added when targetNode is provided;
-              // otherwise FM stays unpinned (preferred podAffinity below).
+              // `tenant-storage` PVC: the explicit targetNode, else the node
+              // holding the tenant's data; unpinned (preferred podAffinity
+              // below) only when neither is known.
               ...(createNode ? { nodeSelector: { 'kubernetes.io/hostname': createNode } } : {}),
               // file-manager runs in the tenant namespace because it
               // mounts the tenant's RWO PVC, but it is platform infra,
@@ -550,9 +573,9 @@ export async function ensureFileManagerRunning(
       // Scaling up from 0 is also the moment the pod gets placed, so point it
       // at the tenant's data node first. Changing the template of a Deployment
       // with no pods disrupts nothing; doing it while the file manager runs
-      // would restart it under the user (which is why this is not done on the
-      // recreate path above). A running workload pod wins — the RWO volume is
-      // attached there and nowhere else can mount it.
+      // would restart it under the user (the recreate path above pins it too,
+      // as it replaces the pod anyway). A running workload pod wins — the RWO
+      // volume is attached there and nowhere else can mount it.
       const scaleUpNode = targetNode ?? await resolveFmDataNode(k8s, namespace);
       const repin = scaleUpNode && scaleUpNode !== existingNodeHost
         ? { template: { spec: { nodeSelector: { 'kubernetes.io/hostname': scaleUpNode } } } }

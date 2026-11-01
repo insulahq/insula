@@ -25,7 +25,7 @@ import { success, paginated } from '../../shared/response.js';
 import { parseBody } from '../../shared/validate-body.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
-import type { TenantPlacementDetail } from '@insula/api-contracts';
+import { tenantListFiltersSchema, type TenantPlacementDetail } from '@insula/api-contracts';
 import { getPlacement, listPlacements, listStorageFailovers, type StoredPlacement } from '../tenant-placement/store.js';
 import { presentFailover, presentPlacement, presentPlacementSummary } from '../tenant-placement/present.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -292,6 +292,11 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
           cursor: { type: 'string', description: 'Opaque pagination cursor' },
           limit: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
           search: { type: 'string', description: 'Search by name, contact email, plan name, or placement (node name, hostname or alias; "auto" for no node pin; "misplaced")' },
+          // Declared, or the query schema strips them (tenantListFiltersSchema).
+          status: { type: 'string', description: 'Only tenants in this status' },
+          placement: { type: 'string', description: '"auto" (no node pin), "misplaced", or a node name' },
+          tier: { type: 'string', description: 'Only tenants on this storage tier (local, ha)' },
+          plan: { type: 'string', description: 'Only tenants on this hosting plan (its id)' },
         },
       },
       response: {
@@ -368,8 +373,16 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     const query = request.query as Record<string, unknown>;
     const paginationParams = parsePaginationParams(query);
     const search = typeof query.search === 'string' ? query.search : undefined;
+    const filters = tenantListFiltersSchema.safeParse({
+      status: query.status, placement: query.placement, tier: query.tier, plan: query.plan,
+    });
+    if (!filters.success) {
+      const issue = filters.error.issues[0];
+      throw new ApiError('INVALID_FIELD_VALUE', `Invalid filter ${String(issue?.path[0] ?? '')}: ${issue?.message ?? 'not allowed'}`, 400,
+        { field: String(issue?.path[0] ?? '') });
+    }
 
-    const result = await service.listTenants(app.db, { ...paginationParams, search });
+    const result = await service.listTenants(app.db, { ...paginationParams, search, filters: filters.data });
     // Best-effort: the placement column is a hint on top of the list, and a
     // failed read must cost the column, never the tenants table.
     const placements = await listPlacements(app.db, result.data.map((t) => t.id)).catch((err) => {

@@ -81,6 +81,14 @@ alias, the node a tenant that is off its primary node is actually on, `auto`
 for every tenant with no node pin, and `misplaced` for every tenant off its
 primary node.
 
+**Filter by**, next to the search box, narrows the list to one value of
+**Status**, **Placement**, **Tier** or **Plan**: pick the field, then one of
+the values this platform has — for Placement, **Auto (no pin)**, **Not where
+it belongs**, or a node (the tenants pinned to it, and those running there
+while off their own node). The filter applies on the server, to every page,
+the total and the **All** rows per page; with a search, both must match.
+Pick **Filter by…** again to clear it.
+
 Sorting applies to the page you are looking at, not the whole tenant list, so
 sort after narrowing with the search box if you have many accounts — or set
 **Rows per page** to **All**, which loads every tenant that matches the search
@@ -212,6 +220,23 @@ node** banner says what is elsewhere and since when, with two ways out:
 - **Make &lt;current node&gt; the primary node** accepts where it is: the
   workloads restart once on the same node to pick up the new pin, and no
   data is copied.
+
+**Auto** (the *Pinned node* list's first entry, or the bulk Change placement)
+means no primary node, and moves nothing. Saving it:
+
+- clears the tenant's pin;
+- takes the platform's node tag off its volume, so Longhorn may place a later
+  copy on any node;
+- keeps a Local-tier tenant's pods on one host with its data: they stay on
+  the node holding its volume, and every later restart or deploy puts them
+  there again. No pod restarts when you save it.
+
+An HA tenant's pods drop their node preference at their next deploy. A tenant
+on Auto whose pods end up on one node and its data on another is reported like
+one away from its primary node — *Auto: its pods and its data are on different
+nodes* — with the same reason and notification. A re-provision (a plan change
+starts one) does not pick a node for an Auto tenant that already has data; only
+a new tenant gets one.
 
 Both ask for a second click that says what they will do. Below the banner,
 **Storage failovers** lists the tenant's recent Longhorn salvages — when a
@@ -435,7 +460,10 @@ dialog that processes the selection **one item at a time**:
   includes the lifecycle hooks: a tenant whose hooks did not all complete is
   shown as *Failed*, with each failing hook listed (failed hooks keep being
   retried in the background).
-- **Change placement** moves each tenant as [Move back](#placement) does. A
+- **Change placement** to **Auto** takes each tenant's pin off and moves
+  nothing: no pod restarts. See *Auto* under [Placement](#placement). Each
+  row says which node the tenant stays on; one already on Auto is skipped.
+- **Change placement** to a node moves each tenant as [Move back](#placement) does. A
   running tenant's row waits until its move has finished (about a minute
   each) and shows how it ended. A tenant that now runs on the new node but
   whose data Longhorn would not copy there is *Failed*, with the cause; it

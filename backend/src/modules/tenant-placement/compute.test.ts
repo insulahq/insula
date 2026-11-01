@@ -192,6 +192,37 @@ describe('observeTenantPlacement — local tier', () => {
   });
 });
 
+describe('observeTenantPlacement — Auto (no primary node)', () => {
+  const auto = tenant({ pinnedNode: null });
+
+  it('is unpinned while its pods and its data are on one host, and while it is stopped', () => {
+    expect(observeTenantPlacement(auto, { pods: [pod('node-a')], volumes: [vol()], replicas: [rep('node-a')] }))
+      .toMatchObject({ status: 'unpinned', reasons: [] });
+    expect(observeTenantPlacement(auto, { pods: [], volumes: [vol({ attached: false, attachedNode: null })], replicas: [rep('node-b')] }).status)
+      .toBe('unpinned');
+  });
+
+  it('reports pods on one node and the data on another — the disk I/O crosses the network', () => {
+    const p = observeTenantPlacement(auto, {
+      pods: [pod('node-a')],
+      volumes: [vol({ attachedNode: 'node-a', scheduleFailure: 'insufficient storage' })],
+      replicas: [rep('node-b')],
+    });
+    expect(p.status).toBe('misplaced');
+    expect(p.reasons).toEqual(['running on node-a, data on node-b; Longhorn cannot copy it to node-a: insufficient storage']);
+  });
+
+  it('says a copy is under way while the data follows the pods', () => {
+    const p = observeTenantPlacement(auto, { pods: [pod('node-a')], volumes: [vol()], replicas: [rep('node-a'), rep('node-b')] });
+    expect(p.reasons).toEqual(['running on node-a, its data being copied there from node-b']);
+  });
+
+  it('leaves an HA tenant on Auto alone: replicas on several nodes are the design', () => {
+    expect(observeTenantPlacement(tenant({ pinnedNode: null, storageTier: 'ha' }), { pods: [pod('node-a')], volumes: [vol()], replicas: [rep('node-b')] }).status)
+      .toBe('unpinned');
+  });
+});
+
 describe('observeTenantPlacement — HA tier', () => {
   const ha = tenant({ storageTier: 'ha' });
 

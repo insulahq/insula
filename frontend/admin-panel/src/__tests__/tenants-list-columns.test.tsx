@@ -55,6 +55,7 @@ vi.mock('@/hooks/use-resource-metrics', () => ({
 const moveTenantToNodeItem = vi.fn();
 const changeTenantPlanItem = vi.fn();
 vi.mock('@/hooks/use-bulk-tenants', () => ({
+  AUTO_PLACEMENT: '__auto__',
   runTenantBulkItem: vi.fn(),
   moveTenantToNodeItem: (...a: unknown[]) => moveTenantToNodeItem(...a),
   changeTenantPlanItem: (...a: unknown[]) => changeTenantPlanItem(...a),
@@ -128,7 +129,7 @@ describe('TenantsListTab — columns', () => {
     fireEvent.click(screen.getByTestId('sort-cpu')); // 0.5, 1, 2 — numeric
     expect(rowNames()).toEqual(['Bravo Ltd', 'SYSTEM', 'Alpha GmbH']);
     // Every tenant, not a page: the order exists only in the browser.
-    expect(tenantsParams.at(-1)).toEqual({ search: undefined, all: true, sort: 'name:asc' });
+    expect(tenantsParams.at(-1)).toEqual({ search: undefined, filters: {}, all: true, sort: 'name:asc' });
     fireEvent.click(screen.getByTestId('sort-cpu'));
     expect(rowNames()).toEqual(['Alpha GmbH', 'SYSTEM', 'Bravo Ltd']);
 
@@ -159,9 +160,9 @@ describe('TenantsListTab — Change placement / Change plan', () => {
     selectAll();
     fireEvent.click(screen.getByTestId('bulk-change-placement'));
     const modal = screen.getByTestId('bulk-change-placement-modal');
-    // Only tenant-capable nodes are offered.
+    // Auto first, then only the tenant-capable nodes.
     const options = within(modal).getAllByRole('option').map((o) => o.textContent);
-    expect(options).toEqual(['Choose…', 'node-2']);
+    expect(options).toEqual(['Choose…', 'Auto: no pin, each stays where its data is', 'node-2']);
     expect(within(modal).getByTestId('bulk-confirm')).toBeDisabled();
 
     fireEvent.change(within(modal).getByTestId('bulk-change-target'), { target: { value: 'node-2' } });
@@ -174,6 +175,21 @@ describe('TenantsListTab — Change placement / Change plan', () => {
 
     void config.runItem(config.items[0]);
     expect(moveTenantToNodeItem).toHaveBeenCalledWith(config.items[0], { id: 'node-2', label: 'node-2' });
+  });
+
+  it('sets the selected tenants to Auto, saying it moves nothing', () => {
+    renderList();
+    selectAll();
+    fireEvent.click(screen.getByTestId('bulk-change-placement'));
+    const modal = screen.getByTestId('bulk-change-placement-modal');
+    fireEvent.change(within(modal).getByTestId('bulk-change-target'), { target: { value: '__auto__' } });
+    expect(within(modal).getByTestId('bulk-change-auto-note')).toHaveTextContent('moves nothing: no pod restarts');
+    fireEvent.click(within(modal).getByTestId('bulk-confirm'));
+
+    const config = start.mock.calls[0][0];
+    expect(config.title).toBe('Change placement to Auto');
+    void config.runItem(config.items[0]);
+    expect(moveTenantToNodeItem).toHaveBeenCalledWith(config.items[0], { id: '__auto__', label: 'Auto' });
   });
 
   it('changes the plan, passing the notify choice', () => {
@@ -191,5 +207,47 @@ describe('TenantsListTab — Change placement / Change plan', () => {
     expect(item).toMatchObject({ planId: 'p-basic', nodeName: 'node-2', misplaced: false });
     void config.runItem(item);
     expect(changeTenantPlanItem).toHaveBeenCalledWith(item, { id: 'p-pro', label: 'Pro' }, false);
+  });
+});
+
+describe('TenantsListTab — Filter by', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tenantsParams.length = 0;
+  });
+  const lastFilters = () => tenantsParams[tenantsParams.length - 1]?.filters;
+
+  it('filters nothing until a field AND a value are chosen, then asks the server for that value', () => {
+    renderList();
+    const value = screen.getByTestId('tenant-filter-value');
+    expect(value).toBeDisabled();
+    fireEvent.change(screen.getByTestId('tenant-filter-field'), { target: { value: 'status' } });
+    expect(lastFilters()).toEqual({});
+    expect(within(value).getAllByRole('option').map((o) => o.textContent))
+      .toEqual(['Any status', 'Active', 'Suspended', 'Pending', 'Archived']);
+    fireEvent.change(value, { target: { value: 'suspended' } });
+    expect(lastFilters()).toEqual({ status: 'suspended' });
+  });
+
+  it('offers the values this platform has: Auto, misplaced and its nodes; its plans; the two tiers', () => {
+    renderList();
+    const field = screen.getByTestId('tenant-filter-field');
+    const options = () => within(screen.getByTestId('tenant-filter-value')).getAllByRole('option').map((o) => o.textContent);
+    fireEvent.change(field, { target: { value: 'placement' } });
+    expect(options()).toEqual(['Any placement', 'Auto (no pin)', 'Not where it belongs', 'node-2', 'node-cp']);
+    fireEvent.change(field, { target: { value: 'plan' } });
+    expect(options()).toEqual(['Any plan', 'Pro']);
+    fireEvent.change(field, { target: { value: 'tier' } });
+    expect(options()).toEqual(['Any tier', 'Local', 'HA']);
+  });
+
+  it('clears the value when the field changes, so a status never stays applied as a plan', () => {
+    renderList();
+    fireEvent.change(screen.getByTestId('tenant-filter-field'), { target: { value: 'placement' } });
+    fireEvent.change(screen.getByTestId('tenant-filter-value'), { target: { value: 'auto' } });
+    expect(lastFilters()).toEqual({ placement: 'auto' });
+    fireEvent.change(screen.getByTestId('tenant-filter-field'), { target: { value: 'plan' } });
+    expect(lastFilters()).toEqual({});
+    expect(screen.getByTestId('tenant-filter-value')).toHaveValue('');
   });
 });

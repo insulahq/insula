@@ -30,7 +30,7 @@ import {
   type TenantDiskLimits,
 } from '../tenant-disk/pod-bounds.js';
 import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
-import { tenantPodScheduling, type TenantPodPlacement } from '../tenant-placement/pod-placement.js';
+import { resolveAutoPlacement, tenantPodScheduling, type TenantPodPlacement } from '../tenant-placement/pod-placement.js';
 import {
   deploymentKey,
   podsForApp,
@@ -641,6 +641,8 @@ export async function deployCatalogEntry(
   input: DeployCatalogEntryInput,
 ): Promise<void> {
   const { deploymentName, namespace, components, volumes, replicaCount, cpuRequest, memoryRequest, configuration, envVars, timezone, configurableEnvKeys } = input;
+  // An Auto tenant's pods follow its data (pod-placement.ts resolveAutoPlacement).
+  const placement = await resolveAutoPlacement(k8s, namespace, { nodeName: input.nodeName ?? null, storageTier: input.storageTier ?? null });
   const componentCount = components.length;
   const componentNames = components.map(c => c.name);
   const env = buildEnvVars(envVars?.fixed, configuration, {
@@ -763,7 +765,7 @@ export async function deployCatalogEntry(
 
     switch (component.type) {
       case 'deployment':
-        await deployK8sDeployment(k8s, diskLimitMb, namespace, name, labels, container, replicaCount, input.storagePath, mountsForComponent, passwordResetContainer, env, input.nodeName, input.storageTier, firewallAnnotations, component === primaryComponent ? input.multihost : null);
+        await deployK8sDeployment(k8s, diskLimitMb, namespace, name, labels, container, replicaCount, input.storagePath, mountsForComponent, passwordResetContainer, env, placement.nodeName, placement.storageTier, firewallAnnotations, component === primaryComponent ? input.multihost : null);
         break;
 
       case 'statefulset':
@@ -774,16 +776,16 @@ export async function deployCatalogEntry(
         console.warn(
           `[deployer] component "${name}" in ${namespace} declares deprecated type 'statefulset'; emitting a Deployment. Update the catalog manifest to type: deployment.`,
         );
-        await deployK8sDeployment(k8s, diskLimitMb, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.nodeName, input.storageTier, firewallAnnotations);
+        await deployK8sDeployment(k8s, diskLimitMb, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, placement.nodeName, placement.storageTier, firewallAnnotations);
         break;
 
       case 'cronjob':
-        await deployK8sCronJob(k8s, diskLimitMb, namespace, name, labels, container, component.schedule ?? '0 * * * *', input.storagePath, mountsForComponent, { nodeName: input.nodeName ?? null, storageTier: input.storageTier ?? null });
+        await deployK8sCronJob(k8s, diskLimitMb, namespace, name, labels, container, component.schedule ?? '0 * * * *', input.storagePath, mountsForComponent, placement);
         break;
 
       case 'job':
         // Jobs are one-shot; create only
-        await deployK8sJob(k8s, diskLimitMb, namespace, name, labels, container, input.storagePath, mountsForComponent, { nodeName: input.nodeName ?? null, storageTier: input.storageTier ?? null });
+        await deployK8sJob(k8s, diskLimitMb, namespace, name, labels, container, input.storagePath, mountsForComponent, placement);
         break;
     }
 

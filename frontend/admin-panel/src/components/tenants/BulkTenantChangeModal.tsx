@@ -6,7 +6,7 @@ import { usePlans } from '@/hooks/use-plans';
 import { useSystemInfo } from '@/hooks/use-system-info';
 import { formatCurrency } from '@/lib/format-currency';
 import { plural } from '@/lib/bulk-run';
-import type { BulkTarget } from '@/hooks/use-bulk-tenants';
+import { AUTO_PLACEMENT, type BulkTarget } from '@/hooks/use-bulk-tenants';
 import { pinnedOnlySuffix } from '@/lib/tenant-hosting';
 
 export type TenantChangeKind = 'placement' | 'plan';
@@ -24,7 +24,7 @@ const COPY: Readonly<Record<TenantChangeKind, { title: string; label: string; bo
   placement: {
     title: 'Change placement of',
     label: 'Target node',
-    body: 'Each tenant is re-pinned to this node and moved there, one at a time — the same move as the '
+    body: 'Each tenant is re-pinned to the node and moved there, one at a time — the same move as the '
       + 'Placement card’s “Migrate pods now”. Running workloads restart (a tenant running on another node '
       + 'is stopped, moved and started: about a minute of downtime, and the next waits until that move has '
       + 'finished). Each row says whether the data followed. Tenants already on the node are skipped.',
@@ -85,7 +85,14 @@ export default function BulkTenantChangeModal({ kind, count, onCancel, onConfirm
             ))}
           </select>
         )}
-        {!options.loading && options.items.length === 0 && (
+        {kind === 'placement' && targetId === AUTO_PLACEMENT && (
+          <p className="mt-2 rounded-lg bg-gray-50 p-3 text-xs text-gray-600 dark:bg-gray-700/40 dark:text-gray-300" data-testid="bulk-change-auto-note">
+            Auto takes each tenant’s pin off and moves nothing: no pod restarts. Its pods stay on the node
+            holding its data, and its volume is no longer held to that node, so Longhorn may place a later copy
+            anywhere and the pods follow it. Tenants already on Auto are skipped.
+          </p>
+        )}
+        {!options.loading && options.items.length <= (kind === 'placement' ? 1 : 0) && (
           <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
             {kind === 'placement' ? 'No node can host tenant workloads.' : 'No hosting plans exist yet.'}
           </p>
@@ -152,7 +159,9 @@ function useTargetOptions(kind: TenantChangeKind): { readonly items: readonly Ta
         const text = label === n.name ? label : `${label} (${n.name})`;
         return { id: n.name, label, optionText: `${text}${pinnedOnlySuffix(n)}` };
       });
-    return { items, loading: nodes.isLoading };
+    // Auto first: no node, the same choice as the Placement card's.
+    const auto = { id: AUTO_PLACEMENT, label: 'Auto', optionText: 'Auto: no pin, each stays where its data is' };
+    return { items: [auto, ...items], loading: nodes.isLoading };
   }
 
   const currency = sysInfo?.currency ?? 'USD';

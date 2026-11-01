@@ -12,6 +12,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Filter the Tenants list by status, placement, tier or plan.** A **Filter by** dropdown sits
+  next to the search box, and a second lists the values this platform has: its nodes, Auto and
+  "not where it belongs" for placement, its plans. The filter applies on the server, so it holds
+  across pages, sorts and the All rows per page, and the total counts only what matches.
+- **Bulk Change placement offers Auto.** It takes each tenant's pin off and moves nothing.
+
+### Changed
+
+- **Auto placement clears the whole pin, and keeps a tenant's pods with its data.** Saving Auto
+  used to clear only the tenant's row: its Deployments and its volume stayed held to the old
+  node. Now, on the Placement card and in the bulk Change placement:
+  - the volume loses the platform's node tag, so Longhorn may place a later copy anywhere;
+  - a Local-tier tenant's pods stay on the node holding its volume, and every later restart or
+    deploy puts them there again (apps, custom containers and the platform's proxies in the
+    tenant namespace). No pod restarts when Auto is saved;
+  - a tenant on Auto whose pods and data end up on different nodes is reported like one away
+    from its primary node, with the same reason and notification;
+  - a re-provision (a plan change starts one) no longer pins an Auto tenant that already has
+    data to the roomiest node; only a new tenant gets a node picked.
+  - a tenant already on Auto before this release gets the pin to its data node at its next
+    deploy, and the platform's proxies in its namespace restart once to take it on. Production
+    has no tenant on Auto.
+
 ### Fixed
 
 - **Every node publishes its public address, so every server serves ingress.** On a cluster
@@ -57,6 +82,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     it again. The tenants are moved one after another.
   - The move's progress dialog shows a move that left its data behind as "Data not
     moved", in amber, rather than a green finish.
+
+- **A file manager no longer starts where the tenant's volume cannot attach.** Recreated after a
+  spec change, it got no node pin, and one started while a move copied the volume had two
+  replicas to choose from and got none either. It could land on another server and wait in
+  ContainerCreating for good, holding up the tenant's own pods. It now always starts on the
+  node holding the data; during a copy, the node the tenant's workloads are pinned to decides.
+- **A drain moves the tenant's file manager too.** The drain moved only workloads pinned to the
+  node, and a file manager often has no pin, so a running one kept the volume on the old node
+  and the moved pods waited for it (8 minutes on lab staging, until it idled).
+- **Auto-heal no longer brings back the file manager that kept a tenant down.** When a tenant's
+  pod could not attach its volume, the heal stopped every workload and restored each one,
+  the file manager included, though a file manager started on another node is often what holds
+  the volume there. It took the volume straight back, the heal failed and raised a "workloads
+  down" alert, and its hold kept the idle loop from ever scaling the file manager down: on lab
+  staging the tenant's site was down 15 minutes. The heal now leaves the file manager at 0; it
+  starts on its next use, on the node holding the data.
+- **A server deleted and joined again gets a usable Longhorn disk.** Delete leaves Longhorn's
+  record of the node for the node-sync reconciler to remove, which Longhorn refuses while a
+  replica is still listed there, even one whose volume has copies elsewhere. On lab staging
+  such a replica kept the record, the host joined again under the same name with a new Longhorn
+  directory, and Longhorn compared the new disk with the old record ("record diskUUID doesn't
+  match the one on the disk"): the server's disk never became ready. The reconciler now removes
+  such replicas first, never a last copy, then the record.
 
 ## [2026.11.1] - 2026-11-01
 

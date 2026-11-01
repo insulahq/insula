@@ -1367,6 +1367,9 @@ export async function strandedPodsOnDeadNode(
   return (pods.items ?? []).map((p) => p.metadata?.name ?? '').filter(Boolean);
 }
 
+/** The tenant's on-demand file manager (file-manager/k8s-lifecycle.ts). */
+const FILE_MANAGER_DEPLOYMENT = 'file-manager';
+
 export async function repinTenantPlacement(
   k8s: K8sClients,
   db: Database,
@@ -1458,6 +1461,26 @@ export async function repinTenantPlacement(
       counts.workloads += 1;
     } catch (err) {
       console.warn(`[nodes] re-pin tenant=${tenant.tenantId} ${w.kind}/${w.name} in ${ns} failed:`, (err as Error).message);
+    }
+  }
+
+  // (c1) The file manager, which the impact lists only when it carries the old
+  //      pin: it is placed where the data is when it starts, so it often has
+  //      none. A RUNNING one still holds the RWO volume on the node it runs on,
+  //      and the re-pinned pods waited behind it until it idled (lab staging:
+  //      8 minutes). Pinned with the tenant, a running one restarts on the
+  //      target, and a stopped one starts there; "auto" takes its pin off.
+  if (!tenant.workloads.some((w) => w.kind === 'Deployment' && w.name === FILE_MANAGER_DEPLOYMENT)) {
+    try {
+      await k8s.apps.patchNamespacedDeployment({
+        namespace: ns, name: FILE_MANAGER_DEPLOYMENT, body,
+      } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
+        MERGE_PATCH);
+    } catch (err) {
+      const status = (err as { code?: number; statusCode?: number }).code ?? (err as { statusCode?: number }).statusCode;
+      if (status !== 404) {
+        console.warn(`[nodes] re-pin tenant=${tenant.tenantId} file manager in ${ns} → ${target || 'auto'} failed:`, (err as Error).message);
+      }
     }
   }
 

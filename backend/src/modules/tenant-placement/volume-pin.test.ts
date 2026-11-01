@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { repinTenant } from '../tenant-migration/repin.js';
-import { holdTenantVolumes, hostTagOf, makeLonghornHostTagEnsurer, releaseVolumeHold, volumesToPoint } from './volume-pin.js';
+import { holdTenantVolumes, hostTagOf, makeLonghornHostTagEnsurer, releaseTenantVolumes, undoVolumeHold, volumesToPoint } from './volume-pin.js';
 
 const NS = 'tenant-acme-1234';
 const lhVol = (name: string, over: { ns?: string; replicas?: number; sel?: string[] | null; lost?: string } = {}) => ({
@@ -133,13 +133,39 @@ describe('repinTenant', () => {
   });
 });
 
-describe('releaseVolumeHold', () => {
+describe('undoVolumeHold', () => {
   it('restores each selector as it was, an empty one included, and reports what it could not', async () => {
     const ok = fakeK8s([]);
-    expect(await releaseVolumeHold(ok.k8s, { target: 'node-b', changed: [{ volumeName: 'pvc-1', previous: [] }] })).toEqual([]);
+    expect(await undoVolumeHold(ok.k8s, { target: 'node-b', changed: [{ volumeName: 'pvc-1', previous: [] }] })).toEqual([]);
     expect(ok.log).toEqual(['patch:volumes:pvc-1:']);
     const down = fakeK8s([], { failVolumePatch: true });
-    expect(await releaseVolumeHold(down.k8s, { target: 'node-b', changed: [{ volumeName: 'pvc-1', previous: [] }] }))
+    expect(await undoVolumeHold(down.k8s, { target: 'node-b', changed: [{ volumeName: 'pvc-1', previous: [] }] }))
       .toEqual(['pvc-1: admission webhook denied']);
+  });
+});
+
+describe('releaseTenantVolumes (Auto)', () => {
+  it('takes only the platform\'s node tag off, on every live volume of the tenant, and keeps a hand-set tag', async () => {
+    const { k8s, log } = fakeK8s([
+      lhVol('held'),
+      lhVol('tagged-by-hand', { sel: ['node-node-a', 'ssd'] }),
+      lhVol('ha-held', { replicas: 3 }),
+      lhVol('free', { sel: null }),
+      lhVol('other-tenant', { ns: 'tenant-other' }),
+      lhVol('leftover', { lost: '2026-09-01T00:00:00Z' }),
+    ]);
+    const hold = await releaseTenantVolumes(k8s, NS);
+    expect(hold.changed.map((v) => v.volumeName)).toEqual(['held', 'tagged-by-hand', 'ha-held']);
+    expect(log).toEqual([
+      'patch:volumes:held:',
+      'patch:volumes:tagged-by-hand:ssd',
+      'patch:volumes:ha-held:',
+    ]);
+  });
+
+  it('puts back what it had changed when a later volume fails', async () => {
+    const { k8s, log } = fakeK8s([lhVol('pvc-1'), lhVol('pvc-2')], { failVolumePatch: 'pvc-2' });
+    await expect(releaseTenantVolumes(k8s, NS)).rejects.toThrow('could not take the node tag off volume pvc-2');
+    expect(log).toEqual(['patch:volumes:pvc-1:', 'patch:volumes:pvc-1:node-node-a']);
   });
 });

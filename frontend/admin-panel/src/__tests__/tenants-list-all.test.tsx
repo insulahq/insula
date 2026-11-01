@@ -86,7 +86,7 @@ describe('TenantsListTab — All rows', () => {
     expect([...(select as HTMLSelectElement).options].map((o) => o.textContent)).toEqual(['20', '50', '100', 'All']);
     fireEvent.change(select, { target: { value: '-1' } });
     // Every page, in the server's order for the column the table sorts by.
-    expect(lastParams).toEqual({ search: undefined, all: true, sort: 'name:asc' });
+    expect(lastParams).toEqual({ search: undefined, filters: {}, all: true, sort: 'name:asc' });
     expect(screen.getByTestId('pagination-bar').textContent).toMatch(/Showing 1-1 of 1/);
   });
 

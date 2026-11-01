@@ -28,6 +28,16 @@
  * can never be deleted. The webhook does not cover the status subresource, and with the
  * node and its manager gone nothing else writes that status: the disk status is aligned
  * with the spec there first.
+ *
+ * And a replica left on the gone node pins it there for good: Longhorn does not remove
+ * the replicas of a node that left, and the webhook refuses a node that still has one.
+ * Measured on lab staging: a server removed with Delete kept one replica of a volume that
+ * had two more copies elsewhere, so its Longhorn node was never removed. The host joined
+ * again under the same name with a new Longhorn directory, and Longhorn compared the new
+ * disk with the old record ("record diskUUID doesn't match the one on the disk"): the
+ * server's disk never became ready, and no data could be placed on it. A replica on a
+ * gone node is removed first when its volume has a usable copy on a live node — never
+ * the last copy, which the node may still bring back.
  */
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -50,7 +60,54 @@ export interface LonghornNodeShape {
 
 /** A replica or an engine: what pins a Longhorn node in place. */
 interface PlacedOnNode {
-  readonly spec?: { readonly nodeID?: string };
+  readonly metadata?: { readonly name?: string };
+  readonly spec?: { readonly nodeID?: string; readonly volumeName?: string; readonly failedAt?: string; readonly healthyAt?: string };
+  readonly status?: { readonly currentState?: string };
+}
+
+/** The Longhorn nodes Longhorn agrees are gone, and that have no live Kubernetes node. Pure. */
+export function goneLonghornNodes(longhornNodes: readonly LonghornNodeShape[], liveNodeNames: ReadonlySet<string>): Set<string> {
+  const gone = new Set<string>();
+  if (liveNodeNames.size === 0) return gone;
+  for (const node of longhornNodes) {
+    const name = node.metadata?.name;
+    if (!name || liveNodeNames.has(name)) continue;
+    const ready = (node.status?.conditions ?? []).find((c) => c.type === 'Ready');
+    if (ready && ready.status !== 'True' && LONGHORN_NODE_GONE_REASONS.includes(ready.reason ?? '')) gone.add(name);
+  }
+  return gone;
+}
+
+/** The Longhorn nodes whose Ready condition is True. Pure. */
+export function readyLonghornNodes(longhornNodes: readonly LonghornNodeShape[]): Set<string> {
+  return new Set(longhornNodes
+    .filter((n) => (n.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True'))
+    .map((n) => n.metadata?.name)
+    .filter((n): n is string => Boolean(n)));
+}
+
+/**
+ * Replicas on a gone node whose volume has a usable copy elsewhere — the ones that may
+ * go so the node can be removed. Pure. Usable means a COMPLETE copy that can be served:
+ * Longhorn once marked it healthy (`healthyAt` — a copy still being rebuilt has none,
+ * and the replica on the gone node may be its only source), it has not failed since,
+ * and its node is Ready. A volume with no such copy keeps its replica: the node might
+ * come back with the only data.
+ */
+export function staleReplicasOnGoneNodes(
+  replicas: readonly PlacedOnNode[],
+  gone: ReadonlySet<string>,
+  readyNodes: ReadonlySet<string>,
+): string[] {
+  const usableElsewhere = new Set(replicas
+    .filter((r) => r.spec?.nodeID && !gone.has(r.spec.nodeID) && readyNodes.has(r.spec.nodeID)
+      && Boolean(r.spec.healthyAt) && !r.spec.failedAt && r.status?.currentState !== 'error')
+    .map((r) => r.spec?.volumeName)
+    .filter((v): v is string => Boolean(v)));
+  return replicas
+    .filter((r) => r.spec?.nodeID && gone.has(r.spec.nodeID) && r.spec.volumeName && usableElsewhere.has(r.spec.volumeName))
+    .map((r) => r.metadata?.name)
+    .filter((n): n is string => Boolean(n));
 }
 
 export interface ReapCandidate {
@@ -190,6 +247,31 @@ async function kubeNodeGone(k8s: K8sClients, name: string): Promise<boolean> {
 }
 
 /**
+ * Remove the replicas a gone node keeps although their volume has a copy elsewhere
+ * (see the header). Returns the ones removed; one that cannot be is left for the next
+ * tick, and keeps its node in place until then.
+ */
+async function removeStaleReplicas(
+  k8s: K8sClients,
+  replicas: readonly PlacedOnNode[],
+  gone: ReadonlySet<string>,
+  readyNodes: ReadonlySet<string>,
+): Promise<Set<string>> {
+  const removed = new Set<string>();
+  for (const name of staleReplicasOnGoneNodes(replicas, gone, readyNodes)) {
+    try {
+      await custom(k8s).deleteNamespacedCustomObject({ ...LONGHORN, plural: 'replicas', name });
+      removed.add(name);
+      console.info(`[node-sync] removed replica ${name} from a node that is gone; its volume has a copy elsewhere`);
+    } catch (err) {
+      if (httpStatusOf(err) === 404) removed.add(name);
+      else console.warn(`[node-sync] could not remove replica ${name} from a node that is gone:`, (err as Error).message);
+    }
+  }
+  return removed;
+}
+
+/**
  * One reconciler pass: remove every residual Longhorn node. `liveNodeNames` must come
  * from a successful Node list. Best-effort — logs, never throws (Longhorn may not be
  * installed yet). Returns the names removed.
@@ -208,8 +290,10 @@ export async function reapOrphanLonghornNodes(
       listLonghorn<PlacedOnNode>(k8s, 'engines'),
     ]);
     if (replicas === null || engines === null) return [];
+    const stale = await removeStaleReplicas(k8s, replicas, goneLonghornNodes(nodes, live), readyLonghornNodes(nodes));
     const occupied = new Set(
-      [...replicas, ...engines].map((o) => o.spec?.nodeID).filter((id): id is string => Boolean(id)),
+      [...replicas.filter((r) => !stale.has(r.metadata?.name ?? '')), ...engines]
+        .map((o) => o.spec?.nodeID).filter((id): id is string => Boolean(id)),
     );
     const removed: string[] = [];
     for (const candidate of planLonghornNodeReap(nodes, live, occupied)) {

@@ -13,6 +13,7 @@ import {
   describeMove,
   describeMoveOperation,
   describeTransition,
+  describeUnpin,
   moveTenantToNodeItem,
   type MoveWait,
   runTenantBulkItem,
@@ -335,6 +336,33 @@ describe('tenant bulk: change placement', () => {
   it('an API error becomes a failed row (thrown to the runner)', async () => {
     mockApiFetch.mockRejectedValueOnce(new ApiError(409, 'TENANT_BUSY', 'a storage operation is running'));
     await expect(moveTenantToNodeItem(TENANT, { id: 'node-b', label: 'Node B' })).rejects.toThrow('a storage operation is running');
+  });
+});
+
+describe('tenant bulk: Auto', () => {
+  const AUTO = { id: '__auto__', label: 'Auto' };
+
+  it('sends the unpin for ONE tenant and says where it stays, and that nothing restarted', async () => {
+    mockApiFetch.mockResolvedValueOnce({ data: { tenantId: 't1', previousPin: 'node-a', runsOn: 'node-a', volumesReleased: ['pvc-1'] } });
+    const outcome = await moveTenantToNodeItem(TENANT, AUTO);
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/v1/admin/tenants/t1/unpin', { method: 'POST' });
+    expect(outcome).toEqual({
+      status: 'succeeded',
+      detail: 'Unpinned from node-a — stays on node-a with its data — no longer held to a node (1 volume). Nothing was restarted.',
+    });
+  });
+
+  it('still sends it for a tenant the list shows on Auto: an older Auto may have left the volume held', async () => {
+    mockApiFetch.mockResolvedValueOnce({ data: { tenantId: 't1', previousPin: null, runsOn: 'node-a', volumesReleased: ['pvc-1'] } });
+    const outcome = await moveTenantToNodeItem({ ...TENANT, nodeName: null }, AUTO);
+    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+    expect(outcome.status).toBe('succeeded');
+    expect(outcome.detail).toMatch(/^Was on Auto — stays on node-a/);
+  });
+
+  it('skips one that was on Auto with nothing to release', () => {
+    expect(describeUnpin({ tenantId: 't1', previousPin: null, runsOn: 'node-a', volumesReleased: [] }))
+      .toEqual({ status: 'skipped', detail: 'Already on Auto.' });
   });
 });
 

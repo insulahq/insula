@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { BulkTenantResult, MigrateToWorkerResult, SubscriptionResponse, TenantMoveOperation } from '@insula/api-contracts';
+import type { BulkTenantResult, MigrateToWorkerResult, SubscriptionResponse, TenantMoveOperation, UnpinTenantResult } from '@insula/api-contracts';
 import { apiFetch, ApiError } from '@/lib/api-client';
 import { plural, type BulkItemOutcome, type BulkRunItem } from '@/lib/bulk-run';
 import type { BulkOpResponse } from '@/hooks/use-lifecycle';
@@ -113,6 +113,31 @@ export interface BulkTarget {
   readonly label: string;
 }
 
+/** The Change placement target that is no node: Auto (unpin, move nothing). */
+export const AUTO_PLACEMENT = '__auto__';
+
+/**
+ * Auto for ONE tenant (POST …/unpin): its pin comes off and nothing moves. Sent
+ * even for a tenant the list shows on Auto — a volume left held to a node by an
+ * older Auto, which only cleared the row, is released too.
+ */
+export async function unpinTenantItem(item: TenantChangeItem): Promise<BulkItemOutcome> {
+  const res = await apiFetch<{ data: UnpinTenantResult }>(
+    `/api/v1/admin/tenants/${encodeURIComponent(item.id)}/unpin`,
+    { method: 'POST' },
+  );
+  return describeUnpin(res.data);
+}
+
+export function describeUnpin(result: UnpinTenantResult, nodeLabel: (name: string) => string = (n) => n): BulkItemOutcome {
+  const released = result.volumesReleased.length;
+  if (!result.previousPin && released === 0) return { status: 'skipped', detail: 'Already on Auto.' };
+  const parts = [result.previousPin ? `Unpinned from ${nodeLabel(result.previousPin)}` : 'Was on Auto'];
+  if (result.runsOn) parts.push(`stays on ${nodeLabel(result.runsOn)} with its data`);
+  if (released > 0) parts.push(`no longer held to a node (${plural(released, 'volume')})`);
+  return { status: 'succeeded', detail: `${parts.join(' — ')}. Nothing was restarted.` };
+}
+
 /** How a bulk move waits for the background operation that moves a running tenant. */
 export interface MoveWait {
   readonly pollMs: number;
@@ -145,6 +170,7 @@ export async function moveTenantToNodeItem(
   target: BulkTarget,
   wait: MoveWait = MOVE_WAIT,
 ): Promise<BulkItemOutcome> {
+  if (target.id === AUTO_PLACEMENT) return unpinTenantItem(item);
   if (item.nodeName === target.id && !item.misplaced) {
     return { status: 'skipped', detail: `Already on ${target.label}.` };
   }

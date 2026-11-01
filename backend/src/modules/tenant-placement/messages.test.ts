@@ -67,6 +67,11 @@ describe('misplacedMessage', () => {
     expect(m.guidance).not.toMatch(/shrink|room for its volume/);
   });
 
+  it('says Auto, not "primary node —", for a tenant on Auto whose pods and data are apart', () => {
+    const m = misplacedMessage([placement({ primaryNode: null, reasons: ['running on node-a, data on node-b'] })]);
+    expect(m.details[0]).toBe('Acme School: Auto, but running on node-a, data on node-b (seen since 2026-10-02 05:10 UTC).');
+  });
+
   it('recognises a blocked copy by the wording the placement check writes', () => {
     // The stored reason is plain text; the two modules must not drift apart.
     const reason = observeTenantPlacement(
