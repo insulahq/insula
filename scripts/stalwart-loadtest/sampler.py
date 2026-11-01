@@ -13,6 +13,8 @@ page cache ("cache") is what it can use on top.
 
 report.py turns the cumulative CPU into CPU-seconds per phase and takes the peak memory.
 """
+from __future__ import annotations  # Python 3.9 on RHEL-family servers: no `X | None` at runtime
+
 import glob
 import json
 import subprocess

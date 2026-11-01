@@ -609,7 +609,7 @@ stalwart_deploy() {
   # CONFIG_SECRET=1: no shared store volume — every pod copies config.json from the Secret lt-config
   # into its own emptyDir (pods on several nodes; the stores are all remote: PostgreSQL, S3, RWX)
   local store_vol="{name: store, persistentVolumeClaim: {claimName: $claim}}" conf_vol="" conf_cp="" init_conf=""
-  if [[ -n ${CONFIG_SECRET:-} ]]; then
+  if [[ -n ${USE_CONFIG_SECRET:-} ]]; then  # set by stalwart_up once the Secret exists
     store_vol="{name: store, emptyDir: {}}"
     conf_vol="- {name: conf, secret: {secretName: lt-config}}"
     conf_cp=" && cp /conf/config.json /pvc/etc/config.json && chown 2000:2000 /pvc/etc/config.json"
@@ -641,7 +641,9 @@ spec:
           volumeMounts: [{name: store, mountPath: /pvc}$init_blobs$init_conf]
         - name: stalwart-binary
           image: $image
-          command: [sh, -c, "cp /usr/local/bin/stalwart /opt/stalwart-bin/stalwart && chmod 0555 /opt/stalwart-bin/stalwart"]
+          # tmp + mv, as production's: after a node restart the pod's emptyDir still holds the 0555
+          # copy, and cp onto it fails (Permission denied) — the pod never starts again
+          command: [sh, -c, "cp /usr/local/bin/stalwart /opt/stalwart-bin/stalwart.tmp && chmod 0555 /opt/stalwart-bin/stalwart.tmp && mv -f /opt/stalwart-bin/stalwart.tmp /opt/stalwart-bin/stalwart"]
           volumeMounts: [{name: bin, mountPath: /opt/stalwart-bin}]
       containers:
         - name: stalwart
@@ -861,7 +863,7 @@ stalwart_up() {
       kx create secret generic lt-config --from-file=config.json="$OUT/$v/config.json.tmp" --dry-run=client -o yaml | kx apply -f - >/dev/null ||
       die "$v: config not captured"
     rm -f "$OUT/$v/config.json.tmp"
-    stalwart_deploy lt-stalwart "$image" lt-data /var/lib/stalwart /etc/stalwart 1
+    USE_CONFIG_SECRET=1 stalwart_deploy lt-stalwart "$image" lt-data /var/lib/stalwart /etc/stalwart 1
     s=$(wait_ready lt-stalwart) || die "$v: not ready with the config from the Secret"
   fi
   if (( replicas > 1 )); then

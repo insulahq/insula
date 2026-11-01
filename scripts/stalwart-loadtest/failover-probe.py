@@ -13,6 +13,8 @@ throttle allows 25 messages an hour per sender domain and recipient, which a ste
   send  --host H [--port 25] --rcpt ADDR --rate R --duration S --run ID --log FILE
   check --host H [--port 143] --user LOGIN --password-env VAR --run ID --log FILE [--cut EPOCH]
 """
+from __future__ import annotations  # Python 3.9 on RHEL-family servers: no `X | None` at runtime
+
 import argparse
 import imaplib
 import json
@@ -39,7 +41,7 @@ def one(a: argparse.Namespace, seq: int) -> dict:
     t0 = time.time()
     row = {"seq": seq, "t": round(t0, 3)}
     try:
-        s = smtplib.SMTP(a.host, a.port, timeout=5, local_hostname="probe.example.test")
+        s = smtplib.SMTP(a.host, a.port, timeout=15, local_hostname="probe.example.test")
         try:
             s.ehlo()
             if s.has_extn("starttls"):
@@ -96,12 +98,14 @@ def present(a: argparse.Namespace) -> set[int]:
         typ, data = m.select(name, readonly=True)
         if typ != "OK" or int(data[0]) == 0:
             continue
-        typ, hits = m.search(None, "SUBJECT", f"failover probe {a.run}")
-        ids = (hits[0] or b"").split()
-        for i in range(0, len(ids), 500):
-            typ, rows = m.fetch(b",".join(ids[i:i + 500]), "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+        # every message's Message-ID, not a SEARCH: a search runs on the full-text index, which lags
+        # behind after an outage and would report present mail as lost
+        n = int(data[0])
+        tag = f"-{a.run}@".encode()
+        for lo in range(1, n + 1, 500):
+            typ, rows = m.fetch(f"{lo}:{min(n, lo + 499)}", "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
             for r in rows:
-                if isinstance(r, tuple) and b"probe-" in r[1]:
+                if isinstance(r, tuple) and b"probe-" in r[1] and tag in r[1]:
                     seqs.add(int(r[1].split(b"probe-", 1)[1].split(b"-", 1)[0]))
     m.logout()
     return seqs
