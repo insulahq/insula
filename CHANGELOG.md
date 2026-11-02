@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.11.3-rc.2] - 2026-11-02
-
 ### Added
 
 - **The Tenants list shows where an Auto tenant is, and filters by where tenants are now.**
