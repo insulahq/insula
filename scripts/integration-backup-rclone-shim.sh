@@ -22,7 +22,7 @@
 #         STATE_NO_ASSIGNMENTS + non-empty keyFingerprint
 #
 #   C — Assign + reconcile + verify-ready
-#     C1. Create a fresh backup_configurations row (S3 minio in dev)
+#     C1. Create a fresh backup_configurations row (the dev S3 endpoint)
 #     C2. PUT assignments/system → 200 + taskId; drain.phase=drain_immediate
 #     C3. GET assignments → system bound to the new row
 #     C4. Status CM updates within 30s (inputHash + assignedClasses)
@@ -219,7 +219,7 @@ echo "── Phase C: assign / reconcile / verify ──"
 # (s3_access_key min length is 16; the old "minioadmin" was also too short).
 # Phase C only binds + reconciles + unbinds — it never runs a real backup, so
 # the creds/endpoint don't need to be live; the create just stores the config.
-CREATE_RESP=$(api POST /api/v1/admin/backup-configs '{"name":"rx5-shim-itest","storage_type":"s3","s3_endpoint":"http://minio.dev-minio.svc.cluster.local:9000","s3_bucket":"itest-rx5","s3_region":"us-east-1","s3_access_key":"itestaccesskey0000001","s3_secret_key":"itestsecretkey0000000001","retention_days":7}')
+CREATE_RESP=$(api POST /api/v1/admin/backup-configs '{"name":"rx5-shim-itest","storage_type":"s3","s3_endpoint":"http://s3.dev-s3.svc.cluster.local:9000","s3_bucket":"itest-rx5","s3_region":"us-east-1","s3_access_key":"itestaccesskey0000001","s3_secret_key":"itestsecretkey0000000001","retention_days":7}')
 if [[ "$(http_code "$CREATE_RESP")" == "200" ]] || [[ "$(http_code "$CREATE_RESP")" == "201" ]]; then
   TARGET_ID=$(http_body "$CREATE_RESP" | sed -nE 's/.*"id":"([^"]+)".*/\1/p' | head -1)
   pass "C1: created S3 backup target $TARGET_ID"

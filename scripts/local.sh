@@ -41,6 +41,9 @@ set -euo pipefail
 #   ./scripts/local.sh sftp-up     Deploy SFTP gateway (opt-in)
 #   ./scripts/local.sh sftp-down   Remove SFTP gateway
 #   ./scripts/local.sh sftp-status Show SFTP gateway state
+#   ./scripts/local.sh s3-up       Deploy a dev S3 endpoint, versitygw (opt-in)
+#   ./scripts/local.sh s3-down     Remove the dev S3 endpoint
+#   ./scripts/local.sh s3-status   Show the dev S3 endpoint and its buckets
 #   ./scripts/local.sh help        Show this help
 #
 # Environment: override via .env.local (see .env.local.example)
@@ -1561,45 +1564,54 @@ cmd_sftp_status() {
   echo "════════════════════════════════════════════════"
 }
 
-# ─── minio (Phase 8 of snapshot-storage overhaul) ─────────────────────
+# ─── S3 (versitygw) ───────────────────────────────────────────────────
 #
-# Dev-only S3 backend for the streaming snapshot E2E pipeline. Not
-# deployed by default (operators may not need snapshots in every dev
-# session). Use `./scripts/local.sh minio-up` to opt in.
+# Dev-only S3 backend for the backup-target and streaming snapshot E2E
+# paths: versitygw's posix backend, the same server as the VM lab's S3.
+# Not deployed by default (not every dev session needs one). Use
+# `./scripts/local.sh s3-up` to opt in; the old minio-* names still work.
 
-cmd_minio_up() {
-  echo "Deploying dev minio (S3-compatible backend for snapshot E2E)..."
+cmd_s3_up() {
+  echo "Deploying dev S3 (versitygw, for backup-target and snapshot E2E)..."
   # Copy manifest into the k3s container then apply — same pattern as
   # cmd_up / cmd_mail_up (manifests are not visible inside the DinD
   # container's filesystem otherwise).
-  docker cp "${PROJECT_DIR}/k8s/dev/minio/minio.yaml" "${K3S_CONTAINER}:/tmp/minio.yaml" >/dev/null
-  k3s_exec kubectl apply -f /tmp/minio.yaml >/dev/null
-  k3s_exec kubectl wait --for=condition=available --timeout=60s -n dev-minio deploy/minio
+  docker cp "${PROJECT_DIR}/k8s/dev/s3/s3.yaml" "${K3S_CONTAINER}:/tmp/s3.yaml" >/dev/null
+  # A Job's pod template is immutable and a failed one never completes: start
+  # the bucket Job afresh on every run (the buckets survive; mkdir is idempotent).
+  k3s_exec kubectl delete job s3-init -n dev-s3 --ignore-not-found >/dev/null
+  k3s_exec kubectl apply -f /tmp/s3.yaml >/dev/null
+  k3s_exec kubectl wait --for=condition=available --timeout=90s -n dev-s3 deploy/s3
+  k3s_exec kubectl wait --for=condition=complete --timeout=120s -n dev-s3 job/s3-init
   echo ""
-  echo "minio deployed."
-  echo "  S3 endpoint (cluster-internal): http://minio.dev-minio.svc.cluster.local:9000"
-  echo "  Access key: minio-dev-access-key"
-  echo "  Secret key: minio-dev-secret-key"
+  echo "dev S3 deployed."
+  echo "  S3 endpoint (cluster-internal): http://s3.dev-s3.svc.cluster.local:9000 (path-style)"
+  echo "  Access key: s3-dev-access-key"
+  echo "  Secret key: s3-dev-secret-key"
   echo "  Buckets:    snapshots, system-backups"
   echo ""
   echo "Next: configure /settings/backups with these credentials, then assign"
   echo "      tenant_snapshot class to it via /settings/snapshot-classes."
 }
 
-cmd_minio_down() {
-  echo "Removing dev minio..."
-  k3s_exec kubectl delete -f - --ignore-not-found < "${PROJECT_DIR}/k8s/dev/minio/minio.yaml" 2>/dev/null \
-    || k3s_exec kubectl delete namespace dev-minio --ignore-not-found
+cmd_s3_down() {
+  echo "Removing dev S3..."
+  k3s_exec kubectl delete namespace dev-s3 --ignore-not-found
+  # The MinIO fixture this replaced, on a stack that still runs it.
+  k3s_exec kubectl delete namespace dev-minio --ignore-not-found
 }
 
-cmd_minio_status() {
+cmd_s3_status() {
   echo "════════════════════════════════════════════════"
-  echo "  minio (snapshot-storage overhaul Phase 8)"
+  echo "  dev S3 (versitygw)"
   echo "════════════════════════════════════════════════"
-  k3s_exec kubectl get pods -n dev-minio 2>/dev/null | sed 's/^/    /' || echo "  Not deployed. Run: ./scripts/local.sh minio-up"
+  k3s_exec kubectl get pods -n dev-s3 2>/dev/null | sed 's/^/    /' || echo "  Not deployed. Run: ./scripts/local.sh s3-up"
   echo ""
-  k3s_exec kubectl exec -n dev-minio deploy/minio -- sh -c \
-    "mc alias set local http://localhost:9000 minio-dev-access-key minio-dev-secret-key >/dev/null 2>&1 && mc ls --recursive local/ 2>/dev/null | head -20" \
+  # The posix backend keeps each bucket as a directory and each object as a
+  # file, so the data directory is the bucket listing (its own state lives in
+  # dot-directories: .sgwtmp staging, .vgwlocks).
+  k3s_exec kubectl exec -n dev-s3 deploy/s3 -- sh -c \
+    'cd /data && du -sh -- * 2>/dev/null; find . -type f -not -path "./.*" | head -20' \
     2>/dev/null | sed 's/^/    /' || true
   echo "════════════════════════════════════════════════"
 }
@@ -1607,7 +1619,7 @@ cmd_minio_status() {
 # ─── samba (snapshot-storage overhaul, CIFS target) ───────────────────
 #
 # Dev-only SMB server so the CIFS streaming + Phase 11 read paths can
-# be exercised end-to-end. Same opt-in shape as minio.
+# be exercised end-to-end. Same opt-in shape as s3-up.
 
 cmd_samba_up() {
   echo "Deploying dev samba (CIFS/SMB backend for snapshot E2E)..."
@@ -1703,7 +1715,8 @@ cmd_sftp_dev_status() {
 # ─── Help & dispatch ─────────────────────────────────────────────────────────
 
 cmd_help() {
-  sed -n '3,36p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+  # The whole comment header, however long the command list grows.
+  awk 'NR < 4 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"
 }
 
 # Preflight the external tools each verb needs BEFORE doing any work, so a
@@ -1745,9 +1758,9 @@ case "${1:-help}" in
   sftp-up)        cmd_sftp_up ;;
   sftp-down)      cmd_sftp_down ;;
   sftp-status)    cmd_sftp_status ;;
-  minio-up)       cmd_minio_up ;;
-  minio-down)     cmd_minio_down ;;
-  minio-status)   cmd_minio_status ;;
+  s3-up|minio-up)         cmd_s3_up ;;
+  s3-down|minio-down)     cmd_s3_down ;;
+  s3-status|minio-status) cmd_s3_status ;;
   samba-up)       cmd_samba_up ;;
   samba-down)     cmd_samba_down ;;
   samba-status)   cmd_samba_status ;;

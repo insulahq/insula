@@ -66,8 +66,8 @@ ensure_services() {
       if ( source "$STATE_FILE"
         _vssh "$svc" "mkdir -p /var/lib/s3 && docker run -d --name s3 --restart=always --network host \
           -v /var/lib/s3:/data -e ROOT_ACCESS_KEY_ID=$(printf %q "$VMTEST_MINIO_USER") \
-          -e ROOT_SECRET_ACCESS_KEY=$(printf %q "$VMTEST_MINIO_PW") versity/versitygw:v1.8.0 --port :9000 posix /data >/dev/null \
-          && for i in \$(seq 1 30); do docker run --rm --network host rclone/rclone:1.74.1 mkdir :s3:$(printf %q "$VMTEST_MINIO_BUCKET") \
+          -e ROOT_SECRET_ACCESS_KEY=$(printf %q "$VMTEST_MINIO_PW") versity/versitygw:v1.10.0 --port :9000 posix /data >/dev/null \
+          && for i in \$(seq 1 30); do docker run --rm --network host rclone/rclone:1.75.2 mkdir :s3:$(printf %q "$VMTEST_MINIO_BUCKET") \
              --s3-provider Other --s3-endpoint http://127.0.0.1:9000 --s3-access-key-id $(printf %q "$VMTEST_MINIO_USER") \
              --s3-secret-access-key $(printf %q "$VMTEST_MINIO_PW") >/dev/null 2>&1 && break || sleep 2; done" ); then
         echo "  services VM: S3 backup target (versitygw) started"

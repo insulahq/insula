@@ -105,7 +105,7 @@ The DNS/ACME/S3 services are **NOT** host containers — see below. There is no
 The platform **already overlay-switches ClusterIssuers** (`letsencrypt-staging-http01`,
 `letsencrypt-prod-dns01-powerdns`, …). Adding a `pebble-*` issuer is one manifest.
 
-**Where these run — NOT the host's Docker.** PowerDNS, Pebble, and MinIO run in a small
+**Where these run — NOT the host's Docker.** PowerDNS, Pebble, and versitygw (S3) run in a small
 **throw-away services VM's own Docker** (`net-services.sh`), on the run's NAT net. Using the
 host's Docker would need `docker.sock` (root-equivalent) and wouldn't share the host-libvirt
 VMs' network anyway; a services VM is isolated *and* network-coherent, and dies with the run. So
@@ -197,7 +197,7 @@ scripts/vm-integration-tests/
     driver.sh               # libvirt-sock | ssh-host backends (the contract above)
     waitfor.sh              # wait-for-ssh, wait-for-k3s-ready, wait-for-flux
   os-images.sh              # fetch/cache golden base image(s) (list|<os>|all=pool)
-  net-services.sh           # per-run NAT net + services VM (own Docker: PowerDNS/Pebble/MinIO)
+  net-services.sh           # per-run NAT net + services VM (own Docker: PowerDNS/Pebble/versitygw)
   spawn-cluster.sh          # draw a RANDOM OS per node, overlay-clone, bootstrap.sh --remote
   run.sh                    # one run: net→spawn(mixed-OS)→integration-all→report→teardown
   teardown.sh               # throw everything away (trap-safe)
@@ -218,7 +218,7 @@ construction.
 - **P1 — full HA gate.** Default topology (**3 servers + 1 worker**): etcd HA control plane via
   `--join-as server --server <s1> --token <t>` joins (the first server CREATES with `--domain`, no
   `--join-as`) + `ClusterPendingPeer` pre-enroll, Longhorn on virtual disks,
-  PowerDNS+Pebble, MinIO backup target, `run.sh` → full `integration-all` green **including HA mode**
+  PowerDNS+Pebble, an S3 backup target (versitygw), `run.sh` → full `integration-all` green **including HA mode**
   (CNPG 1→3, Deployments 2→3, topologySpread).
 - **P2 — automation.** Nightly cron on the Unraid host (or a self-hosted GH runner) → cold full
   run + weekly LE-staging fidelity run; upload the report JSON. PR tier stays Tier 0 (fast).

@@ -18,7 +18,7 @@
 #     A6. dry-run of all three restore scripts (no real restore yet)
 #
 #   B — SYSTEM target round-trip
-#     B1. Create a fresh backup_configurations row (dev minio default)
+#     B1. Create a fresh backup_configurations row (the dev S3 endpoint)
 #     B2. PUT /admin/backup-rclone-shim/assignments/system → taskId
 #     B3. Wait for reconcile (status.state == STATE_OK within 60s)
 #     B4. ObjectStore CR materialised in `platform` ns
@@ -233,13 +233,13 @@ else
   # storage_type, uses s3_endpoint/s3_bucket/s3_access_key…); the old camelCase
   # body 400'd → B1..B7 silently SKIPPED on every run (same bug as rclone-shim
   # Phase C). Dummy creds satisfy the schema (s3_access_key min 16); the create
-  # only stores config, so the dev-minio endpoint is fine.
+  # only stores config, so the dev S3 endpoint is fine.
   _dr_drill_cleanup() {
     [[ -n "${TARGET_ID:-}" ]] || return 0
     api PUT "/api/v1/admin/backup-rclone-shim/assignments/system" '{"targetId":null,"force":true}' >/dev/null 2>&1 || true
     api DELETE "/api/v1/admin/backup-configs/$TARGET_ID" >/dev/null 2>&1 || true
   }
-  CREATE=$(api POST /api/v1/admin/backup-configs '{"name":"rx12-dr-drill","storage_type":"s3","s3_endpoint":"http://minio.dev-minio.svc.cluster.local:9000","s3_bucket":"drill","s3_region":"us-east-1","s3_access_key":"drilltestaccesskey01","s3_secret_key":"drilltestsecretkey000001","retention_days":7}')
+  CREATE=$(api POST /api/v1/admin/backup-configs '{"name":"rx12-dr-drill","storage_type":"s3","s3_endpoint":"http://s3.dev-s3.svc.cluster.local:9000","s3_bucket":"drill","s3_region":"us-east-1","s3_access_key":"drilltestaccesskey01","s3_secret_key":"drilltestsecretkey000001","retention_days":7}')
   TARGET_ID=$(http_body "$CREATE" | sed -nE 's/.*"id":"([^"]+)".*/\1/p' | head -1)
   if [[ -n "$TARGET_ID" ]]; then
     HAVE_BINDING=1
