@@ -1128,7 +1128,13 @@ export async function runProvisionNamespace(
   // dataLocality=best-effort drifts the primary toward the chosen node
   // naturally. Skipped when targetNode is set so we never persist an
   // auto-picked node that an unverified operator target would then override.
-  if (!tenant.nodeName && !targetNode && tenant.storageTier !== 'ha') {
+  //
+  // Only for a tenant whose volume does not exist yet. A re-provision (a plan
+  // change queues one) of a tenant an operator set to Auto would otherwise pin
+  // it to the roomiest node, away from its data: Auto keeps its pods with its
+  // data instead (tenant-placement/pod-placement.ts resolveAutoPlacement).
+  if (!tenant.nodeName && !targetNode && tenant.storageTier !== 'ha'
+    && !(await tenantVolumeExists(k8s, namespace))) {
     try {
       const { autoPickWorkerNode } = await import('../tenants/storage-placement-service.js');
       const picked = await autoPickWorkerNode(db, k8s);
@@ -1579,5 +1585,23 @@ export async function runDeprovision(
     await mirrorProvisioningToTaskTracker(db, taskId).catch((mirErr) => {
       console.warn(`[k8s-provisioner] task tracker mirror failed for ${taskId}: ${mirErr instanceof Error ? mirErr.message : String(mirErr)}`);
     });
+  }
+}
+
+/**
+ * Whether the tenant's storage PVC exists. A read that fails for any other
+ * reason than "not found" counts as existing: guessing "no data" would let the
+ * auto-pick pin an Auto tenant away from its data.
+ */
+async function tenantVolumeExists(k8s: K8sClients, namespace: string): Promise<boolean> {
+  try {
+    await k8s.core.readNamespacedPersistentVolumeClaim(
+      { name: `${namespace}-storage`, namespace } as unknown as Parameters<typeof k8s.core.readNamespacedPersistentVolumeClaim>[0],
+    );
+    return true;
+  } catch (err) {
+    if (isK8s404(err)) return false;
+    console.warn(`[k8s-provisioner] could not read ${namespace}-storage (${(err as Error).message}); not picking a node for it`);
+    return true;
   }
 }

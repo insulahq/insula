@@ -454,7 +454,7 @@ async function ensureGate(
   await upsertSecret(deps.k8s.core, namespace, material.secretData);
   await upsertConfigMap(deps.k8s.core, namespace, configMapData);
   await upsertService(deps.k8s.core, namespace);
-  const placement = await loadTenantPodPlacement(deps.db, tenantId);
+  const placement = await loadTenantPodPlacement(deps.db, tenantId, deps.k8s);
   const action = await upsertDeployment(deps.k8s.apps, namespace, buildGateDeployment(namespace, material, placement), hash);
   await deleteLegacyPassthrough(deps.k8s.custom, namespace);
   return { action, hash };

@@ -169,7 +169,7 @@ export default function PlacementSection({ tenant, tenantId }: { readonly tenant
               className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
               data-testid="placement-worker-select"
             >
-              <option value="">Auto: the scheduler picks by free capacity</option>
+              <option value="">Auto: no pin, it stays where its data is</option>
               {nodes.filter((n) => nodeTakesTier(n, tierTarget) || n.name === pinTarget).map((n) => (
                 <option key={n.name} value={n.name}>{nodeLabel(n.name)}{pinnedOnlySuffix(n)}{n.cordoned ? ' (cordoned)' : ''}{formatAvailability(usageByName.get(n.name))}</option>
               ))}

@@ -81,6 +81,14 @@ alias, the node a tenant that is off its primary node is actually on, `auto`
 for every tenant with no node pin, and `misplaced` for every tenant off its
 primary node.
 
+**Filter by**, next to the search box, narrows the list to one value of
+**Status**, **Placement**, **Tier** or **Plan**: pick the field, then one of
+the values this platform has — for Placement, **Auto (no pin)**, **Not where
+it belongs**, or a node (the tenants pinned to it, and those running there
+while off their own node). The filter applies on the server, to every page,
+the total and the **All** rows per page; with a search, both must match.
+Pick **Filter by…** again to clear it.
+
 Sorting applies to the page you are looking at, not the whole tenant list, so
 sort after narrowing with the search box if you have many accounts — or set
 **Rows per page** to **All**, which loads every tenant that matches the search
@@ -193,14 +201,42 @@ node** banner says what is elsewhere and since when, with two ways out:
   volume first (**Plan & limits**). Without this check the tenant
   would start on the new node with its data left behind, and do all of
   its disk I/O across the network from then on.
+- A move holds the tenant's volume to its new node, as a drain does: it
+  tags that node in Longhorn (`node-<name>`) and limits the volume to it.
+  Before, a move left the volume limited to the node an earlier drain had
+  put it on, and Longhorn could place the copy nowhere.
 - When Longhorn cannot copy the data to where the tenant runs, the banner
-  says so in Longhorn's words — *data on node-a; Longhorn cannot copy it to
-  node-b: insufficient storage* — and so does the notification. That does
-  not resolve by waiting: move the tenant to a node with room, or shrink
-  its volume.
+  says why, and what to do — *data on node-a; Longhorn cannot copy it to
+  node-b: the volume is still held to the Longhorn node tagged node-node-a
+  (a pin left by an earlier drain or move), and node-b does not carry that
+  tag — move the tenant again from its Placement card; a move holds the
+  volume to the node it moves to*: **Move back to &lt;primary&gt;** when it
+  already runs there. The notification and the move's own result carry the
+  same line. The platform checks, in Longhorn's order: the volume's node
+  tags, whether Longhorn takes new data on the node and its disks are ready
+  (with Longhorn's reason when one is not), the volume's disk tags, then
+  room. When none of these explains it, the banner gives Longhorn's own
+  words. A refused copy does not resolve by waiting.
 - **Make &lt;current node&gt; the primary node** accepts where it is: the
   workloads restart once on the same node to pick up the new pin, and no
   data is copied.
+
+**Auto** (the *Pinned node* list's first entry, or the bulk Change placement)
+means no primary node, and moves nothing. Saving it:
+
+- clears the tenant's pin;
+- takes the platform's node tag off its volume, so Longhorn may place a later
+  copy on any node;
+- keeps a Local-tier tenant's pods on one host with its data: they stay on
+  the node holding its volume, and every later restart or deploy puts them
+  there again. No pod restarts when you save it.
+
+An HA tenant's pods drop their node preference at their next deploy. A tenant
+on Auto whose pods end up on one node and its data on another is reported like
+one away from its primary node — *Auto: its pods and its data are on different
+nodes* — with the same reason and notification. A re-provision (a plan change
+starts one) does not pick a node for an Auto tenant that already has data; only
+a new tenant gets one.
 
 Both ask for a second click that says what they will do. Below the banner,
 **Storage failovers** lists the tenant's recent Longhorn salvages — when a
@@ -412,8 +448,8 @@ workloads again.
 ## Bulk actions
 
 On the **Tenants** tab, tick the checkbox on one or more rows to reveal
-the bulk action bar at the bottom: **Suspend**, **Reactivate**, and
-**Delete**. The **Domains** and **Cron Jobs** tabs have their own bulk bars
+the bulk action bar at the bottom: **Suspend**, **Reactivate**, **Delete**,
+**Change placement** and **Change plan**. The **Domains** and **Cron Jobs** tabs have their own bulk bars
 (verify / refresh route DNS / delete, and enable / disable / delete).
 
 Every bulk action asks for confirmation with the count, then opens a progress
@@ -424,6 +460,14 @@ dialog that processes the selection **one item at a time**:
   includes the lifecycle hooks: a tenant whose hooks did not all complete is
   shown as *Failed*, with each failing hook listed (failed hooks keep being
   retried in the background).
+- **Change placement** to **Auto** takes each tenant's pin off and moves
+  nothing: no pod restarts. See *Auto* under [Placement](#placement). Each
+  row says which node the tenant stays on; one already on Auto is skipped.
+- **Change placement** to a node moves each tenant as [Move back](#placement) does. A
+  running tenant's row waits until its move has finished (about a minute
+  each) and shows how it ended. A tenant that now runs on the new node but
+  whose data Longhorn would not copy there is *Failed*, with the cause; it
+  stays selected, and **Retry failed** moves it again.
 - A progress bar and running counts sit at the top.
 - **Cancel** stops before the next item; the one already running finishes.
   Items that never ran are shown as *Not run*.

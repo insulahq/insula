@@ -1,3 +1,4 @@
+import { TENANT_PLACEMENT_FILTER, type TenantListFilters } from '@insula/api-contracts';
 import { eq, ilike, and, or, isNull, sql, getTableColumns, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { likePattern, likePrefixPattern } from '../../shared/like-pattern.js';
 import bcrypt from 'bcrypt';
@@ -859,6 +860,41 @@ export function tenantSearchCondition(term: string): SQL {
 }
 
 /**
+ * The admin Tenants list's "Filter by", as SQL — every given filter must match.
+ *
+ * Placement matches what the Placement column shows: `auto` the tenants with
+ * no pin, `misplaced` the ones off where they belong, and a node the tenants
+ * pinned to it or, while off their own node, running on it (the red name the
+ * column shows). The node is matched by its Kubernetes name or hostname, as
+ * placement observations carry either.
+ */
+export function tenantFilterConditions(filters: TenantListFilters): SQL[] {
+  const out: SQL[] = [];
+  if (filters.status) out.push(eq(tenants.status, filters.status));
+  if (filters.tier) out.push(eq(tenants.storageTier, filters.tier));
+  if (filters.plan) out.push(eq(tenants.planId, filters.plan));
+  const placement = filters.placement;
+  if (placement === TENANT_PLACEMENT_FILTER.auto) {
+    out.push(isNull(tenants.nodeName));
+  } else if (placement === TENANT_PLACEMENT_FILTER.misplaced) {
+    out.push(sql`EXISTS (SELECT 1 FROM ${tenantPlacementState} tps WHERE tps.tenant_id = ${tenants.id} AND tps.status = 'misplaced')`);
+  } else if (placement) {
+    const names = sql`
+      SELECT v.node FROM ${clusterNodes} cn,
+        LATERAL (VALUES (cn.name), (cn.labels->>'kubernetes.io/hostname')) AS v(node)
+       WHERE cn.name = ${placement} AND v.node IS NOT NULL`;
+    out.push(or(
+      eq(tenants.nodeName, placement),
+      sql`EXISTS (
+        SELECT 1 FROM ${tenantPlacementState} tps, unnest(tps.actual_nodes) AS an(node)
+         WHERE tps.tenant_id = ${tenants.id} AND tps.status = 'misplaced'
+           AND (an.node = ${placement} OR an.node IN (${names})))`, // allow-array-binding: names is a SQL subquery, not an array
+    ) as SQL);
+  }
+  return out;
+}
+
+/**
  * Columns the admin Tenants list can be sorted by on the server. CPU, memory,
  * storage and placement are live readings the database does not hold — the
  * panel sorts those over the whole list it loads instead.
@@ -874,7 +910,7 @@ export const TENANT_SORT_FIELDS: SortFields = {
 
 export async function listTenants(
   db: Database,
-  params: { limit: number; cursor?: string; sortParam?: string; search?: string },
+  params: { limit: number; cursor?: string; sortParam?: string; search?: string; filters?: TenantListFilters },
 ): Promise<{ data: TenantListRow[]; pagination: PaginationMeta }> {
   const { limit, cursor, search } = params;
   const sort = resolveListSort(params.sortParam, TENANT_SORT_FIELDS, { field: 'createdAt', direction: 'desc' });
@@ -883,6 +919,7 @@ export async function listTenants(
   if (search && search.trim() !== '') {
     conditions.push(tenantSearchCondition(search));
   }
+  conditions.push(...tenantFilterConditions(params.filters ?? {}));
   // The total counts the searched set; the cursor only narrows the page.
   const filterWhere = conditions.length > 0 ? and(...conditions) : undefined;
   const after = listCursorCondition(cursor, 'tenant', sort, TENANT_SORT_FIELDS, tenants.id);
@@ -1184,6 +1221,33 @@ export async function updateTenant(
       input.node_name !== undefined ? input.node_name : existing.nodeName,
       tierChange ?? existing.storageTier,
       existing.name,
+    );
+  }
+
+  // Auto (a pin taken off): the cluster too — the volume loses its node tag and
+  // the pods stay with the data (tenant-migration/unpin.ts). Writing only the
+  // row left the Deployments and the volume held to the old node. Before the
+  // row, as `unpinTenant` does: a failure leaves the tenant pinned, and a retry
+  // does the whole job. Never under a storage operation, which owns the
+  // tenant's workloads and volume.
+  if (input.node_name === null && existing.nodeName && existing.kubernetesNamespace) {
+    const [state] = await db.select({ lifecycle: tenants.storageLifecycleState, op: tenants.activeStorageOpId })
+      .from(tenants).where(eq(tenants.id, id));
+    if (state && (state.lifecycle !== 'idle' || state.op)) {
+      throw new ApiError(
+        'STORAGE_OP_IN_PROGRESS',
+        `A ${state.lifecycle} operation is in progress for this tenant; set it to Auto once that has finished`,
+        409,
+        { currentState: state.lifecycle, activeOpId: state.op ?? null },
+      );
+    }
+    const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+    const { applyAutoPlacement } = await import('../tenant-migration/unpin.js');
+    await applyAutoPlacement(
+      createK8sClients(process.env.KUBECONFIG_PATH),
+      existing.kubernetesNamespace,
+      tierChange ?? existing.storageTier ?? null,
+      existing.nodeName,
     );
   }
 

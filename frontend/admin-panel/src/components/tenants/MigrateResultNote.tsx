@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { MigrateToWorkerResult } from '@insula/api-contracts';
 import NodeName from '@/components/nodes/NodeName';
+import NodeText from '@/components/nodes/NodeText';
 import OperationProgressModal from '@/components/OperationProgressModal';
 import { useNodeLabel } from '@/hooks/use-node-labels';
 
@@ -10,8 +11,19 @@ import { useNodeLabel } from '@/hooks/use-node-labels';
  * where the data is going, or why it is not.
  */
 export default function MigrateResultNote({ result }: { readonly result: MigrateToWorkerResult }) {
-  const { currentWorker, deploymentsRestarted, dataRelocation, moveOperationId } = result;
+  const { currentWorker, deploymentsRestarted, dataRelocation, moveOperationId, copyBlocker } = result;
   if (moveOperationId) return <MoveInProgressNote operationId={moveOperationId} target={currentWorker} />;
+  if (copyBlocker) {
+    return (
+      <div className="mt-2 space-y-1 text-xs" data-testid="migrate-result">
+        <p className="text-amber-700 dark:text-amber-400" data-testid="migrate-copy-blocked">
+          Pinned to <NodeName name={currentWorker} />, but its data has NOT moved: Longhorn cannot place a copy
+          there — <NodeText text={copyBlocker.cause} />. Until then the tenant reads and writes its data across
+          the network. {capitalised(copyBlocker.action)}.
+        </p>
+      </div>
+    );
+  }
   const moving = dataRelocation.started.length;
   return (
     <div className="mt-2 space-y-1 text-xs" data-testid="migrate-result">
@@ -36,6 +48,10 @@ export default function MigrateResultNote({ result }: { readonly result: Migrate
       )}
     </div>
   );
+}
+
+function capitalised(text: string): string {
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
 }
 
 /**

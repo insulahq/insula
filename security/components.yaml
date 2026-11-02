@@ -944,10 +944,14 @@ components:
     pinned: "nginx:1.30-alpine"
     pin_source: catalog-images/static-nginx/Dockerfile
     pin_check: true
+    repos: ["ghcr.io/insulahq/application-catalog/static-nginx"]
     watch: { type: github_releases, repo: nginx/nginx, advisories: nginx/nginx, tag_regex: '^release-(\d+\.\d*[02468]\.\d+)$' }
     scan: trivy
     owner: catalog
-    notes: Tenant static hosting runtime.
+    notes: >-
+      Tenant static hosting runtime. What tenants run is the Official Catalog's build
+      (insulahq/application-catalog static-nginx/, on the Minimus nginx base); the
+      catalog-images/ copy here is the older nginx:1.30-alpine variant.
 
   - id: catalog-nginx-php84
     name: catalog/nginx-php84 (PHP-FPM 8.4 runtime)
@@ -986,6 +990,37 @@ components:
     notes: >-
       Tenant WordPress runtime. Highest catalog CVE surface (core + the floating
       `wordpress:` base). Watch WordPress core + PHP advisories.
+
+  - id: catalog-databases
+    name: catalog database images (MariaDB, MySQL, MongoDB, PostgreSQL)
+    tier: "C"
+    kind: image
+    pinned: "mariadb:10.11/11.8/12.3, mysql:8.0/8.4/9.7, mongo:7.0, postgres:18"
+    pin_source: "insulahq/application-catalog: mariadb/, mysql/, mongodb-7/, postgresql/ (chart values)"
+    repos: ["mariadb", "mysql", "mongo", "postgres"]
+    pin_check: false
+    watch: { type: manual }
+    scan: trivy
+    owner: catalog
+    notes: >-
+      Upstream official images the Official Catalog runs as tenant databases, on
+      floating minor tags. Fixes arrive with upstream rebuilds; the weekly image scan
+      reports them (image-cve-scan.yml, the Official Catalog section).
+
+  - id: catalog-golang122
+    name: catalog/golang-122 (tenant Go 1.22 runtime)
+    tier: "C"
+    kind: image
+    pinned: "golang:1.22-alpine"
+    pin_source: "insulahq/application-catalog: golang-122/Dockerfile"
+    repos: ["ghcr.io/insulahq/application-catalog/golang-122"]
+    pin_check: false
+    watch: { type: manual }
+    scan: trivy
+    owner: catalog
+    notes: >-
+      Go 1.22 left upstream support in February 2025: its stdlib gets no more fixes, so
+      a CVE in it stays until the runtime moves to a supported Go release.
 
   # ───────────────────────────── Tier X — External (consumed) ─────────────────────────────
   - id: dex

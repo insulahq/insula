@@ -60,10 +60,15 @@ export function misplacedMessage(placements: readonly NamedPlacement[]): AdminTe
     const why = p.reasons.length > 0 ? p.reasons.join(', ') : `on ${nodes(p.actualNodes)}`;
     // When the reconciler first SAW it — not when the data moved, which it cannot know.
     const since = p.misplacedSince ? ` (seen since ${formatUtcMinute(p.misplacedSince)})` : '';
-    return `${p.tenantName}: primary node ${p.primaryNode ?? '—'}, but ${why}${since}.`;
+    // Auto has no primary node: what is wrong is that pods and data are apart.
+    const against = p.primaryNode ? `primary node ${p.primaryNode}` : 'Auto';
+    return `${p.tenantName}: ${against}, but ${why}${since}.`;
   });
   // A refused copy does not resolve by waiting, and "move it back" is not the
-  // only way out — the operator needs to hear that it is stuck, and why.
+  // only way out — the operator needs to hear that it is stuck. Why, and what
+  // to do, is on the tenant's own line (copy-refusal.ts): one piece of advice
+  // for every cause sent the operator to look for room on a node with 595 GB
+  // free, when the cause was a node tag.
   const blocked = placements.some((p) => p.reasons.some((r) => r.includes(COPY_BLOCKED_MARK)));
   return {
     summary: summaryOf(placements.map((p) => p.tenantName)),
@@ -72,8 +77,7 @@ export function misplacedMessage(placements: readonly NamedPlacement[]): AdminTe
       + 'data locality copies its volume between nodes. Open the tenant\'s Placement card to move it '
       + 'back, or make the node it is on its primary.'
       + (blocked
-        ? ' Where Longhorn cannot copy the data it stays put until that is resolved: move the tenant to a '
-          + 'node with room for its volume (Longhorn reserves the volume\'s full size), or shrink the volume.'
+        ? ' Where Longhorn cannot copy the data, it stays where it is until the cause given for that tenant is dealt with.'
         : ''),
   };
 }

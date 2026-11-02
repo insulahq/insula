@@ -181,6 +181,48 @@ describe.skipIf(!dbAvailable)('Tenant CRUD (integration)', () => {
       await seedTenant(db, regionId, planId, { name: 'Mailed', primaryEmail: 'owner@mailed-co.example.test' });
       expect((await search('mailed-co')).names).toEqual(['Mailed']);
     });
+
+    describe('Filter by', () => {
+      const list = async (query: string): Promise<{ status: number; names: string[]; total: number }> => {
+        const res = await app.inject({
+          method: 'GET',
+          url: `/api/v1/tenants?limit=100&${query}`,
+          headers: { authorization: `Bearer ${adminToken}` },
+        });
+        if (res.statusCode !== 200) return { status: res.statusCode, names: [], total: 0 };
+        const body = res.json() as { data: Array<{ name: string }>; pagination: { total_count: number } };
+        return { status: 200, names: body.data.map((t) => t.name).sort(), total: body.pagination.total_count };
+      };
+
+      it('placement: auto, misplaced, and a node — the tenants pinned to it, or running there off their own node', async () => {
+        expect(await list('placement=auto')).toEqual({ status: 200, names: ['Unpinned'], total: 1 });
+        expect((await list('placement=misplaced')).names).toEqual(['Moved Away']);
+        expect((await list(`placement=${encodeURIComponent(NODES[0]!)}`)).names).toEqual(['On Primary']);
+        // Pinned to Secondary, running on Spare: found under both, as the column shows both.
+        expect((await list(`placement=${encodeURIComponent(NODES[1]!)}`)).names).toEqual(['Moved Away']);
+        expect((await list(`placement=${encodeURIComponent(NODES[2]!)}`)).names).toEqual(['Moved Away']);
+      });
+
+      it('status, tier and plan, the total counting only what matches', async () => {
+        const db = getTestDb();
+        const gold = await seedPlan(db, { name: 'Filter Gold' });
+        await seedTenant(db, regionId, gold.id, { name: 'Paused', status: 'suspended' });
+        await seedTenant(db, regionId, planId, { name: 'Replicated', storageTier: 'ha' });
+        expect(await list('status=suspended')).toEqual({ status: 200, names: ['Paused'], total: 1 });
+        expect(await list('tier=ha')).toEqual({ status: 200, names: ['Replicated'], total: 1 });
+        expect(await list(`plan=${gold.id}`)).toEqual({ status: 200, names: ['Paused'], total: 1 });
+      });
+
+      it('with a search, both must match', async () => {
+        expect((await list('search=moved&placement=misplaced')).names).toEqual(['Moved Away']);
+        expect(await list('search=moved&placement=auto')).toEqual({ status: 200, names: [], total: 0 });
+      });
+
+      it('refuses a status or tier it does not know rather than ignoring it', async () => {
+        expect((await list('status=gone')).status).toBe(400);
+        expect((await list('tier=raid')).status).toBe(400);
+      });
+    });
   });
 
   it('GET /api/v1/tenants/:id — returns single tenant', async () => {

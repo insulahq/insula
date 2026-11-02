@@ -391,3 +391,25 @@ export const bulkTenantResultSchema = z.object({
   failed: z.array(bulkTenantItemResultSchema),
 });
 export type BulkTenantResult = z.infer<typeof bulkTenantResultSchema>;
+
+/** `placement` filter values that are not a node: no pin, and off where it belongs. */
+export const TENANT_PLACEMENT_FILTER = { auto: 'auto', misplaced: 'misplaced' } as const;
+
+/**
+ * GET /tenants filters — the admin Tenants page's "Filter by". Each narrows the
+ * list and its total on the server, so a filter holds across pages, sorts and
+ * the "All" rows per page. Combined with `search`, both must match.
+ */
+export const tenantListFiltersSchema = z.object({
+  status: tenantStatusEnum.optional(),
+  /**
+   * `auto`: no node pin. `misplaced`: off its primary node, or an Auto tenant
+   * whose pods and data are apart. Anything else is a node's Kubernetes name:
+   * tenants pinned to it, or actually running there while off their own node.
+   */
+  placement: z.string().min(1).max(253).optional(),
+  tier: tenantStorageTierEnum.optional(),
+  /** A hosting plan's id. */
+  plan: z.string().min(1).max(64).optional(),
+});
+export type TenantListFilters = z.infer<typeof tenantListFiltersSchema>;

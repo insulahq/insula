@@ -79,7 +79,7 @@ export async function deploymentNetworkAccessRoutes(app: FastifyInstance): Promi
     if (k8s) {
       // Reconcile the per-tenant mesh proxy AND re-sync ingresses
       // so the suppress_public_ingress flag is honoured.
-      const outcome = await reconcileTenant({ db: app.db, k8s: { core: k8s.core, apps: k8s.apps, networking: k8s.networking }, encryptionKey }, tenantId);
+      const outcome = await reconcileTenant({ db: app.db, k8s: { core: k8s.core, apps: k8s.apps, networking: k8s.networking, custom: k8s.custom }, encryptionKey }, tenantId);
       if (outcome.error) {
         throw new ApiError(
           'RECONCILE_FAILED',
@@ -101,7 +101,7 @@ export async function deploymentNetworkAccessRoutes(app: FastifyInstance): Promi
     await assertDeploymentBelongsToTenant(app, tenantId, did);
     await deleteConfig(app.db, did);
     if (k8s) {
-      const outcome = await reconcileTenant({ db: app.db, k8s: { core: k8s.core, apps: k8s.apps, networking: k8s.networking }, encryptionKey }, tenantId);
+      const outcome = await reconcileTenant({ db: app.db, k8s: { core: k8s.core, apps: k8s.apps, networking: k8s.networking, custom: k8s.custom }, encryptionKey }, tenantId);
       try {
         await reconcileIngress(app.db, k8s, tenantId, outcome.namespace);
       } catch (err) {

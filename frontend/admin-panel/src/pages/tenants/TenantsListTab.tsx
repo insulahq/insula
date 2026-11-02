@@ -17,6 +17,7 @@ import { useSelection } from '@/hooks/use-selection';
 import { useLoginAsTenant } from '@/hooks/use-impersonate';
 import ErrorPanel from '@/components/ErrorPanel';
 import TenantDeletedBanner from '@/components/tenants/TenantDeletedBanner';
+import TenantListFilter, { NO_TENANT_FILTER, filtersOf, type TenantFilter } from '@/components/tenants/TenantListFilter';
 import type { OperatorError } from '@insula/api-contracts';
 import { useBulkRun } from '@/hooks/use-bulk-run';
 import {
@@ -56,6 +57,9 @@ const LIVE_SORT_BASE = 'name:asc';
 export default function TenantsListTab() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [filter, setFilter] = useState<TenantFilter>(NO_TENANT_FILTER);
+  const filters = useMemo(() => filtersOf(filter), [filter]);
+  const filtered = Object.keys(filters).length > 0;
   const [showCreate, setShowCreate] = useState(false);
   const [confirmAction, setConfirmAction] = useState<TenantBulkAction | null>(null);
   const [changeKind, setChangeKind] = useState<TenantChangeKind | null>(null);
@@ -65,7 +69,7 @@ export default function TenantsListTab() {
 
   useEffect(() => {
     pagination.resetPagination();
-  }, [debouncedSearch]);
+  }, [debouncedSearch, filters]);
 
   // The server sorts the whole list and pages through it in that order; a
   // sort change starts again from page one (a cursor belongs to its order).
@@ -77,8 +81,8 @@ export default function TenantsListTab() {
   const showAll = liveSort || pagination.limit === ALL_ROWS;
   const serverSort = liveSort ? LIVE_SORT_BASE : sortParam;
   const { data, isLoading, error } = useTenants(showAll
-    ? { search: debouncedSearch || undefined, all: true, sort: serverSort }
-    : { search: debouncedSearch || undefined, limit: pagination.limit, cursor: pagination.cursor, sort: serverSort });
+    ? { search: debouncedSearch || undefined, filters, all: true, sort: serverSort }
+    : { search: debouncedSearch || undefined, filters, limit: pagination.limit, cursor: pagination.cursor, sort: serverSort });
 
   const tenants = useMemo(() => data?.data ?? [], [data]);
   const totalCount = data?.pagination?.total_count ?? 0;
@@ -230,6 +234,8 @@ export default function TenantsListTab() {
             data-testid="tenant-search"
           />
         </div>
+        <TenantListFilter filter={filter} onChange={setFilter} />
+        <div className="hidden flex-1 sm:block" />
         <button
           onClick={() => setShowCreate(true)}
           className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-brand-600"
@@ -374,8 +380,8 @@ export default function TenantsListTab() {
                   {tenants.length === 0 && (
                     <tr>
                       <td colSpan={10} className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">
-                        {debouncedSearch
-                          ? 'No tenants found matching your search.'
+                        {debouncedSearch || filtered
+                          ? `No tenants found matching your ${debouncedSearch && filtered ? 'search and filter' : debouncedSearch ? 'search' : 'filter'}.`
                           : 'No tenants yet. Click "Add Tenant" to create one.'}
                       </td>
                     </tr>

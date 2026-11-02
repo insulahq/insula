@@ -11,8 +11,11 @@ import { runCronJobBulkItem } from '@/hooks/use-bulk-cron-jobs';
 import {
   changeTenantPlanItem,
   describeMove,
+  describeMoveOperation,
   describeTransition,
+  describeUnpin,
   moveTenantToNodeItem,
+  type MoveWait,
   runTenantBulkItem,
   type TenantChangeItem,
 } from '@/hooks/use-bulk-tenants';
@@ -223,6 +226,12 @@ describe('tenant bulk item', () => {
 });
 
 const TENANT: TenantChangeItem = { id: 't1', label: 'Acme', planId: 'plan-basic', nodeName: 'node-a', misplaced: false };
+const HELD = { cause: 'the volume is still held to the Longhorn node tagged node-node-b', action: 'move the tenant to node-a again' };
+const moveOp = (over: Record<string, unknown>) => ({
+  id: 'op-1', state: 'idle', progressMessage: 'Running on node-a. Longhorn is copying the data there in the background.',
+  lastError: null, completedAt: '2026-11-01T18:29:57Z', params: { targetNode: 'node-a', copyBlocker: null }, ...over,
+});
+const instantWait = (): MoveWait => ({ pollMs: 0, maxMs: 60_000, sleep: async () => {}, now: () => 0 });
 const MOVE: MigrateToWorkerResult = {
   tenantId: 't1',
   previousWorker: 'node-a',
@@ -230,6 +239,7 @@ const MOVE: MigrateToWorkerResult = {
   deploymentsRestarted: 2,
   dataRelocation: { started: ['pvc-1'], skipped: [], error: null },
   moveOperationId: null,
+  copyBlocker: null,
 };
 
 describe('tenant bulk: change placement', () => {
@@ -249,12 +259,73 @@ describe('tenant bulk: change placement', () => {
     expect(mockApiFetch).not.toHaveBeenCalled();
   });
 
-  it('still moves a tenant pinned to the target but running elsewhere', async () => {
-    mockApiFetch.mockResolvedValueOnce({ data: { ...MOVE, moveOperationId: 'op-1' } });
-    const outcome = await moveTenantToNodeItem({ ...TENANT, misplaced: true }, { id: 'node-a', label: 'Node A' });
-    expect(mockApiFetch).toHaveBeenCalledTimes(1);
-    expect(outcome.status).toBe('succeeded');
-    expect(outcome.detail).toMatch(/background operation/);
+  it('still moves a tenant pinned to the target but running elsewhere, and reports how its move ended', async () => {
+    mockApiFetch
+      .mockResolvedValueOnce({ data: { ...MOVE, moveOperationId: 'op-1' } })
+      .mockResolvedValueOnce({ data: moveOp({ state: 'quiescing', progressMessage: 'Waiting for the volume to detach' }) })
+      .mockResolvedValueOnce({ data: moveOp({}) });
+    const outcome = await moveTenantToNodeItem({ ...TENANT, misplaced: true }, { id: 'node-a', label: 'Node A' }, instantWait());
+    expect(mockApiFetch).toHaveBeenNthCalledWith(2, '/api/v1/admin/storage/operations/op-1');
+    expect(mockApiFetch).toHaveBeenCalledTimes(3);
+    expect(outcome).toEqual({ status: 'succeeded', detail: 'Running on node-a. Longhorn is copying the data there in the background.' });
+  });
+
+  it('fails the row of a move that left the data behind, with the cause the operation found', async () => {
+    // Production: the bulk run said "moved by a background operation" while
+    // the operation ended with the data still on the old node.
+    const left = 'Running on node-a, but its data has NOT moved: Longhorn cannot place a copy there — the volume is still held '
+      + 'to the Longhorn node tagged node-node-b. Move the tenant to node-a again from its Placement card.';
+    mockApiFetch
+      .mockResolvedValueOnce({ data: { ...MOVE, moveOperationId: 'op-1' } })
+      .mockResolvedValueOnce({ data: moveOp({ progressMessage: left, params: { targetNode: 'node-a', copyBlocker: HELD } }) });
+    const outcome = await moveTenantToNodeItem({ ...TENANT, nodeName: 'node-b' }, { id: 'node-a', label: 'Node A' }, instantWait());
+    expect(outcome).toEqual({ status: 'failed', detail: left });
+  });
+
+  it('fails the row of a move that failed, with its error', () => {
+    const op = moveOp({ state: 'failed', lastError: 'Moving to node-a failed while waiting for its volume to detach' });
+    expect(describeMoveOperation({ kind: 'finished', op }, 'Node A', 1))
+      .toEqual({ status: 'failed', detail: 'Moving to node-a failed while waiting for its volume to detach' });
+  });
+
+  it('words the cause itself when the operation kept no message', () => {
+    const op = moveOp({ progressMessage: null, params: { copyBlocker: HELD } });
+    expect(describeMoveOperation({ kind: 'finished', op }, 'Node A', 1))
+      .toEqual({ status: 'failed', detail: `Running on Node A, but its data has NOT moved: ${HELD.cause} — ${HELD.action}.` });
+  });
+
+  it('stops waiting at once when the operation cannot be read, and says so', async () => {
+    mockApiFetch
+      .mockResolvedValueOnce({ data: { ...MOVE, moveOperationId: 'op-1' } })
+      .mockRejectedValueOnce(new ApiError(404, 'OPERATION_NOT_FOUND', 'Operation op-1 not found'));
+    const outcome = await moveTenantToNodeItem({ ...TENANT, nodeName: 'node-b' }, { id: 'node-a', label: 'Node A' }, instantWait());
+    expect(mockApiFetch).toHaveBeenCalledTimes(2);
+    expect(outcome).toEqual({
+      status: 'failed',
+      detail: 'The move to Node A started, but how it went cannot be read (Operation op-1 not found). Follow it in the Task Tracker.',
+    });
+  });
+
+  it('stops waiting at the cap without claiming success, and keeps polling through a failed read', async () => {
+    let t = 0;
+    const wait: MoveWait = { pollMs: 1_000, maxMs: 3_000, sleep: async (ms) => { t += ms; }, now: () => t };
+    mockApiFetch
+      .mockResolvedValueOnce({ data: { ...MOVE, moveOperationId: 'op-1' } })
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValue({ data: moveOp({ state: 'quiescing' }) });
+    const outcome = await moveTenantToNodeItem({ ...TENANT, nodeName: 'node-b' }, { id: 'node-a', label: 'Node A' }, wait);
+    expect(outcome.status).toBe('failed');
+    expect(outcome.detail).toBe('Still moving to Node A after 1 minute. The move keeps running; follow it in the Task Tracker.');
+    expect(mockApiFetch.mock.calls.length).toBeGreaterThan(2);
+  });
+
+  it('fails the row of an in-place move whose copy Longhorn refuses, with the cause it named', () => {
+    // Lab staging: "Move back" to the node the tenant ran on, whose disk was not ready.
+    const blocked = { cause: 'node-b\'s Longhorn disk is not ready: record diskUUID doesn\'t match', action: 'fix the disk on node-b in Longhorn' };
+    expect(describeMove({ ...MOVE, deploymentsRestarted: 1, copyBlocker: blocked }, 'Node B')).toEqual({
+      status: 'failed',
+      detail: `Pinned to Node B, but its data has NOT moved: ${blocked.cause} — ${blocked.action}.`,
+    });
   });
 
   it('fails the row when the data could not follow the pin', () => {
@@ -265,6 +336,33 @@ describe('tenant bulk: change placement', () => {
   it('an API error becomes a failed row (thrown to the runner)', async () => {
     mockApiFetch.mockRejectedValueOnce(new ApiError(409, 'TENANT_BUSY', 'a storage operation is running'));
     await expect(moveTenantToNodeItem(TENANT, { id: 'node-b', label: 'Node B' })).rejects.toThrow('a storage operation is running');
+  });
+});
+
+describe('tenant bulk: Auto', () => {
+  const AUTO = { id: '__auto__', label: 'Auto' };
+
+  it('sends the unpin for ONE tenant and says where it stays, and that nothing restarted', async () => {
+    mockApiFetch.mockResolvedValueOnce({ data: { tenantId: 't1', previousPin: 'node-a', runsOn: 'node-a', volumesReleased: ['pvc-1'] } });
+    const outcome = await moveTenantToNodeItem(TENANT, AUTO);
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/v1/admin/tenants/t1/unpin', { method: 'POST' });
+    expect(outcome).toEqual({
+      status: 'succeeded',
+      detail: 'Unpinned from node-a — stays on node-a with its data — no longer held to a node (1 volume). Nothing was restarted.',
+    });
+  });
+
+  it('still sends it for a tenant the list shows on Auto: an older Auto may have left the volume held', async () => {
+    mockApiFetch.mockResolvedValueOnce({ data: { tenantId: 't1', previousPin: null, runsOn: 'node-a', volumesReleased: ['pvc-1'] } });
+    const outcome = await moveTenantToNodeItem({ ...TENANT, nodeName: null }, AUTO);
+    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+    expect(outcome.status).toBe('succeeded');
+    expect(outcome.detail).toMatch(/^Was on Auto — stays on node-a/);
+  });
+
+  it('skips one that was on Auto with nothing to release', () => {
+    expect(describeUnpin({ tenantId: 't1', previousPin: null, runsOn: 'node-a', volumesReleased: [] }))
+      .toEqual({ status: 'skipped', detail: 'Already on Auto.' });
   });
 });
 

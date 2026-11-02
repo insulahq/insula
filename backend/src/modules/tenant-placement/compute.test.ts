@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { computePlacements, observeStorageFailovers, observeTenantPlacement } from './compute.js';
 import type { PodFact, ReplicaFact, TenantFact, VolumeFact } from '../tenant-health/service.js';
+import type { LhNodeRaw } from './target-capacity.js';
 
 const NS = 'tenant-acme';
 const tenant = (over: Partial<TenantFact> = {}): TenantFact => ({
@@ -59,6 +60,32 @@ describe('observeTenantPlacement — local tier', () => {
     });
     expect(p.status).toBe('misplaced');
     expect(p.reasons).toEqual(['data on node-b; Longhorn cannot copy it to node-a: insufficient storage']);
+  });
+
+  it('says why Longhorn refuses the copy when its nodes were read — the cause, not only its words', () => {
+    // Production: drained onto one node (the volume held to its tag), then moved to another.
+    const target: LhNodeRaw = {
+      metadata: { name: 'node-a' },
+      spec: { allowScheduling: true, tags: ['system'], disks: { d1: { allowScheduling: true, storageReserved: 0 } } },
+      status: {
+        conditions: [{ type: 'Ready', status: 'True' }],
+        diskStatus: { d1: { storageMaximum: 675 * 2 ** 30, storageAvailable: 595 * 2 ** 30, storageScheduled: 0, conditions: [] } },
+      },
+    };
+    const input = {
+      pods: [pod('node-a')],
+      volumes: [vol({
+        attachedNode: 'node-a', scheduleFailure: 'replica scheduling failed',
+        scheduling: { nodeSelector: ['node-node-b'], diskSelector: [], size: 50 * 2 ** 30, actualSize: 28 * 2 ** 30 },
+      })],
+      replicas: [rep('node-b')],
+    };
+    const p = observeTenantPlacement(tenant(), input, { nodes: new Map([['node-a', target]]), settings: { overProvisioningPct: 100, minimalAvailablePct: 25 } });
+    expect(p.reasons).toEqual(['data on node-b; Longhorn cannot copy it to node-a: the volume is still held to the Longhorn node '
+      + 'tagged node-node-b (a pin left by an earlier drain or move), and node-a does not carry that tag — move the tenant '
+      + 'again from its Placement card; a move holds the volume to the node it moves to']);
+    // Longhorn's nodes not read on this tick: its own words, as before.
+    expect(observeTenantPlacement(tenant(), input).reasons).toEqual(['data on node-b; Longhorn cannot copy it to node-a: replica scheduling failed']);
   });
 
   it('names the node the volume is attached to as the copy\'s target, the primary when it is detached', () => {
@@ -162,6 +189,37 @@ describe('observeTenantPlacement — local tier', () => {
     const p = observeTenantPlacement(tenant({ pinnedNode: null }), { pods: [pod('node-b')], volumes: [], replicas: [] });
     expect(p.status).toBe('unpinned');
     expect(p.actualNodes).toEqual(['node-b']);
+  });
+});
+
+describe('observeTenantPlacement — Auto (no primary node)', () => {
+  const auto = tenant({ pinnedNode: null });
+
+  it('is unpinned while its pods and its data are on one host, and while it is stopped', () => {
+    expect(observeTenantPlacement(auto, { pods: [pod('node-a')], volumes: [vol()], replicas: [rep('node-a')] }))
+      .toMatchObject({ status: 'unpinned', reasons: [] });
+    expect(observeTenantPlacement(auto, { pods: [], volumes: [vol({ attached: false, attachedNode: null })], replicas: [rep('node-b')] }).status)
+      .toBe('unpinned');
+  });
+
+  it('reports pods on one node and the data on another — the disk I/O crosses the network', () => {
+    const p = observeTenantPlacement(auto, {
+      pods: [pod('node-a')],
+      volumes: [vol({ attachedNode: 'node-a', scheduleFailure: 'insufficient storage' })],
+      replicas: [rep('node-b')],
+    });
+    expect(p.status).toBe('misplaced');
+    expect(p.reasons).toEqual(['running on node-a, data on node-b; Longhorn cannot copy it to node-a: insufficient storage']);
+  });
+
+  it('says a copy is under way while the data follows the pods', () => {
+    const p = observeTenantPlacement(auto, { pods: [pod('node-a')], volumes: [vol()], replicas: [rep('node-a'), rep('node-b')] });
+    expect(p.reasons).toEqual(['running on node-a, its data being copied there from node-b']);
+  });
+
+  it('leaves an HA tenant on Auto alone: replicas on several nodes are the design', () => {
+    expect(observeTenantPlacement(tenant({ pinnedNode: null, storageTier: 'ha' }), { pods: [pod('node-a')], volumes: [vol()], replicas: [rep('node-b')] }).status)
+      .toBe('unpinned');
   });
 });
 

@@ -16,6 +16,8 @@
 import { eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { tenants } from '../../db/schema.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { resolveTenantDataNode } from './data-node.js';
 
 export const HOSTNAME_LABEL = 'kubernetes.io/hostname';
 
@@ -80,6 +82,36 @@ export function platformPodPlacement(p: TenantPodPlacement): TenantPodScheduling
   return { ...tenantPodScheduling(p), priorityClassName: TENANT_OVERHEAD_PRIORITY_CLASS };
 }
 
+/**
+ * Where an Auto tenant's pods run. Auto (no primary node, `tenants.node_name`
+ * null) still keeps a Local-tier tenant's pods and its data on one host: the
+ * pods are placed on the node holding its volume — where Longhorn has it
+ * attached, else a running pod mounts it, else its replica — and the volume
+ * carries no node tag (tenant-placement/volume-pin.ts). Left to the scheduler,
+ * a pod could start on another node and make Longhorn copy the whole volume
+ * across, or do all its disk I/O over the network when the copy is refused.
+ *
+ * A pinned tenant, an HA tenant (replicas on several nodes by design) and an
+ * Auto tenant with no data yet are returned as they are. Never throws: an
+ * unreadable cluster leaves the pods unpinned, as before.
+ */
+export async function resolveAutoPlacement(
+  k8s: Pick<K8sClients, 'core' | 'custom'>,
+  namespace: string,
+  p: TenantPodPlacement,
+): Promise<TenantPodPlacement> {
+  if (p.nodeName || p.storageTier === 'ha') return p;
+  const choice = await resolveTenantDataNode(k8s, {
+    namespace,
+    pvcName: `${namespace}-storage`,
+    pinNode: null,
+    // Two replicas while a copy is in flight: no node to choose yet.
+    unambiguousOnly: true,
+    logger: { warn: (msg) => console.warn(`[pod-placement] ${msg}`) },
+  });
+  return choice.node ? { ...p, nodeName: choice.node } : p;
+}
+
 export function tenantPodPlacementOf(
   tenant: { readonly nodeName?: string | null; readonly storageTier?: string | null } | undefined,
 ): TenantPodPlacement {
@@ -90,21 +122,34 @@ export function tenantPodPlacementOf(
   };
 }
 
-/** The tenant's placement; unpinned when the tenant row is gone. */
-export async function loadTenantPodPlacement(db: Database, tenantId: string): Promise<TenantPodPlacement> {
+/**
+ * The tenant's placement; unpinned when the tenant row is gone. With `k8s`, an
+ * Auto tenant's pods follow its data (`resolveAutoPlacement`).
+ */
+export async function loadTenantPodPlacement(
+  db: Database,
+  tenantId: string,
+  k8s?: Pick<K8sClients, 'core' | 'custom'>,
+): Promise<TenantPodPlacement> {
   const [t] = await db
-    .select({ nodeName: tenants.nodeName, storageTier: tenants.storageTier })
+    .select({ nodeName: tenants.nodeName, storageTier: tenants.storageTier, namespace: tenants.kubernetesNamespace })
     .from(tenants)
     // Primary key: one row at most.
     .where(eq(tenants.id, tenantId));
-  return tenantPodPlacementOf(t);
+  const placement = tenantPodPlacementOf(t);
+  return k8s && t?.namespace ? resolveAutoPlacement(k8s, t.namespace, placement) : placement;
 }
 
-export async function loadTenantPodPlacementByNamespace(db: Database, namespace: string): Promise<TenantPodPlacement> {
+export async function loadTenantPodPlacementByNamespace(
+  db: Database,
+  namespace: string,
+  k8s?: Pick<K8sClients, 'core' | 'custom'>,
+): Promise<TenantPodPlacement> {
   const [t] = await db
     .select({ nodeName: tenants.nodeName, storageTier: tenants.storageTier })
     .from(tenants)
     // tenants_namespace_unique: one row at most.
     .where(eq(tenants.kubernetesNamespace, namespace));
-  return tenantPodPlacementOf(t);
+  const placement = tenantPodPlacementOf(t);
+  return k8s && t ? resolveAutoPlacement(k8s, namespace, placement) : placement;
 }

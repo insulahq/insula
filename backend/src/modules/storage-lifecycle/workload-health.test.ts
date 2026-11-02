@@ -3,6 +3,7 @@ import {
   GRACE_MS, RECENT_EVENT_MS,
   classifyUnavailability, currentEvidence, evidenceIsStale, isHealable, labelForReason, parsePreQuiesceReplicas,
   type EvidenceEvent, type EvidencePod, type HealReason,
+  restoreWithoutFileManager,
 } from './workload-health.js';
 
 /**
@@ -354,5 +355,22 @@ describe('evidenceIsStale — how often an outage is diagnosed afresh', () => {
     expect(evidenceIsStale({ since, at: T - 60_000 }, T)).toBe(false);
     expect(evidenceIsStale({ since, at: T - (5 * 60_000 - 1) }, T)).toBe(false);
     expect(evidenceIsStale({ since, at: T - 5 * 60_000 }, T)).toBe(true);
+  });
+});
+
+describe('restoreWithoutFileManager (a re-stage heal)', () => {
+  it('brings back the tenant\'s own workloads and leaves its file manager at 0', () => {
+    // The file manager may be what held the volume on another node: restored with
+    // the rest, it took the volume back and the heal failed (lab staging).
+    const snap = { deployments: [{ name: 'web', replicas: 1 }, { name: 'file-manager', replicas: 1 }], cronJobs: [{ name: 'nightly', wasSuspended: false }] };
+    expect(restoreWithoutFileManager(snap)).toEqual({
+      restore: { deployments: [{ name: 'web', replicas: 1 }], cronJobs: [{ name: 'nightly', wasSuspended: false }] },
+      fileManagerLeftDown: true,
+    });
+  });
+
+  it('changes nothing for a tenant without a file manager', () => {
+    const snap = { deployments: [{ name: 'web', replicas: 2 }], cronJobs: [] };
+    expect(restoreWithoutFileManager(snap)).toEqual({ restore: snap, fileManagerLeftDown: false });
   });
 });

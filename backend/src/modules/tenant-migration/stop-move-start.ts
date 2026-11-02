@@ -42,8 +42,9 @@ import {
   updateOp,
   waitForVolumeDetachedByPvc,
 } from '../storage-lifecycle/service.js';
-import { readCopyBlocker, startDataRelocation } from '../tenant-placement/relocate.js';
-import { repinDeployments } from './repin.js';
+import { startDataRelocation } from '../tenant-placement/relocate.js';
+import { readCopyBlocker, type CopyRefusal } from '../tenant-placement/copy-refusal.js';
+import { repinDeployments, repinTenant } from './repin.js';
 import { withTenantLock } from '../tenant-lifecycle/tenant-lock.js';
 
 type DataRelocation = MigrateToWorkerResult['dataRelocation'];
@@ -131,7 +132,13 @@ export async function readMoveFacts(k8s: K8sClients, namespace: string, now: num
 }
 
 export type MoveOutcome =
-  | { readonly ok: true; readonly message: string; readonly dataRelocation: DataRelocation }
+  | {
+    readonly ok: true;
+    readonly message: string;
+    readonly dataRelocation: DataRelocation;
+    /** Set when Longhorn will not build the copy on the target: the tenant runs there, its data does not. */
+    readonly copyBlocker: CopyRefusal | null;
+  }
   | { readonly ok: false; readonly error: string; readonly restored: boolean };
 
 /** The side effects of one move, bound to its tenant and operation. */
@@ -140,13 +147,20 @@ export interface MoveSteps {
   readonly quiesce: () => Promise<QuiesceSnapshot>;
   readonly waitForPodsGone: () => Promise<unknown>;
   readonly waitForDetached: () => Promise<void>;
+  /** Volumes, then Deployments, to `node`; puts the volumes back when it throws (repin.ts). */
   readonly repin: (node: string) => Promise<unknown>;
+  /**
+   * Deployments only, back to `node`, after a failed `repin`. The volumes are
+   * already back — a failed `repin` puts them back itself — and the pins must
+   * agree before anything starts, Longhorn readable or not.
+   */
+  readonly pinBack: (node: string) => Promise<unknown>;
   readonly recordPrimary: () => Promise<void>;
   /** Never throws: a failure is reported in the result. */
   readonly startCopy: () => Promise<DataRelocation>;
   readonly unquiesce: (snap: QuiesceSnapshot) => Promise<void>;
-  /** Never throws: Longhorn's reason for refusing the copy on the target, else null. */
-  readonly copyBlocker: () => Promise<string | null>;
+  /** Never throws: why Longhorn refuses the copy on the target, else null. */
+  readonly copyBlocker: () => Promise<CopyRefusal | null>;
   /** Never throws: true when the workloads came back. */
   readonly restore: (snap: QuiesceSnapshot | null) => Promise<boolean>;
   readonly finish: (outcome: MoveOutcome) => Promise<void>;
@@ -156,13 +170,19 @@ function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function successMessage(target: string, copy: DataRelocation, blocker: string | null): string {
+function sentence(text: string): string {
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)}.`;
+}
+
+function successMessage(target: string, copy: DataRelocation, blocker: CopyRefusal | null): string {
   // Longhorn has already said no: "copying in the background" would send the
   // operator away from a tenant that now does all its disk I/O across nodes.
+  // The cause is the one Longhorn's scheduler stopped at (copy-refusal.ts), not
+  // a guess: "no room" sent the operator the wrong way when it was a node tag.
   if (blocker) {
-    return `Running on ${target}, but its data has NOT moved: Longhorn cannot place a copy there (${blocker}). `
+    return `Running on ${target}, but its data has NOT moved: Longhorn cannot place a copy there — ${blocker.cause}. `
       + 'The tenant now reads and writes its data across the network on the node it came from. '
-      + 'Move it to a node with room for its volume, or shrink the volume.';
+      + sentence(blocker.action);
   }
   if (copy.started.length > 0) {
     return `Running on ${target}. Longhorn is copying the data there in the background; `
@@ -223,14 +243,14 @@ export async function runTenantMove(
     // The volume is attached on the target by now and Longhorn's scheduler has
     // decided whether the data can follow.
     const blocker = await steps.copyBlocker();
-    await steps.finish({ ok: true, message: successMessage(target, copy, blocker), dataRelocation: copy });
+    await steps.finish({ ok: true, message: successMessage(target, copy, blocker), dataRelocation: copy, copyBlocker: blocker });
   } catch (err) {
     const cause = errText(err);
     if (pinned === 'mixed') {
       // Some Deployments may carry the new pin and some the old one; started
       // like that, half the pods would wait on the volume forever. Put them all
       // back where the data still is.
-      pinned = await steps.repin(rollbackNode).then(() => 'source' as const, () => 'mixed' as const);
+      pinned = await steps.pinBack(rollbackNode).then(() => 'source' as const, () => 'mixed' as const);
     }
     const restored = await steps.restore(snap);
     const where = pinned === 'target' ? target : pinned === 'source' ? rollbackNode : `${source} and ${target}`;
@@ -261,7 +281,8 @@ function bindSteps(db: Database, k8s: K8sClients, input: BeginMoveInput, opId: s
     quiesce: () => quiesce(k8s, namespace, (s) => persistQuiesceSnapshot(db, opId, s)),
     waitForPodsGone: () => waitForQuiesced(k8s, namespace),
     waitForDetached: () => waitForVolumeDetachedByPvc(k8s, namespace, `${namespace}-storage`),
-    repin: (node) => repinDeployments(k8s, namespace, node, { restart: false }),
+    repin: (node) => repinTenant(k8s, namespace, node, input.storageTier, { restart: false }),
+    pinBack: (node) => repinDeployments(k8s, namespace, node, { restart: false }),
     recordPrimary: async () => {
       await db.update(tenants).set({ nodeName: target, updatedAt: sql`NOW()` }).where(eq(tenants.id, tenantId));
     },
@@ -278,7 +299,7 @@ function bindSteps(db: Database, k8s: K8sClients, input: BeginMoveInput, opId: s
           progressPct: 100,
           progressMessage: outcome.message,
           completedAt: new Date(),
-          params: { ...(row?.params ?? {}), dataRelocation: outcome.dataRelocation },
+          params: { ...(row?.params ?? {}), dataRelocation: outcome.dataRelocation, copyBlocker: outcome.copyBlocker },
         });
       } else {
         await updateOp(db, opId, { state: 'failed', lastError: outcome.error, completedAt: new Date() });
