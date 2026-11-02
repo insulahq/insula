@@ -12,6 +12,30 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **Component bumps out of their soak.** Each image now scans with 0 fixable CRITICAL, and most
+  with 0 fixable HIGH:
+
+  | Component | Change | Notes |
+  |---|---|---|
+  | **Flux** | 2.9.6 → 2.10.0 | Its rebuilt kustomize-controller no longer carries CVE-2026-111497, now `fixed` in the ledger. Every controller image is HIGH-free. Built with Kubernetes 1.37. |
+  | **CrowdSec** | v1.8.1 → v1.8.2 | Fixable HIGHs 76 → 8. Simulated decisions no longer suppress real bans. Its database gains one nullable column, which LAPI adds on start. |
+  | **Sealed Secrets** | chart 2.20.0 → 2.22.0, controller 0.40.0 → 0.41.2 | The controller now restores a Secret whose data is changed by hand to what its SealedSecret holds, and takes up added or removed sealing keys without a restart. The platform ships no SealedSecrets; an operator who edits one's Secret by hand should edit the SealedSecret instead. |
+  | **VictoriaMetrics** | v1.154.1 → v1.155.0 | Go 1.27.3, Alpine 3.24.3. |
+
+  Flux 2.10's breaking changes miss this platform:
+  - its controllers lose `serviceaccounts/token` create; no Flux object here uses workload identity;
+  - Alert and Provider move to notification `v1`; none exists;
+  - ImageRepository moves to a new tag store; the image controllers are not installed.
+
+  Existing clusters move through host-migrations 2026.11.3/0001 (Sealed Secrets) and 0002 (Flux).
+  The Flux migration reads its installer from the release tag, as `bootstrap.sh` already does.
+- **The component watch soaks Docker Hub releases too.** It dated GitHub releases only, so an
+  image pushed to Docker Hub the day before read as due: alpine/k8s 1.36.6 was offered on its
+  second day. A Docker Hub tag is now dated by its last push; alpine/k8s 1.36.6 waits until
+  2026-11-08.
+
 ### Changed
 
 - **An entry a catalog repository stops listing leaves the catalog.** The sync only ever added

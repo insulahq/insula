@@ -154,13 +154,20 @@ def github_tags(repo: str, token: str) -> list[tuple[str, str | None]]:
     return [(t["name"], None) for t in _get(f"https://api.github.com/repos/{repo}/tags?per_page=100", token)]
 
 
-def dockerhub_tags(repo: str) -> list[str]:
+def dockerhub_tags(repo: str) -> list[tuple[str, str | None]]:
+    """(tag, when it was last pushed) for the repository's newest tags.
+
+    Docker Hub keeps no first-push date, so a tag is dated by its last push. A
+    re-pushed tag restarts its soak, which errs on the side of waiting. Undated,
+    a Docker Hub release skipped the soak entirely: alpine/k8s 1.36.6 read as
+    due the day after it was pushed.
+    """
     repo = repo if "/" in repo else f"library/{repo}"
     url = f"https://hub.docker.com/v2/repositories/{repo}/tags?page_size=100&ordering=last_updated"
-    tags: list[str] = []
+    tags: list[tuple[str, str | None]] = []
     for _ in range(3):
         page = _get(url)
-        tags += [t["name"] for t in page.get("results") or []]
+        tags += [(t["name"], t.get("tag_last_pushed") or t.get("last_updated")) for t in page.get("results") or []]
         url = page.get("next")
         if not url:
             break
@@ -184,7 +191,7 @@ def check(component: dict, token: str) -> dict:
             dated, docker = github_tags(row["repo"], token), False
         else:
             repo = "library/alpine" if kind == "alpine_secdb" else row["repo"]
-            dated, docker = [(t, None) for t in dockerhub_tags(repo)], True
+            dated, docker = dockerhub_tags(repo), True
     except Exception as e:  # network / rate limit: say so, never "behind"
         row["note"] = f"lookup failed: {str(e)[:80]}"
         return row
