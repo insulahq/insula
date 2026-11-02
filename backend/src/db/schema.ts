@@ -687,6 +687,12 @@ export const catalogEntries = pgTable('catalog_entries', {
   // hidden from the tenant catalog listing (listCatalogEntries filters it out
   // for non-admin panels); existing deployments keep working. Migration 0078.
   disabled: integer('disabled').notNull().default(0),
+  // Set by the catalog sync when the entry's repository stops listing it in
+  // catalog.json; cleared when the repository lists it again. A removed entry
+  // is hidden from tenants and refused for new deploys; deployments made from
+  // it keep working. Separate from `disabled`, which is the admin's choice.
+  // Migration 0173.
+  removedFromSourceAt: timestamp('removed_from_source_at'),
   sourceRepoId: varchar('source_repo_id', { length: 36 }),
   manifestUrl: varchar('manifest_url', { length: 500 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),

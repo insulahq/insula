@@ -195,6 +195,10 @@ export const catalogEntryResponseSchema = z.object({
   // Admin visibility flag (0/1). When 1 the entry is hidden from the tenant
   // catalog listing; admins still see it. Migration 0078.
   disabled: z.number().default(0),
+  // When the entry's repository stopped listing it (ISO timestamp), or null.
+  // Set and cleared by the catalog sync; such an entry is hidden from tenants
+  // and refused for new deploys. Migration 0173.
+  removedFromSourceAt: z.string().nullable().default(null),
   sourceRepoId: z.string().nullable(),
   manifestUrl: z.string().nullable(),
   createdAt: z.string(),

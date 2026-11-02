@@ -12,6 +12,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **An entry a catalog repository stops listing leaves the catalog.** The sync only ever added
+  and updated entries, so an entry deleted from its repository stayed listed and installable on
+  every install for good. The sync now marks such an entry **Removed from its repository**:
+  - tenants no longer see it, the search no longer finds it, and a new deploy from it is
+    refused (`CATALOG_ENTRY_REMOVED`);
+  - deployments already made from it keep running and can still be upgraded;
+  - the next sync brings it back if the repository lists it again.
+
+  A sync that cannot read every listed manifest withdraws nothing, and neither does a
+  `catalog.json` that lists no entries. Migration 0173.
+- **MinIO leaves the Official Catalog.** Its image no longer pulls without credentials (Docker
+  Hub, Quay and GHCR), so it could not be installed anywhere. Nothing in the platform uses it.
+- **The dev and lab S3 endpoint is versitygw.** `./scripts/local.sh s3-up` deploys versitygw
+  v1.10.0 in place of MinIO, whose `minio/minio` and `minio/mc` images stopped pulling; the
+  `minio-*` commands still work. The VM lab's S3 moves from v1.8.0 to v1.10.0, and its next
+  `lab.sh up svc` replaces the running container. Buckets and objects stay, because the posix
+  backend keeps them on disk. `security/components.yaml` now tracks versitygw.
+  `local.sh help` lists every command again; it had stopped after the first 30 or so.
+
 ## [2026.11.2] - 2026-11-02
 
 ### Added
