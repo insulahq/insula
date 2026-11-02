@@ -226,8 +226,9 @@ export default function TenantsListTab() {
           <input
             type="search"
             placeholder="Search name, plan or placement…"
-            title={'Matches the tenant name and contact email, the plan, and the placement: a node by its name or alias, '
-              + '"auto" for tenants with no node pin, "misplaced" for tenants off their primary node.'}
+            title={'Matches the tenant name and contact email, the plan, and the placement: a node by its name or alias '
+              + '(Auto tenants by the node they run on), "auto" for tenants with no node pin, "misplaced" for tenants '
+              + 'off their primary node.'}
             value={search}
             onChange={(e) => handleSearchChange(e.target.value)}
             className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 pl-9 pr-4 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"

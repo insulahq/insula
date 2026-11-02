@@ -121,6 +121,12 @@ live. The CRS project documents this as a complete-bypass footgun
 SQL injection in a **query string**. It was shipped to DEV and reverted the same
 hour.
 
+Measured again with CRS 4.30.0 for the JMAP API call (`POST /jmap/` on the
+Stalwart host, exclusion `9000118`), with the request-body flag set to off for
+that request alone: SQL injection in a **cookie** and XSS in the **User-Agent**
+both passed, and both are refused without it. That exclusion therefore drops the
+body-parse refusal (`200002`) for the request instead.
+
 **Why target-stripping is insufficient.** `REQUEST_BODY` and `ARGS_POST` do not
 cover a JSON body: ModSecurity's JSON processor expands it into `ARGS:json.<field>`.
 That is why the existing `9000104` names `ARGS:json.content` explicitly — a

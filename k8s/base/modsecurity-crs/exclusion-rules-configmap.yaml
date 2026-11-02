@@ -720,6 +720,13 @@ data:
     # 9000118: the JMAP API call itself — POST /jmap/, which carries
     # Bulwark's Email/set, identities and Sieve updates. Its JSON body is the
     # message, so the body and every argument parsed from it go uninspected.
+    # So does 200002, the refusal of a body the parser gave up on: a body
+    # over SecRequestBodyNoFilesLimit (128 KiB) is one, and a long reply or a
+    # pasted image puts an ordinary message over it — Bulwark got a 400 for
+    # sending or saving it. Stalwart refuses malformed JSON itself, and
+    # Traefik's waf-body-limit still caps the request. Not
+    # `ctl:requestBodyAccess=Off`: in ModSecurity v3 that skips the whole of
+    # phase 2, the header and cookie rules with it (ADR-060).
     # The URI and headers keep coverage, and so does every other JMAP path:
     # the session, download and event-source endpoints, and anything with a
     # query string. Stalwart authenticates the call before it reads the body.
@@ -742,6 +749,7 @@ data:
          pass,\
          nolog,\
          chain,\
+         ctl:ruleRemoveById=200002,\
          ctl:ruleRemoveTargetByTag=OWASP_CRS;REQUEST_BODY,\
          ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS,\
          ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS_NAMES,\
