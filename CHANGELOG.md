@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.2-rc.1] - 2026-11-02
+
 ### Added
 
 - **Filter the Tenants list by status, placement, tier or plan.** A **Filter by** dropdown sits
