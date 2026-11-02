@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.3-rc.1] - 2026-11-02
+
 ### Security
 
 - **Component bumps out of their soak.** Each image now scans with 0 fixable CRITICAL, and most
