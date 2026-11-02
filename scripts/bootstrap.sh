@@ -2285,6 +2285,33 @@ EOF
   log "Graceful node shutdown configured (ordered drain: tenants 30s → platform 40s → longhorn 30s → system 20s, logind delay ${GRACEFUL_SHUTDOWN_INHIBIT_SEC}s)."
 }
 
+# Raise the inotify limits to what host-config-desired declares. The kernel
+# default of 128 instances per user runs out on a busy node: each containerd shim
+# and most controllers hold one, and a starting crowdsec-agent then dies with
+# "could not create fsnotify watcher: ... too many open files". Only ever raises:
+# max_user_watches scales with RAM on kernels >= 5.11 and may already be higher.
+# Existing clusters get the same file from host-migration 2026.11.3/0003.
+configure_inotify_limits() {
+  local cur_i cur_w i w
+  cur_i="$(tr -d '[:space:]' < /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo 0)"
+  cur_w="$(tr -d '[:space:]' < /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo 0)"
+  [[ "$cur_i" =~ ^[0-9]+$ ]] || cur_i=0
+  [[ "$cur_w" =~ ^[0-9]+$ ]] || cur_w=0
+  i=$(( cur_i > 8192 ? cur_i : 8192 ))
+  w=$(( cur_w > 524288 ? cur_w : 524288 ))
+  install -d -m 0755 /etc/sysctl.d
+  cat > /etc/sysctl.d/99-platform-inotify.conf <<EOF
+# Managed by the platform (host-migration 2026.11.3/0003; bootstrap.sh
+# configure_inotify_limits on fresh installs). The values host-config-desired
+# declares, or the kernel's own when it already held more. Edit to override.
+fs.inotify.max_user_instances = ${i}
+fs.inotify.max_user_watches = ${w}
+EOF
+  sysctl -q -p /etc/sysctl.d/99-platform-inotify.conf >/dev/null 2>&1 \
+    || warn "sysctl could not apply /etc/sysctl.d/99-platform-inotify.conf; check 'sysctl -p' on it."
+  log "inotify limits: max_user_instances=${i}, max_user_watches=${w}."
+}
+
 configure_node_net_tuning() {
   # Raise the kernel UDP receive limits so VXLAN, WireGuard, and any
   # tenant UDP workload don't hit rcvbuf overflow under gigabit bursts.
@@ -12335,6 +12362,7 @@ main() {
     configure_control_plane_resilience
     configure_graceful_shutdown
     configure_node_net_tuning
+    configure_inotify_limits
     configure_longhorn_multipath_blacklist
     pin_k3s_node_name
   fi

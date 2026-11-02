@@ -36,6 +36,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   second day. A Docker Hub tag is now dated by its last push; alpine/k8s 1.36.6 waits until
   2026-11-08.
 
+### Fixed
+
+- **Nodes get the inotify limits the platform declares.** Every node ran the kernel default
+  of 128 inotify instances per user. `host-config-desired` declares 8192, but the sysctl converger
+  only reports drift and nothing wrote the value. Each containerd shim and most controllers hold
+  an instance, so a busy node ran out, and a starting `crowdsec-agent` died with "could not
+  create fsnotify watcher: … too many open files". This was seen on lab staging, crash-looping
+  on a node at 127 of 128, and on DEV during the CrowdSec 1.8.2 roll.
+  - `/etc/sysctl.d/99-platform-inotify.conf` now sets `fs.inotify.max_user_instances` to 8192
+    and `fs.inotify.max_user_watches` to 524288. Only ever raises: a value the kernel already holds
+    above these is kept, since `max_user_watches` scales with RAM on newer kernels.
+  - Fresh installs get the file from `bootstrap.sh`; existing clusters from host-migration
+    2026.11.3/0003.
+  - The other two declared sysctls stay observe-only. Both declared values are below what an
+    Ubuntu 24.04 node already runs: `net.core.somaxconn` 1024 against 4096, and `vm.max_map_count`
+    262144 against 1048576. They need their own decision.
+
 ### Changed
 
 - **An entry a catalog repository stops listing leaves the catalog.** The sync only ever added
