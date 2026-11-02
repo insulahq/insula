@@ -9,11 +9,13 @@
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { FileManagerStatus } from '@insula/api-contracts';
-import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { MERGE_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
 import { deriveFmSecret } from './internal-secret.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
-import { resolveTenantDataNode } from '../tenant-placement/data-node.js';
+import {
+  readPvcVolumeName, readVolumeAttachedNode, readVolumeReplicaNodes, resolveTenantDataNode,
+} from '../tenant-placement/data-node.js';
 
 /**
  * The node holding this tenant's data, for placing a file manager that is
@@ -50,6 +52,24 @@ async function workloadPin(k8s: K8sClients, namespace: string): Promise<string |
     }
   } catch { /* unpinned, as without a pin */ }
   return null;
+}
+
+/**
+ * Does `node` hold a usable copy of the tenant's volume (or have it attached)?
+ * True when it cannot be read: keeping a pin is the old behaviour, and moving
+ * a file manager on a guess is not better than that.
+ */
+async function nodeHoldsTenantData(k8s: K8sClients, namespace: string, node: string): Promise<boolean> {
+  try {
+    const volumeName = await readPvcVolumeName(k8s, namespace, `${namespace}-storage`);
+    if (!volumeName) return true;
+    if (await readVolumeAttachedNode(k8s, volumeName) === node) return true;
+    const holding = await readVolumeReplicaNodes(k8s, volumeName);
+    // No usable replica listed at all is a read that says nothing, not "elsewhere".
+    return holding.length === 0 || holding.includes(node);
+  } catch {
+    return true;
+  }
 }
 
 const FM_NAME = 'file-manager';
@@ -576,10 +596,28 @@ export async function ensureFileManagerRunning(
       // would restart it under the user (the recreate path above pins it too,
       // as it replaces the pod anyway). A running workload pod wins — the RWO
       // volume is attached there and nowhere else can mount it.
+      //
+      // When the data node cannot be told (two copies mid-move and no workload
+      // pin, Longhorn unreadable), the old pin is kept only while that node
+      // still holds a copy. A pin left by an earlier placement on a node the
+      // data has since left started the file manager there, where it sat in
+      // ContainerCreating unable to attach the volume (lab staging); without it
+      // the preferred podAffinity puts it beside the tenant's pods.
       const scaleUpNode = targetNode ?? await resolveFmDataNode(k8s, namespace);
+      const staleHost = !scaleUpNode && existingNodeHost && !await nodeHoldsTenantData(k8s, namespace, existingNodeHost);
       const repin = scaleUpNode && scaleUpNode !== existingNodeHost
         ? { template: { spec: { nodeSelector: { 'kubernetes.io/hostname': scaleUpNode } } } }
         : {};
+      if (staleHost) {
+        console.warn(`[file-manager] ${namespace}: pinned to ${existingNodeHost}, which holds none of the tenant's data — starting it unpinned`);
+        // A JSON merge patch: only there does null reliably delete the key.
+        await k8s.apps.patchNamespacedDeployment({
+          name: FM_NAME,
+          namespace,
+          body: { spec: { template: { spec: { nodeSelector: { 'kubernetes.io/hostname': null } } } } },
+        } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
+          MERGE_PATCH);
+      }
       await k8s.apps.patchNamespacedDeployment({
         name: FM_NAME,
         namespace,

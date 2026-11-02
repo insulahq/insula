@@ -16,11 +16,13 @@
  * pinned to — or, when none is pinned, the node holding the data (attached,
  * else its one replica), if that node takes pods: a pin to a cordoned, tainted
  * or NotReady node would never start. Only for a single-copy volume when
- * nothing is pinned: an HA volume is not held to one node here. A workload
- * pinned to a node is never moved (two pins that disagree are the operator's
- * to settle), one that is running is never restarted, one the restore leaves
- * stopped is not touched, and nothing here throws: a failure leaves the
- * restore as it was.
+ * nothing is pinned: an HA volume is not held to one node here (its pods
+ * prefer each other's node — pod-placement.ts HA_SHARED_VOLUME_AFFINITY). A
+ * workload pinned to a node is never moved (two pins that disagree are the
+ * operator's to settle), except the file manager: the platform places it, so
+ * its pin never decides the others' and it follows them. One that is running
+ * is never restarted, one the restore leaves stopped is not touched, and
+ * nothing here throws: a failure leaves the restore as it was.
  */
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
@@ -37,6 +39,12 @@ export interface RestoreWorkload {
   readonly mountsData: boolean;
   /** Wants pods and has them all available: changing it would restart it. */
   readonly running: boolean;
+  /**
+   * The file manager: placed by the platform beside the tenant's pods, so its
+   * pin never decides theirs (a stale one would send them where the data is
+   * not), and one starting with a pin elsewhere is moved with them.
+   */
+  readonly follower?: boolean;
 }
 
 export interface RestoreColocationPlan {
@@ -46,6 +54,7 @@ export interface RestoreColocationPlan {
 }
 
 const NO_PLAN: RestoreColocationPlan = { node: null, patch: [] };
+const FILE_MANAGER = 'file-manager';
 
 /**
  * Pure. `dataNode` is consulted only when no workload sharing the volume is
@@ -56,12 +65,19 @@ export function planRestoreColocation(
   dataNode: string | null,
 ): RestoreColocationPlan {
   const sharing = workloads.filter((w) => w.mountsData);
-  const pins = [...new Set(sharing.flatMap((w) => (w.pin ? [w.pin] : [])))];
+  const pins = sharedPins(sharing);
   if (pins.length > 1) return NO_PLAN;
   const node = pins[0] ?? dataNode;
   if (!node) return NO_PLAN;
-  const patch = sharing.filter((w) => w.pin === null && !w.running).map((w) => w.name);
+  const patch = sharing
+    .filter((w) => !w.running && (w.pin === null || (w.follower === true && w.pin !== node)))
+    .map((w) => w.name);
   return patch.length > 0 ? { node, patch } : NO_PLAN;
+}
+
+/** The distinct pins of the workloads that decide the node (not the file manager). Pure. */
+function sharedPins(sharing: readonly RestoreWorkload[]): string[] {
+  return [...new Set(sharing.flatMap((w) => (w.pin && !w.follower ? [w.pin] : [])))];
 }
 
 interface DeploymentLike {
@@ -88,6 +104,7 @@ export function restoreWorkloadOf(d: DeploymentLike, claimName: string): Restore
     pin: hostnamePinOf(spec)?.node ?? null,
     mountsData: (spec?.volumes ?? []).some((v) => v.persistentVolumeClaim?.claimName === claimName),
     running: desired > 0 && (d.status?.availableReplicas ?? 0) >= desired,
+    ...(name === FILE_MANAGER ? { follower: true } : {}),
   };
 }
 
@@ -157,9 +174,9 @@ export async function colocateBeforeRestore(
       .map((d) => restoreWorkloadOf(d, claimName))
       .filter((w): w is RestoreWorkload => w !== null);
     const sharing = workloads.filter((w) => w.mountsData);
-    if (!sharing.some((w) => w.pin === null && !w.running)) return NO_PLAN;
+    if (!sharing.some((w) => !w.running && (w.pin === null || w.follower))) return NO_PLAN;
 
-    const pins = [...new Set(sharing.flatMap((w) => (w.pin ? [w.pin] : [])))];
+    const pins = sharedPins(sharing);
     if (pins.length > 1) {
       console.warn(`[unquiesce] ${namespace}: the workloads sharing the volume are pinned to ${pins.join(' and ')}; leaving them as they are`);
       return NO_PLAN;

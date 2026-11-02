@@ -42,6 +42,30 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     node holding the data.
   - A pinned workload is never moved, a running one is never restarted, and an HA volume is left
     as it is.
+  - The file manager never decides that node: the platform places it, and a stale pin on it would
+    send every unpinned app where the data is not. One the restore starts moves with the others.
+- **An HA tenant's pods stay together.** Its Deployments share one ReadWriteOnce volume too, but on
+  the HA tier only a soft preference for the primary node held them together, and an Auto HA
+  tenant had nothing at all. Each pod was placed on its own, and one placed away from the others
+  never started.
+  - Tenant workloads on the HA tier now prefer the node where the tenant's other workload pods run
+    (weight 100), and the node where its file manager runs (weight 50).
+  - It is a preference, not a rule. The scheduler counts a terminating pod like any other, so a
+    required rule would hold every new pod to a dead node during the failover HA exists for.
+  - Platform pods in the namespace (oauth2-proxy, private workers, the Ziti and zrok proxies) are
+    unchanged.
+  - A Deployment gets it at its next deploy, which restarts it once. A tier change applies it at
+    once.
+- **A tier change also re-places an Auto tenant.** It patched the scheduling of pinned tenants
+  only. An Auto tenant moved to HA kept the hard pin to its data node, and one moved to Local got
+  no pin. It now applies what a deploy would: the HA preference above, or on the Local tier the
+  tenant's data node, file manager included.
+- **A file manager no longer starts pinned to a node that has none of the data.** A file manager
+  that is starting moves to the node holding the tenant's data, except when that node cannot be
+  told (two copies mid-move and no workload pin). Then it kept its old pin, even when that node had
+  no copy any more, and sat in ContainerCreating there until the idle loop stopped it. In that case
+  it now starts unpinned, beside the tenant's pods. A pin on a node that still holds a copy is
+  kept.
 
 ## [2026.11.3] - 2026-11-02
 

@@ -11,7 +11,7 @@ vi.mock('../../shared/scale-deployment.js', () => ({
 }));
 
 import {
-  colocateBeforeRestore, deploymentsToStart, nodeTakesPods, planRestoreColocation, type RestoreWorkload,
+  colocateBeforeRestore, deploymentsToStart, nodeTakesPods, planRestoreColocation, restoreWorkloadOf, type RestoreWorkload,
 } from './restore-colocation.js';
 import { unquiesce } from './quiesce.js';
 
@@ -32,6 +32,15 @@ describe('planRestoreColocation', () => {
     expect(planRestoreColocation([
       w('web', { pin: 'sv3' }), w('crm', { running: true }), w('proxy', { mountsData: false }), w('db'),
     ], 'sv1')).toEqual({ node: 'sv3', patch: ['db'] });
+  });
+
+  it('never takes the file manager\'s pin for the tenant\'s, and moves a starting one with the others', () => {
+    // A stale file-manager pin would otherwise send every unpinned app where the data is not.
+    const fm = (o: Partial<RestoreWorkload> = {}) => w('file-manager', { pin: 'sv1', follower: true, ...o });
+    expect(planRestoreColocation([w('web'), w('db'), fm()], 'sv3')).toEqual({ node: 'sv3', patch: ['web', 'db', 'file-manager'] });
+    expect(planRestoreColocation([w('web', { pin: 'sv2' }), fm()], null)).toEqual({ node: 'sv2', patch: ['file-manager'] });
+    // One serving a user is left alone, like any running workload.
+    expect(planRestoreColocation([w('web'), fm({ running: true })], 'sv3')).toEqual({ node: 'sv3', patch: ['web'] });
   });
 
   it('leaves everything when the pins disagree or no node is known', () => {
@@ -120,6 +129,15 @@ describe('deploymentsToStart', () => {
       [{ name: 'web', replicas: 1 }, { name: 'db', replicas: 0 }, { name: 'file-manager', replicas: 0 }],
       [{ metadata: { name: 'web' } }, held, { metadata: { name: 'file-manager' } }],
     )].sort()).toEqual(['db', 'web']);
+  });
+});
+
+describe('restoreWorkloadOf', () => {
+  it('marks the file manager a follower', () => {
+    const fm = restoreWorkloadOf({ metadata: { name: 'file-manager' }, spec: { replicas: 1, template: { spec: {} } } }, 'c');
+    const web = restoreWorkloadOf({ metadata: { name: 'web' }, spec: { replicas: 1, template: { spec: {} } } }, 'c');
+    expect(fm?.follower).toBe(true);
+    expect(web?.follower).toBeUndefined();
   });
 });
 
