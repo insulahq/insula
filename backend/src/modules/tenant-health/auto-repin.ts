@@ -144,7 +144,9 @@ export async function applyAutoRepin(
 
       // target '' = clear the pin, letting the scheduler and Longhorn place
       // freely. We deliberately do NOT pick a specific node: dataLocality
-      // best-effort will drift the volume toward wherever the pod lands.
+      // best-effort will drift the volume toward wherever the pod lands. The
+      // tier goes along so the re-pin knows this is an HA tenant — "Auto" holds
+      // a Local-tier tenant's pods to one node, never an HA one's.
       const counts = await repinTenantPlacement(
         k8s, db,
         {
@@ -152,6 +154,7 @@ export async function applyAutoRepin(
           namespace: pinned.namespace,
           workloads: pinned.workloads,
           pvcs: pinned.pvcs,
+          storageTier: pinned.storageTier,
         },
         '',
         c.strandedOn,

@@ -50,7 +50,7 @@ describe('repinTenantPlacement and the file manager', () => {
     expect(patched[1]!.body).toEqual({ spec: { template: { spec: { nodeSelector: { 'kubernetes.io/hostname': 'node-b' } } } } });
   });
 
-  it('takes its pin off for "auto", and does not patch it twice when the impact listed it', async () => {
+  it('takes its pin off for "auto" when no node can hold the pods together, and does not patch it twice when the impact listed it', async () => {
     const auto = fakeCluster();
     await repinTenantPlacement(auto.k8s, auto.db, TENANT, '', 'node-a', async (t) => `node-${t}`);
     expect(auto.patched[1]).toEqual({ name: 'file-manager', body: { spec: { template: { spec: { nodeSelector: { 'kubernetes.io/hostname': null } } } } } });

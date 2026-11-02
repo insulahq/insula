@@ -12,6 +12,37 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **A drain keeps an Auto tenant's pods together with its data.** A tenant's Deployments share
+  one ReadWriteOnce volume, so they run together on one node or not at all. A drain re-pinned an
+  Auto tenant to Auto by deleting the hostname selector from every workload, and the scheduler
+  then placed each Deployment on its own. On production, a tenant's web pods started on the node
+  holding its volume and its database on another node, where it waited for the volume. The CRM
+  on that database answered 500.
+  - A re-pin to Auto (drain, the recovery wizard) now sends a Local-tier tenant's pods to ONE node
+    off the node being left. That is a node that already holds a copy of its data, so nothing is
+    copied, or else the node with the most free space that can take the volume.
+  - It never picks a cordoned node, one that is not Ready, or one that does not take auto-placed
+    tenants.
+  - The tenant stays on Auto, with no primary node and no volume node tag. HA tenants are
+    unchanged.
+- **The recovery wizard can move a tenant whose row says Auto while its workloads are pinned.**
+  A tenant set to Auto while it runs keeps the pin on its workloads, because Auto moves
+  nothing. `POST /admin/tenants/:id/recover/repin` read only the row and answered
+  `TENANT_NOT_PINNED`, so the only way to move such a tenant was to drain its node.
+  - It now releases the node the workloads are pinned to.
+  - Workloads pinned to several nodes get `409 TENANT_PINNED_TO_SEVERAL_NODES`, with nothing
+    changed.
+- **Auto-heal and every other restore start a tenant's workloads on one node.** A restore scaled
+  the tenant's Deployments back up as they were. Unpinned ones were each placed on their own, and
+  those away from the volume never started. On production, that is how the auto-heal failed.
+  - Before scaling up, a workload that mounts the tenant's volume and carries no pin now gets the
+    node the others are pinned to. When none is pinned and the volume keeps one copy, it gets the
+    node holding the data.
+  - A pinned workload is never moved, a running one is never restarted, and an HA volume is left
+    as it is.
+
 ## [2026.11.3] - 2026-11-02
 
 ### Added
