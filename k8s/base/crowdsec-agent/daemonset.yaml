@@ -165,7 +165,7 @@ spec:
         runAsUser: 0
       containers:
         - name: crowdsec-agent
-          image: docker.io/crowdsecurity/crowdsec:v1.8.1
+          image: docker.io/crowdsecurity/crowdsec:v1.8.2
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

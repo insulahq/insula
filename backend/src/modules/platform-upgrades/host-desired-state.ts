@@ -46,6 +46,9 @@ const LABELS = {
 
 // host-config-desired sysctls = the 0002 baseline + the 0007 BBR block. BBR
 // lines come from 0007's exported constant (single source of truth).
+// The two inotify values are WRITTEN to nodes (raise-only) by bootstrap.sh
+// configure_inotify_limits and host-migration 2026.11.3/0003: change them in
+// all three places together.
 const CANONICAL_SYSCTLS = [
   '# host-config-desired — sysctls the platform expects on every node.',
   '# OBSERVE by default: the host-config-reconciler reports drift; it does NOT',

@@ -108,7 +108,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: vmsingle
-          image: victoriametrics/victoria-metrics:v1.154.1
+          image: victoriametrics/victoria-metrics:v1.155.0
           args:
             - -promscrape.config=/config/prometheus.yml
             # Re-read the scrape config every minute — without this VM

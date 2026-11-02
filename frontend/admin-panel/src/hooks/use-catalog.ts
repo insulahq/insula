@@ -26,6 +26,8 @@ export interface CatalogEntry {
   readonly popular: number;
   /** Admin visibility flag (0/1). When 1, hidden from tenants; admins still see it. */
   readonly disabled: number;
+  /** When its repository stopped listing it (set by the sync), or null. Hidden from tenants, no new deploys. */
+  readonly removedFromSourceAt?: string | null;
   readonly url: string | null;
   readonly documentation: string | null;
   readonly manifestUrl: string | null;

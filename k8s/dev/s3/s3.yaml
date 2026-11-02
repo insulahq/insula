@@ -1,0 +1,163 @@
+---
+# Dev-only S3 endpoint for backup-target and snapshot E2E testing.
+#
+# The streaming snapshot Job and the backup paths upload via rclone/restic to
+# an S3-compatible target. Local DinD has no real S3, so this deployment
+# provides one: versitygw (Apache-2.0) serving a plain directory through its
+# posix backend — the same server as the VM lab's S3 (lib/lab-svc.sh), so a
+# test behaves the same in both. It replaced MinIO, whose images stopped
+# pulling without credentials. NOT for production.
+#
+# Deployed via `./scripts/local.sh s3-up` (see scripts/local.sh).
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev-s3
+  labels:
+    insula.host/env: dev
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: s3-root
+  namespace: dev-s3
+type: Opaque
+stringData:
+  # Intentionally hardcoded for dev — local.sh deploys this only when the
+  # operator opts in with s3-up. Production stacks never apply this
+  # manifest. Min 16 chars to satisfy the backup-config API validation
+  # (s3AccessKey min length).
+  ROOT_ACCESS_KEY_ID: s3-dev-access-key
+  ROOT_SECRET_ACCESS_KEY: s3-dev-secret-key
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s3
+  namespace: dev-s3
+  labels:
+    app: s3
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: s3
+  template:
+    metadata:
+      labels:
+        app: s3
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      containers:
+        - name: versitygw
+          image: versity/versitygw:v1.10.0
+          imagePullPolicy: IfNotPresent
+          args: ["posix", "/data"]
+          env:
+            - name: VGW_PORT
+              value: ":9000"
+            - name: VGW_HEALTH
+              value: /health
+          envFrom:
+            - secretRef:
+                name: s3-root
+          ports:
+            - name: api
+              containerPort: 9000
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: api
+            initialDelaySeconds: 2
+            periodSeconds: 5
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s3
+  namespace: dev-s3
+  labels:
+    app: s3
+spec:
+  type: ClusterIP
+  selector:
+    app: s3
+  ports:
+    - name: api
+      port: 9000
+      targetPort: 9000
+---
+# Pre-create the buckets so the operator doesn't have to. Runs once on each
+# deploy; idempotent (rclone mkdir on an existing bucket succeeds).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: s3-init
+  namespace: dev-s3
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: rclone
+          image: rclone/rclone:1.75.2
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              for bucket in snapshots system-backups; do
+                rclone mkdir ":s3:$bucket"
+              done
+              rclone lsd :s3:
+              echo "dev S3 buckets initialised"
+          env:
+            - name: HOME
+              value: /tmp
+            - name: RCLONE_S3_PROVIDER
+              value: Other
+            - name: RCLONE_S3_ENDPOINT
+              value: http://s3.dev-s3.svc.cluster.local:9000
+            - name: RCLONE_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-root
+                  key: ROOT_ACCESS_KEY_ID
+            - name: RCLONE_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-root
+                  key: ROOT_SECRET_ACCESS_KEY
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

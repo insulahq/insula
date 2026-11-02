@@ -156,14 +156,13 @@ To enable: one `k8s/base/flux/gitrepository-local.yaml` + `kustomization-local.y
 
 ## Backup target
 
-Longhorn needs a backup target to test the backup side of snapshot → backup flows. On Unraid, the cleanest option is a **single MinIO VM or container** serving S3-compatible storage:
+Longhorn needs a backup target to test the backup side of snapshot → backup flows. The lab's services VM (`lab-svc`, see `LOCAL_VM_LAB.md`) serves S3-compatible storage with **versitygw** (posix backend, pinned in `scripts/vm-integration-tests/lib/lab-svc.sh`):
 
-- 1 additional VM (or docker container on Unraid host) running `minio/minio:latest`
-- Creates an `s3://longhorn-local/` bucket
-- Longhorn `BackupTarget` configured to this endpoint
-- Mirrors what staging does with its real S3 provider
+- One bucket per lab cluster (`dev-backups`, `stg-backups`), created by `lab.sh up svc`
+- The platform's backup targets point at it, the same way production points at its real S3 provider
+- Buckets are directories and objects are files on the VM, so what a backup wrote can be inspected directly
 
-Alternative: NFS-backed target from an Unraid share (simpler, faster, no MinIO process). Choose based on whether you want S3 API parity (MinIO) or speed (NFS).
+Alternative: NFS-backed target from an Unraid share (simpler, faster, no S3 process). Choose based on whether you want S3 API parity (versitygw) or speed (NFS).
 
 ---
 
@@ -175,7 +174,7 @@ Alternative: NFS-backed target from an Unraid share (simpler, faster, no MinIO p
 | cloud-init templates that invoke `bootstrap.sh` unchanged | 2-3 |
 | Networking: libvirt bridge integration, DNS for `*.local-staging.test` | 1-2 |
 | Kubeconfig export + kubectl passthrough | 1 |
-| Backup target (MinIO VM or NFS share) | 1-2 |
+| Backup target (lab-svc's versitygw or NFS share) | 1-2 |
 | Optional local-Flux install + `gitrepository-local.yaml` | 1 |
 | Docs — update this file from PLANNED to LIVE, add operator runbook | 1 |
 | **Total** | **10-14 hours** |

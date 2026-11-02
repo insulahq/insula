@@ -77,6 +77,20 @@ on the row. Entries from all repositories merge into one catalog; the
 **type** filter on the Catalog tab separates runtimes, databases/services,
 and full applications.
 
+### When a repository drops an entry
+
+If a repository stops listing an entry, the next sync keeps it but marks it
+**Removed from its repository** on the Catalog tab:
+
+- Tenants no longer see it, and nothing new can be deployed from it.
+- Deployments already made from it keep running, and can still be restarted
+  and upgraded.
+- If the repository lists it again, the next sync brings it back as normal.
+
+A sync that can't read every manifest its repository lists removes nothing,
+and neither does one whose repository lists no entries at all. A broken
+repository never empties your catalog.
+
 ## Custom deployments (bring-your-own container)
 
 Tenants can deploy any container image or a compose stack directly. In the

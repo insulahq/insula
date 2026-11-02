@@ -196,7 +196,7 @@ probe_db_protocol() {
 }
 
 # probe_service_protocol NAMESPACE ENTRY_CODE TIMEOUT_S
-# Service-specific protocol pings (redis, memcached, minio).
+# Service-specific protocol pings (redis, memcached).
 probe_service_protocol() {
   local ns="$1" code="$2" timeout="$3"
   local pod
@@ -219,14 +219,6 @@ probe_service_protocol() {
          'echo "version" | nc -w2 127.0.0.1 11211 2>/dev/null' \
          | grep -qi '^VERSION '; then
         ok "memcached responding VERSION (pod=${pod})"; return 0
-      fi
-      ;;
-    minio)
-      # minio image (RELEASE.*) has no wget/curl/nc. Use bash /dev/tcp.
-      if kctl -n "$ns" exec "$pod" -c minio --request-timeout=15s -- bash -c \
-         'timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/9000" 2>/dev/null && echo OK' \
-         | grep -q '^OK$'; then
-        ok "minio listening on 9000 (pod=${pod})"; return 0
       fi
       ;;
     *)

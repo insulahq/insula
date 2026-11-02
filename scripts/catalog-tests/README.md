@@ -45,7 +45,7 @@ Each entry has a probe `kind` from `readiness.json`. Defaults are keyed by
 | `pod_ready_only` | All pods matching `app.kubernetes.io/instance=<deplname>` reach `Ready`. Used for runtimes (no app deployed; HTTP would 404) |
 | `http_ingress` | Curl through the dev ingress (`https://localhost:2011` with Host header), response code in `[expect_code_min, expect_code_max]`. Used for applications + static |
 | `db_protocol` | Engine-specific ping via `kubectl exec` — `mariadb-admin ping`, `pg_isready`, `mongosh ping` |
-| `service_protocol` | `redis-cli PING`, memcached `version`, MinIO `/minio/health/ready` |
+| `service_protocol` | `redis-cli PING`, memcached `version` |
 | `stun_probe` | Inline Python sends a STUN binding request to coturn's host port and checks the response message type is `0x0101` (success) |
 
 ## Adding an entry

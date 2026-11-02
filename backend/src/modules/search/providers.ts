@@ -472,6 +472,8 @@ const catalogProvider: SearchProvider = {
         allOf(
           // `disabled` is an integer flag (0/1), not a boolean column.
           eq(catalogEntries.disabled, 0),
+          // No longer listed by its repository: not offered (migration 0173).
+          isNull(catalogEntries.removedFromSourceAt),
           or(ilike(catalogEntries.name, pattern), ilike(catalogEntries.code, pattern)),
         ),
       )

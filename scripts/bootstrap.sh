@@ -524,8 +524,8 @@ LONGHORN_VERSION="v1.13.0"               # V1 engine only (no V2/SPDK). 1.13 add
 # fluxcd.io/install.sh shipped that day, so two nodes bootstrapped a
 # week apart could run different reconciler behaviour (R15 lesson —
 # unpinned drift is how the ssa-policy surprise class happens).
-# Latest stable at pin time: v2.8.8.
-FLUX_VERSION="2.9.6"
+# Existing clusters: host-migration 2026.11.3/0002.
+FLUX_VERSION="2.10.0"
 TRAEFIK_CHART_VERSION="42.1.3"           # app v3.7.16; verify: helm search repo traefik/traefik
 
 # ─── Remote installer script integrity ──────────
@@ -611,7 +611,7 @@ HELM_INSTALLER_SHA256="e4a604efcff328eef2b2c7e67445d609f333e3875b34420ebf4e5ae37
 # old source, fluxcd.io/install.sh, follows flux2's main branch: a one-word
 # comment fix there changed its digest and every fresh install stopped at
 # install_flux. A tag does not move, so this pin changes only with FLUX_VERSION.
-FLUX_INSTALLER_SHA256="bd7765225b731a1df952456eced0abb5dbbf5e11bc70cf6ab5fddd1476088b7e"
+FLUX_INSTALLER_SHA256="60b78fb0ff7ff63f43e5d97a7bf020380e97c9da73d11aa5f44246ea0e5c9053"
 
 # Helm's installer is pinned to a TAG, not `main` — `main` is a moving target
 # and re-pointing it silently changes what runs as root on every fresh node.
@@ -712,7 +712,7 @@ MODSECURITY_PLUGIN_MODULE="github.com/insulahq/insula/traefik-plugins/modsecurit
 CORAZA_PLUGIN_MODULE=""
 CORAZA_PLUGIN_VERSION=""
 CERT_MANAGER_CHART_VERSION="v1.21.3"     # Go 1.26.10 (x509 eMudhra distrust) + certificates/status key-copy fix; existing clusters: host-migration 2026.10.23/0002. v1.21: ARI + security hardening. The v1.21 chart drops the default tokenrequest RBAC — safe here: our ClusterIssuers are ACME http01/dns01 only (no serviceAccountRef/ambient). Prior: v1.20.3 fixed GHSA-8rvj-mm4h-c258 (ACME solver priv-esc)
-SEALED_SECRETS_CHART_VERSION="2.20.0"    # controller v0.40.0. Chart 2.22.0 (controller 0.41.2) is out; it heals hand-edited owned Secrets (#2073)
+SEALED_SECRETS_CHART_VERSION="2.22.0"    # controller v0.41.2: restores hand-edited owned Secrets (#2073), hot-reloads sealing keys (#2034); existing clusters: host-migration 2026.11.3/0001
 CNPG_CHART_VERSION="0.29.1"              # CloudNative-PG operator v1.30.1 (latest stable; PG 14-18). Bumped from 0.28.3/v1.29.1: 1.30.0 fixes the barman-cloud WAL-archiver plugin-roll deadlock on the HA switchover path (cnpg#11032/#11059) but does NOT fix the single-instance (instances:1) system-db wedge — that CNPG limitation is reported upstream + tracked separately (node-pin / HA). So this is version hygiene + a partial mitigation, not the wedge fix.
 SKIP_CNPG=false                          # --skip-cnpg flag sets this
 ACME_EMAIL=""
@@ -2283,6 +2283,33 @@ EOF
   systemctl restart systemd-logind 2>/dev/null || warn "systemd-logind restart failed — InhibitDelayMaxSec applies on next boot."
 
   log "Graceful node shutdown configured (ordered drain: tenants 30s → platform 40s → longhorn 30s → system 20s, logind delay ${GRACEFUL_SHUTDOWN_INHIBIT_SEC}s)."
+}
+
+# Raise the inotify limits to what host-config-desired declares. The kernel
+# default of 128 instances per user runs out on a busy node: each containerd shim
+# and most controllers hold one, and a starting crowdsec-agent then dies with
+# "could not create fsnotify watcher: ... too many open files". Only ever raises:
+# max_user_watches scales with RAM on kernels >= 5.11 and may already be higher.
+# Existing clusters get the same file from host-migration 2026.11.3/0003.
+configure_inotify_limits() {
+  local cur_i cur_w i w
+  cur_i="$(tr -d '[:space:]' < /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo 0)"
+  cur_w="$(tr -d '[:space:]' < /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo 0)"
+  [[ "$cur_i" =~ ^[0-9]+$ ]] || cur_i=0
+  [[ "$cur_w" =~ ^[0-9]+$ ]] || cur_w=0
+  i=$(( cur_i > 8192 ? cur_i : 8192 ))
+  w=$(( cur_w > 524288 ? cur_w : 524288 ))
+  install -d -m 0755 /etc/sysctl.d
+  cat > /etc/sysctl.d/99-platform-inotify.conf <<EOF
+# Managed by the platform (host-migration 2026.11.3/0003; bootstrap.sh
+# configure_inotify_limits on fresh installs). The values host-config-desired
+# declares, or the kernel's own when it already held more. Edit to override.
+fs.inotify.max_user_instances = ${i}
+fs.inotify.max_user_watches = ${w}
+EOF
+  sysctl -q -p /etc/sysctl.d/99-platform-inotify.conf >/dev/null 2>&1 \
+    || warn "sysctl could not apply /etc/sysctl.d/99-platform-inotify.conf; check 'sysctl -p' on it."
+  log "inotify limits: max_user_instances=${i}, max_user_watches=${w}."
 }
 
 configure_node_net_tuning() {
@@ -12335,6 +12362,7 @@ main() {
     configure_control_plane_resilience
     configure_graceful_shutdown
     configure_node_net_tuning
+    configure_inotify_limits
     configure_longhorn_multipath_blacklist
     pin_k3s_node_name
   fi

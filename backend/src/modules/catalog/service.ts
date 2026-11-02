@@ -5,7 +5,7 @@
  * Replaces the old application-repos and workload-repos modules.
  */
 
-import { eq, and, ilike, sql, desc, asc, lt, gt, or } from 'drizzle-orm';
+import { eq, and, ilike, sql, desc, asc, lt, gt, or, isNull, notInArray } from 'drizzle-orm';
 import { likePattern } from '../../shared/like-pattern.js';
 import { catalogRepositories, catalogEntries, catalogEntryVersions } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
@@ -131,9 +131,9 @@ interface ListCatalogEntriesParams {
   readonly category?: string;
   readonly search?: string;
   /**
-   * When false/omitted, entries flagged `disabled` are excluded — the tenant
-   * view. Admin callers pass true so they can see and re-enable disabled
-   * entries. Migration 0078.
+   * When false/omitted, entries flagged `disabled` (migration 0078) and
+   * entries their repository no longer lists (migration 0173) are excluded —
+   * the tenant view. Admin callers pass true so they can see both.
    */
   readonly includeDisabled?: boolean;
 }
@@ -552,6 +552,8 @@ interface SyncResult {
   readonly synced: number;
   readonly skipped: number;
   readonly errors: readonly string[];
+  /** Codes of entries this sync found no longer listed (hidden from tenants). */
+  readonly removed: readonly string[];
   readonly message: string;
 }
 
@@ -562,6 +564,10 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
     .where(eq(catalogRepositories.id, repoId));
 
   if (!repo) throw repoNotFound(repoId);
+
+  // Rows another sync of this repository writes after this moment are its
+  // to judge: this one may have read an older catalog.json.
+  const syncStartedAt = new Date();
 
   // Mark as syncing
   await db
@@ -593,6 +599,12 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
     const manifestErrors: string[] = [];
     let syncedCount = 0;
     let skippedCount = 0;
+    // Every code the repository still lists, as a directory name and as the
+    // manifest's own `code` (which names the stored row). A listed entry whose
+    // manifest cannot be read hides its stored code, so its sync withdraws
+    // nothing.
+    const listedCodes = new Set<string>(entryCodes);
+    let everyListedManifestRead = true;
 
     for (const code of entryCodes) {
       if (!VALID_ENTRY_NAME.test(code)) {
@@ -603,6 +615,7 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
       const manifestPath = join(localRoot, code, 'manifest.json');
       if (!(await fileExists(manifestPath))) {
         manifestErrors.push(`${code}: manifest.json not found`);
+        everyListedManifestRead = false;
         continue;
       }
 
@@ -612,8 +625,10 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         manifestErrors.push(`${code}: Invalid JSON — ${msg}`);
+        everyListedManifestRead = false;
         continue;
       }
+      if (manifest.code) listedCodes.add(manifest.code);
 
       // Build the remote manifestUrl for display (even though we read locally)
       const manifestUrl = buildCatalogFileUrl(source, repo.branch, `${code}/manifest.json`);
@@ -784,6 +799,11 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
         envVars: (manifest.env_vars ?? null) as typeof catalogEntries.$inferInsert['envVars'],
         versionLockMode: manifest.versionLockMode ?? 'advisory',
         status: 'available' as const,
+        // Listed again after a removal: back in the catalog.
+        removedFromSourceAt: null,
+        // Stamped here (an insert would take the database's clock) so it is on
+        // the same clock as `syncStartedAt`, which the removal mark compares.
+        updatedAt: new Date(),
         sourceRepoId: repoId,
         manifestUrl,
       };
@@ -867,6 +887,13 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
       syncedCount++;
     }
 
+    const removed = everyListedManifestRead
+      ? await markEntriesRemovedFromSource(db, repoId, [...listedCodes], syncStartedAt)
+      : [];
+    if (removed.length > 0) {
+      console.log(`[catalog-sync] No longer listed by the repository, hidden from tenants: ${removed.join(', ')}`);
+    }
+
     // Store the local cache path for icon serving
     await db
       .update(catalogRepositories)
@@ -884,9 +911,11 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
       synced: syncedCount,
       skipped: skippedCount,
       errors: manifestErrors,
-      message: manifestErrors.length > 0
+      removed,
+      message: (manifestErrors.length > 0
         ? `Synced ${syncedCount} entries with ${manifestErrors.length} error(s) (${skippedCount} skipped due to invalid local_path)`
-        : `Synced ${syncedCount} entries successfully`,
+        : `Synced ${syncedCount} entries successfully`)
+        + (removed.length > 0 ? `; no longer listed, hidden from tenants: ${removed.join(', ')}` : ''),
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -896,6 +925,38 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
       .where(eq(catalogRepositories.id, repoId));
     throw error;
   }
+}
+
+/**
+ * Mark the repository's entries that its catalog.json no longer lists, and
+ * return their codes. The rows stay: a deployment made from one keeps working
+ * and can still be upgraded or redeployed from it. A marked entry is hidden from
+ * tenants (listCatalogEntries) and refused for new deploys (createDeployment);
+ * the sync's upsert clears the mark when the repository lists it again.
+ *
+ * A catalog.json that lists nothing is read as a broken source, not as a request
+ * to withdraw every entry the repository ever had. A row written at or after
+ * `syncStartedAt` is left alone: a concurrent sync that read a newer
+ * catalog.json listed it, and this sync's older read must not hide it.
+ */
+export async function markEntriesRemovedFromSource(
+  db: Database,
+  repoId: string,
+  listedCodes: readonly string[],
+  syncStartedAt: Date,
+): Promise<string[]> {
+  if (listedCodes.length === 0) return [];
+  const rows = await db
+    .update(catalogEntries)
+    .set({ removedFromSourceAt: new Date() })
+    .where(and(
+      eq(catalogEntries.sourceRepoId, repoId),
+      notInArray(catalogEntries.code, [...listedCodes]),
+      isNull(catalogEntries.removedFromSourceAt),
+      lt(catalogEntries.updatedAt, syncStartedAt),
+    ))
+    .returning({ code: catalogEntries.code });
+  return rows.map((r) => r.code).sort();
 }
 
 // ─── Per-File Fetch Fallback (HTTP sources) ──────────────────────────────────
@@ -938,10 +999,12 @@ export async function listCatalogEntries(
 
   const conditions = [];
 
-  // Hide admin-disabled entries from tenants (migration 0078). Admin callers
-  // pass includeDisabled=true so they can see + re-enable them.
+  // Hide admin-disabled entries from tenants (migration 0078), and entries
+  // their repository no longer lists (migration 0173). Admin callers pass
+  // includeDisabled=true so they can see both and act on them.
   if (!includeDisabled) {
     conditions.push(eq(catalogEntries.disabled, 0));
+    conditions.push(isNull(catalogEntries.removedFromSourceAt));
   }
 
   if (type) {
@@ -1018,10 +1081,19 @@ export async function getCatalogEntryById(db: Database, id: string) {
 }
 
 export async function getCatalogEntryByCode(db: Database, code: string) {
+  // A code is unique per repository, not overall. Prefer a copy that can be
+  // deployed: one its repository still lists, then one the admin has not
+  // disabled, then the oldest.
   const [row] = await db
     .select()
     .from(catalogEntries)
-    .where(eq(catalogEntries.code, code));
+    .where(eq(catalogEntries.code, code))
+    .orderBy(
+      sql`${catalogEntries.removedFromSourceAt} IS NOT NULL`,
+      asc(catalogEntries.disabled),
+      asc(catalogEntries.createdAt),
+    )
+    .limit(1);
 
   if (!row) throw entryNotFound(code);
   return normalizeEntryRow(row);

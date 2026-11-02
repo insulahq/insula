@@ -128,7 +128,7 @@ spec:
         # copy + chown into an emptyDir, drops all capabilities except the two
         # the copy needs, and the LAPI itself keeps running as uid 1000.
         - name: seed-config
-          image: docker.io/crowdsecurity/crowdsec:v1.8.1
+          image: docker.io/crowdsecurity/crowdsec:v1.8.2
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsUser: 0
@@ -281,7 +281,7 @@ spec:
           # the HTTP and k8s-audit datasources (unused here) and migrates the
           # LAPI's Postgres schema on start, additively (bouncers.stream_cursor,
           # a new decisions index); each bouncer does one full resync after.
-          image: docker.io/crowdsecurity/crowdsec:v1.8.1
+          image: docker.io/crowdsecurity/crowdsec:v1.8.2
           imagePullPolicy: IfNotPresent
           # DISABLE_ONLINE_API comes from the crowdsec-capi-config ConfigMap
           # (community blocklist opt-in). `optional: true` is deliberate and

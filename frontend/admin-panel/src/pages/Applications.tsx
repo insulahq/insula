@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { API_BASE } from '@/lib/api-client';
 import { useNavigate } from 'react-router-dom';
-import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, RotateCcw, History, LayoutGrid, Tag, Play, Square, RefreshCw, Trash2, CheckSquare, ChevronLeft, ChevronRight, Eye, EyeOff } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, RotateCcw, History, LayoutGrid, Tag, Play, Square, RefreshCw, Trash2, CheckSquare, ChevronLeft, ChevronRight, Eye, EyeOff, Archive } from 'lucide-react';
 import AppPreviewModal from '@/components/AppPreviewModal';
 import clsx from 'clsx';
 import CatalogRepoSettings from '@/components/CatalogRepoSettings';
@@ -426,13 +426,14 @@ function AdminCatalogCard({
   readonly toggleDisabled: (entry: CatalogEntry) => void;
 }) {
   const isDisabled = Boolean(entry.disabled);
+  const isRemoved = Boolean(entry.removedFromSourceAt);
   return (
     <button
       type="button"
       onClick={() => onCardClick(entry)}
       className={clsx(
         'cursor-pointer rounded-xl border bg-white dark:bg-gray-800 p-5 shadow-sm transition-shadow hover:shadow-md text-left',
-        isDisabled
+        isDisabled || isRemoved
           ? 'border-dashed border-gray-300 dark:border-gray-600 opacity-60'
           : 'border-gray-200 dark:border-gray-700',
       )}
@@ -477,11 +478,25 @@ function AdminCatalogCard({
               <EyeOff size={12} /> Disabled
             </span>
           ) : null}
+          {isRemoved ? (
+            <span
+              className="inline-flex items-center gap-1 rounded-full bg-gray-100 dark:bg-gray-700 px-2.5 py-0.5 text-xs font-medium text-gray-700 dark:text-gray-200"
+              data-testid={`catalog-removed-${entry.code}`}
+            >
+              <Archive size={12} /> Removed from its repository
+            </span>
+          ) : null}
           <span className="inline-flex rounded-full bg-brand-50 dark:bg-brand-900/20 px-2.5 py-0.5 text-xs font-medium text-brand-700 dark:text-brand-300">
             {entry.category ?? 'other'}
           </span>
         </div>
       </div>
+      {isRemoved ? (
+        <p className="mb-2 text-xs text-gray-600 dark:text-gray-300" data-testid={`catalog-removed-note-${entry.code}`}>
+          Its catalog repository no longer lists it, so tenants no longer see it and nothing new is
+          deployed from it. Deployments made from it keep running.
+        </p>
+      ) : null}
       <p className="mb-4 line-clamp-2 text-sm text-gray-600 dark:text-gray-400">{entry.description}</p>
       <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
         <span className="inline-flex items-center rounded bg-gray-100 dark:bg-gray-700 px-2 py-0.5">

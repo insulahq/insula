@@ -12,6 +12,68 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **Component bumps out of their soak.** Each image now scans with 0 fixable CRITICAL, and most
+  with 0 fixable HIGH:
+
+  | Component | Change | Notes |
+  |---|---|---|
+  | **Flux** | 2.9.6 → 2.10.0 | Its rebuilt kustomize-controller no longer carries CVE-2026-111497, now `fixed` in the ledger. Every controller image is HIGH-free. Built with Kubernetes 1.37. |
+  | **CrowdSec** | v1.8.1 → v1.8.2 | Fixable HIGHs 76 → 8. Simulated decisions no longer suppress real bans. Its database gains one nullable column, which LAPI adds on start. |
+  | **Sealed Secrets** | chart 2.20.0 → 2.22.0, controller 0.40.0 → 0.41.2 | The controller now restores a Secret whose data is changed by hand to what its SealedSecret holds, and takes up added or removed sealing keys without a restart. The platform ships no SealedSecrets; an operator who edits one's Secret by hand should edit the SealedSecret instead. |
+  | **VictoriaMetrics** | v1.154.1 → v1.155.0 | Go 1.27.3, Alpine 3.24.3. |
+
+  Flux 2.10's breaking changes miss this platform:
+  - its controllers lose `serviceaccounts/token` create; no Flux object here uses workload identity;
+  - Alert and Provider move to notification `v1`; none exists;
+  - ImageRepository moves to a new tag store; the image controllers are not installed.
+
+  Existing clusters move through host-migrations 2026.11.3/0001 (Sealed Secrets) and 0002 (Flux).
+  The Flux migration reads its installer from the release tag, as `bootstrap.sh` already does.
+- **The component watch soaks Docker Hub releases too.** It dated GitHub releases only, so an
+  image pushed to Docker Hub the day before read as due: alpine/k8s 1.36.6 was offered on its
+  second day. A Docker Hub tag is now dated by its last push; alpine/k8s 1.36.6 waits until
+  2026-11-08.
+
+### Fixed
+
+- **Nodes get the inotify limits the platform declares.** Every node ran the kernel default
+  of 128 inotify instances per user. `host-config-desired` declares 8192, but the sysctl converger
+  only reports drift and nothing wrote the value. Each containerd shim and most controllers hold
+  an instance, so a busy node ran out, and a starting `crowdsec-agent` died with "could not
+  create fsnotify watcher: … too many open files". This was seen on lab staging, crash-looping
+  on a node at 127 of 128, and on DEV during the CrowdSec 1.8.2 roll.
+  - `/etc/sysctl.d/99-platform-inotify.conf` now sets `fs.inotify.max_user_instances` to 8192
+    and `fs.inotify.max_user_watches` to 524288. Only ever raises: a value the kernel already holds
+    above these is kept, since `max_user_watches` scales with RAM on newer kernels.
+  - Fresh installs get the file from `bootstrap.sh`; existing clusters from host-migration
+    2026.11.3/0003.
+  - The other two declared sysctls stay observe-only. Both declared values are below what an
+    Ubuntu 24.04 node already runs: `net.core.somaxconn` 1024 against 4096, and `vm.max_map_count`
+    262144 against 1048576. They need their own decision.
+
+### Changed
+
+- **An entry a catalog repository stops listing leaves the catalog.** The sync only ever added
+  and updated entries, so an entry deleted from its repository stayed listed and installable on
+  every install for good. The sync now marks such an entry **Removed from its repository**:
+  - tenants no longer see it, the search no longer finds it, and a new deploy from it is
+    refused (`CATALOG_ENTRY_REMOVED`);
+  - deployments already made from it keep running and can still be upgraded;
+  - the next sync brings it back if the repository lists it again.
+
+  A sync that cannot read every listed manifest withdraws nothing, and neither does a
+  `catalog.json` that lists no entries. Migration 0173.
+- **MinIO leaves the Official Catalog.** Its image no longer pulls without credentials (Docker
+  Hub, Quay and GHCR), so it could not be installed anywhere. Nothing in the platform uses it.
+- **The dev and lab S3 endpoint is versitygw.** `./scripts/local.sh s3-up` deploys versitygw
+  v1.10.0 in place of MinIO, whose `minio/minio` and `minio/mc` images stopped pulling; the
+  `minio-*` commands still work. The VM lab's S3 moves from v1.8.0 to v1.10.0, and its next
+  `lab.sh up svc` replaces the running container. Buckets and objects stay, because the posix
+  backend keeps them on disk. `security/components.yaml` now tracks versitygw.
+  `local.sh help` lists every command again; it had stopped after the first 30 or so.
+
 ## [2026.11.2] - 2026-11-02
 
 ### Added
