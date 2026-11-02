@@ -63,9 +63,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **A file manager no longer starts pinned to a node that has none of the data.** A file manager
   that is starting moves to the node holding the tenant's data, except when that node cannot be
   told (two copies mid-move and no workload pin). Then it kept its old pin, even when that node had
-  no copy any more, and sat in ContainerCreating there until the idle loop stopped it. In that case
-  it now starts unpinned, beside the tenant's pods. A pin on a node that still holds a copy is
-  kept.
+  no copy any more. It sat in ContainerCreating there when the volume was attached elsewhere, or
+  made Longhorn copy the volume to it. In that case it now starts on a node that holds a copy. A pin
+  on a node that still holds a copy is kept.
 
 ## [2026.11.3] - 2026-11-02
 

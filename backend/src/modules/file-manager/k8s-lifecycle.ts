@@ -9,7 +9,7 @@
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { FileManagerStatus } from '@insula/api-contracts';
-import { MERGE_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
 import { deriveFmSecret } from './internal-secret.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
@@ -55,20 +55,22 @@ async function workloadPin(k8s: K8sClients, namespace: string): Promise<string |
 }
 
 /**
- * Does `node` hold a usable copy of the tenant's volume (or have it attached)?
- * True when it cannot be read: keeping a pin is the old behaviour, and moving
- * a file manager on a guess is not better than that.
+ * When the file manager's old pin is on a node holding no copy of the tenant's
+ * volume (and the volume is not attached there), a node that does: the first
+ * replica node by name. Null when the pin is fine or nothing can be read —
+ * keeping a pin is the old behaviour, and moving on a guess is not better.
  */
-async function nodeHoldsTenantData(k8s: K8sClients, namespace: string, node: string): Promise<boolean> {
+async function replacementForStalePin(k8s: K8sClients, namespace: string, node: string): Promise<string | null> {
   try {
     const volumeName = await readPvcVolumeName(k8s, namespace, `${namespace}-storage`);
-    if (!volumeName) return true;
-    if (await readVolumeAttachedNode(k8s, volumeName) === node) return true;
+    if (!volumeName) return null;
+    if (await readVolumeAttachedNode(k8s, volumeName) === node) return null;
     const holding = await readVolumeReplicaNodes(k8s, volumeName);
     // No usable replica listed at all is a read that says nothing, not "elsewhere".
-    return holding.length === 0 || holding.includes(node);
+    if (holding.length === 0 || holding.includes(node)) return null;
+    return holding[0]!;
   } catch {
-    return true;
+    return null;
   }
 }
 
@@ -600,24 +602,20 @@ export async function ensureFileManagerRunning(
       // When the data node cannot be told (two copies mid-move and no workload
       // pin, Longhorn unreadable), the old pin is kept only while that node
       // still holds a copy. A pin left by an earlier placement on a node the
-      // data has since left started the file manager there, where it sat in
-      // ContainerCreating unable to attach the volume (lab staging); without it
-      // the preferred podAffinity puts it beside the tenant's pods.
-      const scaleUpNode = targetNode ?? await resolveFmDataNode(k8s, namespace);
-      const staleHost = !scaleUpNode && existingNodeHost && !await nodeHoldsTenantData(k8s, namespace, existingNodeHost);
+      // data has since left started the file manager there: it sat in
+      // ContainerCreating when the volume was attached elsewhere (lab staging),
+      // or made Longhorn copy the volume to it. It moves to a node with a copy.
+      const resolved = targetNode ?? await resolveFmDataNode(k8s, namespace);
+      const replacement = !resolved && existingNodeHost
+        ? await replacementForStalePin(k8s, namespace, existingNodeHost)
+        : null;
+      if (replacement) {
+        console.warn(`[file-manager] ${namespace}: pinned to ${existingNodeHost}, which holds none of the tenant's data — starting it on ${replacement}`);
+      }
+      const scaleUpNode = resolved ?? replacement ?? undefined;
       const repin = scaleUpNode && scaleUpNode !== existingNodeHost
         ? { template: { spec: { nodeSelector: { 'kubernetes.io/hostname': scaleUpNode } } } }
         : {};
-      if (staleHost) {
-        console.warn(`[file-manager] ${namespace}: pinned to ${existingNodeHost}, which holds none of the tenant's data — starting it unpinned`);
-        // A JSON merge patch: only there does null reliably delete the key.
-        await k8s.apps.patchNamespacedDeployment({
-          name: FM_NAME,
-          namespace,
-          body: { spec: { template: { spec: { nodeSelector: { 'kubernetes.io/hostname': null } } } } },
-        } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
-          MERGE_PATCH);
-      }
       await k8s.apps.patchNamespacedDeployment({
         name: FM_NAME,
         namespace,

@@ -103,23 +103,21 @@ describe('File Manager K8s Lifecycle', () => {
         expect(patch).toEqual({ spec: { replicas: 1, template: { spec: { nodeSelector: { 'kubernetes.io/hostname': 'node-b' } } } } });
       });
 
-      it('starts it unpinned when its old pin holds no copy and the data node cannot be told', async () => {
+      it('moves it to a node holding a copy when its old pin holds none and the data node cannot be told', async () => {
         // Lab staging: two copies mid-move, no workload pin, and the file manager
-        // still pinned to a node the data had left — it sat in ContainerCreating there.
-        withLonghorn(['node-b', 'node-c']);
+        // still pinned to a node the data had left — it started there.
+        withLonghorn(['node-c', 'node-b']);
         (mockK8s as unknown as { custom: Record<string, unknown> }).custom.getNamespacedCustomObject =
           vi.fn().mockResolvedValue({ status: { state: 'detached' } });
         (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue(fullSpec(0, { 'kubernetes.io/hostname': 'node-a' }));
         (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
         const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
         await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest', 1);
-        const calls = (mockK8s.apps.patchNamespacedDeployment as unknown as { mock: { calls: Array<[{ body: unknown }, unknown]> } }).mock.calls;
+        const calls = (mockK8s.apps.patchNamespacedDeployment as unknown as { mock: { calls: Array<[{ body: unknown }]> } }).mock.calls;
+        // The first replica node by name.
         expect(calls.map((c) => c[0].body)).toEqual([
-          { spec: { template: { spec: { nodeSelector: { 'kubernetes.io/hostname': null } } } } },
-          { spec: { replicas: 1 } },
+          { spec: { replicas: 1, template: { spec: { nodeSelector: { 'kubernetes.io/hostname': 'node-b' } } } } },
         ]);
-        // The removal is a JSON merge patch: only there does null delete the key.
-        expect(calls[0]![1]).not.toEqual(calls[1]![1]);
       });
 
       it('keeps the old pin when no replica can be listed — that read says nothing', async () => {
