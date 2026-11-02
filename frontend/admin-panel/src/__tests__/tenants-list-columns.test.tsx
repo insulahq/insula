@@ -241,6 +241,18 @@ describe('TenantsListTab — Filter by', () => {
     expect(options()).toEqual(['Any tier', 'Local', 'HA']);
   });
 
+  it('Active placement offers only the nodes, and asks the server for the tenants actually on one', () => {
+    renderList();
+    const field = screen.getByTestId('tenant-filter-field');
+    expect(within(field).getAllByRole('option').map((o) => o.textContent))
+      .toEqual(['Filter by…', 'Status', 'Placement', 'Active placement', 'Tier', 'Plan']);
+    fireEvent.change(field, { target: { value: 'activePlacement' } });
+    const value = screen.getByTestId('tenant-filter-value');
+    expect(within(value).getAllByRole('option').map((o) => o.textContent)).toEqual(['Any active placement', 'node-2', 'node-cp']);
+    fireEvent.change(value, { target: { value: 'node-2' } });
+    expect(lastFilters()).toEqual({ activePlacement: 'node-2' });
+  });
+
   it('clears the value when the field changes, so a status never stays applied as a plan', () => {
     renderList();
     fireEvent.change(screen.getByTestId('tenant-filter-field'), { target: { value: 'placement' } });

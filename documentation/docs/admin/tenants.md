@@ -54,8 +54,12 @@ Click the tenant to see the detail, which names the specific object.
 **Placement** is the tenant's **primary node** — the node its workloads are
 pinned to and its data lives on. `auto` means no pin is set and Kubernetes
 schedules the tenant wherever there is room — that is a normal state, not a
-missing value. A node name appears once the tenant is pinned (new local-tier
-tenants are pinned automatically at creation).
+missing value. Next to it, in brackets, is the node the tenant is on now,
+`auto (node-2)`, as the platform's last check saw it. That is where it runs, or
+where its data is while nothing runs; an HA tenant may list several nodes. It
+reads plain `auto` until the first check has seen the tenant. A node name on
+its own appears once the tenant is pinned (new local-tier tenants are pinned
+automatically at creation).
 
 When a tenant is **not on its primary node**, the column shows where it
 **actually** is, in **red**, with `primary <node>` underneath — hover it for
@@ -77,17 +81,28 @@ is visible without reading dates:
 
 The **search box** matches a tenant's name, its contact email, its plan's name
 and its placement as the column shows it: a node by its name, hostname or
-alias, the node a tenant that is off its primary node is actually on, `auto`
-for every tenant with no node pin, and `misplaced` for every tenant off its
-primary node.
+alias, the node a tenant that is off its primary node is actually on, the node
+an Auto tenant is on, `auto` for every tenant with no node pin, and `misplaced`
+for every tenant off its primary node.
 
 **Filter by**, next to the search box, narrows the list to one value of
-**Status**, **Placement**, **Tier** or **Plan**: pick the field, then one of
-the values this platform has — for Placement, **Auto (no pin)**, **Not where
-it belongs**, or a node (the tenants pinned to it, and those running there
-while off their own node). The filter applies on the server, to every page,
-the total and the **All** rows per page; with a search, both must match.
-Pick **Filter by…** again to clear it.
+**Status**, **Placement**, **Active placement**, **Tier** or **Plan**: pick the
+field, then one of the values this platform has.
+
+- **Placement** follows the pin: **Auto (no pin)**, **Not where it belongs**, or
+  a node (the tenants pinned to it, and those running there while off their own
+  node).
+- **Active placement** follows where tenants are now, whatever their pin: pick
+  a node to see every tenant on it, including the Auto tenants placed there. A
+  tenant pinned to the node but running elsewhere is not listed under it, and a
+  tenant the platform has not checked yet (a minute after it is created) is
+  listed under no node.
+
+The filter applies on the server, to every page, the total and the **All** rows
+per page; with a search, both must match. Pick **Filter by…** again to clear it.
+
+Sorting by **Placement** groups the tenants by node: an Auto tenant sorts by
+the node in its `auto (…)`, next to the tenants pinned there.
 
 Sorting applies to the page you are looking at, not the whole tenant list, so
 sort after narrowing with the search box if you have many accounts — or set

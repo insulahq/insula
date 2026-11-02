@@ -408,6 +408,12 @@ export const tenantListFiltersSchema = z.object({
    * tenants pinned to it, or actually running there while off their own node.
    */
   placement: z.string().min(1).max(253).optional(),
+  /**
+   * A node's Kubernetes name: the tenants actually on it now, as the placement
+   * reconciler last saw them (where they run, else where their data is),
+   * whatever their pin. This is how an Auto tenant is found by its node.
+   */
+  activePlacement: z.string().min(1).max(253).optional(),
   tier: tenantStorageTierEnum.optional(),
   /** A hosting plan's id. */
   plan: z.string().min(1).max(64).optional(),

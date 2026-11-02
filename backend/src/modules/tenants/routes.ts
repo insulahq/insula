@@ -295,6 +295,7 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
           // Declared, or the query schema strips them (tenantListFiltersSchema).
           status: { type: 'string', description: 'Only tenants in this status' },
           placement: { type: 'string', description: '"auto" (no node pin), "misplaced", or a node name' },
+          activePlacement: { type: 'string', description: 'A node name: the tenants actually on it now, Auto ones included' },
           tier: { type: 'string', description: 'Only tenants on this storage tier (local, ha)' },
           plan: { type: 'string', description: 'Only tenants on this hosting plan (its id)' },
         },
@@ -374,7 +375,8 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     const paginationParams = parsePaginationParams(query);
     const search = typeof query.search === 'string' ? query.search : undefined;
     const filters = tenantListFiltersSchema.safeParse({
-      status: query.status, placement: query.placement, tier: query.tier, plan: query.plan,
+      status: query.status, placement: query.placement, activePlacement: query.activePlacement,
+      tier: query.tier, plan: query.plan,
     });
     if (!filters.success) {
       const issue = filters.error.issues[0];

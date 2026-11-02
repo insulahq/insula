@@ -12,6 +12,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **The Tenants list shows where an Auto tenant is, and filters by where tenants are now.**
+  - **Placement column:** an Auto tenant reads `auto (<node>)`, the node it runs on (or holds
+    its data on) as the platform's last check saw it, by alias. It reads plain `auto` until
+    the first check.
+  - **Search:** the node's name finds the tenant, as the column shows it.
+  - **Sorting:** a Placement sort puts the tenant next to the tenants pinned to the same node.
+  - **New "Active placement" field in Filter by:** pick a node to list every tenant actually on
+    it, the Auto tenants placed there included. Placement still follows the pin. Server-side
+    (`GET /tenants?activePlacement=<node>`), from the placement reconciler's record.
+
 ### Security
 
 - **Component bumps out of their soak.** Each image now scans with 0 fixable CRITICAL, and most
