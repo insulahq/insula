@@ -38,6 +38,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Webmail can send and save a message over 128 KiB.** The WAF refused every JMAP API call
+  (`POST /jmap/` on the Stalwart host) whose body was over ModSecurity's 128 KiB limit for a
+  body without files, with a 400 (rule 200002, "Failed to parse request body"). A long reply or
+  a pasted image puts an ordinary message over it, and Bulwark could neither send nor save it.
+  Exclusion `9000118` already exempted that body from inspection, since it is the message itself;
+  it now drops 200002 for the same request too. Traefik's 12.5 MiB cap still applies. So do the
+  header, cookie and URL rules, and every other JMAP path and host keeps the limit. Not done with
+  `ctl:requestBodyAccess=Off`, which in ModSecurity v3 skips the whole of phase 2: measured
+  against the CRS image, it let SQL injection in a cookie through. platform-api rolls the WAF
+  pods onto the changed file, as it does for any exclusion change.
 - **Nodes get the inotify limits the platform declares.** Every node ran the kernel default
   of 128 inotify instances per user. `host-config-desired` declares 8192, but the sysctl converger
   only reports drift and nothing wrote the value. Each containerd shim and most controllers hold
