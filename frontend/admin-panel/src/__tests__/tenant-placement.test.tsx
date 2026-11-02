@@ -59,6 +59,24 @@ describe('PlacementCell (tenants table)', () => {
     render(<PlacementCell nodeName={null} placement={null} />);
     expect(screen.getByText('auto')).toBeInTheDocument();
   });
+
+  it('says where an Auto tenant is now: auto (<node>)', () => {
+    render(<PlacementCell nodeName={null} placement={summary({ status: 'unpinned', primaryNode: null, actualNodes: ['node-b'] })} />);
+    const cell = screen.getByTestId('placement-auto');
+    expect(cell).toHaveTextContent('auto (node-b)');
+    expect(cell.getAttribute('title')).toBe('Auto: no node pin. On node-b (where it runs, or holds its data)');
+    expect(cell.className).toMatch(/dark:text-gray-400/);
+  });
+
+  it('lists every node an Auto HA tenant runs on, and stays plain "auto" while unobserved', () => {
+    const { unmount } = render(
+      <PlacementCell nodeName={null} placement={summary({ status: 'unpinned', primaryNode: null, actualNodes: ['node-a', 'node-c'] })} />,
+    );
+    expect(screen.getByTestId('placement-auto')).toHaveTextContent('auto (node-a, node-c)');
+    unmount();
+    render(<PlacementCell nodeName={null} placement={summary({ status: 'unknown', primaryNode: null, actualNodes: ['node-a'] })} />);
+    expect(screen.getByTestId('placement-auto')).toHaveTextContent(/^auto$/);
+  });
 });
 
 describe('PlacementStatusPanel (tenant detail)', () => {

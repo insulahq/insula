@@ -203,6 +203,46 @@ describe.skipIf(!dbAvailable)('Tenant CRUD (integration)', () => {
         expect((await list(`placement=${encodeURIComponent(NODES[2]!)}`)).names).toEqual(['Moved Away']);
       });
 
+      /** Auto tenants and a placed one, each with the placement row the reconciler writes. */
+      const seedActive = async (): Promise<void> => {
+        const db = getTestDb();
+        const onSpare = await seedTenant(db, regionId, planId, { name: 'Auto On Spare', nodeName: null });
+        const byHost = await seedTenant(db, regionId, planId, { name: 'Auto By Hostname', nodeName: null });
+        const unseen = await seedTenant(db, regionId, planId, { name: 'Auto Unseen', nodeName: null });
+        const primary = (await db.execute(sql`SELECT id FROM tenants WHERE name = 'On Primary'`)).rows[0] as { id: string };
+        await db.execute(sql`
+          INSERT INTO tenant_placement_state (tenant_id, status, primary_node, actual_nodes) VALUES
+            (${onSpare.id}, 'unpinned', NULL, ARRAY[${NODES[2]}]::text[]),
+            (${byHost.id}, 'unpinned', NULL, ARRAY['search-b']::text[]),
+            (${unseen.id}, 'unknown', NULL, ARRAY[]::text[]),
+            (${primary.id}, 'placed', ${NODES[0]}, ARRAY[${NODES[0]}]::text[])`);
+      };
+
+      it('activePlacement: the tenants actually on a node now, Auto ones included, whatever their pin', async () => {
+        await seedActive();
+        const on = (node: string) => list(`activePlacement=${encodeURIComponent(node)}`);
+        // Spare: the Auto tenant running there, and the one pinned to Secondary but running there.
+        expect(await on(NODES[2]!)).toEqual({ status: 200, names: ['Auto On Spare', 'Moved Away'], total: 2 });
+        // Secondary: Moved Away is pinned here but runs on Spare, so it is not here. The Auto
+        // tenant whose observation carries the node's hostname (search-b) is.
+        expect(await on(NODES[1]!)).toEqual({ status: 200, names: ['Auto By Hostname'], total: 1 });
+        expect((await on(NODES[0]!)).names).toEqual(['On Primary']);
+        // A node with nobody on it, and an Auto tenant not yet observed, match nothing.
+        expect(await on('search-none.cluster.example.test')).toEqual({ status: 200, names: [], total: 0 });
+        // Placement stays the pin: the Auto tenant on Spare is not "pinned to" Spare.
+        expect((await list(`placement=${encodeURIComponent(NODES[2]!)}`)).names).toEqual(['Moved Away']);
+        expect((await list('placement=auto')).names).toEqual(['Auto By Hostname', 'Auto On Spare', 'Auto Unseen', 'Unpinned']);
+        // Combined with another filter, both must match.
+        expect(await list(`activePlacement=${encodeURIComponent(NODES[2]!)}&placement=auto`))
+          .toEqual({ status: 200, names: ['Auto On Spare'], total: 1 });
+      });
+
+      it('search finds an Auto tenant by the node it runs on, as its cell shows auto (<node>)', async () => {
+        await seedActive();
+        expect((await search('spare')).names).toEqual(['Auto On Spare', 'Moved Away']);
+        expect((await search('secondary')).names).toEqual(['Auto By Hostname', 'Moved Away']);
+      });
+
       it('status, tier and plan, the total counting only what matches', async () => {
         const db = getTestDb();
         const gold = await seedPlan(db, { name: 'Filter Gold' });

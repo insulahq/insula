@@ -12,7 +12,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.11.3-rc.1] - 2026-11-02
+### Added
+
+- **The Tenants list shows where an Auto tenant is, and filters by where tenants are now.**
+  - **Placement column:** an Auto tenant reads `auto (<node>)`, the node it runs on (or holds
+    its data on) as the platform's last check saw it, by alias. It reads plain `auto` until
+    the first check.
+  - **Search:** the node's name finds the tenant, as the column shows it.
+  - **Sorting:** a Placement sort puts the tenant next to the tenants pinned to the same node.
+  - **New "Active placement" field in Filter by:** pick a node to list every tenant actually on
+    it, the Auto tenants placed there included. Placement still follows the pin. Server-side
+    (`GET /tenants?activePlacement=<node>`), from the placement reconciler's record.
 
 ### Security
 
@@ -40,6 +50,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Webmail can send and save a message over 128 KiB.** The WAF refused every JMAP API call
+  (`POST /jmap/` on the Stalwart host) whose body was over ModSecurity's 128 KiB limit for a
+  body without files, with a 400 (rule 200002, "Failed to parse request body"). A long reply or
+  a pasted image puts an ordinary message over it, and Bulwark could neither send nor save it.
+  Exclusion `9000118` already exempted that body from inspection, since it is the message itself;
+  it now drops 200002 for the same request too. Traefik's 12.5 MiB cap still applies. So do the
+  header, cookie and URL rules, and every other JMAP path and host keeps the limit. Not done with
+  `ctl:requestBodyAccess=Off`, which in ModSecurity v3 skips the whole of phase 2: measured
+  against the CRS image, it let SQL injection in a cookie through. platform-api rolls the WAF
+  pods onto the changed file, as it does for any exclusion change.
 - **Nodes get the inotify limits the platform declares.** Every node ran the kernel default
   of 128 inotify instances per user. `host-config-desired` declares 8192, but the sysctl converger
   only reports drift and nothing wrote the value. Each containerd shim and most controllers hold

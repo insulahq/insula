@@ -4,7 +4,7 @@ import { useNodeLabel } from '@/hooks/use-node-labels';
 import { usePlans } from '@/hooks/use-plans';
 
 /** What the Tenants list can be filtered by — one field at a time. */
-export type TenantFilterField = 'status' | 'placement' | 'tier' | 'plan';
+export type TenantFilterField = 'status' | 'placement' | 'activePlacement' | 'tier' | 'plan';
 
 export interface TenantFilter {
   readonly field: TenantFilterField | '';
@@ -17,6 +17,7 @@ export const NO_TENANT_FILTER: TenantFilter = { field: '', value: '' };
 const FIELD_LABELS: Readonly<Record<TenantFilterField, string>> = {
   status: 'Status',
   placement: 'Placement',
+  activePlacement: 'Active placement',
   tier: 'Tier',
   plan: 'Plan',
 };
@@ -53,13 +54,17 @@ function useFilterOptions(field: TenantFilterField | ''): { readonly options: re
       return { options: STATUS_OPTIONS, loading: false };
     case 'tier':
       return { options: TIER_OPTIONS, loading: false };
-    case 'placement': {
+    case 'placement':
+    case 'activePlacement': {
       const nodeOptions = (nodes.data?.data ?? [])
         .map((n) => {
           const label = nodeLabel(n.name);
           return { value: n.name, label: label === n.name ? label : `${label} (${n.name})` };
         })
         .sort((a, b) => a.label.localeCompare(b.label));
+      // Active placement is where tenants are now, so only nodes: an Auto tenant
+      // is listed under the node it runs on.
+      if (field === 'activePlacement') return { options: nodeOptions, loading: nodes.isLoading };
       return {
         options: [
           { value: TENANT_PLACEMENT_FILTER.auto, label: 'Auto (no pin)' },

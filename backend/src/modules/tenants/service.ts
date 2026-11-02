@@ -816,8 +816,10 @@ export const PLACEMENT_SEARCH_WORDS = { unpinned: 'auto', misplaced: 'misplaced'
  * domain, so a term from it (the operator's own brand) matched the node of
  * every pinned tenant and listed them all. A misplaced tenant is also found
  * by the node it is actually on, which the column shows in red above its
- * primary. `auto` finds the tenants with no node pin and `misplaced` the ones
- * off their primary node, the two words the column shows in place of a node.
+ * primary, and an Auto tenant by the node it runs on, which the column shows
+ * as `auto (<node>)`. `auto` finds the tenants with no node pin and `misplaced`
+ * the ones off their primary node, the two words the column shows in place of
+ * a node.
  *
  * The caller's query must LEFT JOIN hosting_plans (the plan name is matched
  * on the joined row).
@@ -849,7 +851,7 @@ export function tenantSearchCondition(term: string): SQL {
     sql`${tenants.nodeName} IN (${matchingNodes})`, // allow-array-binding: matchingNodes is a SQL subquery, not an array
     sql`EXISTS (
       SELECT 1 FROM ${tenantPlacementState} tps, unnest(tps.actual_nodes) AS an(node)
-       WHERE tps.tenant_id = ${tenants.id} AND tps.status = 'misplaced'
+       WHERE tps.tenant_id = ${tenants.id} AND (tps.status = 'misplaced' OR ${tenants.nodeName} IS NULL)
          AND (${nodeNameMatches(sql`an.node`)} OR an.node IN (${matchingNodes})))`, // allow-array-binding: a SQL subquery, not an array
   ];
   if (word === PLACEMENT_SEARCH_WORDS.unpinned) clauses.push(isNull(tenants.nodeName));
@@ -865,10 +867,22 @@ export function tenantSearchCondition(term: string): SQL {
  * Placement matches what the Placement column shows: `auto` the tenants with
  * no pin, `misplaced` the ones off where they belong, and a node the tenants
  * pinned to it or, while off their own node, running on it (the red name the
- * column shows). The node is matched by its Kubernetes name or hostname, as
- * placement observations carry either.
+ * column shows). Active placement is where tenants are now, whatever their pin:
+ * a node's tenants by the placement reconciler's last look, so it finds the
+ * Auto tenants on the node too, and not the ones pinned there but running
+ * elsewhere. A node is matched by its Kubernetes name or hostname, as placement
+ * observations carry either.
  */
 export function tenantFilterConditions(filters: TenantListFilters): SQL[] {
+  // Both names a node goes by: placement observations carry either.
+  const namesOf = (node: string): SQL => sql`
+    SELECT v.node FROM ${clusterNodes} cn,
+      LATERAL (VALUES (cn.name), (cn.labels->>'kubernetes.io/hostname')) AS v(node)
+     WHERE cn.name = ${node} AND v.node IS NOT NULL`;
+  const actuallyOn = (node: string, onlyMisplaced: boolean): SQL => sql`EXISTS (
+    SELECT 1 FROM ${tenantPlacementState} tps, unnest(tps.actual_nodes) AS an(node)
+     WHERE tps.tenant_id = ${tenants.id}${onlyMisplaced ? sql` AND tps.status = 'misplaced'` : sql``}
+       AND (an.node = ${node} OR an.node IN (${namesOf(node)})))`; // allow-array-binding: namesOf is a SQL subquery, not an array
   const out: SQL[] = [];
   if (filters.status) out.push(eq(tenants.status, filters.status));
   if (filters.tier) out.push(eq(tenants.storageTier, filters.tier));
@@ -879,18 +893,9 @@ export function tenantFilterConditions(filters: TenantListFilters): SQL[] {
   } else if (placement === TENANT_PLACEMENT_FILTER.misplaced) {
     out.push(sql`EXISTS (SELECT 1 FROM ${tenantPlacementState} tps WHERE tps.tenant_id = ${tenants.id} AND tps.status = 'misplaced')`);
   } else if (placement) {
-    const names = sql`
-      SELECT v.node FROM ${clusterNodes} cn,
-        LATERAL (VALUES (cn.name), (cn.labels->>'kubernetes.io/hostname')) AS v(node)
-       WHERE cn.name = ${placement} AND v.node IS NOT NULL`;
-    out.push(or(
-      eq(tenants.nodeName, placement),
-      sql`EXISTS (
-        SELECT 1 FROM ${tenantPlacementState} tps, unnest(tps.actual_nodes) AS an(node)
-         WHERE tps.tenant_id = ${tenants.id} AND tps.status = 'misplaced'
-           AND (an.node = ${placement} OR an.node IN (${names})))`, // allow-array-binding: names is a SQL subquery, not an array
-    ) as SQL);
+    out.push(or(eq(tenants.nodeName, placement), actuallyOn(placement, true)) as SQL);
   }
+  if (filters.activePlacement) out.push(actuallyOn(filters.activePlacement, false));
   return out;
 }
 

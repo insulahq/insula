@@ -1,5 +1,6 @@
 import type { TenantPlacementSummary } from '@insula/api-contracts';
 import { useNodeLabel, useNodeText } from '@/hooks/use-node-labels';
+import { autoCurrentNodes } from '@/lib/tenant-placement';
 
 interface PlacementCellProps {
   /** `tenants.node_name` — the primary node ("primary data location"). */
@@ -50,13 +51,18 @@ export default function PlacementCell({ nodeName, placement }: PlacementCellProp
 
   // Not pinned is NOT the same as unknown. A bare "—" read as missing data,
   // which is what the column actually showed for everyone while nodeName was
-  // being stripped by the response schema.
+  // being stripped by the response schema. An Auto tenant says where it is
+  // now; until the placement reconciler has seen it, plain "auto".
+  const current = autoCurrentNodes(placement).map((n) => nodeLabel(n));
   return (
     <span
       className="italic text-gray-500 dark:text-gray-400"
-      title="Auto: no node pin. Its pods run on the node holding its data"
+      title={current.length > 0
+        ? `Auto: no node pin. On ${current.join(', ')} (where it runs, or holds its data)`
+        : 'Auto: no node pin. Its pods run on the node holding its data'}
+      data-testid="placement-auto"
     >
-      auto
+      {current.length > 0 ? `auto (${current.join(', ')})` : 'auto'}
     </span>
   );
 }

@@ -2,6 +2,7 @@ import type { TenantResponse } from '@insula/api-contracts';
 import type { SortAccessors } from '@/hooks/use-sortable';
 import type { ResourceMetrics } from '@/hooks/use-resource-metrics';
 import { isMetricValue } from '@/lib/format-metrics';
+import { autoCurrentNodes } from '@/lib/tenant-placement';
 
 /**
  * Sort values for the admin Tenants table — each column sorts by what it
@@ -11,8 +12,9 @@ import { isMetricValue } from '@/lib/format-metrics';
  *   numerically. A suspended or archived tenant shows `—` there, and so does
  *   one without a reading; both sort as "no value" (after every value).
  * - Placement: the node name on screen — where the tenant ACTUALLY runs when
- *   it is off its primary node, else its pinned node, by alias. `auto` (no pin)
- *   has no node and sorts as "no value".
+ *   it is off its primary node, else its pinned node, by alias. An Auto tenant
+ *   (no pin) sorts by the node in its `auto (<node>)`; one not yet observed has
+ *   no node and sorts as "no value".
  * - Tier: `HA` / `local` as shown (a missing tier renders, and sorts, as local).
  * - Plan: the plan name; Expires: the expiry instant, `never` as "no value".
  */
@@ -43,7 +45,11 @@ export function metricSortValue(
   return inUse;
 }
 
-/** The node name the Placement cell shows, or null for `auto`. */
+/**
+ * The node name the Placement cell shows, so a sort groups each node's tenants:
+ * an Auto tenant sorts by the node it is on (`auto (<node>)`), next to the
+ * tenants pinned there. Null for an Auto tenant not yet observed.
+ */
 export function placementSortValue(
   tenant: Pick<SortableTenant, 'nodeName' | 'placement'>,
   nodeLabel: (name: string) => string,
@@ -54,7 +60,9 @@ export function placementSortValue(
       ? placement.actualNodes.map((n) => nodeLabel(n)).join(', ')
       : 'unknown';
   }
-  return tenant.nodeName ? nodeLabel(tenant.nodeName) : null;
+  if (tenant.nodeName) return nodeLabel(tenant.nodeName);
+  const current = autoCurrentNodes(placement);
+  return current.length > 0 ? current.map((n) => nodeLabel(n)).join(', ') : null;
 }
 
 /** An ISO instant as epoch millis, or null when unset or unparseable. */

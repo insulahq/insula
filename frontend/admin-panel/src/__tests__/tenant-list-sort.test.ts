@@ -86,8 +86,13 @@ describe('placementSortValue', () => {
     expect(placementSortValue({ nodeName: 'n1', placement: null }, (n) => `alias-${n}`)).toBe('alias-n1');
   });
 
-  it('is null for an unpinned (auto) tenant', () => {
+  it('is null for an unpinned (auto) tenant not yet observed', () => {
     expect(placementSortValue({ nodeName: null, placement: null }, identity)).toBeNull();
+  });
+
+  it('is the node an Auto tenant runs on, by alias, as its cell shows auto (<node>)', () => {
+    const auto = { ...misplaced, status: 'unpinned' as const, primaryNode: null, actualNodes: ['n2'] };
+    expect(placementSortValue({ nodeName: null, placement: auto }, (n) => `alias-${n}`)).toBe('alias-n2');
   });
 });
 
@@ -117,6 +122,17 @@ describe('tenantSortAccessors — whole table', () => {
 
   it('sorts placement by node name, auto last', () => {
     expect(order('placement')).toEqual(['t2', 't1', 't3']);
+  });
+
+  it('sorts an Auto tenant next to the tenants on its node', () => {
+    const auto = {
+      id: 't4', name: 'Delta', status: 'active' as const, nodeName: null, storageTier: 'local' as const, planName: null, subscriptionExpiresAt: null,
+      placement: { status: 'unpinned' as const, primaryNode: null, actualNodes: ['node-10'], reasons: [], misplacedSince: null, checkedAt: '2026-10-01T00:00:00Z' },
+    };
+    const rows = [...tenants, auto];
+    const acc = tenantSortAccessors<(typeof rows)[number]>({}, identity);
+    // node-2 (t2), node-10 (t1 and the Auto t4 on it), then the unobserved Auto t3.
+    expect(sortRows(rows, 'placement', 'asc', acc).map((t) => t.id)).toEqual(['t2', 't1', 't4', 't3']);
   });
 
   it('sorts tier, plan and expiry by what is shown', () => {
