@@ -312,3 +312,24 @@ describe('Application Detail Panel — supported versions table', () => {
     expect(versions()).toEqual(['6.10', '6.9', '6.7']);
   });
 });
+
+describe('Admin catalog card — an entry its repository no longer lists', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('says so on the removed entry only', async () => {
+    const removed = { ...MOCK_CATALOG_ENTRIES[0], id: 'cat-2', code: 'minio', name: 'MinIO', removedFromSourceAt: '2026-11-02T10:00:00Z' };
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url.includes('/catalog')) return Promise.resolve({ data: [MOCK_CATALOG_ENTRIES[0], removed] });
+      return Promise.resolve({ data: [] });
+    });
+    render(<Applications />, { wrapper: createWrapper() });
+
+    const card = await screen.findByTestId('catalog-card-minio');
+    expect(within(card).getByTestId('catalog-removed-minio')).toHaveTextContent('Removed from its repository');
+    expect(within(card).getByTestId('catalog-removed-note-minio')).toHaveTextContent('Deployments made from it keep running.');
+    const listed = screen.getByTestId('catalog-card-wordpress');
+    expect(within(listed).queryByTestId('catalog-removed-wordpress')).toBeNull();
+  });
+});

@@ -1,0 +1,12 @@
+-- When the entry's catalog repository stopped listing it (catalog.json).
+--
+-- The sync only ever added and updated entries, so an entry deleted from its
+-- repository stayed in every install's catalog, offered to tenants, for good
+-- (the Official Catalog's MinIO, whose image no longer pulls). The sync now
+-- sets this column instead of deleting the row: deployments made from the
+-- entry keep working and can still be upgraded or redeployed, while the entry
+-- is hidden from tenants and refused for new deploys. NULL = listed. A
+-- repository that lists the entry again clears it.
+--
+-- Replay-safe (IF NOT EXISTS) for the non-transactional runner.
+ALTER TABLE catalog_entries ADD COLUMN IF NOT EXISTS removed_from_source_at timestamp;

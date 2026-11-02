@@ -72,9 +72,10 @@ components:
       hold:
         below: "1.37"
         reason: >-
-          cert-manager v1.21 (supports 1.33–1.36), Flux 2.9 (1.34–1.36) and Longhorn 1.13
-          (documented to 1.36) do not support Kubernetes 1.37 yet, and its etcd 3.7 is
-          one-way once every member runs it. Lift with those three; take 1.36.x meanwhile.
+          cert-manager v1.21 (supports 1.33–1.36) and Longhorn 1.13 (documented to 1.36)
+          do not support Kubernetes 1.37 yet, and its etcd 3.7 is one-way once every
+          member runs it (Flux 2.10 already supports 1.35–1.37). Lift with those two; take
+          1.36.x meanwhile.
     scan: trivy    # chart/manifest images: scripts/list-chart-images.sh (weekly image scan)
     owner: platform
     notes: >-
@@ -179,8 +180,8 @@ components:
     name: Sealed Secrets controller (secret-at-rest decryption)
     tier: "0"
     kind: chart
-    pinned: "2.20.0"
-    app_version: "v0.40.0"
+    pinned: "2.22.0"
+    app_version: "v0.41.2"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: bitnami-labs/sealed-secrets, advisories: bitnami-labs/sealed-secrets, tag_regex: '^helm-v(\d+\.\d+\.\d+)$' }
@@ -205,7 +206,7 @@ components:
     name: CrowdSec LAPI (IPS / behavioural bouncer)
     tier: "0"
     kind: image
-    pinned: "v1.8.1"
+    pinned: "v1.8.2"
     pin_source: k8s/base/crowdsec/deployment.yaml
     pin_check: true
     repos: [crowdsecurity/crowdsec]
@@ -357,7 +358,7 @@ components:
     name: Flux v2 (GitOps reconciler — supply chain)
     tier: "1"
     kind: binary
-    pinned: "2.9.6"
+    pinned: "2.10.0"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: fluxcd/flux2, advisories: fluxcd/flux2 }
@@ -375,7 +376,7 @@ components:
     name: VictoriaMetrics vmsingle (metrics TSDB + scraper + VMUI)
     tier: "1"
     kind: image
-    pinned: "v1.154.1"
+    pinned: "v1.155.0"
     pin_source: k8s/base/monitoring/vmsingle.yaml
     pin_check: true
     repos: [victoriametrics/victoria-metrics]
@@ -491,7 +492,7 @@ components:
     watch: { type: github_releases, repo: rclone/rclone, advisories: rclone/rclone }
     scan: trivy
     owner: platform
-    notes: rclone/rclone image (etcd-snapshot-via-shim CronJob, the speedtest + streaming-store Jobs) + the SHA-verified binary baked into backup-rclone. Backup data path.
+    notes: rclone/rclone image (etcd-snapshot-via-shim CronJob, the speedtest + streaming-store Jobs) + the SHA-verified binary baked into backup-rclone. Backup data path. The dev S3 fixture's bucket Job (k8s/dev/s3/s3.yaml) and the VM lab (lib/lab-svc.sh LAB_RCLONE_IMAGE, net-services.sh, start.sh) use the same tag — bump them with it.
 
   - id: rclone-binary
     name: rclone (host binary installed by bootstrap.sh)
@@ -1062,33 +1063,25 @@ components:
     notes: One optional mesh underlay (ADR-022; not a hard dep). Watch advisories; operator owns deployment.
 
   # ───────────────────────────── Dev-only fixtures (not in production installs) ─────────────────────────────
-  - id: dev-minio
-    name: MinIO (dev S3 fixture)
+  - id: dev-versitygw
+    name: versitygw (dev and lab S3 fixture)
     tier: "3"
     kind: image
-    pinned: "RELEASE.2025-01-20T14-49-07Z"
-    pin_source: k8s/dev/minio/minio.yaml
+    pinned: "v1.10.0"
+    pin_source: k8s/dev/s3/s3.yaml
     pin_check: true
-    repos: [minio/minio]
-    watch: { type: github_releases, repo: minio/minio, advisories: minio/minio }
+    repos: [versity/versitygw]
+    watch: { type: github_releases, repo: versity/versitygw, advisories: versity/versitygw }
     scan: trivy
     owner: platform
     dev_only: true
-    notes: Local-dev S3 endpoint for backup-target testing. Never deployed to real clusters.
-
-  - id: dev-minio-mc
-    name: MinIO client mc (dev fixture)
-    tier: "3"
-    kind: image
-    pinned: "RELEASE.2025-01-17T23-25-50Z"
-    pin_source: k8s/dev/minio/minio.yaml
-    pin_check: true
-    repos: [minio/mc]
-    watch: { type: github_releases, repo: minio/mc, advisories: minio/mc }
-    scan: trivy
-    owner: platform
-    dev_only: true
-    notes: Dev-only MinIO client.
+    notes: >-
+      S3 endpoint for backup-target testing (posix backend: buckets are directories,
+      objects are files). Never deployed to real clusters. The same pin is copied into the
+      VM lab, which nothing else drift-checks — bump them together:
+      scripts/vm-integration-tests/lib/lab-svc.sh (LAB_S3_IMAGE; the lab replaces its
+      container on the next `lab.sh up svc`), net-services.sh and start.sh. Replaced MinIO,
+      whose minio/minio and minio/mc images stopped pulling without credentials.
 
   - id: dev-samba
     name: dperson/samba (dev CIFS fixture)

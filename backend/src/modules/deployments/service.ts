@@ -466,6 +466,16 @@ export async function createDeployment(
       { catalog_entry_id: entry.id },
     );
   }
+  // Its catalog repository no longer lists it (migration 0173): nothing new is
+  // deployed from it. Existing deployments keep working, like a disabled entry's.
+  if (entry.removedFromSourceAt) {
+    throw new ApiError(
+      'CATALOG_ENTRY_REMOVED',
+      `'${entry.name}' was removed from its catalog repository and can no longer be deployed. Deployments made from it keep running.`,
+      409,
+      { catalog_entry_id: entry.id },
+    );
+  }
 
   // Resolve version-aware configuration: components, volumes, env vars
   const resolved = await resolveVersionAwareDeploymentConfig(db, entry, input.version);

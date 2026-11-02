@@ -17,8 +17,8 @@
 # Pinned to the latest stable releases at the time of writing.
 LAB_PDNS_IMAGE="${LAB_PDNS_IMAGE:-powerdns/pdns-auth-51:5.1.4}"
 LAB_STEPCA_IMAGE="${LAB_STEPCA_IMAGE:-smallstep/step-ca:0.30.2}"
-LAB_S3_IMAGE="${LAB_S3_IMAGE:-versity/versitygw:v1.8.0}"
-LAB_RCLONE_IMAGE="${LAB_RCLONE_IMAGE:-rclone/rclone:1.74.1}"
+LAB_S3_IMAGE="${LAB_S3_IMAGE:-versity/versitygw:v1.10.0}"
+LAB_RCLONE_IMAGE="${LAB_RCLONE_IMAGE:-rclone/rclone:1.75.2}"
 LAB_SFTP_IMAGE="${LAB_SFTP_IMAGE:-atmoz/sftp:latest}"
 LAB_SMB_IMAGE="${LAB_SMB_IMAGE:-dperson/samba:latest}"
 
@@ -93,6 +93,11 @@ if [ "$(jq -r '.authority.claims.defaultTLSCertDuration // empty' "$D/step/confi
 fi
 
 # ── Backup targets: S3 (versitygw), SFTP, SMB ──
+# A pin bump reaches a running lab: an S3 container on another image is replaced.
+# Safe because the posix backend keeps every bucket and object in the bind mount.
+if have s3 && [ "$(docker inspect -f '{{.Config.Image}}' s3)" != "$LAB_S3_IMAGE" ]; then
+  docker rm -f s3 >/dev/null
+fi
 have s3 || docker run -d --name s3 --restart=always --network host -v "$D/s3:/data" \
   -e ROOT_ACCESS_KEY_ID="$S3_USER" -e ROOT_SECRET_ACCESS_KEY="$S3_PW" "$LAB_S3_IMAGE" --port :9000 posix /data
 for bucket in dev-backups stg-backups; do

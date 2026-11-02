@@ -46,7 +46,7 @@ Entries cover the full spectrum, and the panel's **type** filter separates them:
 |---|---|---|
 | **Runtimes** | A blank environment you put your own code into (upload via SFTP, Git, or the file manager) | PHP (Apache or Nginx), Node.js, Python, Ruby, Go, Java, .NET, Bun |
 | **Static** | A web server for static files | static site |
-| **Databases / Services** | Data stores and helpers a site can use | MariaDB, PostgreSQL, MongoDB, Redis, Memcached, MinIO |
+| **Databases / Services** | Data stores and helpers a site can use | MariaDB, PostgreSQL, MongoDB, Redis, Memcached |
 | **Applications** | Complete, self-contained products deployed as one unit (their own database, cache and ingress bundled) — from the opt-in community catalog | WordPress, Nextcloud, Jitsi, Gitea, Matomo |
 
 A tenant browses the catalog, deploys an entry onto one of their domains, and —

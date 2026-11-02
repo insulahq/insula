@@ -81,6 +81,21 @@ r = cmp("1.37", [("1.38", None), ("1.37", None)], {"hold": {"below": "1.38", "re
 check("hold: nothing under the hold is newer → not behind, still says held", not r["behind"] and "held below 1.38" in r.get("held", ""))
 r = cmp("1.37", [("1.39", None), ("1.38", None), ("1.37", None)], {"hold": {"below": "1.38", "reason": "unstable"}}, docker=True)
 check("hold: undated docker tags get no soak", not r.get("soak"))
+r = cmp("1.36.5", [("1.36.6", "2026-10-29T16:00:00Z"), ("1.36.5", "2026-09-27T00:00:00Z")], docker=True)
+check("soak: a docker tag pushed 1 day ago soaks like a release", not r["behind"] and r.get("soak") == "1.36.6" and r["soak_until"] == "2026-11-05")
+
+# Docker Hub tags are dated by their last push (no network: _get is stubbed).
+pages = [{"results": [{"name": "1.36.6", "tag_last_pushed": "2026-11-01T09:00:00Z", "last_updated": "2026-11-01T09:00:00Z"},
+                      {"name": "1.36.5", "last_updated": "2026-09-27T00:00:00Z"}], "next": "page2"},
+         {"results": [{"name": "1.36.4"}], "next": None}]
+real_get = cl._get
+cl._get = lambda url, token=None: pages.pop(0)
+try:
+    got = cl.dockerhub_tags("alpine/k8s")
+finally:
+    cl._get = real_get
+check("dockerhub_tags: tag_last_pushed first, last_updated next, else undated",
+      got == [("1.36.6", "2026-11-01T09:00:00Z"), ("1.36.5", "2026-09-27T00:00:00Z"), ("1.36.4", None)])
 
 print()
 if failures:

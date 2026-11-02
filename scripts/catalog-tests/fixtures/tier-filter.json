@@ -31,7 +31,7 @@
       ]
     },
     "medium": {
-      "$comment": "300 MiB - 1 GiB or multi-component apps that bundle a DB. 12 entries.",
+      "$comment": "300 MiB - 1 GiB or multi-component apps that bundle a DB. 11 entries.",
       "entries": [
         "wordpress",
         "matomo",
@@ -43,8 +43,7 @@
         "strapi",
         "directus",
         "rocketchat",
-        "mongodb-7",
-        "minio"
+        "mongodb-7"
       ]
     },
     "large": {

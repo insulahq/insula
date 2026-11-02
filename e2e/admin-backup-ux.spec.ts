@@ -72,9 +72,9 @@ test.describe('backup UX', () => {
           headers: auth,
           data: {
             name: `wal-e2e-${stamp}`, storage_type: 's3',
-            s3_endpoint: 'http://minio.dev-minio.svc.cluster.local:9000',
+            s3_endpoint: 'http://s3.dev-s3.svc.cluster.local:9000',
             s3_bucket: 'system-backups', s3_prefix: `wal-e2e-${stamp}`, s3_region: 'us-east-1',
-            s3_access_key: 'minio-dev-access-key', s3_secret_key: 'minio-dev-secret-key',
+            s3_access_key: 's3-dev-access-key', s3_secret_key: 's3-dev-secret-key',
           },
         })).json()) as { data?: { id?: string } };
         cfgId = created.data?.id ?? null;
@@ -143,9 +143,9 @@ test.describe('backup UX', () => {
         headers: auth,
         data: {
           name: cfgName, storage_type: 's3',
-          s3_endpoint: 'http://minio.dev-minio.svc.cluster.local:9000',
+          s3_endpoint: 'http://s3.dev-s3.svc.cluster.local:9000',
           s3_bucket: 'snapshots', s3_prefix: cfgName, s3_region: 'us-east-1',
-          s3_access_key: 'minio-dev-access-key', s3_secret_key: 'minio-dev-secret-key',
+          s3_access_key: 's3-dev-access-key', s3_secret_key: 's3-dev-secret-key',
         },
       })).json()) as { data?: { id?: string } };
       cfgId = created.data?.id ?? null;
