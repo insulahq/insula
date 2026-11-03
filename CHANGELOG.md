@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.4] - 2026-11-03
+
 ### Security
 
 - **Reloader v1.4.22 → v1.4.23, out of its soak.** Fixable HIGHs 6 → 0 (Go 1.26.10, newer
