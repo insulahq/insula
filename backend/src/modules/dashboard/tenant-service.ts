@@ -114,15 +114,27 @@ export async function buildTenantSummary(
       const r = await db.execute<Record<string, number | null>>(sql`
         SELECT
           (SELECT COUNT(*)::int FROM domains WHERE tenant_id = ${tenantId}) AS total,
-          (SELECT COUNT(*)::int FROM domains WHERE tenant_id = ${tenantId} AND status::text = 'active') AS verified,
-          (SELECT COUNT(*)::int FROM ssl_certificates WHERE tenant_id = ${tenantId}
-             AND COALESCE(status,'') <> 'revoked') AS certs,
+          -- 'verified' is the state a verified domain reaches. This counted
+          -- 'active', a declared enum label nothing ever sets, so every tenant
+          -- read "0 of N verified" (the admin domain alert had the same bug).
+          (SELECT COUNT(*)::int FROM domains WHERE tenant_id = ${tenantId} AND status::text = 'verified') AS verified,
+          -- INNER joins on domains: a certificate row whose domain is gone
+          -- serves nothing. Until migration 0174 a deleted domain left its
+          -- row behind, and its long-passed renewal date pinned "Renews in"
+          -- at 0d for good.
+          (SELECT COUNT(*)::int FROM ssl_certificates c JOIN domains cd ON cd.id = c.domain_id
+            WHERE c.tenant_id = ${tenantId} AND COALESCE(c.status,'') <> 'revoked') AS certs,
           -- Days until the earliest scheduled RENEWAL (a third of the
           -- lifetime before expiry), not until expiry: "Renews in" said 45
-          -- days for a certificate due to renew in 15.
+          -- days for a certificate due to renew in 15. 0 once the renewal
+          -- point is reached: from there cert-manager is renewing it, and it
+          -- is not overdue until half the renewal window is gone (the admin
+          -- tile's figure). The "0d" a tenant saw for weeks was a deleted
+          -- domain's row, whose renewal point never moved — see the join.
           (SELECT GREATEST(0, MIN(EXTRACT(DAY FROM (${renewalAtSql('c', autoRenewedSql('c', 'cd'))} - NOW()))))::int
-             FROM ssl_certificates c LEFT JOIN domains cd ON cd.id = c.domain_id
-            WHERE c.tenant_id = ${tenantId} AND c.expires_at IS NOT NULL) AS nearest
+             FROM ssl_certificates c JOIN domains cd ON cd.id = c.domain_id
+            WHERE c.tenant_id = ${tenantId} AND c.expires_at IS NOT NULL
+              AND COALESCE(c.status,'') <> 'revoked') AS nearest
       `);
       const x = (r.rows ?? [])[0] ?? {};
       return {

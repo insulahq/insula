@@ -84,7 +84,10 @@ export async function execConfigTablesItem(args: {
   if (selector.kind === 'all') {
     pickedCamel = allTables;
   } else if (selector.kind === 'tables' && Array.isArray(selector.tables)) {
-    pickedCamel = selector.tables;
+    // In the dump's order, whatever order the cart listed them in: parents
+    // (domains) are restored before the rows that point at them, or every
+    // certificate row would read as an orphan and be skipped.
+    pickedCamel = [...selector.tables].sort((a, b) => allTables.indexOf(a) - allTables.indexOf(b));
   } else {
     throw new Error(`config-tables: unsupported selector ${JSON.stringify(selector)}`);
   }
@@ -98,6 +101,7 @@ export async function execConfigTablesItem(args: {
   }
 
   let totalUpserts = 0;
+  let totalSkipped = 0;
   // Applications coming back through a TENANT cart count against its limit.
   await withinApplicationLimitForCart({
     app,
@@ -127,8 +131,8 @@ export async function execConfigTablesItem(args: {
               : sqlTable === 'mailboxes'
                 ? { ...(safeRow as Record<string, unknown>), stalwart_principal_id: null }
                 : safeRow;
-          await upsertRow(tx, sqlTable, withoutStalwartIds);
-          totalUpserts++;
+          if (await upsertRow(tx, sqlTable, withoutStalwartIds)) totalUpserts++;
+          else totalSkipped++;
         }
       }
     }),
@@ -140,7 +144,8 @@ export async function execConfigTablesItem(args: {
   const dumpJsonBytes = JSON.stringify(dump).length;
   await app.db.execute(sql`
     UPDATE restore_items
-    SET progress_message = ${`upserted ${totalUpserts} rows across ${pickedCamel.length} table(s)`},
+    SET progress_message = ${`upserted ${totalUpserts} rows across ${pickedCamel.length} table(s)`
+      + (totalSkipped > 0 ? `; skipped ${totalSkipped} whose parent row is gone` : '')},
         size_bytes = ${dumpJsonBytes}
     WHERE id = ${item.id}
   `);

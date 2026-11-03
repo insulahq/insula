@@ -2,9 +2,10 @@ import { sql } from 'drizzle-orm';
 import type { DashboardAlert } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { countStalePodsByNode } from '../node-health/recovery.js';
+import { listStalePods } from '../node-health/recovery.js';
 import { readPvcUsage, type PvcUsageReader } from './pvc-usage.js';
 import { alert } from './alerts.js';
+import { DASHBOARD_SUBJECT_LIMIT, moreRow } from './subjects.js';
 
 /**
  * Alerts that can only be answered by the cluster, so they ride the SLOW
@@ -221,11 +222,11 @@ export async function buildOrphanedVolumeAlert(
 
 /** Failed / Evicted / ContainerStatusUnknown pods left behind on a node. */
 export async function buildOrphanedPodAlert(k8s: K8sClients): Promise<DashboardAlert | null> {
-  const byNode = await countStalePodsByNode(k8s);
-  const entries = Object.entries(byNode)
-    .filter(([, n]) => n > 0)
-    .sort((a, b) => b[1] - a[1]);
-  const total = entries.reduce((sum, [, n]) => sum + n, 0);
+  const pods = [...await listStalePods(k8s)].sort((a, b) => a.node.localeCompare(b.node) || a.ns.localeCompare(b.ns));
+  const byNode: Record<string, number> = {};
+  for (const p of pods) byNode[p.node] = (byNode[p.node] ?? 0) + 1;
+  const entries = Object.entries(byNode).sort((a, b) => b[1] - a[1]);
+  const total = pods.length;
   if (total === 0) return null;
 
   return alert({
@@ -240,7 +241,12 @@ export async function buildOrphanedPodAlert(k8s: K8sClients): Promise<DashboardA
       ? `${entries[0][1]} on ${entries[0][0]}`
       : `across ${entries.length} nodes · worst ${entries[0][0]}`,
     href: '/cluster/nodes',
-    detail: entries.map(([node, n]) => [node, `${n} pod${n === 1 ? '' : 's'}`] as [string, string]),
+    // The pods themselves, not only their nodes: which ones failed is the
+    // symptom worth reading before clearing them.
+    detail: [
+      ...pods.slice(0, DASHBOARD_SUBJECT_LIMIT).map((p) => [`${p.ns}/${p.name}`, p.node] as [string, string]),
+      ...moreRow(total, Math.min(total, DASHBOARD_SUBJECT_LIMIT)),
+    ],
     note: 'Failed, evicted or status-unknown pods. Clearing them is safe — Cluster → Nodes → Recovery.',
   });
 }

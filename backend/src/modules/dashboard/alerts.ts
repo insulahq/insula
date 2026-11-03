@@ -9,6 +9,8 @@ import type { Database } from '../../db/index.js';
 import { aliasNodeNames, type NodeLabels } from '../nodes/labels.js';
 import type { Section } from './section.js';
 import { autoRenewedSql, renewalOverdueSql } from '../certificates/renewal-policy-sql.js';
+import { describeSubject, MONITORING_UNREACHABLE_RULE_ID, ruleById } from '../monitoring/rules.js';
+import { DASHBOARD_SUBJECT_LIMIT, daysLeft, forHowLong, moreRow } from './subjects.js';
 
 /**
  * The alert band, derived from notification categories.
@@ -60,6 +62,14 @@ export function rankAlerts(alerts: readonly DashboardAlert[]): DashboardAlert[] 
   });
 }
 
+/** A firing series as the operator reads it: the rule's name, and the series it fires on. */
+export function sloSubject(ruleId: string, labels: Record<string, string>): { rule: string; subject: string | null } {
+  if (ruleId === MONITORING_UNREACHABLE_RULE_ID) return { rule: 'Monitoring unreachable', subject: null };
+  const rule = ruleById(ruleId);
+  if (!rule) return { rule: ruleId, subject: null };
+  return { rule: rule.name, subject: describeSubject(rule, labels) };
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // admin
 // ─────────────────────────────────────────────────────────────────────
@@ -74,43 +84,60 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
   // Certificates — admin.cert_expiring.
   // Table and columns verified against the live schema: `ssl_certificates`
   // holds expires_at/status; there is no certificate_health table.
+  //
+  // INNER join on domains: a certificate row whose domain is gone describes
+  // nothing that serves traffic. Deleting a domain left its row behind until
+  // migration 0174, and on production two such rows were this tile — "2
+  // certificates expiring" for a wildcard whose live certificate was healthy.
+  //
+  // One row per certificate, soonest first, so the hover card can say WHICH.
+  // It used to show only the count, and the subtitle paired the
+  // alphabetically first domain with the soonest expiry of any of them.
   const certs = await db.execute<{
-    n: number; soonest: number | null; name: string | null;
-    domain_id: string | null; tenant_id: string | null;
+    total: number; name: string; tenant_name: string | null; days: number;
+    domain_id: string; tenant_id: string;
   }>(sql`
-    SELECT COUNT(*)::int AS n,
-           MIN(EXTRACT(DAY FROM (c.expires_at - NOW())))::int AS soonest,
-           MIN(d.domain_name) AS name,
-           -- Only meaningful when exactly one certificate is expiring; the
-           -- alert checks that before using them to build a deep link.
-           MIN(d.id) AS domain_id,
-           MIN(d.tenant_id) AS tenant_id
+    SELECT COUNT(*) OVER ()::int AS total,
+           COALESCE(NULLIF(c.subject, ''), d.domain_name) AS name,
+           t.name AS tenant_name,
+           EXTRACT(DAY FROM (c.expires_at - NOW()))::int AS days,
+           d.id AS domain_id, d.tenant_id
       FROM ssl_certificates c
-      LEFT JOIN domains d ON d.id = c.domain_id
+      JOIN domains d ON d.id = c.domain_id
+      LEFT JOIN tenants t ON t.id = d.tenant_id
      WHERE ${renewalOverdueSql('c', autoRenewedSql('c', 'd'))}
        AND COALESCE(c.status, '') <> 'revoked'
+     ORDER BY c.expires_at ASC
+     LIMIT ${DASHBOARD_SUBJECT_LIMIT}
   `);
-  const cert = (certs.rows ?? [])[0];
-  if (cert && Number(cert.n) > 0) {
-    const soonest = cert.soonest ?? 0;
+  const certRows = certs.rows ?? [];
+  if (certRows.length > 0) {
+    const soonest = certRows[0];
+    const certTotal = Number(soonest.total ?? certRows.length);
+    const days = Number(soonest.days ?? 0);
     out.push(alert({
       categoryId: 'admin.cert_expiring',
-      severity: soonest <= 3 ? 'critical' : 'warning',
-      value: String(cert.n),
-      title: Number(cert.n) === 1 ? 'Certificate expiring' : 'Certificates expiring',
-      subtitle: `${cert.name ?? 'a domain'} · soonest in ${soonest} days`,
+      severity: days <= 3 ? 'critical' : 'warning',
+      value: String(certTotal),
+      title: certTotal === 1 ? 'Certificate expiring' : 'Certificates expiring',
+      subtitle: `${soonest.name} · ${daysLeft(days)}` + (certTotal > 1 ? ` · ${certTotal - 1} more` : ''),
       // When the alert names ONE certificate, go to that domain rather than
       // making the operator find it in a list. Several expiring is a list
       // problem, so the list is the right answer then.
-      href: Number(cert.n) === 1 && cert.tenant_id && cert.domain_id
-        ? `/tenants/${cert.tenant_id}/domains/${cert.domain_id}`
+      href: certTotal === 1
+        ? `/tenants/${soonest.tenant_id}/domains/${soonest.domain_id}`
         : '/tenants/domains',
       // Overdue by the renewal policy — half the renewal window gone without
       // a new certificate — not a fixed 14 days, which a short-lived
       // certificate passes on every cycle.
-      detail: [['Renewal overdue', String(cert.n)],
-               ['Soonest', `${soonest} days`]],
-      note: 'A certificate that fails to renew keeps serving until it expires — this is the last warning.',
+      detail: [
+        ...certRows.map((r) => [
+          r.name,
+          `${daysLeft(Number(r.days ?? 0))}` + (r.tenant_name ? ` · ${r.tenant_name}` : ''),
+        ] as [string, string]),
+        ...moreRow(certTotal, certRows.length),
+      ],
+      note: 'Renewal is overdue: a certificate that fails to renew keeps serving until it expires — this is the last warning.',
     }));
   }
 
@@ -167,7 +194,7 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
         + (downTotal > 1 ? ` · ${downTotal - 1} more` : ''),
       // One subject → deep-link to that tenant. Several is a list problem.
       href: downTotal === 1 ? `/tenants/${w.tenant_id}` : '/tenants',
-      detail: downRows.map((r) => [
+      detail: [...downRows.map((r) => [
         `${r.tenant_name} / ${r.workload}`,
         `${r.down_minutes} min · ${r.reason}`
         // Require BOTH a recorded failure and a counted attempt before saying
@@ -176,7 +203,7 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
         + (Number(r.heal_failed) === 1 && Number(r.heal_attempts) > 0
           ? ` · ${r.heal_attempts} heal attempt(s) failed`
           : Number(r.heal_attempts) > 0 ? ` · heal attempt ${r.heal_attempts} in progress` : ' · heal pending'),
-      ] as [string, string]),
+      ] as [string, string]), ...moreRow(downTotal, downRows.length)],
       // `notHealable` rows will NEVER be auto-healed — a bad image, a
       // crash-loop and an unschedulable pod all come back identical, so the
       // reconciler deliberately does not try. Promising recovery that is never
@@ -227,10 +254,10 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       title: stuckTotal === 1 ? 'Tenant storage operation failed' : 'Tenant storage operations failed',
       subtitle: `${first.name} · ${what(first)} failed` + (stuckTotal > 1 ? ` · ${stuckTotal - 1} more` : ''),
       href: stuckTotal === 1 ? `/tenants/${first.id}` : '/tenants',
-      detail: stuckRows.map((r) => [
+      detail: [...stuckRows.map((r) => [
         r.name,
         `${what(r)} failed` + (r.minutes !== null ? ` · ${r.minutes} min ago` : ''),
-      ] as [string, string]),
+      ] as [string, string]), ...moreRow(stuckTotal, stuckRows.length)],
       note: 'Resize, restore, suspend, resume, archive and moving are refused until this is dealt with. '
         + 'Open the tenant, read the failed operation on its Storage tab (an archived tenant shows it on its page), then use Reset to idle.',
     }));
@@ -266,16 +293,20 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       // about a mailbox's quota. The accounts page is where the mailbox and
       // its quota can actually be seen and raised.
       href: '/tenants/email-accounts',
-      detail: boxRows.map((b) => [b.full_address, `${b.used_mb} / ${b.quota_mb} MB · ${b.pct}%`] as [string, string]),
+      detail: [
+        ...boxRows.map((b) => [b.full_address, `${b.used_mb} / ${b.quota_mb} MB · ${b.pct}%`] as [string, string]),
+        ...moreRow(boxTotal, boxRows.length),
+      ],
       note: 'At 100% inbound mail is rejected at RCPT TO — the sender gets a bounce.',
     }));
   }
 
   // Tenants at a resource limit — admin.tenant_resource_saturation_*
   const sat = await db.execute<{
-    tenant: string; tenant_id: string; resource: string; level: string; used_pct: number;
+    total: number; tenant: string; tenant_id: string; resource: string; level: string; used_pct: number;
   }>(sql`
-    SELECT t.name AS tenant, t.id AS tenant_id, e.resource, e.level, e.used_pct
+    SELECT COUNT(*) OVER ()::int AS total,
+           t.name AS tenant, t.id AS tenant_id, e.resource, e.level, e.used_pct
       FROM tenant_saturation_events e
       JOIN tenants t ON t.id = e.tenant_id
      WHERE e.cleared_at IS NULL
@@ -292,7 +323,7 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
         : 'admin.tenant_resource_saturation_warning',
       severity: critical ? 'critical' : 'warning',
       value: `${worst.used_pct}%`,
-      title: satRows.length === 1 ? 'Tenant at a resource limit' : 'Tenants at a resource limit',
+      title: Number(worst.total ?? satRows.length) === 1 ? 'Tenant at a resource limit' : 'Tenants at a resource limit',
       subtitle: `${worst.tenant} · ${worst.resource} ${worst.used_pct}%`,
       // The subtitle names a tenant; the link used to drop the operator on a
       // list of every tenant to find it again. One affected tenant goes
@@ -300,28 +331,53 @@ export async function buildAdminAlerts(db: Database): Promise<DashboardAlert[]> 
       href: new Set(satRows.map((r) => r.tenant_id)).size === 1 && worst.tenant_id
         ? `/tenants/${worst.tenant_id}`
         : '/tenants',
-      detail: satRows.map((r) => [`${r.tenant} · ${r.resource}`, `${r.used_pct}% · ${r.level}`] as [string, string]),
+      detail: [
+        ...satRows.map((r) => [`${r.tenant} · ${r.resource}`, `${r.used_pct}% · ${r.level}`] as [string, string]),
+        ...moreRow(Number(worst.total ?? satRows.length), satRows.length),
+      ],
       note: 'Reminders widen to 1h, then 6h, then daily while it persists.',
     }));
   }
 
   // Firing SLO rules — admin.slo_alert_*. Table is `alert_state`.
-  const slo = await db.execute<{ severity: string; n: number; subject: string | null }>(sql`
-    SELECT severity, COUNT(*)::int AS n, MIN(subject_key) AS subject
+  // One row per firing series, so the hover card names the rule and what it
+  // fires on. It showed "Firing: 2 · Severity: warning", which is the tile's
+  // own headline again.
+  const slo = await db.execute<{
+    severity: string; total: number; rule_id: string;
+    subject_labels: Record<string, string> | null; minutes: number;
+  }>(sql`
+    SELECT severity, COUNT(*) OVER (PARTITION BY severity)::int AS total,
+           rule_id, subject_labels,
+           FLOOR(EXTRACT(EPOCH FROM (now() - since)) / 60)::int AS minutes
       FROM alert_state
      WHERE state = 'firing'
-     GROUP BY severity
+     ORDER BY severity, since ASC
   `);
+  const sloBySeverity = new Map<string, typeof slo.rows>();
   for (const row of slo.rows ?? []) {
-    const critical = row.severity === 'critical';
+    sloBySeverity.set(row.severity, [...(sloBySeverity.get(row.severity) ?? []), row]);
+  }
+  for (const [severity, rows] of sloBySeverity) {
+    const critical = severity === 'critical';
+    const named = rows.map((r) => sloSubject(r.rule_id, r.subject_labels ?? {}));
+    const first = named[0];
+    const total = Number(rows[0].total ?? rows.length);
     out.push(alert({
       categoryId: critical ? 'admin.slo_alert_critical' : 'admin.slo_alert_warning',
       severity: critical ? 'critical' : 'warning',
-      value: String(row.n),
+      value: String(total),
       title: critical ? 'Monitoring rules firing' : 'Monitoring warnings',
-      subtitle: row.subject && row.subject.length > 0 ? row.subject : 'see Monitoring → SLOs',
+      subtitle: (first.subject ? `${first.rule} · ${first.subject}` : first.rule)
+        + (total > 1 ? ` · ${total - 1} more` : ''),
       href: '/monitoring/slos',
-      detail: [['Firing', String(row.n)], ['Severity', row.severity]],
+      detail: [
+        ...rows.slice(0, DASHBOARD_SUBJECT_LIMIT).map((r, i) => [
+          named[i].rule,
+          (named[i].subject ? `${named[i].subject} · ` : '') + `firing ${forHowLong(Number(r.minutes ?? 0))}`,
+        ] as [string, string]),
+        ...moreRow(total, Math.min(rows.length, DASHBOARD_SUBJECT_LIMIT)),
+      ],
       note: null,
     }));
   }
@@ -343,6 +399,7 @@ export async function buildDnsDriftAlert(db: Database): Promise<DashboardAlert |
   if (!report || report.scanError) return null;
   if (report.driftCount === 0 && report.errorCount === 0) return null;
   const n = report.driftCount;
+  const affected = report.domains.filter((d) => d.error || d.missingCount > 0 || d.staleCount > 0);
   return alert({
     categoryId: 'admin.platform_event',
     severity: 'warning',
@@ -353,11 +410,13 @@ export async function buildDnsDriftAlert(db: Database): Promise<DashboardAlert |
       : `${report.errorCount} zone${report.errorCount === 1 ? '' : 's'} could not be checked`,
     action: 'dns-drift',
     href: '/platform/dns',
+    // Which domains — the counts alone are the subtitle again.
     detail: [
-      ['Domains drifting', String(n)],
-      ['Records missing', String(report.missingCount)],
-      ['Records stale', String(report.staleCount)],
-      ...(report.errorCount > 0 ? [['Zones unreadable', String(report.errorCount)] as [string, string]] : []),
+      ...affected.slice(0, DASHBOARD_SUBJECT_LIMIT).map((d) => [
+        d.domainName,
+        d.error ? `could not be checked: ${d.error}` : `${d.missingCount} to add · ${d.staleCount} to remove`,
+      ] as [string, string]),
+      ...moreRow(affected.length, Math.min(affected.length, DASHBOARD_SUBJECT_LIMIT)),
     ],
     note: 'Route DNS no longer matches the ingress servers: an added server gets no traffic, and visitors are still sent to removed or disabled ones.',
   });

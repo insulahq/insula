@@ -88,7 +88,37 @@ export const RETIRED_BUNDLE_COLUMNS: Readonly<Record<string, readonly string[]>>
 };
 
 /**
- * Generic per-row INSERT … ON CONFLICT (id) DO UPDATE.
+ * Child rows a bundle can carry without their parent. The config dump selects
+ * these tables by tenant, so a bundle taken before migration 0174 holds the
+ * certificate rows of domains that were deleted long before the bundle — rows
+ * the foreign key added by 0174 now refuses. Restoring one would abort the
+ * whole transaction over a certificate for a domain nobody has. Such a row is
+ * skipped, not written.
+ */
+export const ORPHANABLE_BUNDLE_ROWS: Readonly<Record<string, { readonly column: string; readonly parent: string }>> = {
+  ssl_certificates: { column: 'domain_id', parent: 'domains' },
+};
+
+/** True when `row` points at a parent row that does not exist (yet) in this transaction. */
+async function parentMissing(
+  tx: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> },
+  sqlTable: string,
+  row: Record<string, unknown>,
+): Promise<boolean> {
+  const ref = ORPHANABLE_BUNDLE_ROWS[sqlTable];
+  if (!ref) return false;
+  const parentId = row[ref.column];
+  if (typeof parentId !== 'string') return false;
+  const res = await tx.execute(sql`
+    SELECT 1 FROM ${sql.identifier(ref.parent)} WHERE ${sql.identifier('id')} = ${parentId} LIMIT 1
+  `) as { rows?: unknown[] } | unknown[];
+  const rows = Array.isArray(res) ? res : res.rows ?? [];
+  return rows.length === 0;
+}
+
+/**
+ * Generic per-row INSERT … ON CONFLICT (id) DO UPDATE. Resolves false, writing
+ * nothing, for a row in ORPHANABLE_BUNDLE_ROWS whose parent is not there.
  *
  * SAFE:
  *  - Caller pre-validates `sqlTable` against an allow-list before
@@ -101,13 +131,14 @@ export async function upsertRow(
   tx: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> },
   sqlTable: string,
   row: Record<string, unknown>,
-): Promise<void> {
+): Promise<boolean> {
   const retired = RETIRED_BUNDLE_COLUMNS[sqlTable] ?? [];
   const keys = Object.keys(row).filter((k) => !retired.includes(k));
-  if (keys.length === 0) return;
+  if (keys.length === 0) return false;
   if (!keys.includes('id')) {
     throw new Error(`upsertRow: row in '${sqlTable}' has no 'id' column — bundle format mismatch`);
   }
+  if (await parentMissing(tx, sqlTable, row)) return false;
   const tableFragment = sql.identifier(sqlTable);
   const colsFragment = sql.join(keys.map((k) => sql.identifier(k)), sql`, `);
   const valuesFragment = sql.join(keys.map((k) => sql`${row[k]}`), sql`, `);
@@ -129,6 +160,7 @@ export async function upsertRow(
       ON CONFLICT (${sql.identifier('id')}) DO NOTHING
     `);
   }
+  return true;
 }
 
 /**
@@ -172,15 +204,18 @@ export async function applyIdFilteredUpsert(args: {
     }
   }
 
+  let written = 0;
   await app.db.transaction(async (tx) => {
     for (const row of pickedRows) {
-      await upsertRow(tx, sqlTable, row);
+      if (await upsertRow(tx, sqlTable, row)) written++;
     }
   });
+  const skipped = pickedRows.length - written;
 
   await app.db.execute(sql`
     UPDATE restore_items
-    SET progress_message = ${`upserted ${pickedRows.length} ${cartItemTable} row(s)`},
+    SET progress_message = ${`upserted ${written} ${cartItemTable} row(s)`
+      + (skipped > 0 ? `; skipped ${skipped} whose parent row is gone` : '')},
         size_bytes = ${bundleSizeBytes}
     WHERE id = ${item.id}
   `);

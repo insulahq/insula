@@ -32,6 +32,7 @@ import {
 import FailoverLine from '@/components/console/FailoverLine';
 import { useNodeLabel } from '@/hooks/use-node-labels';
 import { CACHE_BAND, triadFigures } from '@/lib/resource-triad';
+import { subjectRows } from '@/lib/dashboard-subjects';
 import { formatBytes } from '@/lib/format-bytes';
 
 /**
@@ -390,9 +391,11 @@ function MailTile({ live }: { live: Live | undefined }) {
       <HoverCard title="Mail — last 7 days" rows={[
         ['Delivered', m.sent7d.toLocaleString()],
         ['Rate-limited', m.rateLimited7d.toLocaleString()],
+        ['Outbound queue', m.queueReachable ? String(m.queueDepth) : 'mail server did not answer'],
         ['Mailboxes', String(m.mailboxes)],
         ['Email domains', String(m.emailDomains)],
         ['Mailboxes over quota', String(m.overQuotaMailboxes)],
+        ...subjectRows(m.overQuota ?? [], m.overQuotaMailboxes),
       ]} note="At 100% of its quota a mailbox refuses inbound mail at RCPT TO." />
     )} />
   );
@@ -455,6 +458,7 @@ function TenantsTile({ summary }: { summary: Summary | undefined }) {
         ['Ingress routes', String(t.routes)],
         ['Domains', String(t.domains)],
         ['Provisioning in flight', String(t.provisioningInFlight)],
+        ...subjectRows(t.provisioning ?? [], t.provisioningInFlight),
       ]} note="A tenant above 90% of any limit opens one alert episode, not one per hour." />
     )} />
   );
@@ -487,6 +491,7 @@ function BackupsTile({ summary }: { summary: Summary | undefined }) {
         ] as Array<[string, string]>)),
         ['Bundles', b.bundles.toLocaleString()],
         ['Tenants never backed up', String(b.tenantsNeverBackedUp)],
+        ...subjectRows(b.neverBackedUp ?? [], b.tenantsNeverBackedUp),
       ]} note="System: the platform database's base backups and WAL, etcd snapshots and DR bundles. Tenant: the repositories of current tenants. Mail: the whole mail store's snapshot repository — separate from the mailboxes inside tenant bundles." />
     )}>
       <div className="flex flex-col divide-y divide-gray-100 dark:divide-gray-700">
@@ -542,6 +547,7 @@ function CertificatesTile({ summary }: { summary: Summary | undefined }) {
         ['Nearest expiry', c.nearestExpiryDays == null ? '—' : `${c.nearestExpiryDays} days`],
         ['Overdue for renewal', String(c.overdue)],
         ['Renewal failures', String(c.failing)],
+        ...subjectRows(c.attention ?? [], c.needsAttention ?? (c.attention ?? []).length),
       ]} note="Wildcards cover webmail and autodiscover on tenant domains at no extra cost." />
     )} />
   );
@@ -555,12 +561,17 @@ function ScheduledTasksTile({ summary }: { summary: Summary | undefined }) {
       { k: 'Jobs', v: String(t.total), sub: `${t.enabled} enabled` },
       { k: 'Failed · 24h', v: String(t.failed24h), tone: t.failed24h > 0 ? 'warn' : 'ok' },
       { k: 'Enabled', v: String(t.enabled) },
-      { k: 'Overdue', v: String(t.overdue), tone: t.overdue > 0 ? 'warn' : undefined },
+      // "Overdue" was a constant 0 — nothing computed it. Never-run jobs are
+      // counted; whether one is late depends on its schedule, so no tone.
+      { k: 'Never run', v: String(t.neverRun ?? 0) },
     ]} card={(
       <HoverCard title="Cron & platform jobs" rows={[
         ['Jobs', String(t.total)],
         ['Enabled', String(t.enabled)],
         ['Failures, 24h', String(t.failed24h)],
+        ...subjectRows(t.failed ?? [], t.failed24h),
+        ['Enabled, never run', String(t.neverRun ?? 0)],
+        ...subjectRows(t.neverRunJobs ?? [], t.neverRun ?? 0),
       ]} note="A job that has never succeeded shows an empty last-success, not a zero." />
     )} />
   );
@@ -577,10 +588,14 @@ function UpdatesTile({ summary }: { summary: Summary | undefined }) {
       { k: 'EOL runtimes', v: String(u.eolRuntimes), tone: u.eolRuntimes > 0 ? 'warn' : 'ok' },
     ]} card={(
       <HoverCard title="Available upgrades" rows={[
-        ['Platform release', u.platformCurrent ? 'current' : 'behind'],
+        ['Platform release', u.platformCurrent
+          ? `current${u.platformInstalled ? ` · ${u.platformInstalled}` : ''}`
+          : `${u.platformInstalled ?? '?'} → ${u.platformAvailable ?? '?'} available`],
         ['Deployments behind', String(u.deploymentsBehind)],
+        ...subjectRows(u.behind ?? [], u.deploymentsBehind),
         ['Auto-upgrade enabled', String(u.autoUpgradeEnabled)],
         ['Runtimes past end-of-life', String(u.eolRuntimes)],
+        ...subjectRows(u.eol ?? [], u.eolRuntimes),
       ]} note="Advisory locks let a tenant pin a version; blocking locks would refuse the upgrade." />
     )} />
   );

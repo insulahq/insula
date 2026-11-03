@@ -10,10 +10,13 @@ import {
 } from './cluster-alerts.js';
 import { readCpuReservation, buildCpuReservationAlert, buildCpuReservationNotice } from './cpu-reservation.js';
 import { buildBackupClasses } from './backup-classes.js';
+import {
+  buildCertificatesTile, buildScheduledTasksTile, buildTenantsTile, buildUpdatesTile, listOverQuotaMailboxes,
+  readMailQueue,
+} from './status-tiles.js';
 import { buildWebDefence } from './web-defence.js';
 import { loadNodeLossFacts, worstNodeLoss } from './node-loss.js';
 import { readNodeMemoryStats, type NodeMemoryStats } from '../node-health/kubelet-disk.js';
-import { autoRenewedSql, renewalOverdueSql } from '../certificates/renewal-policy-sql.js';
 
 interface Logger { warn?(...a: unknown[]): void }
 
@@ -26,75 +29,11 @@ export async function buildAdminSummary(
   const [alerts, tenants, backups, certificates, updates, scheduledTasks, recentChanges] =
     await Promise.all([
       collect('alerts', () => buildAdminAlerts(db), { logger }),
-      collect('tenants', async () => {
-        const r = await db.execute<Record<string, number>>(sql`
-          SELECT
-            (SELECT COUNT(*)::int FROM tenants WHERE status = 'active') AS active,
-            (SELECT COUNT(*)::int FROM tenants) AS total,
-            (SELECT COUNT(*)::int FROM ingress_routes) AS routes,
-            (SELECT COUNT(*)::int FROM domains) AS domains,
-            (SELECT COUNT(*)::int FROM provisioning_tasks WHERE status IN ('pending','running')) AS provisioning
-        `);
-        const x = (r.rows ?? [])[0] ?? {};
-        return {
-          active: Number(x.active ?? 0), total: Number(x.total ?? 0),
-          routes: Number(x.routes ?? 0), domains: Number(x.domains ?? 0),
-          provisioningInFlight: Number(x.provisioning ?? 0),
-        };
-      }, { logger }),
+      collect('tenants', () => buildTenantsTile(db), { logger }),
       collect('backups', () => buildBackupClasses(db), { logger }),
-      collect('certificates', async () => {
-        const r = await db.execute<Record<string, number | null>>(sql`
-          SELECT COUNT(*)::int AS issued,
-                 -- is_wildcard is an INTEGER flag, so it needs an explicit
-                 -- comparison: CASE WHEN requires a boolean predicate.
-                 SUM(CASE WHEN s.is_wildcard = 1 THEN 1 ELSE 0 END)::int AS wildcards,
-                 MIN(EXTRACT(DAY FROM (s.expires_at - NOW())))::int AS nearest_days,
-                 SUM(CASE WHEN s.last_error IS NOT NULL THEN 1 ELSE 0 END)::int AS failing,
-                 -- Overdue by the renewal policy (half the renewal window gone,
-                 -- or expired), measured against each certificate's lifetime.
-                 SUM(CASE WHEN ${renewalOverdueSql('s', autoRenewedSql('s', 'd'))} THEN 1 ELSE 0 END)::int AS overdue
-            FROM ssl_certificates s
-            LEFT JOIN domains d ON d.id = s.domain_id
-           WHERE COALESCE(s.status,'') <> 'revoked'
-        `);
-        const x = (r.rows ?? [])[0] ?? {};
-        return {
-          issued: Number(x.issued ?? 0), wildcards: Number(x.wildcards ?? 0),
-          nearestExpiryDays: x.nearest_days == null ? null : Number(x.nearest_days),
-          failing: Number(x.failing ?? 0),
-          overdue: Number(x.overdue ?? 0),
-        };
-      }, { logger }),
-      collect('updates', async () => {
-        const r = await db.execute<Record<string, number>>(sql`
-          SELECT
-            (SELECT COUNT(*)::int FROM deployments WHERE auto_upgrade = TRUE) AS auto_upgrade,
-            (SELECT COUNT(*)::int FROM deployments) AS total
-        `);
-        const x = (r.rows ?? [])[0] ?? {};
-        return {
-          platformCurrent: true,
-          deploymentsBehind: 0,
-          autoUpgradeEnabled: Number(x.auto_upgrade ?? 0),
-          eolRuntimes: 0,
-        };
-      }, { logger }),
-      collect('scheduledTasks', async () => {
-        const r = await db.execute<Record<string, number>>(sql`
-          SELECT COUNT(*)::int AS total,
-                 SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END)::int AS enabled,
-                 SUM(CASE WHEN "lastRunStatus" = 'failed'
-                           AND last_run_at > NOW() - INTERVAL '24 hours'
-                          THEN 1 ELSE 0 END)::int AS failed24h
-            FROM cron_jobs
-        `);
-        const x = (r.rows ?? [])[0] ?? {};
-        return {
-          total: Number(x.total ?? 0), enabled: Number(x.enabled ?? 0),
-          failed24h: Number(x.failed24h ?? 0), overdue: 0,
-        };
-      }, { logger }),
+      collect('certificates', () => buildCertificatesTile(db), { logger }),
+      collect('updates', () => buildUpdatesTile(db), { logger }),
+      collect('scheduledTasks', () => buildScheduledTasksTile(db), { logger }),
       collect('recentChanges', async () => {
         // The audit log is mostly MACHINE bookkeeping. Over seven days on
         // production: 1006 `snapshot-last-run`, 556 `event`, 528 `file`,
@@ -636,13 +575,19 @@ export async function buildAdminLive(
             AND (used_mb::numeric / quota_mb) >= 1) AS over_quota
     `);
     const x = (r.rows ?? [])[0] ?? {};
+    // No email domain, no mail server expected: an install without mail must
+    // not read "queue unreachable".
+    const queue = Number(x.email_domains ?? 0) > 0
+      ? await readMailQueue()
+      : { depth: 0, reachable: true };
     return {
       sent7d: Number(x.sent7d ?? 0),
-      queueDepth: 0, queueReachable: true,
+      queueDepth: queue.depth, queueReachable: queue.reachable,
       mailboxes: Number(x.mailboxes ?? 0),
       emailDomains: Number(x.email_domains ?? 0),
       rateLimited7d: Number(x.rate_limited ?? 0),
       overQuotaMailboxes: Number(x.over_quota ?? 0),
+      overQuota: Number(x.over_quota ?? 0) > 0 ? await listOverQuotaMailboxes(db) : [],
     };
   }, { logger });
 
