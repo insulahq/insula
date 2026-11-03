@@ -14,6 +14,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Saving an application's resources failed with "e.data.map is not a function".** In the
+  tenant panel's application details, any save that clears the app's previous error — memory,
+  CPU, settings, a restart — first corrects every cached query under the deployments key, and
+  expected each to be a list. The Applications page's usage pill caches an object there, so with
+  the pill loaded the save threw before its request was sent. A list, a single deployment and
+  anything else are now each handled, as in the admin panel.
+  - A compose stack sets its resources per service, and the server refuses one figure for the
+    whole stack. Its details no longer offer the resource form; they say "Set per service" and
+    link to the stack in **Custom containers**.
 - **A deleted domain no longer leaves its certificate rows behind.** Deleting a domain removed
   its cert-manager Certificate and Secret but never its `ssl_certificates` row, which had no
   foreign key. On production six rows outlived their six domains. The operator console counted

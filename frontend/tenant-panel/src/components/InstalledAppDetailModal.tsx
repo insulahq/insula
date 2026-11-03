@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { API_BASE } from '@/lib/api-client';
 import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag as TagIcon, Save, AlertCircle, Terminal, RefreshCw, Pencil } from 'lucide-react';
@@ -631,7 +632,19 @@ export default function InstalledAppDetailModal({
               <Cpu size={16} className="text-blue-600 dark:text-blue-400" />
               Assigned Resources
             </h3>
-            {!editingResources && (
+            {/* A compose stack sets resources per service, and the server
+                refuses a single deployment-level figure for it
+                (NOT_SUPPORTED_FOR_COMPOSE). Say where they are edited
+                instead of offering a form that can only fail. */}
+            {!editingResources && deployment.source === 'custom' && deployment.customSpec?.sourceMode === 'compose' && (
+              <span className="text-xs text-gray-600 dark:text-gray-400" data-testid="resources-edit-in-custom-containers">
+                Set per service —{' '}
+                <Link to="/applications/custom" className="font-medium text-blue-600 hover:underline dark:text-blue-400">
+                  edit the stack in Custom containers
+                </Link>
+              </span>
+            )}
+            {!editingResources && !(deployment.source === 'custom' && deployment.customSpec?.sourceMode === 'compose') && (
               <button
                 type="button"
                 onClick={() => {
