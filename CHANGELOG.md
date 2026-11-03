@@ -79,10 +79,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     unchanged.
   - A Deployment gets it at its next deploy, which restarts it once. A tier change applies it at
     once.
+  - Moving an HA tenant off a node now applies it too. Before, an existing HA tenant's pods came
+    back from their old spec, each placed on its own. On production an upgrade alone leaves every
+    existing HA tenant without it.
+    - The Deployments with a pod on the node being left get it, along with the removal of their
+      soft preference for that node. That is what a deploy of the now-Auto tenant renders.
+    - Auto-repin after a node outage (and the recovery wizard on a dead node) applies it before the
+      stranded pods are deleted, so they come back once, together.
+    - A drain applies it once the node is blocked to tenants, so each app restarts once, off the
+      node.
+    - A re-pin that moves nothing (the recovery wizard on a live node) leaves it to the next deploy.
 - **A tier change also re-places an Auto tenant.** It patched the scheduling of pinned tenants
   only. An Auto tenant moved to HA kept the hard pin to its data node, and one moved to Local got
   no pin. It now applies what a deploy would: the HA preference above, or on the Local tier the
   tenant's data node, file manager included.
+- **A drain removes a node-affinity pin from a workload that has other affinity rules.** The
+  re-pin removed the `kubernetes.io/hostname In [<node>]` requirement by sending the affinity
+  without it, as a JSON merge patch. That kind of patch keeps every key it does not name. A
+  workload with any other affinity rule, such as an anti-affinity or a preferred term, kept its
+  required pin to the node being left and could not start anywhere else. The patch now removes
+  the pin explicitly.
 - **A file manager no longer starts pinned to a node that has none of the data.** A file manager
   that is starting moves to the node holding the tenant's data, except when that node cannot be
   told (two copies mid-move and no workload pin). Then it kept its old pin, even when that node had

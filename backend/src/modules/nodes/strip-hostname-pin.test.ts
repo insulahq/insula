@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripHostnamePin } from './service.js';
+import { stripHostnamePin, toMergePatch } from './service.js';
 
 /**
  * Regression: a drain re-pinned workloads by
@@ -98,5 +98,42 @@ describe('stripHostnamePin', () => {
       { matchExpressions: [{ key: 'kubernetes.io/hostname', operator: 'In', values: [NODE, 'worker-2'] }] },
     ] } } };
     expect(stripHostnamePin(multi, NODE).changed).toBe(false);
+  });
+
+  /** RFC 7396, as the apiserver applies a JSON merge patch. */
+  function applyMergePatch(target: unknown, patch: unknown): unknown {
+    if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) return patch;
+    const out: Record<string, unknown> = typeof target === 'object' && target !== null && !Array.isArray(target)
+      ? { ...(target as Record<string, unknown>) } : {};
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null) delete out[k];
+      else out[k] = applyMergePatch(out[k], v);
+    }
+    return out;
+  }
+
+  it('sent as a merge patch, removes the pin and keeps every other rule', () => {
+    const before = {
+      podAntiAffinity: { requiredDuringSchedulingIgnoredDuringExecution: [{ topologyKey: 'kubernetes.io/hostname' }] },
+      nodeAffinity: {
+        requiredDuringSchedulingIgnoredDuringExecution: { nodeSelectorTerms: [pinTerm] },
+        preferredDuringSchedulingIgnoredDuringExecution: [{ weight: 1, preference: {} }],
+      },
+    };
+    const r = stripHostnamePin(before, NODE);
+    // The value alone, merged, would leave the required pin in place.
+    expect(applyMergePatch(before, r.affinity)).not.toEqual(r.affinity);
+    expect(applyMergePatch(before, toMergePatch(before, r.affinity))).toEqual(r.affinity);
+  });
+
+  it('sent as a merge patch, removes a nodeAffinity left empty, and the whole block when nothing is left', () => {
+    const withAnti = {
+      podAntiAffinity: { requiredDuringSchedulingIgnoredDuringExecution: [{ topologyKey: 'zone' }] },
+      nodeAffinity: { requiredDuringSchedulingIgnoredDuringExecution: { nodeSelectorTerms: [pinTerm] } },
+    };
+    const r = stripHostnamePin(withAnti, NODE);
+    expect(toMergePatch(withAnti, r.affinity)).toEqual({ nodeAffinity: null, podAntiAffinity: withAnti.podAntiAffinity });
+    const only = { nodeAffinity: { requiredDuringSchedulingIgnoredDuringExecution: { nodeSelectorTerms: [pinTerm] } } };
+    expect(toMergePatch(only, stripHostnamePin(only, NODE).affinity)).toBeNull();
   });
 });

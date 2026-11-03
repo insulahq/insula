@@ -812,6 +812,25 @@ describe('Postgres instances on a drained / deleted node', () => {
     expect(evict).not.toHaveBeenCalled();
   });
 
+  it('drainNode: a pod already gone when its eviction comes (its workload restarted) is not a failure', async () => {
+    const { k8s, evict } = makeHaK8s(haCluster);
+    const list = k8s.core.listPodForAllNamespaces as unknown as ReturnType<typeof vi.fn>;
+    const cnpg = list.getMockImplementation()!;
+    list.mockImplementation(async (a: { labelSelector?: string; fieldSelector?: string }) => (a.fieldSelector === 'spec.nodeName=s2'
+      ? { items: [
+        { metadata: { namespace: 'tenant-acme', name: 'web-1', ownerReferences: [{ kind: 'ReplicaSet', name: 'web-abc' }] }, spec: { nodeName: 's2' }, status: { phase: 'Running' } },
+        { metadata: { namespace: 'tenant-acme', name: 'db-1', ownerReferences: [{ kind: 'ReplicaSet', name: 'db-abc' }] }, spec: { nodeName: 's2' }, status: { phase: 'Running' } },
+      ] }
+      : cnpg(a)));
+    evict.mockImplementation(async (req: { name: string }) => {
+      if (req.name === 'web-1') throw Object.assign(new Error('pods "web-1" not found'), { code: 404 });
+      throw Object.assign(new Error('Cannot evict pod as it would violate the pod\'s disruption budget.'), { code: 429 });
+    });
+    const result = await drainNode(k8s, makeDrainDb(), 's2', { tenantPlacement: {}, blockNewTenants: false });
+    expect(result.evicted).toBe(1);
+    expect(result.failed.map((f) => f.name)).toEqual(['db-1']);
+  });
+
   // "Drain tenants" never cordons a server: it switches off "Can host tenant
   // workloads" (label + the server-only NoSchedule taint every system workload
   // tolerates). A chainable stub lets the real updateNode run against it.
