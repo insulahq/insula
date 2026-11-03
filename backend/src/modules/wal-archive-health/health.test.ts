@@ -12,6 +12,8 @@ function snap(over: Partial<WalArchiveSnapshot> = {}): WalArchiveSnapshot {
     clusterName: 'system-db',
     barmanPluginPresent: true,
     continuousArchivingHealthy: true,
+    continuousArchivingConfirmed: true,
+    failingSince: null,
     walBytes: 1 * GiB,
     volumeBytes: 20 * GiB,
     ...over,
@@ -94,8 +96,53 @@ describe('assessWalArchive', () => {
   it('honours custom thresholds', () => {
     const a = assessWalArchive(
       snap({ continuousArchivingHealthy: false, walBytes: 7 * GiB }), // 35%
-      { warnPressurePct: 20, tripPressurePct: 30 },
+      { warnPressurePct: 20, tripPressurePct: 30, alertAfterMs: 0 },
     );
     expect(a.shouldTrip).toBe(true);
+  });
+});
+
+describe('assessWalArchive: a failure alerts only once it has lasted', () => {
+  const NOW = Date.parse('2026-11-03T16:30:47Z');
+  const failing = (since: string | null, walBytes = 2 * GiB): WalArchiveSnapshot =>
+    snap({ continuousArchivingHealthy: false, failingSince: since, walBytes });
+
+  it('holds the alert for a failure seconds old (the failover upload the retry fixed)', () => {
+    const a = assessWalArchive(failing('2026-11-03T16:30:45Z'), DEFAULT_THRESHOLDS, NOW);
+    expect(a.state).toBe('failing');
+    expect(a.shouldAlert).toBe(false);
+    expect(a.reason).toBe('WAL archiving has been failing for 0 minutes; it alerts if it still fails after 10 minutes');
+  });
+
+  it('still holds it at 9 minutes 59 seconds', () => {
+    const a = assessWalArchive(failing('2026-11-03T16:20:48Z'), DEFAULT_THRESHOLDS, NOW);
+    expect(a.shouldAlert).toBe(false);
+  });
+
+  it('alerts at exactly 10 minutes (>=)', () => {
+    const a = assessWalArchive(failing('2026-11-03T16:20:47Z'), DEFAULT_THRESHOLDS, NOW);
+    expect(a.shouldAlert).toBe(true);
+    expect(a.reason).toBe('WAL archiving is failing; pg_wal is at 10% of the data volume');
+  });
+
+  it('alerts at once when the start is unknown or unreadable', () => {
+    expect(assessWalArchive(failing(null), DEFAULT_THRESHOLDS, NOW).shouldAlert).toBe(true);
+    expect(assessWalArchive(failing('not-a-time'), DEFAULT_THRESHOLDS, NOW).shouldAlert).toBe(true);
+  });
+
+  it('alerts at once when pg_wal is already past the warn threshold', () => {
+    const a = assessWalArchive(failing('2026-11-03T16:30:45Z', 11 * GiB), DEFAULT_THRESHOLDS, NOW); // 55%
+    expect(a.severity).toBe('error');
+    expect(a.shouldAlert).toBe(true);
+  });
+
+  it('never delays a trip', () => {
+    const a = assessWalArchive(failing('2026-11-03T16:30:45Z', 16 * GiB), DEFAULT_THRESHOLDS, NOW); // 80%
+    expect(a.state).toBe('critical');
+    expect(a.shouldTrip).toBe(true);
+  });
+
+  it('reads a start in the future (clock skew) as just started', () => {
+    expect(assessWalArchive(failing('2026-11-03T16:35:00Z'), DEFAULT_THRESHOLDS, NOW).shouldAlert).toBe(false);
   });
 });

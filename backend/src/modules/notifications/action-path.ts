@@ -68,6 +68,7 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.backup_target_unreachable': '/backups/targets',
   'admin.wal_archive_failing': '/backups',
   'admin.wal_archive_auto_disabled': '/backups',
+  'admin.wal_archive_recovered': '/backups',
   'admin.cert_expiring': '/cluster/ingress-tls',
   'admin.cert_issuance_failed': '/cluster/ingress-tls',
   'admin.cert_renewal_failed': '/cluster/ingress-tls',

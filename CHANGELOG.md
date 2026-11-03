@@ -23,6 +23,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **"WAL archiving failing" no longer fires for a failover, can fire more than once a month,
+  and gets an all-clear.** On production, a node restart failed the platform database over. The
+  new primary's first WAL upload failed and the retry succeeded 4 seconds later. The 5-minute
+  health check happened to read inside that gap and sent "WAL archiving failing", with nothing
+  after it.
+  - The alert now waits until archiving has been failing for 10 minutes. If pg_wal is already at
+    half the volume, it alerts at once, and the automatic shutoff at 75% is never delayed.
+  - Every failure gets its own alert. The alert's dedupe key was fixed, and deliveries are
+    deduplicated for 30 days, so one alert, even a false one, silenced every later failure for a
+    month.
+  - New notification **Database WAL archiving working again** (`admin.wal_archive_recovered`):
+    once archiving works again after an alert, it says so, and how long it failed. A failure
+    that never alerted sends none, and neither does archiving that was switched off rather than
+    repaired.
 - **A drain keeps an Auto tenant's pods together with its data.** A tenant's Deployments share
   one ReadWriteOnce volume, so they run together on one node or not at all. A drain re-pinned an
   Auto tenant to Auto by deleting the hostname selector from every workload, and the scheduler

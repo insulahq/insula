@@ -27,8 +27,24 @@ export interface WalArchiveSnapshot {
   readonly clusterName: string;
   /** Is the barman-cloud plugin present (i.e. archiving configured/attempted)? */
   readonly barmanPluginPresent: boolean;
-  /** CNPG `status.conditions[ContinuousArchiving].status === 'True'`. */
+  /**
+   * Not failing: CNPG's ContinuousArchiving condition is anything but 'False'.
+   * An absent or Unknown condition counts, so a just-attached plugin does not
+   * alert before its first archive is reported.
+   */
   readonly continuousArchivingHealthy: boolean;
+  /**
+   * Working: the condition is explicitly 'True'. Only this closes an alerted
+   * failure — a condition that is briefly absent or Unknown during a restart
+   * says nothing about whether WAL reaches the target again.
+   */
+  readonly continuousArchivingConfirmed: boolean;
+  /**
+   * While archiving fails: when it started failing, the condition's
+   * lastTransitionTime (ISO-8601). Null while healthy, or when CNPG gave no
+   * time. It also names the failure: one failure, one alert.
+   */
+  readonly failingSince: string | null;
   /** Total bytes in pg_wal (sum of pg_ls_waldir().size). */
   readonly walBytes: number;
   /** Data volume size in bytes (cluster spec.storage.size). 0 if unknown. */
@@ -40,12 +56,24 @@ export interface WalArchiveThresholds {
   readonly warnPressurePct: number;
   /** Trip the circuit-breaker (auto-disable archiving) at/above this %. */
   readonly tripPressurePct: number;
+  /**
+   * Alert only once archiving has been failing this long. A failover fails the
+   * new primary's first upload, then the retry succeeds seconds later: on
+   * production one 5-minute tick read it inside that 4-second gap and sent
+   * "failing" for a failure that was already over.
+   */
+  readonly alertAfterMs: number;
 }
 
-/** Conservative defaults: escalate at 50%, hard-trip at 75% (room to spare). */
+/**
+ * Conservative defaults: escalate at 50%, hard-trip at 75% (room to spare),
+ * alert after 10 minutes of failing. The wait never delays a trip, and a
+ * pressure at or past warn alerts at once.
+ */
 export const DEFAULT_THRESHOLDS: WalArchiveThresholds = {
   warnPressurePct: 50,
   tripPressurePct: 75,
+  alertAfterMs: 10 * 60_000,
 };
 
 export interface WalArchiveAssessment {
@@ -71,13 +99,15 @@ export function pressurePercent(walBytes: number, volumeBytes: number): number {
  * - No plugin → archiving is off (wal-archive no-op-succeeds, WAL recycles) → OK.
  * - Plugin present + ContinuousArchiving healthy → OK.
  * - Plugin present + archiving FAILING:
- *     pressure < warn  → state=failing, alert (warning)
- *     pressure ≥ warn  → state=failing, alert (error)
+ *     pressure < warn  → state=failing, alert (warning) once failing ≥ alertAfterMs
+ *     pressure ≥ warn  → state=failing, alert (error) at once
  *     pressure ≥ trip  → state=critical, alert (critical) + TRIP the breaker
+ *   A failure with no known start alerts at once: an unknown age is not a short one.
  */
 export function assessWalArchive(
   snapshot: WalArchiveSnapshot,
   thresholds: WalArchiveThresholds = DEFAULT_THRESHOLDS,
+  nowMs: number = Date.now(),
 ): WalArchiveAssessment {
   const pressurePct = pressurePercent(snapshot.walBytes, snapshot.volumeBytes);
   const ok = (reason: string): WalArchiveAssessment => ({
@@ -104,8 +134,28 @@ export function assessWalArchive(
     };
   }
   const severity: WalArchiveSeverity = pressurePct >= thresholds.warnPressurePct ? 'error' : 'warning';
+  const failingForMs = failingDurationMs(snapshot.failingSince, nowMs);
+  const shouldAlert = severity === 'error'
+    || failingForMs === null
+    || failingForMs >= thresholds.alertAfterMs;
   return {
-    state: 'failing', pressurePct, shouldAlert: true, shouldTrip: false, severity,
-    reason: `WAL archiving is failing; pg_wal is at ${pct}% of the data volume`,
+    state: 'failing', pressurePct, shouldAlert, shouldTrip: false, severity,
+    reason: shouldAlert
+      ? `WAL archiving is failing; pg_wal is at ${pct}% of the data volume`
+      : `WAL archiving has been failing for ${minutes(failingForMs ?? 0)}; it alerts if it still fails `
+        + `after ${minutes(thresholds.alertAfterMs)}`,
   };
+}
+
+/** How long archiving has been failing, or null when the start is unknown or unreadable. */
+function failingDurationMs(failingSince: string | null, nowMs: number): number | null {
+  if (!failingSince) return null;
+  const since = Date.parse(failingSince);
+  if (Number.isNaN(since)) return null;
+  return Math.max(0, nowMs - since);
+}
+
+function minutes(ms: number): string {
+  const m = Math.floor(ms / 60_000);
+  return m === 1 ? '1 minute' : `${m} minutes`;
 }

@@ -622,12 +622,34 @@ export interface AdminWalArchiveFailingPayload {
   readonly pressurePercent: string;
   readonly reason?: string;
 }
+/**
+ * Resolves true when the alert reached someone: a channel sent or queued it, or
+ * it was a duplicate of one that already had. False when nothing went out
+ * (rate limit, mutes, no recipients, a dispatch error). The caller only owes a
+ * "recovered" notice for an alert that reached someone.
+ */
 export async function notifyAdminWalArchiveFailing(
   db: Database,
   payload: AdminWalArchiveFailingPayload,
   dedupeKey?: string,
+): Promise<boolean> {
+  const res = await dispatchSafe(db, 'admin.wal_archive_failing', { kind: 'admin' }, payload, undefined, { dedupeKey });
+  return (res?.perChannelStatuses ?? []).some((s) => s.status === 'sent' || s.status === 'queued'
+    || (s.status === 'skipped' && s.error === 'duplicate'));
+}
+
+export interface AdminWalArchiveRecoveredPayload {
+  readonly clusterName: string;
+  /** How long archiving failed, as the sentence reads it: "25 minutes". */
+  readonly failedFor: string;
+}
+/** Closes an "archiving failing" alert. Sent only for a failure that alerted. */
+export async function notifyAdminWalArchiveRecovered(
+  db: Database,
+  payload: AdminWalArchiveRecoveredPayload,
+  dedupeKey?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'admin.wal_archive_failing', { kind: 'admin' }, payload, undefined, { dedupeKey });
+  await dispatchSafe(db, 'admin.wal_archive_recovered', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
 export interface AdminWalArchiveAutoDisabledPayload {
