@@ -173,6 +173,12 @@ export function buildCpuReservationAlert(
       ...(totalSlack > 0
         ? [['Reserved and unused', `${fmtCores(totalSlack)} cores across ${overReservers.length} pods`] as [string, string]]
         : []),
+      // Every other node showing the gap. Only the worst one was described, so
+      // a second node refusing work was nowhere on the tile.
+      ...assessed.slice(1).map((x) => [
+        x.node.name,
+        `${x.verdict.reservedPct}% reserved, ${x.verdict.usedPct}% in use`,
+      ] as [string, string]),
       ...overReservers.slice(0, 4).map((x) => [
         `${x.p.namespace}/${x.p.name}`,
         `reserves ${fmtCores(x.p.requestedMillis)}, uses ${fmtCores(x.p.usedMillis)}`,

@@ -321,15 +321,21 @@ export function selectStalePodTargets(
 export async function countStalePodsByNode(
   k8s: K8sClients,
 ): Promise<Record<string, number>> {
-  const list = (await k8s.core.listPodForAllNamespaces()) as unknown as {
-    items?: ReadonlyArray<RawPod>;
-  };
   const counts: Record<string, number> = {};
-  for (const t of selectStalePodTargets(list.items ?? [])) {
-    if (!t.node) continue;
+  for (const t of await listStalePods(k8s)) {
     counts[t.node] = (counts[t.node] ?? 0) + 1;
   }
   return counts;
+}
+
+/** The stale pod records themselves, by the same predicate — the dashboard names them. */
+export async function listStalePods(
+  k8s: K8sClients,
+): Promise<ReadonlyArray<{ readonly ns: string; readonly name: string; readonly node: string }>> {
+  const list = (await k8s.core.listPodForAllNamespaces()) as unknown as {
+    items?: ReadonlyArray<RawPod>;
+  };
+  return selectStalePodTargets(list.items ?? []).filter((t) => Boolean(t.node));
 }
 
 export async function cleanStalePodsOnNode(input: {

@@ -86,26 +86,47 @@ export function useSwitchDeploymentVersion(tenantId: string | undefined, deploym
  * redeploy fails, the failure path writes a new error and the refetch brings
  * it back — the worst case is that a genuine failure appears a second later
  * than it would have, not that one is hidden.
+ *
+ * Every query under ['deployments', tenantId] is visited, and not all of them
+ * hold a list: the application-usage pill caches `{ data: { current, limit } }`
+ * there. Calling `.map` on that threw inside onMutate, so every save with the
+ * pill on screen — memory, CPU, settings, a restart — failed before its
+ * request left, with "e.data.map is not a function". A list is patched row by
+ * row, a single deployment as itself, and anything else is left alone, as the
+ * admin panel's copy of this function already did.
  */
 function forgetFailureInCache(
   queryClient: ReturnType<typeof useQueryClient>,
   tenantId: string | undefined,
   deploymentId: string,
 ): void {
-  queryClient.setQueriesData<PaginatedResponse<Deployment>>(
+  const forget = (d: Deployment): Deployment => {
+    if (d.id !== deploymentId) return d;
+    if (d.status !== 'failed' && !d.lastError && !d.statusMessage) return d;
+    // 'pending', not 'running': the pods are coming back, and claiming
+    // they are up is the same overstatement in the other direction.
+    return { ...d, status: d.status === 'failed' ? 'pending' : d.status, lastError: null, statusMessage: null };
+  };
+  queryClient.setQueriesData<unknown>(
     { queryKey: ['deployments', tenantId] },
-    (prev) => {
-      if (!prev?.data) return prev;
-      let touched = false;
-      const data = prev.data.map((d) => {
-        if (d.id !== deploymentId) return d;
-        if (d.status !== 'failed' && !d.lastError && !d.statusMessage) return d;
-        touched = true;
-        // 'pending', not 'running': the pods are coming back, and claiming
-        // they are up is the same overstatement in the other direction.
-        return { ...d, status: d.status === 'failed' ? 'pending' : d.status, lastError: null, statusMessage: null };
-      });
-      return touched ? { ...prev, data } : prev;
+    (prev: unknown) => {
+      const env = prev as { data?: unknown } | undefined;
+      if (!env || typeof env !== 'object' || !('data' in env)) return prev;
+      const d = env.data;
+      if (Array.isArray(d)) {
+        let touched = false;
+        const data = (d as Deployment[]).map((row) => {
+          const out = forget(row);
+          if (out !== row) touched = true;
+          return out;
+        });
+        return touched ? { ...env, data } : prev;
+      }
+      if (d && typeof d === 'object' && 'id' in d) {
+        const out = forget(d as Deployment);
+        return out === d ? prev : { ...env, data: out };
+      }
+      return prev;
     },
   );
 }

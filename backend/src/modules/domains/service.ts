@@ -659,6 +659,19 @@ export async function deleteDomain(
 ): Promise<DeleteDomainResult> {
   const domainRow = await getDomainById(db, tenantId, domainId);
 
+  // The platform's own domains belong to the SYSTEM tenant (ADR-040), which
+  // cannot be deleted. Deleting its apex would also delete the platform's DNS
+  // zone at the provider below. The single DELETE route never refused it, and
+  // the admin bulk delete now runs this same function, so the guard is here.
+  const owner = await getTenantById(db, tenantId);
+  if (owner.isSystem) {
+    throw new ApiError(
+      'SYSTEM_DOMAIN_PROTECTED',
+      `${domainRow.domainName} belongs to the SYSTEM tenant — the platform's own domains cannot be deleted`,
+      409,
+    );
+  }
+
   // Resolve DNS servers BEFORE deleting the domain (need dnsGroupId which is on the domain row)
   const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
   let dnsServersToClean: Awaited<ReturnType<typeof getActiveServersForDomain>> = [];

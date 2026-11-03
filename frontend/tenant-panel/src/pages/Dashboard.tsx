@@ -324,6 +324,16 @@ function MailTile({ summary }: { summary: Summary | undefined }) {
   );
 }
 
+/**
+ * When the earliest certificate renews. 0 means the renewal point is reached
+ * and the certificate is being renewed now; "0d" read like a fault.
+ */
+function renewsIn(days: number | null, form: 'short' | 'long'): string {
+  if (days == null) return '—';
+  if (days <= 0) return form === 'short' ? 'now' : 'due now';
+  return form === 'short' ? `${days}d` : `${days} day${days === 1 ? '' : 's'}`;
+}
+
 function DomainsTile({ summary }: { summary: Summary | undefined }) {
   const d = summary?.domains.data;
   if (!d) return <SectionFallback title="Domains & certificates" to="/domains" section={summary?.domains ?? { state: 'stale', reason: null, observedAt: null }} />;
@@ -332,13 +342,13 @@ function DomainsTile({ summary }: { summary: Summary | undefined }) {
       { k: 'Domains', v: String(d.domains) },
       { k: 'Verified', v: String(d.verified), sub: `of ${d.domains}`, tone: d.verified === d.domains ? 'ok' : 'warn' },
       { k: 'Certificates', v: String(d.certificates), tone: 'ok' },
-      { k: 'Renews in', v: d.nearestRenewalDays == null ? '—' : `${d.nearestRenewalDays}d` },
+      { k: 'Renews in', v: renewsIn(d.nearestRenewalDays, 'short') },
     ]} card={(
       <HoverCard title="Domains & certificates" rows={[
         ['Domains', String(d.domains)],
         ['Verified', `${d.verified} of ${d.domains}`],
         ['Certificates', String(d.certificates)],
-        ['Earliest renewal', d.nearestRenewalDays == null ? '—' : `${d.nearestRenewalDays} days`],
+        ['Earliest renewal', renewsIn(d.nearestRenewalDays, 'long')],
       ]} note="Certificates renew automatically with about a third of their lifetime left." />
     )} />
   );

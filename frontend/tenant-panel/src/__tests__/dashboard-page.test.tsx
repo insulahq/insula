@@ -251,3 +251,30 @@ describe('Hosting overview — renewal date', () => {
     expect(screen.queryByTestId('dashboard-renewal')).not.toBeInTheDocument();
   });
 });
+
+/**
+ * "Renews in" read "0d" for weeks: a deleted domain's certificate row, whose
+ * renewal point never moved, held the minimum at 0. With those rows gone, 0
+ * means the renewal is due now, and the tile says so.
+ */
+describe('Domains & certificates — when the earliest certificate renews', () => {
+  const renewal = (nearestRenewalDays: number | null) => summaryFn.mockReturnValue({
+    data: { data: summary({ domains: ok({ domains: 3, verified: 3, certificates: 4, nearestRenewalDays }) }) },
+    isLoading: false,
+  });
+
+  it('days ahead read as days', () => {
+    renewal(74);
+    show();
+    expect(screen.getByText('74d')).toBeInTheDocument();
+    expect(screen.getByText('74 days')).toBeInTheDocument();
+  });
+
+  it('0 reads as due now, not "0d"', () => {
+    renewal(0);
+    show();
+    expect(screen.getByText('now')).toBeInTheDocument();
+    expect(screen.getByText('due now')).toBeInTheDocument();
+    expect(screen.queryByText('0d')).not.toBeInTheDocument();
+  });
+});

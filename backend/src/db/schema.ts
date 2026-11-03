@@ -1202,7 +1202,10 @@ export const provisioningTasks = pgTable('provisioning_tasks', {
 
 export const protectedDirectories = pgTable('protected_directories', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  domainId: varchar('domain_id', { length: 36 }).notNull(),
+  domainId: varchar('domain_id', { length: 36 }).notNull()
+    // ON DELETE CASCADE since migration 0174: the row describes the domain, and
+    // nothing else ever deleted it, so a deleted domain left it behind.
+    .references(() => domains.id, { onDelete: 'cascade' }),
   path: varchar('path', { length: 500 }).notNull(),
   realm: varchar('realm', { length: 255 }).notNull().default('Restricted Area'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -1227,7 +1230,10 @@ export const protectedDirectoryUsers = pgTable('protected_directory_users', {
 
 export const hostingSettings = pgTable('hosting_settings', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  domainId: varchar('domain_id', { length: 36 }).notNull(),
+  domainId: varchar('domain_id', { length: 36 }).notNull()
+    // ON DELETE CASCADE since migration 0174: the row describes the domain, and
+    // nothing else ever deleted it, so a deleted domain left it behind.
+    .references(() => domains.id, { onDelete: 'cascade' }),
   redirectWww: integer('redirect_www').notNull().default(0),
   redirectHttps: integer('redirect_https').notNull().default(1),
   forwardExternal: varchar('forward_external', { length: 500 }),
@@ -2524,7 +2530,10 @@ export const catalogEntryVersions = pgTable('catalog_entry_versions', {
 
 export const sslCertificates = pgTable('ssl_certificates', {
   id: varchar('id', { length: 36 }).primaryKey(),
-  domainId: varchar('domain_id', { length: 36 }).notNull(),
+  domainId: varchar('domain_id', { length: 36 }).notNull()
+    // ON DELETE CASCADE since migration 0174: the row describes the domain, and
+    // nothing else ever deleted it, so a deleted domain left it behind.
+    .references(() => domains.id, { onDelete: 'cascade' }),
   tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
     .references(() => tenants.id, { onDelete: 'cascade' }),
@@ -2590,7 +2599,10 @@ export const certDownloadTokens = pgTable('cert_download_tokens', {
     .notNull()
     .references(() => tenants.id, { onDelete: 'cascade' }),
   /** Bound to exactly one domain — the token cannot be used for any other. */
-  domainId: varchar('domain_id', { length: 36 }).notNull(),
+  domainId: varchar('domain_id', { length: 36 }).notNull()
+    // ON DELETE CASCADE since migration 0174: the row describes the domain, and
+    // nothing else ever deleted it, so a deleted domain left it behind.
+    .references(() => domains.id, { onDelete: 'cascade' }),
   /** Operator-chosen label, e.g. "staging-server" or "deploy-pipeline". */
   name: varchar('name', { length: 100 }).notNull(),
   /** sha256 of the plaintext token. The plaintext is never stored. */

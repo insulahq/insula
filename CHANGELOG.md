@@ -12,6 +12,53 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Saving an application's resources failed with "e.data.map is not a function".** In the
+  tenant panel's application details, any save that clears the app's previous error — memory,
+  CPU, settings, a restart — first corrects every cached query under the deployments key, and
+  expected each to be a list. The Applications page's usage pill caches an object there, so with
+  the pill loaded the save threw before its request was sent. A list, a single deployment and
+  anything else are now each handled, as in the admin panel.
+  - A compose stack sets its resources per service, and the server refuses one figure for the
+    whole stack. Its details no longer offer the resource form; they say "Set per service" and
+    link to the stack in **Custom containers**.
+- **A deleted domain no longer leaves its certificate rows behind.** Deleting a domain removed
+  its cert-manager Certificate and Secret but never its `ssl_certificates` row, which had no
+  foreign key. On production six rows outlived their six domains. The operator console counted
+  two of them as "2 certificates expiring" for a wildcard whose live certificate was healthy,
+  and a tenant's "Renews in" stayed at 0d once such a row's renewal date had passed.
+  - Migration 0174 deletes the rows whose domain is already gone and adds foreign keys with
+    `ON DELETE CASCADE` for `ssl_certificates`, `protected_directories`, `hosting_settings` and
+    `cert_download_tokens`, so every delete path takes them along. `NOT VALID`, so a domain
+    deleted mid-upgrade cannot abort the boot.
+  - The admin bulk domain delete removed only the domains row. It now runs the same delete as a
+    single one per domain: certificate, webmail Ingress, Stalwart domain and DKIM, and DNS zone.
+  - A domain of the SYSTEM tenant — the platform's own apex — can no longer be deleted (409
+    `SYSTEM_DOMAIN_PROTECTED`). Nothing refused it, and deleting the apex also deletes the
+    platform's DNS zone at the provider.
+  - A tenant bundle taken before this can hold such orphan rows. A restore skips a certificate
+    row whose domain is not there, and says how many it skipped, instead of failing.
+- **Every dashboard warning names what it counts.** Hover cards repeated their own figures.
+  - Certificates expiring lists each certificate with its days left and tenant. The subtitle
+    named the alphabetically first domain beside the soonest expiry of any.
+  - Monitoring rules firing lists each rule and the series it fires on, Apex DNS drift each
+    drifting domain, Orphaned pods each pod, CPU reserved but not used every affected node, not
+    only the worst. Capped lists say how many they leave out.
+  - The Certificates, Scheduled tasks, Updates, Tenants, Backups and Mail tiles name the
+    certificates, jobs, deployments, tenants and mailboxes behind each amber or red figure.
+- **The Updates tile, the Scheduled tasks "Overdue" cell and the Mail queue were constants.**
+  - Updates said "Current", 0 apps behind and 0 end-of-life whatever was true. It now reads the
+    verified release on the Updates page, the upgrade graph of the Upgrades page and the catalog's
+    end-of-life dates.
+  - "Overdue" was always 0; it is replaced by "Never run", the enabled jobs that have never run.
+  - The outbound queue was "0, reachable". It is read from Stalwart, and a mail server that does
+    not answer shows red.
+- **The tenant panel's Domains & certificates tile said "0 of N verified" for every tenant.** It
+  counted the domain status `active`, which nothing sets; a verified domain is `verified`.
+  "Renews in" sat at 0d for weeks on a tenant that had deleted a domain: its certificate row's
+  renewal point never moved. Only live domains count now, and a renewal that is due reads "now".
+
 ## [2026.11.4] - 2026-11-03
 
 ### Security
