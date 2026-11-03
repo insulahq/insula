@@ -162,13 +162,44 @@ export async function tenantHealthRoutes(app: FastifyInstance): Promise<void> {
       await import('../nodes/service.js');
 
     // Derive the tenant's workloads + volumes from wherever it is pinned now.
-    // With no pin there is nothing for buildDrainImpact to report, so an
-    // explicit error beats a silent no-op that looks like success.
-    const releaseFrom = tenant.pin ?? '';
+    // The row is not the whole answer: a tenant set to Auto while it ran keeps
+    // the pin on its workloads (Auto moves nothing), so the row says "no
+    // primary node" while every pod is held to one. Refusing such a tenant
+    // here left the operator no way to move it but draining the whole node
+    // (production). With no pin anywhere there is nothing for
+    // buildDrainImpact to report, so an explicit error beats a silent no-op
+    // that looks like success.
+    let releaseFrom = tenant.pin ?? '';
+    if (!releaseFrom && tenant.ns) {
+      const { workloadPinNodes } = await import('../tenant-placement/workload-pin.js');
+      let pinnedTo: string[];
+      try {
+        pinnedTo = await workloadPinNodes(k8s, tenant.ns);
+      } catch (err) {
+        request.log.warn({ err, tenantId: id }, 'recover/repin: workload pin read failed');
+        throw new ApiError(
+          'K8S_UNAVAILABLE',
+          `Could not read ${tenant.name}'s workloads from the cluster to find the node they are pinned to. ` +
+          'Retry once the Kubernetes API responds — nothing was changed.',
+          503,
+        );
+      }
+      if (pinnedTo.length > 1) {
+        throw new ApiError(
+          'TENANT_PINNED_TO_SEVERAL_NODES',
+          `${tenant.name}'s workloads are pinned to several nodes (${pinnedTo.join(', ')}), so there is no one node to ` +
+          `move it off. Move the tenant to one node from its Placement card instead — nothing was changed.`,
+          409,
+          { nodes: pinnedTo },
+        );
+      }
+      releaseFrom = pinnedTo[0] ?? '';
+    }
     if (!releaseFrom) {
       throw new ApiError(
         'TENANT_NOT_PINNED',
-        'This tenant has no node pin, so there is nothing to move. Its workloads are already placed by the scheduler.',
+        'This tenant has no node pin and none of its workloads is held to a node, so there is nothing to move. ' +
+        'Its workloads are already placed by the scheduler.',
         409,
       );
     }
@@ -202,6 +233,8 @@ export async function tenantHealthRoutes(app: FastifyInstance): Promise<void> {
           reason,
           from: releaseFrom,
           to: targetNode === '' ? null : targetNode,
+          // Auto: the node its pods went to together (null = scheduler).
+          runsOn: targetNode === '' ? counts.autoNode : targetNode,
           workloadsPatched: counts.workloads,
           volumesPatched: counts.pvcs,
           strandedPodsEvicted: counts.evictedPods,

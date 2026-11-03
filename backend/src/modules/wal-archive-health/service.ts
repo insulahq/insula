@@ -29,7 +29,7 @@ interface ClusterCRView {
     storage?: { size?: string };
   };
   status?: {
-    conditions?: Array<{ type?: string; status?: string }>;
+    conditions?: Array<{ type?: string; status?: string; lastTransitionTime?: string }>;
   };
 }
 
@@ -84,6 +84,11 @@ export async function readWalArchiveHealth(deps: ReadWalArchiveDeps): Promise<Wa
   // Healthy unless CNPG EXPLICITLY reports False — avoids false alarms in the
   // window after the plugin attaches but before the first archive is reported.
   const continuousArchivingHealthy = ca?.status !== 'False';
+  const continuousArchivingConfirmed = ca?.status === 'True';
+  // While False, lastTransitionTime is when archiving started failing.
+  const failingSince = !continuousArchivingHealthy && typeof ca?.lastTransitionTime === 'string'
+    ? ca.lastTransitionTime
+    : null;
   const volumeBytes = parseStorageQuantity(cluster.spec?.storage?.size);
 
   let walBytes = 0;
@@ -102,6 +107,8 @@ export async function readWalArchiveHealth(deps: ReadWalArchiveDeps): Promise<Wa
     clusterName: POSTGRES_CLUSTER_NAME,
     barmanPluginPresent,
     continuousArchivingHealthy,
+    continuousArchivingConfirmed,
+    failingSince,
     walBytes,
     volumeBytes,
   };

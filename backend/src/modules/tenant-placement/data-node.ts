@@ -123,6 +123,22 @@ export async function readVolumeAttachedNode(
   return attachedNodeOf(volume as VolumeLike);
 }
 
+/** The size Longhorn reserves for the volume `volumeName`, in bytes (0 when unknown). */
+export async function readVolumeSizeBytes(
+  k8s: Pick<K8sClients, 'custom'>,
+  volumeName: string,
+): Promise<number> {
+  const volume = await k8s.custom.getNamespacedCustomObject({
+    group: 'longhorn.io',
+    version: 'v1beta2',
+    namespace: 'longhorn-system',
+    plural: 'volumes',
+    name: volumeName,
+  } as unknown as Parameters<K8sClients['custom']['getNamespacedCustomObject']>[0]) as { spec?: { size?: string | number } };
+  const size = Number(volume.spec?.size);
+  return Number.isFinite(size) && size > 0 ? size : 0;
+}
+
 interface ReplicaLike {
   readonly spec?: { readonly nodeID?: string; readonly failedAt?: string; readonly volumeName?: string };
   readonly status?: { readonly currentState?: string };

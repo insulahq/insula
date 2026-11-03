@@ -682,6 +682,19 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     isMandatory: true, // safety-critical — operators cannot opt out
     gdprBasis: 'legitimate_interest',
   },
+  {
+    id: 'admin.wal_archive_recovered',
+    cls: 'record',
+    reportsOn: 'database',
+    displayName: 'Database WAL archiving working again',
+    description: 'Closes a "Database WAL archiving failing" alert: WAL reaches the backup target again, '
+      + 'and how long it failed. Sent only for a failure that alerted.',
+    audience: 'admin',
+    defaultSeverity: 'info',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
   // ── R4/R6 PR 4: outbound-mail protection (send quotas + FBL complaints) ──
   {
     id: 'tenant.email_quota_warning',

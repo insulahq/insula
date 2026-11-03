@@ -103,6 +103,47 @@ describe('File Manager K8s Lifecycle', () => {
         expect(patch).toEqual({ spec: { replicas: 1, template: { spec: { nodeSelector: { 'kubernetes.io/hostname': 'node-b' } } } } });
       });
 
+      it('moves it to a node holding a copy when its old pin holds none and the data node cannot be told', async () => {
+        // Lab staging: two copies mid-move, no workload pin, and the file manager
+        // still pinned to a node the data had left — it started there.
+        withLonghorn(['node-c', 'node-b']);
+        (mockK8s as unknown as { custom: Record<string, unknown> }).custom.getNamespacedCustomObject =
+          vi.fn().mockResolvedValue({ status: { state: 'detached' } });
+        (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue(fullSpec(0, { 'kubernetes.io/hostname': 'node-a' }));
+        (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
+        const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+        await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest', 1);
+        const calls = (mockK8s.apps.patchNamespacedDeployment as unknown as { mock: { calls: Array<[{ body: unknown }]> } }).mock.calls;
+        // The first replica node by name.
+        expect(calls.map((c) => c[0].body)).toEqual([
+          { spec: { replicas: 1, template: { spec: { nodeSelector: { 'kubernetes.io/hostname': 'node-b' } } } } },
+        ]);
+      });
+
+      it('keeps the old pin when no replica can be listed — that read says nothing', async () => {
+        withLonghorn([]);
+        (mockK8s as unknown as { custom: Record<string, unknown> }).custom.getNamespacedCustomObject =
+          vi.fn().mockResolvedValue({ status: { state: 'detached' } });
+        (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue(fullSpec(0, { 'kubernetes.io/hostname': 'node-a' }));
+        (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
+        const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+        await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest', 1);
+        const calls = (mockK8s.apps.patchNamespacedDeployment as unknown as { mock: { calls: Array<[{ body: unknown }]> } }).mock.calls;
+        expect(calls.map((c) => c[0].body)).toEqual([{ spec: { replicas: 1 } }]);
+      });
+
+      it('keeps the old pin while that node still holds a copy', async () => {
+        withLonghorn(['node-a', 'node-b']);
+        (mockK8s as unknown as { custom: Record<string, unknown> }).custom.getNamespacedCustomObject =
+          vi.fn().mockResolvedValue({ status: { state: 'detached' } });
+        (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue(fullSpec(0, { 'kubernetes.io/hostname': 'node-a' }));
+        (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
+        const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+        await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest', 1);
+        const calls = (mockK8s.apps.patchNamespacedDeployment as unknown as { mock: { calls: Array<[{ body: unknown }]> } }).mock.calls;
+        expect(calls.map((c) => c[0].body)).toEqual([{ spec: { replicas: 1 } }]);
+      });
+
       it('pins a RECREATED file manager to the data node too — the recreate replaces the pod anyway', async () => {
         // Lab staging: an image drift recreated it unpinned, it landed on the other
         // server and sat in ContainerCreating, unable to attach the volume.

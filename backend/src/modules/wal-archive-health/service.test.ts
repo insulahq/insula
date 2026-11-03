@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { parseStorageQuantity } from './service.js';
+import { describe, it, expect, vi } from 'vitest';
+import { parseStorageQuantity, readWalArchiveHealth, type ReadWalArchiveDeps } from './service.js';
 
 describe('parseStorageQuantity', () => {
   it('parses binary (Ki/Mi/Gi/Ti/Pi/Ei) units', () => {
@@ -29,5 +29,44 @@ describe('parseStorageQuantity', () => {
     expect(parseStorageQuantity('')).toBe(0);
     expect(parseStorageQuantity('garbage')).toBe(0);
     expect(parseStorageQuantity('20Zi')).toBe(0);
+  });
+});
+
+describe('readWalArchiveHealth: when archiving started failing', () => {
+  const deps = (condition: Record<string, string> | null): ReadWalArchiveDeps => ({
+    db: { execute: vi.fn(async () => ({ rows: [{ wal_bytes: '1024' }] })) } as unknown as ReadWalArchiveDeps['db'],
+    custom: {
+      getNamespacedCustomObject: vi.fn(async () => ({
+        spec: { plugins: [{ name: 'barman-cloud.cloudnative-pg.io' }], storage: { size: '4Gi' } },
+        status: { conditions: condition ? [{ type: 'ContinuousArchiving', ...condition }] : [] },
+      })),
+    } as unknown as ReadWalArchiveDeps['custom'],
+    log: { warn: vi.fn() },
+  });
+
+  it('takes the start from the condition while it is False', async () => {
+    const s = await readWalArchiveHealth(deps({ status: 'False', lastTransitionTime: '2026-11-03T16:30:45Z' }));
+    expect(s?.continuousArchivingHealthy).toBe(false);
+    expect(s?.failingSince).toBe('2026-11-03T16:30:45Z');
+  });
+
+  it('has no start while archiving is healthy (that transition is when it recovered)', async () => {
+    const s = await readWalArchiveHealth(deps({ status: 'True', lastTransitionTime: '2026-11-03T16:30:51Z' }));
+    expect(s?.continuousArchivingHealthy).toBe(true);
+    expect(s?.continuousArchivingConfirmed).toBe(true);
+    expect(s?.failingSince).toBeNull();
+  });
+
+  it('counts an Unknown or absent condition as not failing, but not as working', async () => {
+    for (const s of [await readWalArchiveHealth(deps({ status: 'Unknown' })), await readWalArchiveHealth(deps(null))]) {
+      expect(s?.continuousArchivingHealthy).toBe(true);
+      expect(s?.continuousArchivingConfirmed).toBe(false);
+    }
+  });
+
+  it('has no start when CNPG gave no time', async () => {
+    const s = await readWalArchiveHealth(deps({ status: 'False' }));
+    expect(s?.continuousArchivingHealthy).toBe(false);
+    expect(s?.failingSince).toBeNull();
   });
 });

@@ -201,7 +201,10 @@ export const tenantRecoveryActionSchema = z.enum(['repin']);
 export type TenantRecoveryAction = z.infer<typeof tenantRecoveryActionSchema>;
 
 export const tenantRepinRequestSchema = z.object({
-  /** A node name, or '' to clear the pin and let the scheduler choose. */
+  /**
+   * A node name, or '' for Auto: the pin is cleared, and a Local-tier tenant's
+   * pods still go to one node with its data (nodes/auto-target.ts).
+   */
   targetNode: z.string().max(253),
   /** Typed tenant name — the same confirmation shape as node recovery. */
   confirm: z.literal(true),
