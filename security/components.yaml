@@ -765,7 +765,7 @@ components:
     name: Stakater Reloader (rollout on ConfigMap/Secret change)
     tier: "2"
     kind: image
-    pinned: "v1.4.22"
+    pinned: "v1.4.23"
     pin_source: k8s/base/reloader/reloader.yaml
     pin_check: true
     repos: [stakater/reloader]

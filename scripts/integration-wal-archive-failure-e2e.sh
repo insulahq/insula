@@ -11,22 +11,29 @@
 #   2. Bind a DEAD S3 target (unroutable endpoint) → the postgres-objectstore
 #      reconciler attaches the barman plugin → archiving fails →
 #      `ContinuousArchiving=False` (reason ContinuousArchivingFailing).
-#   3. GET /admin/wal-archive-health → the assessment flips to state=failing +
-#      shouldAlert=true (the HARD gate: deterministic, pure logic over the live
-#      snapshot). Because pg_wal pressure stays far below the 75% trip threshold,
-#      the circuit-breaker stays UNTRIPPED (alert-only — the intended `failing`,
+#   3. GET /admin/wal-archive-health → the assessment flips to state=failing,
+#      with shouldAlert=false while the failure is young: the platform alerts
+#      only once archiving has failed for 10 minutes, so a failover's failed
+#      first upload, which the retry fixes in seconds, never alerts. Because
+#      pg_wal pressure stays far below the 75% trip threshold, the
+#      circuit-breaker stays UNTRIPPED (alert-only — the intended `failing`,
 #      not `critical`, state).
-#   4. The `admin.wal_archive_failing` notification ROW (soft check): it fires on
-#      a fresh cluster, but is rate-limited to once / 6h, so its absence on a
-#      re-run within that window is EXPECTED — the detection is already proven in
-#      step 3. (The live row-firing is proven separately on a fresh bootstrap.)
-#   5. Recovery: unassign + delete the target → plugin removed → wal-archive
-#      no-op-succeeds again → WAL recycles → state returns to ok; reset-breaker is
-#      idempotent.
+#   4. The `admin.wal_archive_failing` notification ROW, once the failure is 10
+#      minutes old (hard check). Phase 1 clears the category's rows, which also
+#      resets its once-per-6h rate limit, and the alert's dedupe key names the
+#      failure, so a re-run alerts again.
+#   5. Recovery. With a SYSTEM target bound at the start, the suite rebinds it:
+#      archiving works again with the plugin attached, and the
+#      `admin.wal_archive_recovered` row must follow. On a targetless cluster
+#      it unassigns + deletes the target → plugin removed → wal-archive
+#      no-op-succeeds again → WAL recycles → state returns to ok, and no
+#      "recovered" row may follow (archiving is off, not working). Either way
+#      reset-breaker is idempotent.
 #
 # This is a HEAVY suite: binding/unbinding a target triggers CNPG-managed Postgres
-# restarts (~30–60s each) and the alert waits on the 5-min scheduler tick, so a
-# full run is ~8–12 min. Run on-demand / nightly, not per-commit.
+# restarts (~30–60s each), and the alert waits out the 10-minute rule plus up to
+# one 5-min scheduler tick, so a full run is ~20–30 min. Run on-demand / nightly,
+# not per-commit.
 #
 # Two modes: ON-NODE (default — local kubectl + self-managed port-forward, no
 # public ingress needed) or REMOTE (set SSH_HOST → kubectl over ssh + the public
@@ -70,6 +77,7 @@ CLUSTER="${CNPG_CLUSTER:-system-db}"
 DEAD_ENDPOINT="${DEAD_ENDPOINT:-https://wal-archive-fail.invalid:9000}"
 TEST_CONFIG_NAME="wal-fail-itest"
 ALERT_CATEGORY="admin.wal_archive_failing"
+RECOVERED_CATEGORY="admin.wal_archive_recovered"
 
 # kubectl wrapper: local, or remote via ssh with every arg shell-quoted so
 # jsonpath braces, `-p '{json}'`, and `psql -c "SQL"` survive the remote shell.
@@ -179,6 +187,8 @@ TEST_TID=""
 # suite used to do) left the cluster with no WAL archiving and no system
 # backups after every run.
 ORIG_SYSTEM=""
+# Set once Phase 3 has rebound ORIG_SYSTEM: the cleanup then leaves it bound.
+ORIG_SYSTEM_REBOUND=""
 cleanup() {
   phase "Cleanup"
   # A long run (several CNPG restarts) can outlive the 30-min access token, and
@@ -186,12 +196,14 @@ cleanup() {
   local _prev_token="$TOKEN"
   login >/dev/null 2>&1 || TOKEN="$_prev_token"
   # Off the dead target + delete the test config via the API if we still have a token.
-  if [[ -n "$TOKEN" ]]; then
+  if [[ -n "$TOKEN" && -z "$ORIG_SYSTEM_REBOUND" ]]; then
     api PUT /api/v1/admin/backup-rclone-shim/assignments/system '{"targetId":null,"force":true}' >/dev/null 2>&1 || true
     [[ -n "$TEST_TID" ]] && api DELETE "/api/v1/admin/backup-configs/$TEST_TID" >/dev/null 2>&1 || true
   fi
   dbq "DELETE FROM backup_configurations WHERE name='$TEST_CONFIG_NAME'" >/dev/null 2>&1 || true
-  if [[ -n "$ORIG_SYSTEM" && -n "$TOKEN" ]]; then
+  if [[ -n "$ORIG_SYSTEM_REBOUND" ]]; then
+    log "SYSTEM binding already restored → $ORIG_SYSTEM"
+  elif [[ -n "$ORIG_SYSTEM" && -n "$TOKEN" ]]; then
     local rc
     rc=$(hcode "$(api PUT /api/v1/admin/backup-rclone-shim/assignments/system "{\"targetId\":\"$ORIG_SYSTEM\",\"force\":true}")")
     if [[ "$rc" == "200" ]]; then log "restored the SYSTEM binding → $ORIG_SYSTEM"
@@ -238,9 +250,14 @@ fi
 # rate_limited rows carry category_id but notification_id=NULL), so clear BOTH
 # deliveries (by category_id — not via a notification_id join, which misses the
 # NULL-notification rate_limited rows) and the notifications themselves.
-dbq "DELETE FROM notification_deliveries WHERE category_id='$ALERT_CATEGORY'" >/dev/null 2>&1 || true
-PRIOR=$(dbq "DELETE FROM notifications WHERE category_id='$ALERT_CATEGORY' RETURNING 1" | grep -c 1 2>/dev/null || echo 0)
-[[ "${PRIOR:-0}" -gt 0 ]] 2>/dev/null && log "cleared $PRIOR prior $ALERT_CATEGORY notification(s) + deliveries for a clean re-run"
+for cat in "$ALERT_CATEGORY" "$RECOVERED_CATEGORY"; do
+  dbq "DELETE FROM notification_deliveries WHERE category_id='$cat'" >/dev/null 2>&1 || true
+  PRIOR=$(dbq "DELETE FROM notifications WHERE category_id='$cat' RETURNING 1" | grep -c 1 2>/dev/null || echo 0)
+  [[ "${PRIOR:-0}" -gt 0 ]] 2>/dev/null && log "cleared $PRIOR prior $cat notification(s) + deliveries for a clean re-run"
+done
+# The failure an alert went out for, recorded so its end can be told. A stale
+# one from an earlier run would make a recovered notice the wrong failure's.
+dbq "DELETE FROM platform_settings WHERE setting_key='wal_archive_alerted_failure'" >/dev/null 2>&1 || true
 if plugin_present; then warn "a barman plugin is already present (pre-existing target?) — proceeding"; else ok "no barman plugin on a targetless cluster"; fi
 H=$(api GET /api/v1/admin/wal-archive-health)
 [[ "$(hcode "$H")" == "200" ]] && ok "GET /admin/wal-archive-health → 200" || fail "health endpoint → $(hcode "$H")"
@@ -283,11 +300,10 @@ for _ in $(seq 1 40); do
 done
 [[ "$CA" == "False" ]] && ok "ContinuousArchiving=False (archiving is failing)" || fail "ContinuousArchiving never went False (=$CA)"
 
-# AUTHORITATIVE alerting gate: assessWalArchive (pure logic over the live
-# snapshot) flips to state=failing + shouldAlert the instant archiving fails.
-# This is deterministic + dedupe-independent — unlike the notification ROW, which
-# is rate-limited to once / 6h (a deliberate anti-spam guard). Retry to ride out
-# the platform-api restart the plugin-add provokes (empty body mid-restart).
+# Detection gate: assessWalArchive (pure logic over the live snapshot) flips to
+# state=failing the instant archiving fails, and holds the alert
+# (shouldAlert=false) until the failure is 10 minutes old. Retry to ride out the
+# platform-api restart the plugin-add provokes (empty body mid-restart).
 log "polling GET /admin/wal-archive-health for the failing assessment..."
 HFAIL=0; HBODY=""
 for _ in $(seq 1 24); do
@@ -297,25 +313,30 @@ for _ in $(seq 1 24); do
 done
 if [[ "$HFAIL" == 1 ]]; then
   ok "health assessment = failing (the platform detects the archive failure)"
-  printf '%s' "$HBODY" | grep -q '"shouldAlert":true' && ok "assessment.shouldAlert=true (an alert is warranted)" \
-    || warn "shouldAlert not true: $(printf '%s' "$HBODY" | head -c 160)"
+  if printf '%s' "$HBODY" | grep -q '"shouldAlert":false'; then
+    ok "assessment holds the alert while the failure is young: $(printf '%s' "$HBODY" | grep -o 'WAL archiving has been failing[^"]*' | head -1)"
+  else
+    warn "shouldAlert already true (the failure began over 10 minutes ago?): $(printf '%s' "$HBODY" | head -c 160)"
+  fi
 else
   fail "health assessment never reported state=failing: $(printf '%s' "$HBODY" | head -c 160)"
 fi
 
-# The notification ROW is the user-visible side-effect. It fires on a fresh
-# cluster, but is rate-limited to once / 6h with dedupe key wal-failing:<cluster>,
-# so on a re-run within that window its absence is EXPECTED, not a failure — the
-# detection is already proven above. (Best-effort reset ran in Phase 1.)
-log "checking for the $ALERT_CATEGORY notification row (rate-limited once/6h)..."
+# The notification ROW is the user-visible side-effect: once the failure is 10
+# minutes old, the next 5-minute tick sends it. Phase 1 reset the category, and
+# the dedupe key names this failure, so it must fire. Up to ~20 minutes.
+log "waiting for the $ALERT_CATEGORY notification row (10-minute rule + one tick)..."
 FOUND=0
-for _ in $(seq 1 18); do
+for _ in $(seq 1 120); do
   N=$(dbq "SELECT count(*) FROM notifications WHERE category_id='$ALERT_CATEGORY' AND created_at > now() - interval '30 minutes'")
   if [[ "${N:-0}" =~ ^[0-9]+$ ]] && [[ "$N" -ge 1 ]]; then FOUND=1; break; fi
   sleep 10
 done
 [[ "$FOUND" == 1 ]] && ok "$ALERT_CATEGORY notification row fired on the live cluster" \
-  || warn "no fresh notification row — rate-limited (once/6h); detection confirmed via the health assessment above"
+  || fail "no $ALERT_CATEGORY notification row within ~20 minutes of the failure"
+ALERTED=$(dbq "SELECT setting_value FROM platform_settings WHERE setting_key='wal_archive_alerted_failure'")
+[[ "$ALERTED" == *'"failingSince"'* ]] && ok "the alerted failure is on record: $ALERTED" \
+  || fail "no alerted failure on record after the alert (='$ALERTED')"
 
 BRK=$(dbq "SELECT COALESCE((SELECT setting_value FROM platform_settings WHERE setting_key='wal_archive_circuit_breaker'),'ABSENT')")
 if [[ "$BRK" == "ABSENT" || "$BRK" == *'"tripped":false'* ]]; then
@@ -324,16 +345,52 @@ else
   fail "breaker unexpectedly tripped at low pressure: $BRK"
 fi
 
-phase "Phase 3 — recovery (remove target → archiving recovers)"
-api PUT /api/v1/admin/backup-rclone-shim/assignments/system '{"targetId":null,"force":true}' >/dev/null
-[[ -n "$TEST_TID" ]] && api DELETE "/api/v1/admin/backup-configs/$TEST_TID" >/dev/null && TEST_TID=""
-log "waiting for the plugin to be removed (reconciler tick)..."
-for _ in $(seq 1 60); do plugin_present || break; sleep 6; done
-if plugin_present; then
-  warn "plugin still present after unassign — forcing off"
-  kc patch cluster -n "$NS" "$CLUSTER" --type=merge -p '{"spec":{"plugins":[]}}' >/dev/null 2>&1 || true
+recovered_rows() { dbq "SELECT count(*) FROM notifications WHERE category_id='$RECOVERED_CATEGORY' AND created_at > now() - interval '60 minutes'"; }
+if [[ -n "$ORIG_SYSTEM" ]]; then
+  phase "Phase 3 — recovery (rebind the original target → archiving works → \"working again\")"
+  A=$(api PUT /api/v1/admin/backup-rclone-shim/assignments/system "{\"targetId\":\"$ORIG_SYSTEM\",\"force\":true}")
+  [[ "$(hcode "$A")" == "200" ]] && ok "rebound SYSTEM to the original target" || fail "rebind → $(hcode "$A"): $(hbody "$A" | head -c 160)"
+  [[ -n "$TEST_TID" ]] && api DELETE "/api/v1/admin/backup-configs/$TEST_TID" >/dev/null && TEST_TID=""
+  log "forcing WAL switches + waiting for ContinuousArchiving=True..."
+  CA=""
+  for _ in $(seq 1 60); do
+    CA=$(continuous_archiving_status)
+    [[ "$CA" == "True" ]] && break
+    dbq "SELECT pg_switch_wal()" >/dev/null 2>&1 || true
+    sleep 8
+  done
+  [[ "$CA" == "True" ]] && ok "ContinuousArchiving=True (archiving works again)" || fail "ContinuousArchiving never went True (=$CA)"
+  log "waiting for the $RECOVERED_CATEGORY notification row (next tick)..."
+  FOUND=0
+  for _ in $(seq 1 45); do
+    N=$(recovered_rows)
+    if [[ "${N:-0}" =~ ^[0-9]+$ ]] && [[ "$N" -ge 1 ]]; then FOUND=1; break; fi
+    sleep 10
+  done
+  [[ "$FOUND" == 1 ]] && ok "$RECOVERED_CATEGORY row: $(dbq "SELECT message FROM notifications WHERE category_id='$RECOVERED_CATEGORY' ORDER BY created_at DESC LIMIT 1")" \
+    || fail "no $RECOVERED_CATEGORY row within ~7 minutes of archiving working again"
+  ORIG_SYSTEM_REBOUND=1
 else
-  ok "barman plugin removed → wal-archive no-op-succeeds → WAL recycles"
+  phase "Phase 3 — recovery (remove target → archiving off → no \"working again\")"
+  api PUT /api/v1/admin/backup-rclone-shim/assignments/system '{"targetId":null,"force":true}' >/dev/null
+  [[ -n "$TEST_TID" ]] && api DELETE "/api/v1/admin/backup-configs/$TEST_TID" >/dev/null && TEST_TID=""
+  log "waiting for the plugin to be removed (reconciler tick)..."
+  for _ in $(seq 1 60); do plugin_present || break; sleep 6; done
+  if plugin_present; then
+    warn "plugin still present after unassign — forcing off"
+    kc patch cluster -n "$NS" "$CLUSTER" --type=merge -p '{"spec":{"plugins":[]}}' >/dev/null 2>&1 || true
+  else
+    ok "barman plugin removed → wal-archive no-op-succeeds → WAL recycles"
+  fi
+  log "waiting for the alerted failure to be dropped without a notice (next tick)..."
+  for _ in $(seq 1 45); do
+    [[ -z "$(dbq "SELECT 1 FROM platform_settings WHERE setting_key='wal_archive_alerted_failure'")" ]] && break
+    sleep 10
+  done
+  [[ -z "$(dbq "SELECT 1 FROM platform_settings WHERE setting_key='wal_archive_alerted_failure'")" ]] \
+    && ok "alerted failure dropped" || fail "the alerted failure is still on record with archiving off"
+  [[ "$(recovered_rows)" == "0" ]] && ok "no \"working again\" notice: archiving is off, not working" \
+    || fail "a $RECOVERED_CATEGORY notice went out although archiving is off"
 fi
 R=$(api POST /api/v1/admin/wal-archive-health/reset-breaker)
 [[ "$(hcode "$R")" == "200" ]] && ok "reset-breaker → 200 (idempotent)" || warn "reset-breaker → $(hcode "$R")"

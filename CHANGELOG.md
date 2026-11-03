@@ -12,6 +12,100 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **Reloader v1.4.22 → v1.4.23, out of its soak.** Fixable HIGHs 6 → 0 (Go 1.26.10, newer
+  `x/net` and `x/text`).
+  - The Go profiling handlers (`/debug/pprof/`) answered on its metrics port, port 9090, without
+    any flag. They no longer do.
+  - A delete it only noticed on relist is now handled.
+  - Flags, ports and probes are unchanged (`/live`, `/metrics`).
+
+### Fixed
+
+- **"WAL archiving failing" no longer fires for a failover, can fire more than once a month,
+  and gets an all-clear.** On production, a node restart failed the platform database over. The
+  new primary's first WAL upload failed and the retry succeeded 4 seconds later. The 5-minute
+  health check happened to read inside that gap and sent "WAL archiving failing", with nothing
+  after it.
+  - The alert now waits until archiving has been failing for 10 minutes. If pg_wal is already at
+    half the volume, it alerts at once, and the automatic shutoff at 75% is never delayed.
+  - Every failure gets its own alert. The alert's dedupe key was fixed, and deliveries are
+    deduplicated for 30 days, so one alert, even a false one, silenced every later failure for a
+    month.
+  - New notification **Database WAL archiving working again** (`admin.wal_archive_recovered`):
+    once archiving works again after an alert, it says so, and how long it failed. A failure
+    that never alerted sends none, and neither does archiving that was switched off rather than
+    repaired.
+- **A drain keeps an Auto tenant's pods together with its data.** A tenant's Deployments share
+  one ReadWriteOnce volume, so they run together on one node or not at all. A drain re-pinned an
+  Auto tenant to Auto by deleting the hostname selector from every workload, and the scheduler
+  then placed each Deployment on its own. On production, a tenant's web pods started on the node
+  holding its volume and its database on another node, where it waited for the volume. The CRM
+  on that database answered 500.
+  - A re-pin to Auto (drain, the recovery wizard) now sends a Local-tier tenant's pods to ONE node
+    off the node being left. That is a node that already holds a copy of its data, so nothing is
+    copied, or else the node with the most free space that can take the volume.
+  - It never picks a cordoned node, one that is not Ready, or one that does not take auto-placed
+    tenants.
+  - The tenant stays on Auto, with no primary node and no volume node tag. HA tenants are
+    unchanged.
+- **The recovery wizard can move a tenant whose row says Auto while its workloads are pinned.**
+  A tenant set to Auto while it runs keeps the pin on its workloads, because Auto moves
+  nothing. `POST /admin/tenants/:id/recover/repin` read only the row and answered
+  `TENANT_NOT_PINNED`, so the only way to move such a tenant was to drain its node.
+  - It now releases the node the workloads are pinned to.
+  - Workloads pinned to several nodes get `409 TENANT_PINNED_TO_SEVERAL_NODES`, with nothing
+    changed.
+- **Auto-heal and every other restore start a tenant's workloads on one node.** A restore scaled
+  the tenant's Deployments back up as they were. Unpinned ones were each placed on their own, and
+  those away from the volume never started. On production, that is how the auto-heal failed.
+  - Before scaling up, a workload that mounts the tenant's volume and carries no pin now gets the
+    node the others are pinned to. When none is pinned and the volume keeps one copy, it gets the
+    node holding the data.
+  - A pinned workload is never moved, a running one is never restarted, and an HA volume is left
+    as it is.
+  - The file manager never decides that node: the platform places it, and a stale pin on it would
+    send every unpinned app where the data is not. One the restore starts moves with the others.
+- **An HA tenant's pods stay together.** Its Deployments share one ReadWriteOnce volume too, but on
+  the HA tier only a soft preference for the primary node held them together, and an Auto HA
+  tenant had nothing at all. Each pod was placed on its own, and one placed away from the others
+  never started.
+  - Tenant workloads on the HA tier now prefer the node where the tenant's other workload pods run
+    (weight 100), and the node where its file manager runs (weight 50).
+  - It is a preference, not a rule. The scheduler counts a terminating pod like any other, so a
+    required rule would hold every new pod to a dead node during the failover HA exists for.
+  - Platform pods in the namespace (oauth2-proxy, private workers, the Ziti and zrok proxies) are
+    unchanged.
+  - A Deployment gets it at its next deploy, which restarts it once. A tier change applies it at
+    once.
+  - Moving an HA tenant off a node now applies it too. Before, an existing HA tenant's pods came
+    back from their old spec, each placed on its own. On production an upgrade alone leaves every
+    existing HA tenant without it.
+    - The Deployments with a pod on the node being left get it, along with the removal of their
+      soft preference for that node. That is what a deploy of the now-Auto tenant renders.
+    - Auto-repin after a node outage (and the recovery wizard on a dead node) applies it before the
+      stranded pods are deleted, so they come back once, together.
+    - A drain applies it once the node is blocked to tenants, so each app restarts once, off the
+      node.
+    - A re-pin that moves nothing (the recovery wizard on a live node) leaves it to the next deploy.
+- **A tier change also re-places an Auto tenant.** It patched the scheduling of pinned tenants
+  only. An Auto tenant moved to HA kept the hard pin to its data node, and one moved to Local got
+  no pin. It now applies what a deploy would: the HA preference above, or on the Local tier the
+  tenant's data node, file manager included.
+- **A drain removes a node-affinity pin from a workload that has other affinity rules.** The
+  re-pin removed the `kubernetes.io/hostname In [<node>]` requirement by sending the affinity
+  without it, as a JSON merge patch. That kind of patch keeps every key it does not name. A
+  workload with any other affinity rule, such as an anti-affinity or a preferred term, kept its
+  required pin to the node being left and could not start anywhere else. The patch now removes
+  the pin explicitly.
+- **A file manager no longer starts pinned to a node that has none of the data.** A file manager
+  that is starting moves to the node holding the tenant's data, except when that node cannot be
+  told (two copies mid-move and no workload pin). Then it kept its old pin, even when that node had
+  no copy any more. It sat in ContainerCreating there when the volume was attached elsewhere, or
+  made Longhorn copy the volume to it. In that case it now starts on a node that holds a copy. A pin
+  on a node that still holds a copy is kept.
+
 ## [2026.11.3] - 2026-11-02
 
 ### Added

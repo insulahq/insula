@@ -35,27 +35,52 @@ export interface TenantPodPlacement {
   readonly storageTier: 'local' | 'ha' | null;
 }
 
+interface PodAffinityTermLike {
+  labelSelector: { matchLabels: Record<string, string> };
+  topologyKey: string;
+}
+
 export interface TenantPodScheduling {
   nodeSelector?: Record<string, string>;
   affinity?: {
-    nodeAffinity: {
+    nodeAffinity?: {
       preferredDuringSchedulingIgnoredDuringExecution: Array<{
         weight: number;
         preference: { matchExpressions: Array<{ key: string; operator: string; values: string[] }> };
       }>;
     };
+    podAffinity?: {
+      preferredDuringSchedulingIgnoredDuringExecution: Array<{ weight: number; podAffinityTerm: PodAffinityTermLike }>;
+    };
   };
 }
 
+/** On every tenant workload pod (both deployers); not on platform pods. */
+export const TENANT_WORKLOAD_LABEL = 'platform.io/managed';
+const FILE_MANAGER_COMPONENT = { 'platform.io/component': 'file-manager' };
+
 /**
- * The scheduling constraint a tenant's pods carry. Pure.
+ * An HA tenant's pods prefer the node its other pods run on. They all mount
+ * one ReadWriteOnce volume, so a pod placed elsewhere never starts: on the HA
+ * tier only a soft node preference held them together, and an Auto HA tenant
+ * had none at all — each pod was placed on its own. The file manager counts
+ * too, at half the weight: one holding the volume is where it is attached.
  *
- *   no primary node → none
- *   HA tier         → a soft preference: the pod may fail over to a node
- *                     holding a surviving replica when the primary is down
- *   local (or unset) → a hard pin: the single replica only exists there
+ * Preferred, not required, on purpose. The scheduler counts a terminating pod
+ * like any other (interpodaffinity/filtering.go), so a REQUIRED term would hold
+ * every new pod to the node a dead node's pods are still listed on — exactly
+ * the failover HA exists for. No namespace list: a term matches pods of the
+ * pod's own namespace.
  */
-export function tenantPodScheduling(p: TenantPodPlacement): TenantPodScheduling {
+export const HA_SHARED_VOLUME_AFFINITY: NonNullable<NonNullable<TenantPodScheduling['affinity']>['podAffinity']> = {
+  preferredDuringSchedulingIgnoredDuringExecution: [
+    { weight: 100, podAffinityTerm: { labelSelector: { matchLabels: { [TENANT_WORKLOAD_LABEL]: 'true' } }, topologyKey: HOSTNAME_LABEL } },
+    { weight: 50, podAffinityTerm: { labelSelector: { matchLabels: FILE_MANAGER_COMPONENT }, topologyKey: HOSTNAME_LABEL } },
+  ],
+};
+
+/** The node constraint alone — what a platform pod in the namespace carries. Pure. */
+function hostScheduling(p: TenantPodPlacement): TenantPodScheduling {
   if (!p.nodeName) return {};
   if (p.storageTier === 'ha') {
     return {
@@ -75,11 +100,28 @@ export function tenantPodScheduling(p: TenantPodPlacement): TenantPodScheduling 
 }
 
 /**
+ * The scheduling constraint a tenant's pods carry. Pure.
+ *
+ *   HA tier          → a soft preference for the primary node, when there is
+ *                      one (the pod may fail over to a node holding a
+ *                      surviving replica), and for the node the tenant's other
+ *                      pods run on (HA_SHARED_VOLUME_AFFINITY), pinned or Auto
+ *   no primary node  → none (an Auto Local tenant's pods are pinned to its
+ *                      data node by resolveAutoPlacement first)
+ *   local (or unset) → a hard pin: the single replica only exists there
+ */
+export function tenantPodScheduling(p: TenantPodPlacement): TenantPodScheduling {
+  if (p.storageTier !== 'ha') return hostScheduling(p);
+  return { affinity: { ...hostScheduling(p).affinity, podAffinity: HA_SHARED_VOLUME_AFFINITY } };
+}
+
+/**
  * The pod-spec fields a PLATFORM component in a tenant namespace carries:
- * the tenant's scheduling, and the overhead priority class. Pure.
+ * the tenant's node constraint, and the overhead priority class. Pure. No
+ * pull toward the tenant's pods: a platform pod mounts no tenant volume.
  */
 export function platformPodPlacement(p: TenantPodPlacement): TenantPodScheduling & { priorityClassName: string } {
-  return { ...tenantPodScheduling(p), priorityClassName: TENANT_OVERHEAD_PRIORITY_CLASS };
+  return { ...hostScheduling(p), priorityClassName: TENANT_OVERHEAD_PRIORITY_CLASS };
 }
 
 /**

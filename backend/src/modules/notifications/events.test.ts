@@ -67,6 +67,8 @@ const {
   notifyAdminSecurityHardeningDrift,
   notifyTenantScheduledTaskFailure,
   notifyMailboxQuotaThreshold,
+  notifyAdminWalArchiveFailing,
+  notifyAdminWalArchiveRecovered,
 } = await import('./events.js');
 
 
@@ -351,3 +353,40 @@ describe('notification events', () => {
     });
   });
 });
+
+describe('WAL archiving alerts', () => {
+  const payload = { clusterName: 'system-db', pressurePercent: '14' };
+  const result = (statuses: Array<{ status: string; error?: string }>) =>
+    ({ eventId: 'e1', deliveryCount: 0, perChannelStatuses: statuses.map((s) => ({ userId: 'u1', channel: 'in_app', ...s })) });
+
+  it('reports the failing alert as reached when a channel sent or queued it, or it was a duplicate', async () => {
+    emitEventMock.mockResolvedValueOnce(result([{ status: 'sent' }]));
+    await expect(notifyAdminWalArchiveFailing({} as never, payload, 'k')).resolves.toBe(true);
+    emitEventMock.mockResolvedValueOnce(result([{ status: 'rate_limited' }, { status: 'queued' }]));
+    await expect(notifyAdminWalArchiveFailing({} as never, payload, 'k')).resolves.toBe(true);
+    emitEventMock.mockResolvedValueOnce(result([{ status: 'skipped', error: 'duplicate' }]));
+    await expect(notifyAdminWalArchiveFailing({} as never, payload, 'k')).resolves.toBe(true);
+  });
+
+  it('reports it as not reached when nothing went out', async () => {
+    emitEventMock.mockResolvedValueOnce(result([{ status: 'rate_limited' }, { status: 'muted' }]));
+    await expect(notifyAdminWalArchiveFailing({} as never, payload, 'k')).resolves.toBe(false);
+    emitEventMock.mockResolvedValueOnce(result([{ status: 'skipped', error: 'recipient_email_missing' }]));
+    await expect(notifyAdminWalArchiveFailing({} as never, payload, 'k')).resolves.toBe(false);
+    emitEventMock.mockResolvedValueOnce(result([]));
+    await expect(notifyAdminWalArchiveFailing({} as never, payload, 'k')).resolves.toBe(false);
+    emitEventMock.mockRejectedValueOnce(new Error('boom'));
+    await expect(notifyAdminWalArchiveFailing({} as never, payload, 'k')).resolves.toBe(false);
+  });
+
+  it('dispatches the recovered notice to admins under its own category', async () => {
+    await notifyAdminWalArchiveRecovered({} as never, { clusterName: 'system-db', failedFor: '25 minutes' }, 'wal-recovered:k');
+    expect(emitEventMock.mock.calls.at(-1)?.[1]).toMatchObject({
+      categoryId: 'admin.wal_archive_recovered',
+      scope: { kind: 'admin' },
+      variables: { clusterName: 'system-db', failedFor: '25 minutes' },
+      dedupeKey: 'wal-recovered:k',
+    });
+  });
+});
+
