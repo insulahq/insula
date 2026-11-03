@@ -509,3 +509,91 @@ describe('Operator console — chrome', () => {
     expect(screen.getByTestId('dashboard-refresh')).toBeDisabled();
   });
 });
+
+/**
+ * Every figure that turns amber or red names what it counts. The hover cards
+ * repeated the figures ("Overdue for renewal 2"), and the Updates tile and the
+ * Scheduled tasks "Overdue" cell were constants that could never warn.
+ */
+describe('Operator console — status tiles name their subjects', () => {
+  const named = (o: Partial<AdminDashboardSummary>) =>
+    summaryFn.mockReturnValue({ data: { data: summary(o) }, isLoading: false });
+
+  it('Certificates: the overdue and failing ones, and how many are left out', () => {
+    named({ certificates: okSection({
+      issued: 38, wildcards: 28, nearestExpiryDays: 3, failing: 1, overdue: 6, needsAttention: 7,
+      attention: [{ name: '*.example.test', detail: 'renewal overdue · 3 days left · Example Tenant' }],
+    }) });
+    show();
+    expect(screen.getByText('*.example.test')).toBeInTheDocument();
+    expect(screen.getByText('renewal overdue · 3 days left · Example Tenant')).toBeInTheDocument();
+    expect(screen.getByText('6 not shown')).toBeInTheDocument();
+  });
+
+  it('Scheduled tasks: a real "Never run" instead of the constant "Overdue", and the failed jobs named', () => {
+    named({ scheduledTasks: okSection({
+      total: 16, enabled: 14, failed24h: 1, neverRun: 2, overdue: 0,
+      failed: [{ name: 'Example Tenant · nightly-import', detail: 'failed 1 h ago · HTTP 500' }],
+      neverRunJobs: [{ name: 'weekly-report', detail: 'schedule 0 6 * * 1' }],
+    }) });
+    show();
+    expect(screen.queryByText('Overdue')).not.toBeInTheDocument();
+    expect(screen.getByText('Never run')).toBeInTheDocument();
+    expect(screen.getByText('Example Tenant · nightly-import')).toBeInTheDocument();
+    expect(screen.getByText('weekly-report')).toBeInTheDocument();
+  });
+
+  it('Updates: which release is available, and which apps are behind or past end-of-life', () => {
+    named({ updates: okSection({
+      platformCurrent: false, platformInstalled: '2026.11.3', platformAvailable: '2026.11.4',
+      deploymentsBehind: 1, behind: [{ name: 'Example Tenant · blog', detail: 'WordPress 6.4 → 6.5' }],
+      autoUpgradeEnabled: 2,
+      eolRuntimes: 1, eol: [{ name: 'Example Tenant · db', detail: 'MariaDB 10.5 · end of life 2025-06-24' }],
+    }) });
+    show();
+    expect(screen.getByText('Behind')).toBeInTheDocument();
+    expect(screen.getByText('2026.11.3 → 2026.11.4 available')).toBeInTheDocument();
+    expect(screen.getByText('WordPress 6.4 → 6.5')).toBeInTheDocument();
+    expect(screen.getByText('MariaDB 10.5 · end of life 2025-06-24')).toBeInTheDocument();
+  });
+
+  it('Tenancy and Backups: the tenants being provisioned and the ones never backed up', () => {
+    named({
+      tenants: okSection({ active: 26, total: 27, routes: 45, domains: 32, provisioningInFlight: 1,
+        provisioning: [{ name: 'New Tenant', detail: 'create · namespace · 4 min' }] }),
+      backups: okSection({ ...summary().backups.data!, tenantsNeverBackedUp: 1,
+        neverBackedUp: [{ name: 'Quiet Tenant', detail: 'active 30 days, no completed backup' }] }),
+    });
+    show();
+    expect(screen.getByText('New Tenant')).toBeInTheDocument();
+    expect(screen.getByText('create · namespace · 4 min')).toBeInTheDocument();
+    expect(screen.getByText('Quiet Tenant')).toBeInTheDocument();
+  });
+
+  it('Mail: the outbound queue and the mailboxes over quota', () => {
+    liveFn.mockReturnValue({ data: { data: live({
+      mail: okSection({ sent7d: 332, queueDepth: 0, queueReachable: false, mailboxes: 72, emailDomains: 19,
+        rateLimited7d: 0, overQuotaMailboxes: 1, overQuota: [{ name: 'full@example.test', detail: '1024 / 1024 MB' }] }),
+    }) }, isLoading: false });
+    show();
+    expect(screen.getByText('mail server did not answer')).toBeInTheDocument();
+    expect(screen.getByText('full@example.test')).toBeInTheDocument();
+  });
+
+  it('a hover card keeps two rows that share a label, without a key clash', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    summaryFn.mockReturnValue({
+      data: { data: summary({ alerts: okSection([{
+        categoryId: 'admin.slo_alert_warning', severity: 'warning' as const, value: '2',
+        title: 'Monitoring warnings', subtitle: 'Node OOM · node=n1 · 1 more', href: '/monitoring/slos',
+        detail: [['Node OOM', 'node=n1 · firing 12 min'], ['Node OOM', 'node=n2 · firing 3 min']], note: null,
+      }]) }) },
+      isLoading: false,
+    });
+    show();
+    expect(screen.getByText('node=n1 · firing 12 min')).toBeInTheDocument();
+    expect(screen.getByText('node=n2 · firing 3 min')).toBeInTheDocument();
+    expect(error.mock.calls.some((c) => String(c[0]).includes('same key'))).toBe(false);
+    error.mockRestore();
+  });
+});

@@ -161,7 +161,9 @@ storage, a mailbox that is nearly full (which is what actually starts refusing
 mail), a volume nearly full (which is what stops a workload writing), orphaned
 pods left on a node, failed lifecycle transitions, backups that are failing or
 have never run, and certificates close to expiry. Each entry links to the
-tenant, volume or page that resolves it.
+tenant, volume or page that resolves it, and hovering it lists what it
+counts — which certificates, rules, domains, pods or tenants — up to five, and
+how many more.
 
 Three details worth knowing:
 
@@ -237,12 +239,13 @@ same meaning, are on [Cluster → Nodes](../operator/nodes-and-cluster.md#in-use
 | Tile | What it tells you |
 |---|---|
 | **Tenants & workloads** | Tenant count by state, and how many workloads are running, pending or failing. |
-| **Mail — last 7 days** | Delivery volume, rejections and the fullest mailbox on the platform. Opens [Monitoring → Mail](../operator/monitoring.md#mail). |
+| **Mail — last 7 days** | Delivery volume, rejections, the outbound queue (red when the mail server does not answer) and the mailboxes over quota. Opens [Monitoring → Mail](../operator/monitoring.md#mail). |
 | **Web defence — last 24 hours** | Requests blocked, the rules that fired, and the noisiest sources. **Banned IPs** is the number of addresses on the *Banned IPs* list right now — WAF and traffic auto-bans, operator and permanent bans; the community blocklist is not counted. It reads *—* when CrowdSec could not be reached. |
 | **Backups & DR** | The three backup classes, each with when it last succeeded, how much it stores at its target, and whether it is on schedule. **System** is the platform database's base backups and WAL, the etcd snapshots and the DR bundles; its size is measured hourly. **Tenant** is the tenant repositories. **Mail** is the whole mail store's snapshot repository. Hover for the target and, when a class is amber, why. |
-| **Certificates** | What is issued, what renews soon, and anything that failed to renew. |
-| **Cron & platform jobs** | Scheduled work, and anything that has not run when it should have. |
-| **Platform** | Running version, available upgrades, and recent changes. |
+| **Certificates** | What is issued, what renews soon, and anything that failed to renew. Hovering names the overdue and failing certificates. Certificates of deleted domains are not counted. |
+| **Cron & platform jobs** | Scheduled work, the jobs whose last run in the past 24 hours failed, and the enabled jobs that have never run — each named on hover. |
+| **Updates** | The installed release and the verified release on offer, the deployments with a catalog upgrade available, and those running a version past its end-of-life date — each named on hover. |
+| **Changes** | The latest administrative changes — a domain added, a deployment updated, an upgrade applied — and who made them. |
 
 !!! tip "If something is flagged, click it"
     Every signal deep-links to the page that fixes it. You should rarely

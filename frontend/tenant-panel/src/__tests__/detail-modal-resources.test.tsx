@@ -175,3 +175,22 @@ describe('Updates', () => {
     expect(screen.queryByTestId('custom-updates-card')).not.toBeInTheDocument();
   });
 });
+
+/**
+ * A compose stack sets its resources per service, and the server refuses a
+ * single deployment-level figure for it. The modal offered the form anyway.
+ */
+describe('editing resources of a custom container', () => {
+  it('a compose stack points to Custom containers instead of offering the form', () => {
+    renderModal(deployment({ source: 'custom', catalogEntryId: null, customSpec: { sourceMode: 'compose', services: { web: {}, db: {} } } }));
+    expect(screen.queryByTestId('edit-resources-button')).not.toBeInTheDocument();
+    const pointer = screen.getByTestId('resources-edit-in-custom-containers');
+    expect(within(pointer).getByRole('link', { name: /edit the stack in Custom containers/ })).toHaveAttribute('href', '/applications/custom');
+  });
+
+  it('a single-container custom app keeps the form', () => {
+    renderModal(deployment({ source: 'custom', catalogEntryId: null, customSpec: { sourceMode: 'simple', services: { app: {} } } }));
+    expect(screen.getByTestId('edit-resources-button')).toBeInTheDocument();
+    expect(screen.queryByTestId('resources-edit-in-custom-containers')).not.toBeInTheDocument();
+  });
+});

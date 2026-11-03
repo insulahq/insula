@@ -5,6 +5,7 @@ import { listTargetUsage } from '../backup-config/target-usage.js';
 import { evaluateFreshness, resolveScheduleZone } from '../backup-health/freshness.js';
 import { fromCnpgCron } from '../backup-schedules/cadence/targets.js';
 import { readSystemBackupFacts } from '../system-backup/footprint-store.js';
+import { DASHBOARD_SUBJECT_LIMIT } from './subjects.js';
 
 type BackupsData = NonNullable<AdminDashboardSummary['backups']['data']>;
 type BackupClassRow = BackupsData['classes'][number];
@@ -81,10 +82,16 @@ export async function buildBackupClasses(db: Database, now: Date = new Date()): 
   const { lastSuccess: sysLast, footprint } = await readSystemBackupFacts(db);
   const sysBytes = footprint && !footprint.error ? footprint.totalBytes : null;
 
-  const never = await db.execute<{ n: number }>(sql`
-    SELECT COUNT(*)::int AS n FROM tenants t
+  // The tenants themselves too, oldest first: the count alone says only that
+  // someone is unprotected.
+  const never = await db.execute<{ n: number; name: string; days: number }>(sql`
+    SELECT COUNT(*) OVER ()::int AS n, t.name,
+           FLOOR(EXTRACT(EPOCH FROM (now() - t.created_at)) / 86400)::int AS days
+      FROM tenants t
      WHERE t.status = 'active'
        AND NOT EXISTS (SELECT 1 FROM backup_jobs b WHERE b.tenant_id = t.id AND b.status = 'completed')
+     ORDER BY t.created_at ASC
+     LIMIT ${DASHBOARD_SUBJECT_LIMIT}
   `);
 
   const iso = (v: string | Date | null | undefined): string | null => (v ? new Date(v).toISOString() : null);
@@ -135,6 +142,10 @@ export async function buildBackupClasses(db: Database, now: Date = new Date()): 
     bundles: Number(f?.bundles ?? 0),
     repoBytes: tenantStored.repoBytes,
     tenantsNeverBackedUp: Number((never.rows ?? [])[0]?.n ?? 0),
+    neverBackedUp: (never.rows ?? []).map((r) => ({
+      name: r.name,
+      detail: `active ${Number(r.days ?? 0)} day${Number(r.days) === 1 ? '' : 's'}, no completed backup`,
+    })),
   };
 }
 

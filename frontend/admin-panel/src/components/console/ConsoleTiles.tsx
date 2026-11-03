@@ -103,13 +103,17 @@ export function HoverCard({ title, rows, note }: {
         {title}
       </h4>
       <dl className="flex flex-col gap-1">
-        {rows.map(([k, v]) => (
-          // Label and value stay on one line; the LABEL is the half that gives
-          // way, because a truncated number is a wrong number. It keeps a third
-          // of the row, though: a sentence-long value (a health reason) wraps
-          // instead of squeezing its label to nothing.
-          <div key={k} className="flex flex-nowrap items-baseline justify-between gap-3">
-            <dt title={k} className="min-w-[33%] flex-1 truncate text-xs text-gray-600 dark:text-gray-400">{k}</dt>
+        {rows.map(([k, v], i) => (
+          // The value never truncates, because a truncated number is a wrong
+          // number. The label wraps rather than being cut: in a subject list it
+          // IS the subject — a certificate, a mailbox, a job — and the card
+          // showed "*.shop-example.e…" for the one name it existed to give.
+          // It keeps a third of the row, so a sentence-long value (a health
+          // reason) wraps too instead of squeezing its label to nothing.
+          // Keyed by position too: subject rows can share a label (two firing
+          // series of one rule, two jobs with one name).
+          <div key={`${i}:${k}`} className="flex flex-nowrap items-baseline justify-between gap-3">
+            <dt title={k} className="min-w-[33%] flex-1 break-words text-xs text-gray-600 dark:text-gray-400">{k}</dt>
             <dd className="min-w-0 shrink break-words text-right font-mono text-xs tabular-nums text-gray-900 dark:text-gray-100">{v}</dd>
           </div>
         ))}

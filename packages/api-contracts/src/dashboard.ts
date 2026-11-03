@@ -98,6 +98,20 @@ export const dashboardAlertSchema = z.object({
 });
 export type DashboardAlert = z.infer<typeof dashboardAlertSchema>;
 
+/**
+ * One subject behind a warning figure on a status tile: what it is, and why it
+ * counts. A figure that turns amber or red has to say WHICH — "2 overdue"
+ * alone sends the operator hunting for the two. A list holds at most
+ * DASHBOARD_SUBJECT_LIMIT; the figure beside it is the total.
+ */
+export const DASHBOARD_SUBJECT_LIMIT = 5;
+export const dashboardSubjectSchema = z.object({
+  name: z.string(),
+  detail: z.string(),
+});
+export type DashboardSubject = z.infer<typeof dashboardSubjectSchema>;
+const subjects = () => z.array(dashboardSubjectSchema).default([]);
+
 // ── shared resource shapes ──────────────────────────────────────────
 
 /**
@@ -195,6 +209,8 @@ export const adminDashboardSummarySchema = z.object({
     active: z.number(), total: z.number(),
     routes: z.number(), domains: z.number(),
     provisioningInFlight: z.number(),
+    /** The tenants being provisioned, oldest first. */
+    provisioning: subjects(),
   })),
   backups: section(z.object({
     /** One entry per shim class: system, tenant, mail. */
@@ -229,12 +245,18 @@ export const adminDashboardSummarySchema = z.object({
     bundles: z.number(),
     repoBytes: z.number().nullable(),
     tenantsNeverBackedUp: z.number(),
+    /** The tenants with no backup yet. */
+    neverBackedUp: subjects(),
   })),
   certificates: section(z.object({
     issued: z.number(), wildcards: z.number(),
     nearestExpiryDays: z.number().nullable(), failing: z.number(),
     /** Certificates whose renewal is overdue by the renewal policy (half the renewal window gone, or expired). */
     overdue: z.number(),
+    /** Certificates overdue or failing — the two overlap, so this is not their sum. */
+    needsAttention: z.number().default(0),
+    /** The overdue and failing certificates, soonest expiry first. */
+    attention: subjects(),
   })),
   database: section(z.object({
     archivingHealthy: z.boolean(), walBytes: z.number().nullable(),
@@ -242,12 +264,33 @@ export const adminDashboardSummarySchema = z.object({
     breakerTripped: z.boolean(),
   })),
   updates: section(z.object({
-    platformCurrent: z.boolean(), deploymentsBehind: z.number(),
-    autoUpgradeEnabled: z.number(), eolRuntimes: z.number(),
+    /** False when a verified release newer than the installed one is available. */
+    platformCurrent: z.boolean(),
+    platformInstalled: z.string().nullable().default(null),
+    /** The newest release that passed signature verification. */
+    platformAvailable: z.string().nullable().default(null),
+    /** Deployments with a newer catalog version they can upgrade to. */
+    deploymentsBehind: z.number(),
+    behind: subjects(),
+    autoUpgradeEnabled: z.number(),
+    /** Deployments running a catalog version past its end-of-life date. */
+    eolRuntimes: z.number(),
+    eol: subjects(),
   })),
   scheduledTasks: section(z.object({
     total: z.number(), enabled: z.number(),
-    failed24h: z.number(), overdue: z.number(),
+    failed24h: z.number(),
+    /** The jobs whose last run, in the last 24 hours, failed. */
+    failed: subjects(),
+    /** Enabled jobs that have never run. */
+    neverRun: z.number().default(0),
+    /**
+     * @deprecated Always 0 — nothing ever computed it; replaced by `neverRun`.
+     * Kept for one release so an admin panel still on the previous build,
+     * which renders it, reads 0 rather than "undefined" during an upgrade.
+     */
+    overdue: z.number().default(0),
+    neverRunJobs: subjects(),
   })),
   recentChanges: section(z.array(z.object({
     severity: z.enum(['ok', 'warning', 'critical']),
@@ -293,6 +336,8 @@ export const adminDashboardLiveSchema = z.object({
     sent7d: z.number(), queueDepth: z.number(), queueReachable: z.boolean(),
     mailboxes: z.number(), emailDomains: z.number(),
     rateLimited7d: z.number(), overQuotaMailboxes: z.number(),
+    /** The mailboxes at or over quota, fullest first. */
+    overQuota: subjects(),
   })),
   /* Alerts that only the cluster can answer — volume fullness and orphaned
      pods. They arrive on the slow refresh and the UI appends them to the fast
@@ -362,7 +407,9 @@ export const tenantDashboardSummarySchema = z.object({
   domains: section(z.object({
     domains: z.number(), verified: z.number(),
     /** Days until the earliest scheduled renewal (a third of the lifetime before expiry), 0 when due. */
-    certificates: z.number(), nearestRenewalDays: z.number().nullable(),
+    certificates: z.number(),
+    /** Whole days until the earliest scheduled renewal; 0 = due now (the renewal point is reached). */
+    nearestRenewalDays: z.number().nullable(),
   })),
   backups: section(z.object({
     restorePoints: z.number(),
