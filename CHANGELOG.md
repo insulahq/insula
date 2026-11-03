@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.5-rc.1] - 2026-11-03
+
 ### Fixed
 
 - **Saving an application's resources failed with "e.data.map is not a function".** In the
