@@ -244,13 +244,14 @@ if [[ -n "$ORIG_SYSTEM" ]]; then
   api PUT /api/v1/admin/backup-rclone-shim/assignments/system '{"targetId":null,"force":true}' >/dev/null 2>&1 || true
   for _ in $(seq 1 55); do plugin_present || break; sleep 6; done
 fi
-# Best-effort re-run reset for the notification ROW (the hard gate is the health
-# assessment below, which is dedupe-independent). The alert is rate-limited once /
-# 6h: consumeRateLimit counts notification_deliveries by category_id (the
-# rate_limited rows carry category_id but notification_id=NULL), so clear BOTH
-# deliveries (by category_id — not via a notification_id join, which misses the
-# NULL-notification rate_limited rows) and the notifications themselves.
+# Re-run reset for the notification ROWS. The alert is rate-limited once / 6h,
+# counted in notification_rate_limit_buckets (key cat:<category>:user:<id>:ch:
+# <channel>:win:<start>), so a re-run inside the window would be held: clear the
+# category's buckets, its deliveries (by category_id — the rate_limited rows
+# carry no notification_id) and the notifications themselves.
 for cat in "$ALERT_CATEGORY" "$RECOVERED_CATEGORY"; do
+  # starts_with, not LIKE: the "_" in a category id is a LIKE wildcard.
+  dbq "DELETE FROM notification_rate_limit_buckets WHERE starts_with(bucket_key, 'cat:$cat:')" >/dev/null 2>&1 || true
   dbq "DELETE FROM notification_deliveries WHERE category_id='$cat'" >/dev/null 2>&1 || true
   PRIOR=$(dbq "DELETE FROM notifications WHERE category_id='$cat' RETURNING 1" | grep -c 1 2>/dev/null || echo 0)
   [[ "${PRIOR:-0}" -gt 0 ]] 2>/dev/null && log "cleared $PRIOR prior $cat notification(s) + deliveries for a clean re-run"
@@ -334,6 +335,17 @@ for _ in $(seq 1 120); do
 done
 [[ "$FOUND" == 1 ]] && ok "$ALERT_CATEGORY notification row fired on the live cluster" \
   || fail "no $ALERT_CATEGORY notification row within ~20 minutes of the failure"
+# The alert's email leg must not be held by the rate limit the in-app leg just
+# used: the limit is per channel. (Whether the email is then DELIVERED depends on
+# the cluster having a mail provider, which this suite does not assume.)
+EMAIL_LEG=$(dbq "SELECT string_agg(status::text, ',') FROM notification_deliveries WHERE category_id='$ALERT_CATEGORY' AND channel='email' AND queued_at > now() - interval '30 minutes'")
+if [[ -z "$EMAIL_LEG" ]]; then
+  warn "no email delivery row for the alert (email not routed for this category?)"
+elif [[ "$EMAIL_LEG" == *rate_limited* ]]; then
+  fail "the alert's email leg was rate_limited ($EMAIL_LEG): the in-app leg took its slot"
+else
+  ok "the alert's email leg was not rate-limited ($EMAIL_LEG)"
+fi
 ALERTED=$(dbq "SELECT setting_value FROM platform_settings WHERE setting_key='wal_archive_alerted_failure'")
 [[ "$ALERTED" == *'"failingSince"'* ]] && ok "the alerted failure is on record: $ALERTED" \
   || fail "no alerted failure on record after the alert (='$ALERTED')"

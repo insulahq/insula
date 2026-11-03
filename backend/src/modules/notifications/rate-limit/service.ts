@@ -2,7 +2,15 @@
  * Notification rate-limit buckets.
  *
  * Fixed-window counter keyed by bucket-key string. Composite key shape:
- *   `cat:<categoryId>:user:<userId>:win:<windowStartUnix>`
+ *   `cat:<categoryId>:user:<userId>:ch:<channel>:win:<windowStartUnix>`
+ *
+ * Per CHANNEL, so a category's limit is what each channel delivers: "at most
+ * once in 6 hours" means one in-app notification and one email. The key once
+ * had no channel, and the dispatcher consumes a slot for every channel it
+ * routes to, so with max=1 the in-app leg took the only slot and the email
+ * leg was recorded `rate_limited` — every time. On production the alert
+ * "WAL archiving failing" reached the panel and the push topic, and never the
+ * operator's inbox. With a larger max every event cost two slots, halving it.
  *
  * Compared against (windowS, max) supplied per call:
  *   - INSERT new row with count=1 when no row for this window
@@ -30,6 +38,7 @@ export interface IncrementBucketResult {
 export function makeBucketKey(opts: {
   categoryId: string;
   userId: string;
+  channel: string;
   windowS: number;
   now?: Date;
 }): { bucketKey: string; windowStart: Date; windowEnd: Date } {
@@ -37,7 +46,7 @@ export function makeBucketKey(opts: {
   const nowS = Math.floor(now.getTime() / 1000);
   const windowStartS = Math.floor(nowS / opts.windowS) * opts.windowS;
   const windowEndS = windowStartS + opts.windowS;
-  const bucketKey = `cat:${opts.categoryId}:user:${opts.userId}:win:${windowStartS}`;
+  const bucketKey = `cat:${opts.categoryId}:user:${opts.userId}:ch:${opts.channel}:win:${windowStartS}`;
   return {
     bucketKey,
     windowStart: new Date(windowStartS * 1000),
@@ -113,6 +122,8 @@ export async function consumeRateLimit(
   opts: {
     categoryId: string;
     userId: string;
+    /** The channel this delivery leg goes out on; each has its own budget. */
+    channel: string;
     windowS: number;
     max: number;
     now?: Date;

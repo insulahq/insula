@@ -37,6 +37,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     once archiving works again after an alert, it says so, and how long it failed. A failure
     that never alerted sends none, and neither does archiving that was switched off rather than
     repaired.
+- **A notification's rate limit no longer swallows its email.** A category's limit, such as "at
+  most once in 6 hours", was counted per recipient across all channels, and every channel
+  consumed a slot. With a limit of 1, the in-app copy took the only slot and the email was
+  recorded "rate-limited" every time. On production, "WAL archiving failing" reached the panel
+  and the push topic and never an inbox.
+  - Each channel now has its own count, so a limit of 1 means one in-app notification and one
+    email in each window.
+  - Affected most: "WAL archiving failing" (1 per 6 hours) and "Backup target unreachable" (1 per
+    12 hours), which never emailed. Every other rate-limited category routed to both in-app and
+    email delivered half its limit.
+  - The push topic (ntfy) was never rate-limited and is unchanged. The Sources editor now says
+    what the limit counts.
 - **A drain keeps an Auto tenant's pods together with its data.** A tenant's Deployments share
   one ReadWriteOnce volume, so they run together on one node or not at all. A drain re-pinned an
   Auto tenant to Auto by deleting the hostname selector from every workload, and the scheduler

@@ -8,7 +8,8 @@
  *   4. For each (recipient × channel) in the DERIVED channel set:
  *        a. Preference gate. Disabled → write status='muted', skip.
  *        b. Quiet hours (severity < critical). Active → status='muted', skip.
- *        c. Rate limit. Exceeded → status='rate_limited', skip.
+ *        c. Rate limit, counted per recipient AND channel (the ntfy broadcast
+ *           above has none). Exceeded → status='rate_limited', skip.
  *        d. Load template. Missing → log + skip.
  *        e. Render.
  *        f. Hash recipient (sha256 over email/userId salted with PLATFORM_ENCRYPTION_KEY)
@@ -717,6 +718,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         const rl = await consumeRateLimit(db, {
           categoryId: category.id,
           userId,
+          channel,
           windowS: category.rateLimitWindowS,
           max: category.rateLimitMax,
         });

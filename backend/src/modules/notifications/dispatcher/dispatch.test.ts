@@ -517,6 +517,23 @@ describe('emitEvent', () => {
     expect(r.perChannelStatuses.every((s) => s.status === 'rate_limited')).toBe(true);
   });
 
+  // With max=1 per window, the in-app leg used to take the only slot and the
+  // email leg was always rate_limited: production's "WAL archiving failing"
+  // never reached an inbox. Each leg now asks for its own channel's budget.
+  it('asks the rate limit for each channel separately', async () => {
+    getCategoryMock.mockResolvedValue({ ...baseCategory, rateLimitWindowS: 21600, rateLimitMax: 1 });
+    resolveRecipientsMock.mockResolvedValue(['u1']);
+    isAllowedMock.mockResolvedValue(true);
+    await emitEvent(mockDb(), {
+      categoryId: 'tenant.suspended',
+      scope: { kind: 'tenant', tenantId: 't1' },
+      variables: {},
+      encryptionKey: 'KEY',
+    });
+    const asked = consumeRateLimitMock.mock.calls.map(([, o]) => ({ userId: o.userId, channel: o.channel }));
+    expect(asked).toEqual([{ userId: 'u1', channel: 'in_app' }, { userId: 'u1', channel: 'email' }]);
+  });
+
   it('skips channel when no template exists', async () => {
     getCategoryMock.mockResolvedValue(baseCategory);
     resolveRecipientsMock.mockResolvedValue(['u1']);
