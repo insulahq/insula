@@ -244,6 +244,11 @@ if [[ -n "$ORIG_SYSTEM" ]]; then
   api PUT /api/v1/admin/backup-rclone-shim/assignments/system '{"targetId":null,"force":true}' >/dev/null 2>&1 || true
   for _ in $(seq 1 55); do plugin_present || break; sleep 6; done
 fi
+# Unbinding a target removes the plugin, which restarts Postgres. A query sent
+# during that restart fails, and dbq hides the error: the reset below then did
+# nothing, and the checks counted rows from an earlier run. Wait for it first.
+wait_cluster_healthy || warn "cluster not healthy before the reset"
+for _ in $(seq 1 30); do [[ "$(dbq "SELECT 1")" == "1" ]] && break; sleep 5; done
 # Re-run reset for the notification ROWS. The alert is rate-limited once / 6h,
 # counted in notification_rate_limit_buckets (key cat:<category>:user:<id>:ch:
 # <channel>:win:<start>), so a re-run inside the window would be held: clear the
@@ -259,6 +264,15 @@ done
 # The failure an alert went out for, recorded so its end can be told. A stale
 # one from an earlier run would make a recovered notice the wrong failure's.
 dbq "DELETE FROM platform_settings WHERE setting_key='wal_archive_alerted_failure'" >/dev/null 2>&1 || true
+LEFT=$(dbq "SELECT (SELECT count(*) FROM notifications WHERE category_id IN ('$ALERT_CATEGORY','$RECOVERED_CATEGORY'))
+  + (SELECT count(*) FROM notification_deliveries WHERE category_id IN ('$ALERT_CATEGORY','$RECOVERED_CATEGORY'))
+  + (SELECT count(*) FROM notification_rate_limit_buckets WHERE starts_with(bucket_key, 'cat:$ALERT_CATEGORY:') OR starts_with(bucket_key, 'cat:$RECOVERED_CATEGORY:'))
+  + (SELECT count(*) FROM platform_settings WHERE setting_key='wal_archive_alerted_failure')")
+[[ "$LEFT" == "0" ]] && ok "re-run reset took (no prior rows, buckets or record)" \
+  || fail "re-run reset did not take ($LEFT rows left) — the checks below could count an earlier run"
+# Everything below counts rows from this run only, by database time.
+RUN_START=$(dbq "SELECT now()::text")
+[[ -n "$RUN_START" ]] || { fail "could not read the database time"; exit 1; }
 if plugin_present; then warn "a barman plugin is already present (pre-existing target?) — proceeding"; else ok "no barman plugin on a targetless cluster"; fi
 H=$(api GET /api/v1/admin/wal-archive-health)
 [[ "$(hcode "$H")" == "200" ]] && ok "GET /admin/wal-archive-health → 200" || fail "health endpoint → $(hcode "$H")"
@@ -329,7 +343,7 @@ fi
 log "waiting for the $ALERT_CATEGORY notification row (10-minute rule + one tick)..."
 FOUND=0
 for _ in $(seq 1 120); do
-  N=$(dbq "SELECT count(*) FROM notifications WHERE category_id='$ALERT_CATEGORY' AND created_at > now() - interval '30 minutes'")
+  N=$(dbq "SELECT count(*) FROM notifications WHERE category_id='$ALERT_CATEGORY' AND created_at > '$RUN_START'")
   if [[ "${N:-0}" =~ ^[0-9]+$ ]] && [[ "$N" -ge 1 ]]; then FOUND=1; break; fi
   sleep 10
 done
@@ -338,7 +352,7 @@ done
 # The alert's email leg must not be held by the rate limit the in-app leg just
 # used: the limit is per channel. (Whether the email is then DELIVERED depends on
 # the cluster having a mail provider, which this suite does not assume.)
-EMAIL_LEG=$(dbq "SELECT string_agg(status::text, ',') FROM notification_deliveries WHERE category_id='$ALERT_CATEGORY' AND channel='email' AND queued_at > now() - interval '30 minutes'")
+EMAIL_LEG=$(dbq "SELECT string_agg(status::text, ',') FROM notification_deliveries WHERE category_id='$ALERT_CATEGORY' AND channel='email' AND queued_at > '$RUN_START'")
 if [[ -z "$EMAIL_LEG" ]]; then
   warn "no email delivery row for the alert (email not routed for this category?)"
 elif [[ "$EMAIL_LEG" == *rate_limited* ]]; then
@@ -357,7 +371,7 @@ else
   fail "breaker unexpectedly tripped at low pressure: $BRK"
 fi
 
-recovered_rows() { dbq "SELECT count(*) FROM notifications WHERE category_id='$RECOVERED_CATEGORY' AND created_at > now() - interval '60 minutes'"; }
+recovered_rows() { dbq "SELECT count(*) FROM notifications WHERE category_id='$RECOVERED_CATEGORY' AND created_at > '$RUN_START'"; }
 if [[ -n "$ORIG_SYSTEM" ]]; then
   phase "Phase 3 — recovery (rebind the original target → archiving works → \"working again\")"
   A=$(api PUT /api/v1/admin/backup-rclone-shim/assignments/system "{\"targetId\":\"$ORIG_SYSTEM\",\"force\":true}")
@@ -379,7 +393,7 @@ if [[ -n "$ORIG_SYSTEM" ]]; then
     if [[ "${N:-0}" =~ ^[0-9]+$ ]] && [[ "$N" -ge 1 ]]; then FOUND=1; break; fi
     sleep 10
   done
-  [[ "$FOUND" == 1 ]] && ok "$RECOVERED_CATEGORY row: $(dbq "SELECT message FROM notifications WHERE category_id='$RECOVERED_CATEGORY' ORDER BY created_at DESC LIMIT 1")" \
+  [[ "$FOUND" == 1 ]] && ok "$RECOVERED_CATEGORY row: $(dbq "SELECT message FROM notifications WHERE category_id='$RECOVERED_CATEGORY' AND created_at > '$RUN_START' ORDER BY created_at DESC LIMIT 1")" \
     || fail "no $RECOVERED_CATEGORY row within ~7 minutes of archiving working again"
   ORIG_SYSTEM_REBOUND=1
 else
