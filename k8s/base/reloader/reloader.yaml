@@ -125,7 +125,7 @@ spec:
           value: "true"
           effect: NoSchedule
       containers:
-        - image: ghcr.io/stakater/reloader:v1.4.22
+        - image: ghcr.io/stakater/reloader:v1.4.23
           imagePullPolicy: IfNotPresent
           name: reloader-reloader
           args:

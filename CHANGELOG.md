@@ -12,6 +12,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **Reloader v1.4.22 → v1.4.23, out of its soak.** Fixable HIGHs 6 → 0 (Go 1.26.10, newer
+  `x/net` and `x/text`).
+  - The Go profiling handlers (`/debug/pprof/`) answered on its metrics port, port 9090, without
+    any flag. They no longer do.
+  - A delete it only noticed on relist is now handled.
+  - Flags, ports and probes are unchanged (`/live`, `/metrics`).
+
 ### Fixed
 
 - **A drain keeps an Auto tenant's pods together with its data.** A tenant's Deployments share
