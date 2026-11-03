@@ -2398,6 +2398,36 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'clusterName', type: 'string', required: true },
     ],
   },
+  {
+    categoryId: 'admin.wal_archive_recovered',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Database WAL archiving is working again ({{clusterName}})',
+    bodyTemplate: emailMjml(
+      'WAL archiving is working again',
+      'WAL archiving for database {{clusterName}} reaches the backup target again, after failing for '
+        + '{{failedFor}}, as of {{occurredAt}}. No action is needed — this closes the earlier failure notice.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'clusterName', type: 'string', required: true },
+      { name: 'failedFor', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.wal_archive_recovered',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'WAL archiving working again',
+    bodyTemplate: 'WAL archiving for {{clusterName}} works again after failing for {{failedFor}}, as of {{occurredAt}}. This closes the earlier failure notice.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'clusterName', type: 'string', required: true },
+      { name: 'failedFor', type: 'string', required: true },
+    ],
+  },
   // ── admin.email_abuse_warning / _critical (send-limit saturation) ──
   ...(['admin.email_abuse_warning', 'admin.email_abuse_critical'] as const).flatMap((categoryId): SeedTemplate[] => {
     const crit = categoryId.endsWith('critical');

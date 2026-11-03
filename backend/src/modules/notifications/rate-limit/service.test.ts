@@ -12,11 +12,18 @@ type Db = Parameters<typeof incrementBucket>[0];
 describe('makeBucketKey', () => {
   it('rounds window-start down to the windowS boundary', () => {
     const now = new Date('2026-01-01T12:34:56Z');
-    const k = makeBucketKey({ categoryId: 'c', userId: 'u', windowS: 3600, now });
-    expect(k.bucketKey.startsWith('cat:c:user:u:win:')).toBe(true);
+    const k = makeBucketKey({ categoryId: 'c', userId: 'u', channel: 'email', windowS: 3600, now });
+    expect(k.bucketKey.startsWith('cat:c:user:u:ch:email:win:')).toBe(true);
     const ts = Number.parseInt(k.bucketKey.split(':').pop() ?? '0', 10);
     expect(ts % 3600).toBe(0);
     expect(k.windowEnd.getTime() - k.windowStart.getTime()).toBe(3600 * 1000);
+  });
+
+  it('gives each channel its own bucket, and the same channel the same one', () => {
+    const now = new Date('2026-11-03T16:30:47Z');
+    const key = (channel: string) => makeBucketKey({ categoryId: 'c', userId: 'u', channel, windowS: 21600, now }).bucketKey;
+    expect(key('in_app')).not.toBe(key('email'));
+    expect(key('email')).toBe(key('email'));
   });
 });
 
@@ -69,12 +76,14 @@ describe('consumeRateLimit', () => {
     const r = await consumeRateLimit(db, {
       categoryId: 'security.suspicious_activity',
       userId: 'u1',
+      channel: 'in_app',
       windowS: 3600,
       max: 5,
     });
     expect(r.allowed).toBe(true);
     expect(values).toHaveBeenCalledWith(expect.objectContaining({
       count: 1,
+      bucketKey: expect.stringMatching(/^cat:security\.suspicious_activity:user:u1:ch:in_app:win:\d+$/),
     }));
   });
 });

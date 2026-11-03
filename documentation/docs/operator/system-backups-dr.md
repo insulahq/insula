@@ -52,6 +52,20 @@ PITR restores run out-of-band (from a recovery host, not the panel) and create a
 *new* CNPG cluster from the backup, leaving the live database intact until you
 deliberately cut over. The Disaster Recovery page gives you the exact command.
 
+### When WAL archiving fails
+
+The platform checks archiving every 5 minutes and tells you through notifications:
+
+- **Database WAL archiving failing** once uploads have been failing for 10 minutes. A failover
+  often fails the new primary's first upload, and the retry succeeds seconds later; that never
+  alerts. If `pg_wal` already fills half the data volume, the alert goes out at once.
+- **Database WAL archiving working again** when archiving recovers after that alert, with how
+  long it failed. It is only sent for a failure that alerted.
+- **Database WAL archiving auto-disabled** if archiving keeps failing and `pg_wal` reaches 75% of
+  the volume. The platform switches archiving off so the database cannot fill its disk. Fix the
+  backup target, then switch archiving back on with
+  `POST /api/v1/admin/wal-archive-health/reset-breaker` (super_admin).
+
 ### What you configure
 
 **Backups → System → Targets, Schedules & Retention** holds everything for the

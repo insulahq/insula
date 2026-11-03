@@ -12,6 +12,10 @@ import { invalidateNodeLabels } from './labels.js';
 import { loadCnpgFacts, postgresInstanceOnNode, type PostgresInstance } from './postgres-cover.js';
 import { isUsableCopy } from './replica-copy.js';
 import { defaultPlacement, nodesToAvoid, placeStoppedTenants, strandedBytes } from './stopped-tenant-placement.js';
+import { resolveAutoTarget } from './auto-target.js';
+import { unpinnedVolumeSharers } from '../tenant-placement/workload-pin.js';
+import { ensureHaColocation } from '../tenant-placement/ha-colocation.js';
+import { HA_SHARED_VOLUME_AFFINITY } from '../tenant-placement/pod-placement.js';
 import { loadMailRoleOnNode, type MailRoleOnNode } from './mail-role.js';
 import { assertTaintSafeForSystem, cordonNode, moveSystemPodsOff } from './system-pods.js';
 import { movePostgresInstancesOff, type MoveOptions } from './postgres-move.js';
@@ -556,6 +560,30 @@ interface AffinityLite {
     [k: string]: unknown;
   };
   [k: string]: unknown;
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * The JSON merge patch that turns `before` into `after`. Pure.
+ *
+ * stripHostnamePin returns the affinity as it should be, with the pin's keys
+ * deleted. Sent as is, a merge patch keeps every key it does not mention
+ * (RFC 7396 removes only a key set to null): a workload with any other
+ * affinity rule kept its required pin to the node being left.
+ */
+export function toMergePatch(before: unknown, after: unknown): unknown {
+  if (after === null || after === undefined) return null;
+  if (!isPlainObject(before) || !isPlainObject(after)) return after;
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(before)) {
+    if (before[k] !== undefined && after[k] === undefined) out[k] = null;
+  }
+  for (const [k, v] of Object.entries(after)) {
+    if (v !== undefined) out[k] = toMergePatch(before[k], v);
+  }
+  return out;
 }
 
 /**
@@ -1321,6 +1349,8 @@ export interface RepinCounts {
   relocating: number;
   /** What the relocation did, when the re-pin had a target (null for "auto"). */
   relocation: { started: string[]; skipped: Array<{ volumeName: string; reason: string }>; error: string | null } | null;
+  /** "Auto" only: the one node the tenant's pods were sent to (auto-target.ts), or null. */
+  autoNode: string | null;
 }
 
 // The per-host Longhorn tag lives beside the move's volume re-pin
@@ -1336,9 +1366,11 @@ export { makeLonghornHostTagEnsurer };
  * unchanged — including the ordering, which matters: the DB row is written
  * LAST so it never advertises a pin the cluster refused.
  *
- * `target` is a node name, or '' to clear the pin and let the scheduler and
- * Longhorn place freely. `releaseFromNode` is the node whose nodeAffinity pin
- * should be stripped from workloads.
+ * `target` is a node name, or '' for Auto: no primary node and no volume node
+ * tag, while a Local-tier tenant's pods still go to ONE node off
+ * `releaseFromNode` (auto-target.ts) — the scheduler places them only when no
+ * node can be found. `releaseFromNode` is the node being left, whose
+ * nodeAffinity pin is stripped from the workloads.
  */
 /**
  * Pods of `namespace` sitting on `nodeName`, but ONLY when that node is
@@ -1367,6 +1399,21 @@ export async function strandedPodsOnDeadNode(
   return (pods.items ?? []).map((p) => p.metadata?.name ?? '').filter(Boolean);
 }
 
+/**
+ * Whether the node is down: not `Ready=True`, or gone. An unreadable node is
+ * not taken as down — nothing is changed on a guess.
+ */
+async function nodeIsDown(k8s: K8sClients, nodeName: string): Promise<boolean> {
+  try {
+    const node = await k8s.core.readNode({ name: nodeName } as unknown as Parameters<typeof k8s.core.readNode>[0]) as {
+      status?: { conditions?: Array<{ type?: string; status?: string }> };
+    };
+    return (node.status?.conditions ?? []).find((c) => c.type === 'Ready')?.status !== 'True';
+  } catch (err) {
+    return ((err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode) === 404;
+  }
+}
+
 /** The tenant's on-demand file manager (file-manager/k8s-lifecycle.ts). */
 const FILE_MANAGER_DEPLOYMENT = 'file-manager';
 
@@ -1377,9 +1424,33 @@ export async function repinTenantPlacement(
   target: string,
   releaseFromNode: string,
   ensureHostTag: (target: string) => Promise<string>,
+  // A drain re-pinning several tenants passes one map, so the Auto tenants
+  // whose data has to follow them are spread over the nodes (auto-target.ts).
+  opts: { readonly autoPlanned?: Map<string, number> } = {},
 ): Promise<RepinCounts> {
-  const counts: RepinCounts = { pvcs: 0, workloads: 0, tenants: 0, evictedPods: 0, relocating: 0, relocation: null };
+  const counts: RepinCounts = {
+    pvcs: 0, workloads: 0, tenants: 0, evictedPods: 0, relocating: 0, relocation: null, autoNode: null,
+  };
   const ns = tenant.namespace;
+  const haToAuto = target === '' && tenant.storageTier === 'ha';
+
+  // "Auto" still keeps a Local-tier tenant's pods on ONE node with its data.
+  // Read before anything changes, so the copies are where they were.
+  if (target === '' && tenant.storageTier === 'local') {
+    const auto = await resolveAutoTarget(k8s, db, {
+      namespace: ns,
+      volumeNames: tenant.pvcs.map((p) => p.volumeName),
+      releaseFrom: releaseFromNode,
+      storageTier: tenant.storageTier,
+      planned: opts.autoPlanned,
+    });
+    counts.autoNode = auto.node;
+    if (auto.node) {
+      console.info(`[nodes] re-pin tenant=${tenant.tenantId} to auto: its pods go together to ${auto.node} (${auto.source})`);
+    } else {
+      console.warn(`[nodes] re-pin tenant=${tenant.tenantId} to auto: no node to keep its pods together on; the scheduler places them`);
+    }
+  }
 
   // (a) Resolve the Longhorn host-tag for the target. Failure here
   //     skips the entire tenant — none of (b)/(c)/(d) run, so no
@@ -1412,11 +1483,11 @@ export async function repinTenantPlacement(
   // (c) Patch every Deployment + StatefulSet in the namespace.
   //     MERGE_PATCH (RFC 7396) so null on a key deletes it — the
   //     only patch type that reliably clears the hostname selector
-  //     when target=''. Strategic-merge silently merges {} into the
-  //     existing map.
+  //     when "auto" found no node. Strategic-merge silently merges {} into
+  //     the existing map.
   const selectorPatch: Record<string, string | null> =
     target === ''
-      ? { 'kubernetes.io/hostname': null }
+      ? { 'kubernetes.io/hostname': counts.autoNode }
       : { 'kubernetes.io/hostname': target };
   const body = { spec: { template: { spec: { nodeSelector: selectorPatch } } } };
 
@@ -1442,7 +1513,13 @@ export async function repinTenantPlacement(
         const cur = (live as { spec?: { template?: { spec?: { affinity?: unknown } } } })
           .spec?.template?.spec?.affinity as Parameters<typeof stripHostnamePin>[0];
         const stripped = stripHostnamePin(cur, releaseFromNode);
-        if (stripped.changed) affinityPatch = { affinity: stripped.affinity };
+        if (stripped.changed) affinityPatch = { affinity: toMergePatch(cur, stripped.affinity) };
+      }
+      // An HA tenant going to Auto: the keep-together preference rides on the
+      // pin change, which restarts the workload anyway (ha-colocation.ts).
+      if (haToAuto) {
+        const base = affinityPatch ? (affinityPatch.affinity as Record<string, unknown> | null) ?? { nodeAffinity: null } : {};
+        affinityPatch = { affinity: { ...base, podAffinity: HA_SHARED_VOLUME_AFFINITY } };
       }
       const wBody = affinityPatch
         ? { spec: { template: { spec: { ...affinityPatch, nodeSelector: selectorPatch } } } }
@@ -1481,6 +1558,42 @@ export async function repinTenantPlacement(
       if (status !== 404) {
         console.warn(`[nodes] re-pin tenant=${tenant.tenantId} file manager in ${ns} → ${target || 'auto'} failed:`, (err as Error).message);
       }
+    }
+  }
+
+  // (c1b) Deployments that share the tenant's volume but carry no pin. The
+  //       impact lists only the ones pinned to the node being left; one left
+  //       unpinned (a render that lost its pin, an earlier scatter) is placed
+  //       by the scheduler on its own and waits for the ReadWriteOnce volume on
+  //       another node. Local tier only, and only when there is a node to send
+  //       it to.
+  const sendTo = selectorPatch['kubernetes.io/hostname'];
+  if (sendTo && tenant.storageTier === 'local') {
+    try {
+      const list = await k8s.apps.listNamespacedDeployment({ namespace: ns });
+      const skip = new Set([...tenant.workloads.map((w) => w.name), FILE_MANAGER_DEPLOYMENT]);
+      for (const name of unpinnedVolumeSharers(list.items ?? [], `${ns}-storage`, skip)) {
+        await k8s.apps.patchNamespacedDeployment({
+          namespace: ns, name, body,
+        } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
+          MERGE_PATCH);
+        counts.workloads += 1;
+      }
+    } catch (err) {
+      console.warn(`[nodes] re-pin tenant=${tenant.tenantId} unpinned workloads in ${ns} → ${sendTo} failed:`, (err as Error).message);
+    }
+  }
+
+  // (c1c) HA tier, to Auto, off a dead node: its pods are placed again in (c2),
+  //       and a Deployment last deployed before the keep-together preference
+  //       existed has none (tenant-placement/ha-colocation.ts). Before (c2), so
+  //       the stranded pods come back from the patched template. A drain does
+  //       this itself once the node is blocked (drainNode).
+  if (haToAuto && releaseFromNode && await nodeIsDown(k8s, releaseFromNode)) {
+    const colocated = await ensureHaColocation(k8s, ns, releaseFromNode, new Set(tenant.workloads.map((w) => w.name)));
+    counts.workloads += colocated.length;
+    if (colocated.length > 0) {
+      console.info(`[nodes] re-pin tenant=${tenant.tenantId} to auto: ${colocated.join(', ')} now prefer the node the tenant's other pods run on`);
     }
   }
 
@@ -1763,6 +1876,7 @@ export async function drainNode(
   // two cannot drift. Memoised per batch: several tenants moving to the same
   // node tag it once.
   const ensureLonghornHostTag = makeLonghornHostTagEnsurer(k8s);
+  const autoPlanned = new Map<string, number>();
 
   let rePinnedTenants = 0;
   let rePinnedWorkloads = 0;
@@ -1791,6 +1905,7 @@ export async function drainNode(
   // (d) last is therefore important — if it ran first and (b)/(c)
   // fully failed, the DB would advertise a pin the cluster never
   // accepted and the next deploy would inherit the wrong node.
+  const haToAuto: Array<{ namespace: string; patched: ReadonlySet<string> }> = [];
   for (const [tenantId, target] of Object.entries(tenantPlacement)) {
     if (target === 'stay') continue;
     const c = tenantById.get(tenantId);
@@ -1801,11 +1916,15 @@ export async function drainNode(
       target,
       name,
       ensureLonghornHostTag,
+      { autoPlanned },
     );
     rePinnedPvcs += counts.pvcs;
     rePinnedWorkloads += counts.workloads;
     rePinnedTenants += counts.tenants;
     relocatingVolumes += counts.relocating;
+    if (target === '' && c.storageTier === 'ha' && counts.tenants > 0) {
+      haToAuto.push({ namespace: c.namespace, patched: new Set(c.workloads.map((w) => w.name)) });
+    }
     // A stopped tenant's volume whose copy did not start moving stays here —
     // say which and why, rather than leave the drain looking merely slow.
     if (strandedBytes(c) > 0) {
@@ -1870,6 +1989,18 @@ export async function drainNode(
   } as unknown as Parameters<typeof k8s.core.patchNode>[0],
     STRATEGIC_MERGE_PATCH);
 
+  // 2b) An HA tenant sent to Auto: its Deployments with a pod here get the
+  //     keep-together preference now that the node is blocked, so the restart
+  //     it causes places them off this node, together — the eviction below
+  //     then finds them already going (tenant-placement/ha-colocation.ts). On
+  //     a node left open to tenants, the restart could land back here and be
+  //     evicted again, so it waits for the next deploy.
+  if (blockedNewTenants) {
+    for (const t of haToAuto) {
+      rePinnedWorkloads += (await ensureHaColocation(k8s, t.namespace, name, t.patched)).length;
+    }
+  }
+
   // 3) Evict non-system pods.
   //
   // The TS tenant exposes evictions via createNamespacedPodEviction
@@ -1912,6 +2043,12 @@ export async function drainNode(
       });
       evicted += 1;
     } catch (err) {
+      // Already gone: a re-pin above restarted its workload (Recreate deletes
+      // the old pod), and the list is from before. Off the node is the goal.
+      if (((err as { code?: number }).code ?? (err as { statusCode?: number }).statusCode) === 404) {
+        evicted += 1;
+        continue;
+      }
       failed.push({
         namespace: pod.namespace,
         name: pod.name,

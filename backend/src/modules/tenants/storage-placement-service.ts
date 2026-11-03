@@ -25,6 +25,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { ApiError } from '../../shared/errors.js';
 import { patchTenantVolumeReplicas } from '../k8s-provisioner/service.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { resolveAutoPlacement, tenantPodScheduling } from '../tenant-placement/pod-placement.js';
 
 const HA_REPLICAS = 2;
 const LOCAL_REPLICAS = 1;
@@ -93,31 +94,33 @@ export async function applyTenantTier(
   // Patch every Deployment in the namespace owned by this tenant. We
   // use a strategic merge that REPLACES the spec.template.spec.affinity
   // and nodeSelector blocks together — going local→ha removes the hard
-  // pin AND adds the soft one; going ha→local does the inverse.
+  // pin AND adds the soft one; going ha→local does the inverse. The blocks
+  // are what the deployers render (tenantPodScheduling), so a tier change
+  // leaves nothing a later deploy would change: an HA tenant's pods also
+  // prefer the node its other pods run on, and an Auto tenant (no primary
+  // node) is patched too — on the Local tier its pods are held to its data
+  // node, as every render of an Auto Local tenant does.
   const tenantDeploys = await db.select({ id: deployments.id, name: deployments.name })
     .from(deployments)
     .where(eq(deployments.tenantId, tenantId));
 
   let patchedCount = 0;
-  if (k8s && tenantDeploys.length > 0 && tenant.nodeName) {
+  const placement = k8s
+    ? await resolveAutoPlacement(k8s, tenant.kubernetesNamespace, { nodeName: tenant.nodeName ?? null, storageTier: newTier })
+    : null;
+  // An Auto tenant going Local while its data node cannot be told yet (two
+  // copies until Longhorn drops one, the volume detached): patching would take
+  // its pods' HA preference off and put no pin on. Leave them; the next
+  // render pins them to the data node.
+  const dataNodeUnknown = newTier === 'local' && !placement?.nodeName;
+  if (dataNodeUnknown && tenantDeploys.length > 0) {
+    console.warn(`[applyTenantTier] ${tenant.kubernetesNamespace}: the data node is not known yet; its Deployments keep their scheduling until the next deploy`);
+  }
+  if (k8s && placement && tenantDeploys.length > 0 && !dataNodeUnknown) {
     const ns = tenant.kubernetesNamespace;
-    const nodeSelector = newTier === 'ha' ? null : { 'kubernetes.io/hostname': tenant.nodeName };
-    const affinity = newTier === 'ha'
-      ? {
-        nodeAffinity: {
-          preferredDuringSchedulingIgnoredDuringExecution: [{
-            weight: 100,
-            preference: {
-              matchExpressions: [{
-                key: 'kubernetes.io/hostname',
-                operator: 'In',
-                values: [tenant.nodeName],
-              }],
-            },
-          }],
-        },
-      }
-      : null;
+    const scheduling = tenantPodScheduling(placement);
+    const nodeSelector = scheduling.nodeSelector ?? null;
+    const affinity = scheduling.affinity ?? null;
 
     for (const d of tenantDeploys) {
       try {
@@ -173,11 +176,12 @@ export async function applyTenantTier(
   // would surge a second pod that hits Multi-Attach against the
   // tenant pod's mount. Recreate terminates first, schedules second.
   // Patch is best-effort: FM Deployment doesn't exist until first
-  // /files/start. 404 is benign.
-  if (k8s && tenant.nodeName) {
+  // /files/start. 404 is benign. An Auto tenant's FM follows its data node on
+  // the Local tier, like its Deployments above.
+  if (k8s && placement && (newTier === 'ha' || placement.nodeName)) {
     const ns = tenant.kubernetesNamespace;
-    const fmNodeSelector = newTier === 'local'
-      ? { 'kubernetes.io/hostname': tenant.nodeName }
+    const fmNodeSelector = newTier === 'local' && placement.nodeName
+      ? { 'kubernetes.io/hostname': placement.nodeName }
       : null;
     try {
       await k8s.apps.patchNamespacedDeployment({

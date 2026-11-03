@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  platformPodPlacement, resolveAutoPlacement, tenantPodPlacementOf, tenantPodScheduling,
+  HA_SHARED_VOLUME_AFFINITY, platformPodPlacement, resolveAutoPlacement, tenantPodPlacementOf, tenantPodScheduling,
   TENANT_OVERHEAD_PRIORITY_CLASS,
 } from './pod-placement.js';
 import { carryQuiesceHold, STORAGE_PREQUIESCE_REPLICAS_ANNOTATION, STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
@@ -23,8 +23,24 @@ describe('tenantPodScheduling', () => {
             preference: { matchExpressions: [{ key: 'kubernetes.io/hostname', operator: 'In', values: ['sv1'] }] },
           }],
         },
+        podAffinity: HA_SHARED_VOLUME_AFFINITY,
       },
     });
+  });
+
+  it('holds an HA tenant\'s pods together by preference, pinned or Auto — never by a hard rule', () => {
+    // They share one ReadWriteOnce volume: one placed away from the others never starts.
+    // An Auto HA tenant had no constraint at all.
+    expect(tenantPodScheduling({ nodeName: null, storageTier: 'ha' })).toEqual({
+      affinity: { podAffinity: HA_SHARED_VOLUME_AFFINITY },
+    });
+    const terms = HA_SHARED_VOLUME_AFFINITY.preferredDuringSchedulingIgnoredDuringExecution;
+    expect(terms.map((t) => [t.weight, t.podAffinityTerm.labelSelector.matchLabels, t.podAffinityTerm.topologyKey])).toEqual([
+      [100, { 'platform.io/managed': 'true' }, 'kubernetes.io/hostname'],
+      [50, { 'platform.io/component': 'file-manager' }, 'kubernetes.io/hostname'],
+    ]);
+    // Required would count a dead node's terminating pods and strand failover.
+    expect(JSON.stringify(tenantPodScheduling({ nodeName: 'sv1', storageTier: 'ha' }))).not.toContain('requiredDuring');
   });
 
   it('constrains nothing for an unpinned tenant', () => {
@@ -33,6 +49,18 @@ describe('tenantPodScheduling', () => {
 });
 
 describe('platformPodPlacement', () => {
+  it('gives a platform pod the HA node preference but no pull toward the tenant\'s pods', () => {
+    expect(platformPodPlacement({ nodeName: 'sv1', storageTier: 'ha' }).affinity).toEqual({
+      nodeAffinity: {
+        preferredDuringSchedulingIgnoredDuringExecution: [{
+          weight: 100,
+          preference: { matchExpressions: [{ key: 'kubernetes.io/hostname', operator: 'In', values: ['sv1'] }] },
+        }],
+      },
+    });
+    expect(platformPodPlacement({ nodeName: null, storageTier: 'ha' })).toEqual({ priorityClassName: 'platform-tenant-overhead' });
+  });
+
   it('★ pins a platform pod like the tenant and keeps it out of the tenant quota', () => {
     // Production: the private-worker server ran on another server (tenant
     // reported drifted) and its 25m was refused by the tenant's quota.

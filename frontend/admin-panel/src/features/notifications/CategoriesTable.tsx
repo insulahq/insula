@@ -530,6 +530,10 @@ function CategoryEditDrawer({ category, onClose }: CategoryEditDrawerProps) {
             <legend className="text-xs font-semibold text-gray-700 dark:text-gray-200">
               Rate Limit (leave both blank to disable)
             </legend>
+            <p className="text-xs text-gray-500 dark:text-gray-400" data-testid="rate-limit-scope">
+              Counted per recipient and channel: Max 1 allows one in-app notification and one email
+              in each window.
+            </p>
             <div className="grid grid-cols-2 gap-2">
               <label className="text-xs text-gray-600 dark:text-gray-300">
                 Max

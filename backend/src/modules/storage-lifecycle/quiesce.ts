@@ -6,6 +6,7 @@ import {
   STORAGE_PREQUIESCE_REPLICAS_ANNOTATION,
 } from '../../shared/scale-deployment.js';
 import { releaseRelocationsInNamespace } from '../tenant-placement/relocate.js';
+import { colocateBeforeRestore } from './restore-colocation.js';
 
 // Deployment scaling goes through scaleDeploymentReplicas (raw /scale patch) —
 // the typed SDK `patchNamespacedDeployment` serializer DROPS `replicas: 0`,
@@ -540,6 +541,11 @@ export async function unquiesce(
   opts: { availableTimeoutMs?: number } = {},
 ): Promise<void> {
   const failures: string[] = [];
+  // ── PHASE 0: the workloads sharing the volume start on ONE node ──
+  // Scaled up unpinned, each is placed on its own and the ones away from the
+  // ReadWriteOnce volume never start (restore-colocation.ts). Never throws.
+  await colocateBeforeRestore(k8s, namespace, snap.deployments);
+
   // ── PHASE 1: issue every scale-up before waiting on any of them ──
   const scaled: Array<{ name: string; replicas: number }> = [];
   const goneEarly = new Set<string>();
