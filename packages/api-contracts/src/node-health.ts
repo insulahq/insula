@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { nodeOutboundMailSchema } from './outbound-mail.js';
 
 // ─── Node health monitoring ──────────────────────────────────────────────────
 //
@@ -16,7 +17,8 @@ import { z } from 'zod';
 // Severity:
 //   - critical: any pressure=True OR not Ready OR CSI drivers missing
 //                vs cluster baseline
-//   - warning : recent evictions (>= EVICTION_WARNING_THRESHOLD/hour)
+//   - warning : recent evictions (>= EVICTION_WARNING_THRESHOLD/hour), or an
+//                outbound mail port the node needs is blocked (outbound-mail.ts)
 //   - normal  : everything green
 //
 // Notifications fire on severity transitions only (same throttling
@@ -53,6 +55,13 @@ export const nodeHealthEntrySchema = z.object({
   /** Disk-fill percentage from kubelet `/stats/summary` rootfs +
    *  imagefs. null when the kubelet endpoint is unreachable. */
   diskUsedPct: z.number().min(0).max(100).nullable(),
+  /**
+   * Outbound TCP 25/465/587 from this node (outbound-mail.ts). A required port
+   * that is blocked makes the node `warning`. null = its security-probe has not
+   * reported a check (an older probe, or the first check still running).
+   * Optional — older backends omit it.
+   */
+  outboundMail: nodeOutboundMailSchema.nullable().optional(),
   severity: nodeHealthSeveritySchema,
   /** ISO timestamp this row was last computed. */
   observedAt: z.string().datetime(),

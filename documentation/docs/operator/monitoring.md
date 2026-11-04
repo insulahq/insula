@@ -398,6 +398,15 @@ node:
 - **CSI drivers** — a node missing a baseline storage driver → critical (this is
   what silently broke tenant volumes in a past incident).
 - **Evictions in the last hour** — ≥3/h warning, ≥10/h critical.
+- **Mail ports out** — whether the node can open outbound TCP 25, 465 and 587. Every
+  15 minutes the node opens a connection to public mail servers (nothing is sent). A
+  blocked **465 or 587** → warning on any node: apps on it cannot send mail through a
+  mail server, the platform's own included, and every send times out. A blocked **25**
+  → warning only on a mail node (primary, secondary or tertiary in mail placement); on
+  other nodes it is shown greyed, because only the mail server delivers on it. The
+  hosting provider blocks these ports, not the node — ask it to unblock them. Hover a
+  port for what each target answered. A node whose probe has not reported shows
+  *not checked*.
 - **Not Ready** → critical.
 
 When a node is in trouble, you get **recovery actions** without leaving the

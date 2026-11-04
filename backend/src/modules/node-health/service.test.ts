@@ -14,6 +14,7 @@ import {
   shouldNotify,
   type NodeFacts,
 } from './service.js';
+import type { NodeOutboundMail } from '@insula/api-contracts';
 
 const HEALTHY: NodeFacts = {
   name: 'staging1',
@@ -150,6 +151,43 @@ describe('severityFor', () => {
   });
 });
 
+describe('severityFor — outbound mail ports', () => {
+  const baseline = { expectedDrivers: ['csi.tigera.io', 'driver.longhorn.io'] };
+  const ports = (spec: Array<[number, 'open' | 'blocked' | 'unknown', boolean]>, stale = false): NodeOutboundMail => ({
+    checkedAt: '2026-11-04T11:55:00Z',
+    intervalSeconds: 900,
+    stale,
+    ports: spec.map(([port, status, required]) => ({ port, status, required, target: null, latencyMs: null, detail: null })),
+  });
+
+  it('a blocked port the node needs → warning', () => {
+    const outboundMail = ports([[25, 'open', false], [465, 'open', true], [587, 'blocked', true]]);
+    expect(severityFor({ ...HEALTHY, outboundMail }, baseline).severity).toBe('warning');
+  });
+
+  it('a blocked port it does not need (25 on a non-mail node) → normal', () => {
+    const outboundMail = ports([[25, 'blocked', false], [465, 'open', true], [587, 'open', true]]);
+    expect(severityFor({ ...HEALTHY, outboundMail }, baseline).severity).toBe('normal');
+  });
+
+  it('a stale result, an unknown port or no check at all is not judged', () => {
+    expect(severityFor({ ...HEALTHY, outboundMail: ports([[587, 'blocked', true]], true) }, baseline).severity).toBe('normal');
+    expect(severityFor({ ...HEALTHY, outboundMail: ports([[587, 'unknown', true]]) }, baseline).severity).toBe('normal');
+    expect(severityFor({ ...HEALTHY, outboundMail: null }, baseline).severity).toBe('normal');
+    expect(severityFor(HEALTHY, baseline).severity).toBe('normal');
+  });
+
+  it('never outranks a critical condition', () => {
+    const outboundMail = ports([[587, 'blocked', true]]);
+    expect(severityFor({ ...HEALTHY, ready: false, outboundMail }, baseline).severity).toBe('critical');
+  });
+
+  it('the entry carries the judged ports', () => {
+    const outboundMail = ports([[587, 'blocked', true]]);
+    expect(buildEntry({ ...HEALTHY, outboundMail }, baseline, new Date()).outboundMail).toEqual(outboundMail);
+  });
+});
+
 describe('buildEntry', () => {
   it('returns api-contract shape with all fields', () => {
     const baseline = { expectedDrivers: ['driver.longhorn.io'] };
@@ -169,6 +207,7 @@ describe('buildEntry', () => {
       csiDriversMissing: ['driver.longhorn.io'],
       evictionsLastHour: 0,
       diskUsedPct: 30,
+      outboundMail: null,
       severity: 'critical',
       observedAt: '2026-05-08T16:30:00.000Z',
     });

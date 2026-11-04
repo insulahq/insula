@@ -11570,6 +11570,130 @@ cpu_missing_x86_64_v2() {
   printf '%s' "$missing"
 }
 
+# Outbound mail ports. A provider that blocks them (some do on a newly ordered
+# server) makes every send from this node time out: an app's mail, and on a mail
+# node the mail server's own delivery. Nothing on the host shows it — the traffic
+# leaves and is dropped upstream. Checked here, before anything is installed, and
+# afterwards by the security-probe DaemonSet for node health and mail health,
+# against the same targets: images/security-probe/outboundmail_test.go keeps this
+# list equal to the probe's. Port → public mail servers, tried in order until one
+# accepts a TCP connection (closed at once, no SMTP spoken). Overridable with
+# OUTBOUND_MAIL_PROBE_TARGETS in the same format; set it empty to skip the check.
+OUTBOUND_MAIL_PROBE_TARGETS_DEFAULT="25=gmail-smtp-in.l.google.com,mta5.am0.yahoodns.net,outlook-com.olc.protection.outlook.com;465=smtp.gmail.com,smtp.mail.yahoo.com;587=smtp.gmail.com,smtp.office365.com,smtp.mail.yahoo.com"
+
+# outbound_mail_port_status <port> <host,host…> — prints ONE line:
+#   "<port> open <host>"         a target accepted
+#   "<port> blocked <answers>"   targets resolved, none accepted
+#   "<port> unknown <answers>"   no target resolved: no evidence about the port
+# Read-only; at most one dial timeout (OUTBOUND_MAIL_DIAL_TIMEOUT, 5 s) per target.
+outbound_mail_port_status() {
+  local port="$1" hosts="$2" host rc failures="" reached=false
+  local -a _hosts=()
+  IFS=',' read -r -a _hosts <<<"$hosts"
+  for host in ${_hosts[@]+"${_hosts[@]}"}; do
+    host="${host//[[:space:]]/}"
+    [[ -n "$host" ]] || continue
+    # The name goes into a bash -c string: letters, digits, dots and dashes only.
+    if [[ ! "$host" =~ ^[A-Za-z0-9.-]+$ ]]; then
+      failures+="${host} is not a host name; "
+      continue
+    fi
+    if ! getent ahosts "$host" >/dev/null 2>&1; then
+      failures+="${host} did not resolve; "
+      continue
+    fi
+    reached=true
+    rc=0
+    timeout "${OUTBOUND_MAIL_DIAL_TIMEOUT:-5}" bash -c "exec 3<>/dev/tcp/${host}/${port}" 2>/dev/null || rc=$?
+    if (( rc == 0 )); then
+      printf '%s open %s\n' "$port" "$host"
+      return 0
+    fi
+    if (( rc == 124 )); then
+      failures+="${host} timed out after ${OUTBOUND_MAIL_DIAL_TIMEOUT:-5}s; "
+    else
+      failures+="${host} refused or unreachable; "
+    fi
+  done
+  failures="${failures%; }"
+  if [[ "$reached" == true ]]; then
+    printf '%s blocked %s\n' "$port" "$failures"
+  else
+    printf '%s unknown %s\n' "$port" "${failures:-no targets}"
+  fi
+}
+
+# check_outbound_mail_ports — the preflight check. A WARNING, never fatal: the
+# block is the provider's and can be lifted after the install, and a node that
+# hosts neither mail nor mail-sending apps runs fine without it. Ports are dialled
+# in parallel, so a fully blocked host costs one round of timeouts per target.
+check_outbound_mail_ports() {
+  local spec="${OUTBOUND_MAIL_PROBE_TARGETS-$OUTBOUND_MAIL_PROBE_TARGETS_DEFAULT}"
+  if [[ -z "${spec//[[:space:];]/}" ]]; then
+    log "  outbound mail port check skipped (OUTBOUND_MAIL_PROBE_TARGETS is empty)"
+    return 0
+  fi
+  local results entry port hosts status rest
+  results="$(
+    # Split on ';' only — no glob expansion of an operator-supplied value.
+    set -f
+    IFS=';'
+    for entry in $spec; do
+      [[ -n "${entry//[[:space:]]/}" ]] || continue
+      port="${entry%%=*}"
+      port="${port//[[:space:]]/}"
+      hosts="${entry#*=}"
+      if [[ "$entry" != *=* || ! "$port" =~ ^[0-9]+$ ]]; then
+        printf '%s invalid %s\n' "${port:-?}" "not port=host[,host…]"
+        continue
+      fi
+      outbound_mail_port_status "$port" "$hosts" &
+    done
+    wait
+  )"
+  local open=() blocked=() unknown=() invalid=() details=()
+  while read -r port status rest; do
+    [[ -n "$port" ]] || continue
+    case "$status" in
+      open) open+=("$port") ;;
+      blocked) blocked+=("$port"); details+=("${port}: ${rest}") ;;
+      invalid) invalid+=("$port") ;;
+      *) unknown+=("$port"); details+=("${port}: ${rest}") ;;
+    esac
+  done < <(sort -n <<<"$results")
+  if (( ${#invalid[@]} > 0 )); then
+    ui_warn "OUTBOUND_MAIL_PROBE_TARGETS has entries that are not port=host[,host…] ($(IFS=,; printf '%s' "${invalid[*]}")) — they were not checked"
+  fi
+  (( ${#open[@]} + ${#blocked[@]} + ${#unknown[@]} > 0 )) || return 0
+  local unchecked=""
+  (( ${#unknown[@]} > 0 )) && unchecked="
+Port(s) $(IFS=,; printf '%s' "${unknown[*]}" | sed 's/,/, /g') could not be checked: no target answered DNS."
+
+  if (( ${#blocked[@]} == 0 && ${#unknown[@]} == 0 )); then
+    ui_ok "outbound mail ports open: $(IFS=,; printf '%s' "${open[*]}" | sed 's/,/, /g')"
+    return 0
+  fi
+  if (( ${#blocked[@]} > 0 )); then
+    local impact="" p
+    for p in "${blocked[@]}"; do
+      case "$p" in
+        25) impact+="
+  25: this server cannot deliver mail to other mail servers — do not place the mail server here." ;;
+        465|587) [[ "$impact" == *"apps on this server"* ]] || impact+="
+  465/587: apps on this server cannot send through a mail server (the platform's own included) — their mail times out." ;;
+      esac
+    done
+    ui_warn "outbound mail port(s) $(IFS=,; printf '%s' "${blocked[*]}" | sed 's/,/, /g') blocked from this server.${impact}
+Most often the hosting provider blocks them (some do on a new server until asked); a firewall on or in
+front of the server can too. Ask the provider to unblock outbound TCP 25, 465 and 587 for this server.
+Bootstrap continues; Node health and Mail health report the ports once the node runs.${unchecked}
+$(printf '  %s\n' "${details[@]}")"
+    return 0
+  fi
+  ui_warn "could not check outbound mail port(s) $(IFS=,; printf '%s' "${unknown[*]}" | sed 's/,/, /g'): no target answered DNS — check this server's resolver.
+$(printf '  %s\n' "${details[@]}")"
+}
+
 # Everything that can be known BEFORE the first mutation, checked before the
 # first mutation.
 #
@@ -11681,6 +11805,9 @@ run_preflight() {
       ui_warn "clock is not NTP-synchronised — ACME issuance and etcd are both sensitive to skew"
     fi
   fi
+
+  # Outbound mail ports — a warning only (see check_outbound_mail_ports).
+  check_outbound_mail_ports
 
   # IPv6. Surfaced as a decision, not a default, because k3s cannot change
   # cluster CIDRs after install: a node that installs IPv4-only today can only

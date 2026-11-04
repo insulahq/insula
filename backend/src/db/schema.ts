@@ -4538,6 +4538,9 @@ export const nodeHealthState = pgTable('node_health_state', {
   // When the node left Ready for the outage in progress; NULL while Ready. The
   // startup notice's downtime starts here. Migration 0161.
   downSince: timestamp('down_since', { withTimezone: true }),
+  // Outbound TCP 25/465/587 as the node's security-probe measured them, judged
+  // (NodeOutboundMail in api-contracts). NULL = no check reported. Migration 0175.
+  outboundMail: jsonb('outbound_mail').$type<import('@insula/api-contracts').NodeOutboundMail>(),
 });
 
 export type NodeHealthState = typeof nodeHealthState.$inferSelect;

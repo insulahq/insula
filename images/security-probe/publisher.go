@@ -30,7 +30,15 @@ func newConfigMapPublisher(c kubernetes.Interface, namespace, nodeName string) *
 	return &configMapPublisher{client: c, namespace: namespace, nodeName: nodeName}
 }
 
-func (p *configMapPublisher) publish(ctx context.Context, snap Snapshot, memcg MemcgWitnessWire) error {
+// outbound is nil until the first outbound mail check finished, and when the
+// check is off. With keepOutbound (the first check after a restart is still
+// running) the ConfigMap's previous result is carried over — an Update replaces
+// Data wholesale, so leaving the key out for those seconds would read as "never
+// checked" to every backend tick that lands in them. Without it the key goes,
+// and the backend reports the node unchecked.
+func (p *configMapPublisher) publish(
+	ctx context.Context, snap Snapshot, memcg MemcgWitnessWire, outbound *OutboundMailWire, keepOutbound bool,
+) error {
 	payload, err := json.Marshal(snap)
 	if err != nil {
 		return fmt.Errorf("marshal snapshot: %w", err)
@@ -62,9 +70,9 @@ func (p *configMapPublisher) publish(ctx context.Context, snap Snapshot, memcg M
 			Name:      name,
 			Namespace: p.namespace,
 			Labels: map[string]string{
-				"app":                            "security-probe",
-				"app.kubernetes.io/part-of":      "hosting-platform",
-				"security-probe.platform/node":   p.nodeName,
+				"app":                          "security-probe",
+				"app.kubernetes.io/part-of":    "hosting-platform",
+				"security-probe.platform/node": p.nodeName,
 			},
 			OwnerReferences: []metav1.OwnerReference{owner},
 		},
@@ -72,6 +80,13 @@ func (p *configMapPublisher) publish(ctx context.Context, snap Snapshot, memcg M
 			"snapshot": string(payload),
 			"memcg":    string(memcgPayload),
 		},
+	}
+	if outbound != nil {
+		outboundPayload, err := json.Marshal(outbound)
+		if err != nil {
+			return fmt.Errorf("marshal outbound mail check: %w", err)
+		}
+		desired.Data["outboundMail"] = string(outboundPayload)
 	}
 
 	existing, err := p.client.CoreV1().ConfigMaps(p.namespace).Get(ctx, name, metav1.GetOptions{})
@@ -92,6 +107,11 @@ func (p *configMapPublisher) publish(ctx context.Context, snap Snapshot, memcg M
 		return nil
 	}
 	// Preserve resourceVersion for optimistic concurrency.
+	if outbound == nil && keepOutbound {
+		if prev, ok := existing.Data["outboundMail"]; ok {
+			desired.Data["outboundMail"] = prev
+		}
+	}
 	desired.ResourceVersion = existing.ResourceVersion
 	_, uerr := p.client.CoreV1().ConfigMaps(p.namespace).Update(ctx, desired, metav1.UpdateOptions{})
 	if uerr != nil {

@@ -1,8 +1,10 @@
 # NetworkPolicy locking down egress from the security-probe pods.
-# The probe needs exactly one destination — the Kubernetes apiserver
-# (typically :443 or :6443 depending on cluster) — plus CoreDNS for
-# in-cluster DNS resolution used by client-go. Anything else is a
-# data-exfiltration vector if the probe binary is ever compromised.
+# The probe needs the Kubernetes apiserver (typically :443 or :6443
+# depending on cluster) plus CoreDNS for in-cluster DNS resolution used
+# by client-go — and, for the outbound mail check (outboundmail.go),
+# TCP 25/465/587 to public mail servers: it only opens a connection and
+# closes it, nothing is sent. Anything else is a data-exfiltration vector
+# if the probe binary is ever compromised.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -38,3 +40,17 @@ spec:
           port: 443
         - protocol: TCP
           port: 6443
+    # Outbound mail check: does this node's provider let mail ports out?
+    # Any address — the targets are public mail servers resolved by name.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        - ipBlock:
+            cidr: ::/0
+      ports:
+        - protocol: TCP
+          port: 25
+        - protocol: TCP
+          port: 465
+        - protocol: TCP
+          port: 587

@@ -12,6 +12,41 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Outbound mail ports are checked on every node: at install, in node health and in mail
+  health.** A hosting provider can block outbound TCP 25, 465 and 587 on a server. The host's
+  firewall lets the traffic out and the provider drops it, so nothing on the node shows it, and
+  every send from the node times out. On production a tenant's CRM failed every notification
+  with "Unable to connect to ssl://mail.<apex>:465 (Connection timed out)" for days after the
+  tenant was moved to such a node.
+  - The security-probe on each node opens a TCP connection every 15 minutes, from the node's own
+    network, to public mail servers on 25, 465 and 587. Each connection is closed at once and
+    nothing is sent. A port is open when any target accepts, blocked when the targets resolve
+    but none accept, and unknown when no target resolves. The result goes into the probe's
+    ConfigMap at `data.outboundMail`.
+  - **Node health** gets a *Mail ports out* column and raises a warning when a port the node
+    needs is blocked:
+    - 465 and 587 on every node, because apps on the node send their mail on them;
+    - 25 only on a mail placement node (primary, secondary or tertiary), because only the
+      mail server delivers on it.
+
+    The notification names the port and what it breaks, and asks for the provider to unblock it.
+    A result older than three checks is shown, not judged. If a tick cannot read the checks,
+    each node keeps its last verdict, so a warned node is not announced as recovered and then
+    warned again. It is stored in `node_health_state.outbound_mail` (migration 0175).
+  - **Mail health** gets an *Outbound delivery* component, which fails when any mail placement
+    node cannot open port 25.
+    - The node the mail server runs on means outbound mail is queued, not delivered.
+    - A secondary or tertiary means mail would stop going out once a failover puts the server
+      there.
+
+    The alert lists each blocked node with what its targets answered.
+  - **Bootstrap**'s preflight makes the same check against the same targets before anything is
+    installed. A blocked port is a warning, not a failure, and it says what the port breaks.
+    `outboundmail_test.go` and `scripts/test-bootstrap-outbound-mail.sh` keep the two target
+    lists equal.
+
 ## [2026.11.5] - 2026-11-03
 
 ### Fixed

@@ -15,7 +15,11 @@
 //  5. WRITES one ConfigMap (security-probe-<node>) in
 //     platform-system with the JSON snapshot at data.snapshot,
 //  6. and, continuously, witnesses pod memory-cgroup OOM counters
-//     (/host/sys/fs/cgroup, memcg.go), published at data.memcg.
+//     (/host/sys/fs/cgroup, memcg.go), published at data.memcg,
+//  7. and, every OUTBOUND_MAIL_PROBE_INTERVAL_SECONDS (15 min by default),
+//     dials TCP 25/465/587 on public mail servers to tell whether this node's
+//     provider lets mail out (outboundmail.go), published at
+//     data.outboundMail. The only connections it opens beyond the apiserver.
 //
 // Security posture (see daemonset.yaml for the corresponding
 // SecurityContext): readOnlyRootFilesystem, capabilities drop ALL,
@@ -92,12 +96,14 @@ func main() {
 	collector := newCollector("/host")
 	witness := newMemcgWitness("/host")
 	go witness.run(ctx)
+	outbound := newOutboundMailProber()
+	go outbound.run(ctx)
 
 	slog.Info("security-probe starting",
 		"node", nodeName, "namespace", namespace, "intervalSeconds", interval.Seconds())
 
 	// Kick once at start so the page has data before the first tick.
-	last := runOnce(ctx, collector, pub, witness, hs, nil)
+	last := runOnce(ctx, collector, pub, witness, outbound, hs, nil)
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -106,7 +112,10 @@ func main() {
 			slog.Info("security-probe exiting")
 			return
 		case <-t.C:
-			last = runOnce(ctx, collector, pub, witness, hs, nil)
+			last = runOnce(ctx, collector, pub, witness, outbound, hs, nil)
+		case <-outbound.changed:
+			// A finished outbound mail check: publish it with the last posture.
+			last = runOnce(ctx, collector, pub, witness, outbound, hs, last)
 		case <-witness.changed:
 			// An OOM just happened. Publish the witness now rather than up to a
 			// minute later — the backend will not judge a kill until a snapshot
@@ -118,7 +127,7 @@ func main() {
 			case <-time.After(memcgPublishSettle):
 			}
 			drainSignal(witness.changed)
-			last = runOnce(ctx, collector, pub, witness, hs, last)
+			last = runOnce(ctx, collector, pub, witness, outbound, hs, last)
 		}
 	}
 }
@@ -126,9 +135,10 @@ func main() {
 // runOnce wraps one collect+publish cycle in recover() so a panic in
 // (say) sshd_config parsing doesn't kill the pod. With `reuse` set it skips
 // the host-posture collection and republishes that snapshot with a fresh
-// OOM witness. Returns the posture snapshot it published.
+// OOM witness and outbound mail result. Returns the posture snapshot it published.
 func runOnce(
-	ctx context.Context, c *collector, pub *configMapPublisher, witness *memcgWitness, hs *healthState, reuse *Snapshot,
+	ctx context.Context, c *collector, pub *configMapPublisher, witness *memcgWitness, outbound *outboundMailProber,
+	hs *healthState, reuse *Snapshot,
 ) (published *Snapshot) {
 	published = reuse
 	defer func() {
@@ -148,7 +158,7 @@ func runOnce(
 			slog.Warn("collect partial", "err", err)
 		}
 	}
-	if err := pub.publish(ctx, snap, witness.snapshot()); err != nil {
+	if err := pub.publish(ctx, snap, witness.snapshot(), outbound.snapshot(), outbound.pending()); err != nil {
 		slog.Error("publish", "err", err)
 		return published
 	}
