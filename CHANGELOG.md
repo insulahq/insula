@@ -47,6 +47,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     `outboundmail_test.go` and `scripts/test-bootstrap-outbound-mail.sh` keep the two target
     lists equal.
 
+### Fixed
+
+- **A tenant's traffic over 30 days, 90 days or a year is complete again.** Ranges reaching past
+  the metrics store's 30 days are answered from the bandwidth meter's rollup. The rollup keeps
+  the newest 30 days as hourly rows and folds each older day into one daily row, and the chart
+  read only the daily rows. "Last 30 days" came back empty, and 90 days and a year stopped a
+  month short. Both panels were affected: the tenant panel and the admin panel's tenant view.
+  - The hourly rows are now summed into their UTC day, beside the folded days.
+  - The meter writes no row for an hour without traffic, so on a day the meter ran, a tenant
+    with no row is drawn as zero instead of as a gap. Days nobody was measured still draw as a
+    gap, and so do days before the tenant existed.
+  - "Last 30 days" is answered from the metrics store again, at full detail and in both
+    directions, as the range picker says. The browser computes the preset a moment before the
+    server checks it, so it always landed just past the edge and was served from the rollup.
+    A range may now start up to an hour past the edge.
+
 ## [2026.11.5] - 2026-11-03
 
 ### Fixed

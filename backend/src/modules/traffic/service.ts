@@ -2,11 +2,12 @@
  * Serving a traffic frame.
  *
  * Retention decides the source. VictoriaMetrics holds 30 days of fine-grained
- * samples; past that the only survivor is the per-tenant daily egress rollup
- * in `usage_metrics`, written by the bandwidth meter. So a request reaching
+ * samples; past that the only survivor is the per-tenant egress rollup in
+ * `usage_metrics`, written by the bandwidth meter. So a request reaching
  * further back is served one of two ways, and the frame says which:
  *
- *   • per-tenant traffic → the daily rows, at `resolution: 'daily'`;
+ *   • per-tenant traffic → the rollup, one point per UTC day, at
+ *                          `resolution: 'daily'` (daily-frame.ts);
  *   • anything else      → clamped to what the metrics store still has,
  *                          with `clamped: true`.
  *
@@ -14,13 +15,13 @@
  * have drawn a long quiet stretch that never happened.
  */
 
-import { and, eq, gte, inArray, like, lte, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, like, ne } from 'drizzle-orm';
 import {
   TRAFFIC_FINE_RETENTION_DAYS,
   type TrafficFrame, type TrafficMetric, type TrafficScope,
   type TrafficSeries, type TrafficSubject, type TrafficUnit,
 } from '@insula/api-contracts';
-import { domains, ingressRoutes, tenants, usageMetrics } from '../../db/schema.js';
+import { domains, ingressRoutes, tenants } from '../../db/schema.js';
 import { queryRange, type VmClientOptions } from '../monitoring/vm-client.js';
 import {
   BACKUP_CLASS_POD_RE, buildTrafficQuery, UnsupportedTrafficQuery,
@@ -33,6 +34,7 @@ import {
 import type { Database } from '../../db/index.js';
 import type { LiveRouteSource } from './live-ingress-routes.js';
 import { loadExactRouteNamer, type WarnLogger } from './route-naming.js';
+import { dailyTenantFrame } from './daily-frame.js';
 import { loadNodeLabels, nodeLabel, type NodeLabels } from '../nodes/labels.js';
 
 const DAY_MS = 86_400_000;
@@ -58,6 +60,22 @@ export function unitFor(metric: TrafficMetric): TrafficUnit {
 /** Oldest instant the metrics store can still answer for. */
 export function fineRetentionStart(now: Date): Date {
   return new Date(now.getTime() - TRAFFIC_FINE_RETENTION_DAYS * DAY_MS);
+}
+
+/**
+ * How far past the retention edge a range may start and still be answered
+ * from the metrics store.
+ *
+ * "Last 30 days" is computed in the browser, so it arrives a few milliseconds
+ * older than the server's own 30 days, and the panel refetches the same range
+ * every two minutes. Compared exactly, the preset the picker labels as full
+ * detail was always served from the daily rollup instead.
+ */
+const RETENTION_EDGE_GRACE_MS = 3_600_000;
+
+/** True when a range starts further back than the metrics store holds. */
+export function reachesPastRetention(from: Date, now: Date): boolean {
+  return from.getTime() < fineRetentionStart(now).getTime() - RETENTION_EDGE_GRACE_MS;
 }
 
 /**
@@ -347,7 +365,7 @@ export async function fetchTrafficFrame(
   const now = deps.now?.() ?? new Date();
   const unit = unitFor(req.metric);
   const retentionStart = fineRetentionStart(now);
-  const wantsHistory = req.from < retentionStart;
+  const wantsHistory = reachesPastRetention(req.from, now);
 
   if (wantsHistory && req.metric === 'traffic' && req.scope === 'tenant') {
     return dailyTenantFrame(req, deps.db, unit);
@@ -667,65 +685,6 @@ const BACKUP_CLASS_LABEL: Record<keyof typeof BACKUP_CLASS_POD_RE, string> = {
   databases: 'Backup · databases',
   system: 'Backup · cluster state & secrets',
 };
-
-/**
- * Per-tenant egress beyond metric retention, from the meter's daily rollup.
- *
- * These rows are GB already billed, so the frame reports a rate derived from
- * them rather than re-deriving one: value ÷ 86400 gives bytes/s over the day,
- * which is what the chart's y-axis means everywhere else.
- */
-async function dailyTenantFrame(req: TrafficRequest, db: Database, unit: TrafficUnit): Promise<TrafficFrame> {
-  const rows = await db
-    .select({
-      tenantId: usageMetrics.tenantId,
-      ts: usageMetrics.measurementTimestamp,
-      value: usageMetrics.value,
-      name: tenants.name,
-      ns: tenants.kubernetesNamespace,
-    })
-    .from(usageMetrics)
-    .innerJoin(tenants, eq(tenants.id, usageMetrics.tenantId))
-    .where(and(
-      eq(usageMetrics.metricType, 'bandwidth_gb'),
-      eq(usageMetrics.resolution, 'daily'),
-      gte(usageMetrics.measurementTimestamp, req.from),
-      lte(usageMetrics.measurementTimestamp, req.to),
-      req.subject ? eq(tenants.kubernetesNamespace, req.subject) : sql`true`,
-    ));
-
-  const stepSeconds = 86_400;
-  const timeline = buildTimeline(req.from.getTime(), req.to.getTime(), stepSeconds);
-  const byTenant = new Map<string, { name: string; at: Map<number, number> }>();
-  for (const r of rows) {
-    const bucket = Math.floor(r.ts.getTime() / (stepSeconds * 1000)) * stepSeconds * 1000;
-    const entry = byTenant.get(r.tenantId) ?? { name: r.name, at: new Map() };
-    // GB over the day → bytes per second, the unit every other frame uses.
-    entry.at.set(bucket, (entry.at.get(bucket) ?? 0) + (Number(r.value) * 1e9) / stepSeconds);
-    byTenant.set(r.tenantId, entry);
-  }
-
-  const ranked = [...byTenant.entries()].map(([id, e]) => ({
-    key: id,
-    name: e.name,
-    points: timeline.map((t) => e.at.get(t) ?? null),
-  }));
-  const folded = foldTail(ranked, unit, stepSeconds);
-
-  return {
-    from: req.from.toISOString(),
-    to: req.to.toISOString(),
-    stepSeconds,
-    times: timeline.map((t) => new Date(t).toISOString()),
-    unit,
-    resolution: 'daily',
-    series: req.subject
-      ? ranked.map((r) => ({ key: r.key, name: r.name, kind: 'direction' as const, points: r.points }))
-      : folded.series,
-    othersFolded: req.subject ? 0 : folded.othersFolded,
-    clamped: false,
-  };
-}
 
 /** Ranked picker entries for a scope, measured over the same range. */
 export async function fetchTrafficSubjects(
