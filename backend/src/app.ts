@@ -1426,6 +1426,19 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', () => stopBandwidthMeter());
       }
 
+      // Every traffic graph's history in the platform database: hourly from
+      // the metrics store, folded by the usage reaper above. Charts past the
+      // store's 30 days read it, and it outlives losing the store.
+      {
+        const { startTrafficRollup } = await import('./modules/traffic/rollup-collect.js');
+        const { createLiveRouteSource, k8sIngressRouteLister } = await import('./modules/traffic/live-ingress-routes.js');
+        const stopTrafficRollup = startTrafficRollup(app.db, {
+          liveRoutes: createLiveRouteSource(k8sIngressRouteLister(() => app.config?.KUBECONFIG_PATH)),
+          log: app.log,
+        });
+        app.addHook('onClose', () => stopTrafficRollup());
+      }
+
       // Phase 3.D.2: mailbox used_mb reconciliation (15 min default,
       // configurable via platform_settings key
       // `mailbox_usage_sync_interval_minutes`)

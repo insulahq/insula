@@ -6,30 +6,34 @@
 import { and, eq, gte, lte, sql } from 'drizzle-orm';
 import type { TrafficFrame, TrafficUnit } from '@insula/api-contracts';
 import { tenants, usageMetrics } from '../../db/schema.js';
-import { buildTimeline, foldTail } from './frame.js';
+import { foldTail } from './frame.js';
+import {
+  periodBucketSql, periodEnd, periodFor, periodStepSeconds, periodTimeline, type RollupPeriod,
+} from './rollup-period.js';
 import type { Database } from '../../db/index.js';
 import type { TrafficRequest } from './service.js';
 
-const DAY_MS = 86_400_000;
-
-/** One tenant's egress per UTC day, as the rollup stores it. */
-interface EgressDays {
+/** One tenant's egress per bucket, as the rollup stores it. */
+interface EgressBuckets {
   readonly name: string;
   readonly createdAt: Date;
-  /** Day start (ms) → GB from the folded daily row, and GB summed from hourly rows. */
-  readonly days: Map<number, { daily: number | null; hourly: number }>;
+  /** Bucket start (ms) → GB. */
+  readonly gb: Map<number, number>;
 }
 
-/** The stored timestamps are UTC without a zone, so epoch ÷ 86400 is the UTC day number. */
-const utcDay = sql<number>`floor(extract(epoch from ${usageMetrics.measurementTimestamp}) / 86400)::int`;
-
 /**
- * The rollup in range, summed per tenant, UTC day and resolution, plus every
- * day the meter wrote a row for anyone.
+ * The rollup in range, summed per tenant and bucket, plus every bucket the
+ * meter wrote a row for anyone in.
+ *
+ * Every resolution is summed together. The reaper folds a day (or a month)
+ * and deletes what it folded in one transaction, so no hour is ever stored
+ * twice — and a month still inside the year holds daily rows for its older
+ * days and hourly rows for its newest, which have to be added up.
  */
 async function readEgressRollup(
-  req: TrafficRequest, db: Database,
-): Promise<{ byTenant: Map<string, EgressDays>; meteredDays: Set<number> }> {
+  req: TrafficRequest, db: Database, period: RollupPeriod,
+): Promise<{ byTenant: Map<string, EgressBuckets>; metered: Set<number> }> {
+  const bucket = periodBucketSql(period, usageMetrics.measurementTimestamp);
   const inRange = and(
     eq(usageMetrics.metricType, 'bandwidth_gb'),
     gte(usageMetrics.measurementTimestamp, req.from),
@@ -38,8 +42,7 @@ async function readEgressRollup(
   const [rows, meteredForSubject, subjectTenant] = await Promise.all([
     db.select({
       tenantId: usageMetrics.tenantId,
-      day: utcDay.mapWith(Number),
-      resolution: usageMetrics.resolution,
+      bucket: bucket.mapWith(Number),
       gb: sql<number>`sum(${usageMetrics.value})`.mapWith(Number),
       name: tenants.name,
       createdAt: tenants.createdAt,
@@ -47,10 +50,10 @@ async function readEgressRollup(
       .from(usageMetrics)
       .innerJoin(tenants, eq(tenants.id, usageMetrics.tenantId))
       .where(and(inRange, req.subject ? eq(tenants.kubernetesNamespace, req.subject) : sql`true`))
-      .groupBy(usageMetrics.tenantId, utcDay, usageMetrics.resolution, tenants.name, tenants.createdAt),
+      .groupBy(usageMetrics.tenantId, bucket, tenants.name, tenants.createdAt),
     // Every tenant's rows are already in hand when no subject narrows the read.
     req.subject
-      ? db.selectDistinct({ day: utcDay.mapWith(Number) }).from(usageMetrics).where(inRange)
+      ? db.selectDistinct({ bucket: bucket.mapWith(Number) }).from(usageMetrics).where(inRange)
       : Promise.resolve(null),
     req.subject
       ? db.select({ id: tenants.id, name: tenants.name, createdAt: tenants.createdAt })
@@ -58,64 +61,62 @@ async function readEgressRollup(
       : Promise.resolve([]),
   ]);
 
-  const byTenant = new Map<string, EgressDays>();
+  const byTenant = new Map<string, EgressBuckets>();
   // A tenant asked for by name gets its row even when the meter wrote nothing for it.
-  for (const t of subjectTenant) byTenant.set(t.id, { name: t.name, createdAt: t.createdAt, days: new Map() });
+  for (const t of subjectTenant) byTenant.set(t.id, { name: t.name, createdAt: t.createdAt, gb: new Map() });
   for (const r of rows) {
-    const entry = byTenant.get(r.tenantId) ?? { name: r.name, createdAt: r.createdAt, days: new Map() };
-    const day = r.day * DAY_MS;
-    const seen = entry.days.get(day) ?? { daily: null, hourly: 0 };
-    entry.days.set(day, r.resolution === 'daily'
-      ? { ...seen, daily: (seen.daily ?? 0) + r.gb }
-      : { ...seen, hourly: seen.hourly + r.gb });
+    const entry = byTenant.get(r.tenantId) ?? { name: r.name, createdAt: r.createdAt, gb: new Map() };
+    entry.gb.set(r.bucket, (entry.gb.get(r.bucket) ?? 0) + r.gb);
     byTenant.set(r.tenantId, entry);
   }
-  const metered = meteredForSubject ?? rows;
-  return { byTenant, meteredDays: new Set(metered.map((m) => m.day * DAY_MS)) };
+  return { byTenant, metered: new Set((meteredForSubject ?? rows).map((m) => m.bucket)) };
 }
 
 /**
- * GB for one tenant on the day starting at `day`, or null when nobody measured it.
+ * GB for one tenant in the bucket starting at `start`, or null when nobody measured it.
  *
  * The meter skips an hour that carried nothing, so a missing row is not a
- * missing measurement: on a day the meter wrote rows for anyone, a tenant that
- * already existed and has no row sent nothing. Days the meter never covered
- * stay null, so they draw as a gap and not as a quiet stretch.
+ * missing measurement: in a bucket the meter wrote rows for anyone in, a
+ * tenant that already existed and has no row sent nothing. Buckets the meter
+ * never covered stay null, so they draw as a gap and not as a quiet stretch.
  */
-function egressOnDay(e: EgressDays, day: number, meteredDays: ReadonlySet<number>): number | null {
-  const stored = e.days.get(day);
-  // The reaper folds a day and deletes its hours in one transaction, so a day
-  // holds one or the other; the folded row wins should both ever be present.
-  if (stored) return stored.daily ?? stored.hourly;
-  return meteredDays.has(day) && e.createdAt.getTime() < day + DAY_MS ? 0 : null;
+function egressIn(e: EgressBuckets, start: number, period: RollupPeriod, metered: ReadonlySet<number>): number | null {
+  const stored = e.gb.get(start);
+  if (stored !== undefined) return stored;
+  return metered.has(start) && e.createdAt.getTime() < periodEnd(period, start) ? 0 : null;
 }
 
 /**
  * Per-tenant egress beyond metric retention, from the meter's rollup.
  *
- * The rollup keeps the newest 30 days as hourly rows and folds each older day
- * into one daily row, so a range reaching past retention needs both: the
- * daily rows for the old part, and the hourly rows summed per UTC day for the
- * recent part. Reading the daily rows alone left out the newest 30 days.
+ * The rollup keeps the newest 30 days as hourly rows, folds each older day
+ * into one daily row and each month older than a year into one monthly row,
+ * so a range reaching past retention needs all of them: drawn one point per
+ * UTC day within a year, one per UTC month beyond. Reading the daily rows
+ * alone left out the newest 30 days.
  *
  * These rows are GB already billed, so the frame reports a rate derived from
- * them rather than re-deriving one: GB ÷ 86400 gives bytes/s over the day,
- * which is what the chart's y-axis means everywhere else. Today is divided by
- * the whole day too, so its point is the day so far and sits low until the day
- * ends; dividing by the hours elapsed would draw a truer rate but make the
- * range's total, which the panel takes as Σ point × step, larger than billed.
+ * them rather than re-deriving one: GB ÷ the step gives bytes/s over the
+ * bucket, which is what the chart's y-axis means everywhere else. The current
+ * bucket is divided by the whole step too, so its point is the bucket so far
+ * and sits low until it ends; dividing by the time elapsed would draw a truer
+ * rate but make the range's total, which the panel takes as Σ point × step,
+ * larger than billed.
  */
-export async function dailyTenantFrame(req: TrafficRequest, db: Database, unit: TrafficUnit): Promise<TrafficFrame> {
-  const { byTenant, meteredDays } = await readEgressRollup(req, db);
+export async function rollupTenantFrame(
+  req: TrafficRequest, db: Database, unit: TrafficUnit, now: Date,
+): Promise<TrafficFrame> {
+  const period = periodFor(req.from, now);
+  const { byTenant, metered } = await readEgressRollup(req, db, period);
 
-  const stepSeconds = 86_400;
-  const timeline = buildTimeline(req.from.getTime(), req.to.getTime(), stepSeconds);
+  const stepSeconds = periodStepSeconds(period);
+  const timeline = periodTimeline(period, req.from.getTime(), req.to.getTime());
   const ranked = [...byTenant.entries()].map(([id, e]) => ({
     key: id,
     name: e.name,
     points: timeline.map((t) => {
-      const gb = egressOnDay(e, t, meteredDays);
-      // GB over the day → bytes per second, the unit every other frame uses.
+      const gb = egressIn(e, t, period, metered);
+      // GB over the bucket → bytes per second, the unit every other frame uses.
       return gb === null ? null : (gb * 1e9) / stepSeconds;
     }),
   }));
@@ -127,7 +128,7 @@ export async function dailyTenantFrame(req: TrafficRequest, db: Database, unit: 
     stepSeconds,
     times: timeline.map((t) => new Date(t).toISOString()),
     unit,
-    resolution: 'daily',
+    resolution: period,
     series: req.subject
       ? ranked.map((r) => ({ key: r.key, name: r.name, kind: 'direction' as const, points: r.points }))
       : folded.series,

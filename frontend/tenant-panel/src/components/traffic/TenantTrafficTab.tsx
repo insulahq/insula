@@ -236,7 +236,7 @@ export default function TenantTrafficTab() {
             },
           {
             key: 'peak',
-            label: frame.resolution === 'daily' ? 'Peak (daily)' : 'Peak',
+            label: frame.resolution === 'fine' ? 'Peak' : `Peak (${frame.resolution})`,
             value: formatTrafficRate(stats.peak, frame.unit),
             sub: stats.peakAt ? formatInstant(stats.peakAt) : '—',
           },
@@ -264,11 +264,13 @@ export default function TenantTrafficTab() {
           Showing from {formatInstant(frame.from)} — detailed metrics are kept for 30 days.
         </p>
       )}
-      {frame?.resolution === 'daily' && (
+      {frame && frame.resolution !== 'fine' && (
         <p className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600
           dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-300"
         >
-          Daily rollup — one point per UTC day, so short spikes are averaged out.
+          {frame.resolution === 'monthly'
+            ? 'Monthly rollup — one point per UTC month, so short spikes are averaged out.'
+            : 'Daily rollup — one point per UTC day, so short spikes are averaged out.'}
         </p>
       )}
 

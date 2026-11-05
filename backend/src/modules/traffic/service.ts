@@ -2,13 +2,17 @@
  * Serving a traffic frame.
  *
  * Retention decides the source. VictoriaMetrics holds 30 days of fine-grained
- * samples; past that the only survivor is the per-tenant egress rollup in
- * `usage_metrics`, written by the bandwidth meter. So a request reaching
- * further back is served one of two ways, and the frame says which:
+ * samples; past that, history lives in the platform database. So a request
+ * reaching further back is served one of three ways, and the frame says which:
  *
- *   • per-tenant traffic → the rollup, one point per UTC day, at
- *                          `resolution: 'daily'` (daily-frame.ts);
- *   • anything else      → clamped to what the metrics store still has,
+ *   • per-tenant traffic → the bandwidth meter's billed egress in
+ *                          `usage_metrics` (daily-frame.ts);
+ *   • every other view   → the traffic rollup the collector writes
+ *                          (rollup-frame.ts, rollup-collect.ts);
+ *     both one point per UTC day within a year, per UTC month beyond, at
+ *     `resolution: 'daily'` / `'monthly'`;
+ *   • a backup split outside the cluster view, which is not rolled up →
+ *                          clamped to what the metrics store still has,
  *                          with `clamped: true`.
  *
  * Padding the missing months with zeroes was the alternative, and it would
@@ -34,7 +38,8 @@ import {
 import type { Database } from '../../db/index.js';
 import type { LiveRouteSource } from './live-ingress-routes.js';
 import { loadExactRouteNamer, type WarnLogger } from './route-naming.js';
-import { dailyTenantFrame } from './daily-frame.js';
+import { rollupTenantFrame } from './daily-frame.js';
+import { rollupAnswers, rollupFrame } from './rollup-frame.js';
 import { loadNodeLabels, nodeLabel, type NodeLabels } from '../nodes/labels.js';
 
 const DAY_MS = 86_400_000;
@@ -368,7 +373,10 @@ export async function fetchTrafficFrame(
   const wantsHistory = reachesPastRetention(req.from, now);
 
   if (wantsHistory && req.metric === 'traffic' && req.scope === 'tenant') {
-    return dailyTenantFrame(req, deps.db, unit);
+    return rollupTenantFrame(req, deps.db, unit, now);
+  }
+  if (wantsHistory && rollupAnswers(req)) {
+    return rollupFrame(req, deps.db, unit, now, opts);
   }
 
   const clamped = wantsHistory;

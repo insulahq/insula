@@ -60,7 +60,8 @@ export const trafficBackupClassSchema = z.enum(TRAFFIC_BACKUP_CLASSES);
 export type TrafficBackupClass = z.infer<typeof trafficBackupClassSchema>;
 
 /**
- * Hourly detail is retained for 30 days; past that only daily rollups survive.
+ * Detail is retained for 30 days; past that only the rollups survive — daily
+ * for a year, monthly for five.
  * The response says which regime it is in rather than leaving the caller to
  * infer it from the step, because the two look identical on a chart and only
  * one of them can honestly show a spike.
@@ -73,8 +74,12 @@ export const TRAFFIC_TOP_N = 4;
 /** Ceiling on points per series, so a wide range cannot ask for a huge frame. */
 export const TRAFFIC_MAX_POINTS = 400;
 
-/** Widest range the API will serve in one request. */
-export const TRAFFIC_MAX_RANGE_DAYS = 400;
+/**
+ * Widest range the API will serve in one request: the five years the monthly
+ * rollup keeps. Anything past a year is drawn one point per month, so even
+ * the widest range stays far under `TRAFFIC_MAX_POINTS`.
+ */
+export const TRAFFIC_MAX_RANGE_DAYS = 5 * 366;
 
 const isoDateTime = z.string().refine(
   (s) => !Number.isNaN(Date.parse(s)),
@@ -163,16 +168,20 @@ export const trafficFrameSchema = z.object({
   /** ISO-8601 instants, one per index in every series' `points`. */
   times: z.array(z.string()),
   unit: trafficUnitSchema,
-  /** `daily` means the fine-grained rows have aged out; spikes are averaged. */
-  resolution: z.enum(['fine', 'daily']),
+  /**
+   * `daily` / `monthly`: the range reaches past what the metrics store keeps,
+   * so it is drawn from the platform's rollup, one point per UTC day (ranges
+   * within a year) or per UTC month (further back). Spikes are averaged out.
+   */
+  resolution: z.enum(['fine', 'daily', 'monthly']),
   series: z.array(trafficSeriesSchema),
   /** How many subjects were folded into the `Other` series (0 if none were). */
   othersFolded: z.number().int().nonnegative(),
   /**
    * True when `from` is later than what was asked for. Metric retention is
-   * 30 days and only per-tenant egress is rolled up beyond it, so a wider
-   * request at any other breakdown is served short rather than padded with
-   * zeroes — and says so, instead of drawing an empty month as quiet.
+   * 30 days, and a breakdown the rollup does not keep (a backup split outside
+   * the cluster view) is served short rather than padded with zeroes — and
+   * says so, instead of drawing an empty month as quiet.
    */
   clamped: z.boolean(),
 });

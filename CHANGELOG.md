@@ -46,6 +46,41 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     installed. A blocked port is a warning, not a failure, and it says what the port breaks.
     `outboundmail_test.go` and `scripts/test-bootstrap-outbound-mail.sh` keep the two target
     lists equal.
+- **Every traffic graph keeps its history in the platform database, for up to five years.**
+  - **Before:** only a tenant's billed egress had any history past the metrics store's 30
+    days. The cluster, node, route and pod views, and requests and latency on any view, showed
+    the last 30 days with a notice. The metrics store runs as one pod and is not backed up, so
+    losing it would also have lost a month of every one of those graphs.
+  - **The collector:** it runs every 10 minutes on one replica (a scheduler lease). It writes
+    each view's full breakdown, hourly, into `traffic_rollup` (migration 0176): the cluster
+    rows, every node, route and tenant pod in both directions, and requests and latency for the
+    cluster, nodes, tenants and routes. Latency is weighted by the requests behind it. A
+    tenant's own traffic is not collected again: past 30 days it is still the meter's billed
+    egress.
+  - **Catching up:** the collector works from a watermark, two days per pass, so its first runs
+    fill in the 30 days the metrics store still holds (a few hours), and an outage is caught up
+    rather than skipped. Each view is measured on its own: one view that cannot be read leaves
+    a gap in that view for that span and nothing else, and only a store that answers nothing at
+    all holds the watermark back. An hour nobody measured stays a gap instead of becoming a
+    zero.
+  - **Folding:** the daily usage reaper folds hours older than 30 days into days, days older
+    than a year into months, and drops months older than five years. It now runs on one replica
+    under a lease; three replicas folding at once could deadlock and lose the day's fold. Past
+    30 days a chart is drawn from this, one point per UTC day within a year and one per UTC
+    month beyond, under the same names and keys as the live view. On a tenant's own route view
+    the rows are confined to its routes even when one route is asked for by name.
+  - Only a backup split outside the cluster view is not kept; asked for further back, it is
+    served short with its notice, as before.
+
+### Changed
+
+- **Rollups older than a year fold into months instead of being deleted.** This covers a
+  tenant's billed traffic, CPU, memory and storage in `usage_metrics`, and the new traffic
+  rollup. They are kept for five years.
+  - The traffic API accepts ranges up to five years, up from 400 days.
+  - The range picker marks a range starting more than a year back as **monthly rollup**.
+  - The picker now decides "daily" or "monthly" by how far back a range starts, as the server
+    does, not by how long it is.
 
 ### Fixed
 

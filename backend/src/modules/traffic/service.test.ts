@@ -385,10 +385,10 @@ describe('the retention edge', () => {
     expect(reachesPastRetention(new Date(edge - 3_600_001), now)).toBe(true);
   });
 
-  it('still clamps every other scope that reaches past it', async () => {
+  it('still clamps a breakdown the rollup does not keep (a backup split outside the cluster view)', async () => {
     const frame = await fetchTrafficFrame({
       from: new Date(edge - 60 * 86_400_000), to: now,
-      scope: 'node', metric: 'traffic', direction: 'both', backups: 'included',
+      scope: 'node', metric: 'traffic', direction: 'out', backups: 'separate',
     }, { db, now: () => now });
     expect(frame.resolution).toBe('fine');
     expect(frame.clamped).toBe(true);
