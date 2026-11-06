@@ -1101,15 +1101,15 @@ components:
     name: atmoz/sftp (dev SFTP fixture)
     tier: "3"
     kind: image
-    pinned: "alpine-3.7"
+    pinned: "debian"
     pin_source: k8s/dev/sftp/sftp.yaml
-    pin_check: true
+    pin_check: false
     repos: [atmoz/sftp]
     watch: { type: dockerhub, repo: atmoz/sftp, advisories: openssh/openssh-portable }
     scan: trivy
     owner: platform
     dev_only: true
-    notes: Dev-only SFTP endpoint. Production SFTP is the first-party sftp-gateway.
+    notes: Dev-only SFTP endpoint; the lab's SFTP backup target runs the same image. Production SFTP is the first-party sftp-gateway. Floating :debian, the tag atmoz rebuilds (dev acceptable); not alpine, whose musl OpenSSH without PAM is the build CVE-2026-123158 affects.
 
   - id: dev-socat
     name: alpine/socat (dev oauth patch fixture)

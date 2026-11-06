@@ -19,7 +19,8 @@ LAB_PDNS_IMAGE="${LAB_PDNS_IMAGE:-powerdns/pdns-auth-51:5.1.4}"
 LAB_STEPCA_IMAGE="${LAB_STEPCA_IMAGE:-smallstep/step-ca:0.30.2}"
 LAB_S3_IMAGE="${LAB_S3_IMAGE:-versity/versitygw:v1.10.0}"
 LAB_RCLONE_IMAGE="${LAB_RCLONE_IMAGE:-rclone/rclone:1.75.2}"
-LAB_SFTP_IMAGE="${LAB_SFTP_IMAGE:-atmoz/sftp:latest}"
+# atmoz keeps rebuilding `debian`; its `latest` is an old Debian build.
+LAB_SFTP_IMAGE="${LAB_SFTP_IMAGE:-atmoz/sftp:debian}"
 LAB_SMB_IMAGE="${LAB_SMB_IMAGE:-dperson/samba:latest}"
 
 LAB_SVC_VM="lab-svc"
@@ -116,15 +117,16 @@ chown 1001:100 "$D/sftp"
 # replaced; the upload directory is the same bind mount.
 SFTP_USER=sftpbackup
 # A bounded open-files limit. Inherited from containerd (LimitNOFILE=infinity)
-# it is ~1e9, and the image's OpenSSH 8.4 closes every possible fd before a
-# chrooted internal-sftp session starts — there is no /proc in the chroot to
-# list the open ones — so each SFTP login spun a CPU for many minutes before
-# the server sent its SFTP version: the backup shim bound to this target never
-# listened. A container made under the old name or without the limit is
-# replaced; the upload directory is the same bind mount.
+# it is ~1e9, and OpenSSH 8.4 (in the `latest` image) closes every possible fd
+# before a chrooted internal-sftp session starts — there is no /proc in the
+# chroot to list the open ones — so each SFTP login spun a CPU for many minutes
+# before the server sent its SFTP version: the backup shim bound to this target
+# never listened. A container made under the old name, without the limit or on another
+# image is replaced; the upload directory is the same bind mount.
 SFTP_NOFILE=65536
 if have sftp && { ! docker inspect sftp --format '{{range .Args}}{{.}}{{"\n"}}{{end}}' | grep -q "^${SFTP_USER}:" \
-    || ! docker inspect sftp --format '{{range .HostConfig.Ulimits}}{{.Name}}={{.Hard}}{{"\n"}}{{end}}' | grep -qx "nofile=${SFTP_NOFILE}"; }; then
+    || ! docker inspect sftp --format '{{range .HostConfig.Ulimits}}{{.Name}}={{.Hard}}{{"\n"}}{{end}}' | grep -qx "nofile=${SFTP_NOFILE}" \
+    || [ "$(docker inspect -f '{{.Config.Image}}' sftp)" != "$LAB_SFTP_IMAGE" ]; }; then
   docker rm -f sftp >/dev/null
 fi
 have sftp || docker run -d --name sftp --restart=always --ulimit "nofile=${SFTP_NOFILE}:${SFTP_NOFILE}" -p 2222:22 \

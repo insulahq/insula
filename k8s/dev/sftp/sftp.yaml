@@ -46,8 +46,11 @@ spec:
       containers:
         - name: sftp
           # atmoz/sftp is a small, widely-used OpenSSH + sftp-only image
-          # (~100 MB). Pinned to a stable tag.
-          image: atmoz/sftp:alpine-3.7
+          # (~100 MB). The `debian` tag is the one atmoz keeps rebuilding
+          # (`latest` is an old Debian build). Not an alpine tag: a musl
+          # OpenSSH without PAM is the build CVE-2026-123158 (sshole)
+          # affects, and alpine-3.7 has not been rebuilt in years.
+          image: atmoz/sftp:debian
           imagePullPolicy: IfNotPresent
           # User definitions per atmoz/sftp: user:pass[:e][:UID][:GID[:dirs]]
           # Empty pass (key-only auth), uid/gid 1001, writable subdir

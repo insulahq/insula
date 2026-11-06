@@ -12,6 +12,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **The dev and lab SFTP endpoints run `atmoz/sftp:debian`.** The dev fixture
+  (`./scripts/local.sh sftp-dev-up`) ran `alpine-3.7`, a build not refreshed in years. Its
+  musl OpenSSH without PAM is the build CVE-2026-123158 (sshole) affects, and its user is
+  key-only. As configured it lacked one of the conditions the attack needs, and nothing outside
+  dev runs it. The VM lab's SFTP backup target moves from `latest`, a Debian 11 build atmoz no longer
+  updates, to the same `debian` tag (Debian 12, OpenSSH 9.2). Its next `lab.sh up svc` replaces
+  the running container; files on the target stay in the bind mount. Production SFTP is the
+  first-party `sftp-gateway` and is not affected.
+
 ### Fixed
 
 - **The tenant file manager sorts folders by the size it shows.** Sorting by Size ordered
