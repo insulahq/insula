@@ -43,6 +43,7 @@ import type { OperatorError } from '@insula/api-contracts';
 import { config } from '@/lib/runtime-config';
 import CloneSiteModal from '@/components/CloneSiteModal';
 import { resourceBarColor } from '@/lib/resource-usage';
+import { sortFileEntries, nextFileSort, ariaSort, type FileSort, type FileSortColumn } from '@/lib/sort-file-entries';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -63,8 +64,6 @@ const LANG_MAP: Record<string, string> = {
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp', '.ico', '.avif']);
 const ARCHIVE_EXTENSIONS = new Set(['.zip', '.tar', '.tar.gz', '.tgz']);
 const SQLITE_EXTENSIONS = new Set(['.sqlite', '.db', '.sqlite3']);
-
-type FileSortColumn = 'name' | 'size' | 'modifiedAt';
 
 function getExtension(filename: string): string {
   const lower = filename.toLowerCase();
@@ -208,54 +207,24 @@ export default function Files() {
   const folderSize = useFolderSize();
   const chmod = useChmod();
   const chown = useChown();
-  const [folderSizes, setFolderSizes] = useState<Record<string, { size: string; loading: boolean }>>({});
-  const [sortCol, setSortCol] = useState<FileSortColumn>('name');
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  // `bytes` is what a folder sorts by. A running recalculation keeps the last one so the row stays put.
+  const [folderSizes, setFolderSizes] = useState<Record<string, { size: string; bytes?: number; loading: boolean }>>({});
+  const [sort, setSort] = useState<FileSort>({ column: 'name', direction: 'asc' });
 
-  const handleSort = useCallback((col: FileSortColumn) => {
-    setSortCol(prev => {
-      if (prev === col) {
-        setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-      } else {
-        setSortDir('asc');
-      }
-      return col;
-    });
+  const handleSort = useCallback((column: FileSortColumn) => {
+    setSort(prev => nextFileSort(prev, column));
   }, []);
 
   const sortedEntries = useMemo(() => {
     if (!dirListing.data) return [];
-    const entries = [...dirListing.data.entries];
-    const dir = sortDir === 'asc' ? 1 : -1;
-
-    entries.sort((a, b) => {
-      // Directories always come first
-      if (a.type === 'directory' && b.type !== 'directory') return -1;
-      if (a.type !== 'directory' && b.type === 'directory') return 1;
-
-      // Within same type, sort by selected column
-      switch (sortCol) {
-        case 'name':
-          return dir * a.name.toLowerCase().localeCompare(b.name.toLowerCase());
-        case 'size':
-          return dir * (a.size - b.size);
-        case 'modifiedAt': {
-          const aTime = a.modifiedAt ? new Date(a.modifiedAt).getTime() : 0;
-          const bTime = b.modifiedAt ? new Date(b.modifiedAt).getTime() : 0;
-          return dir * (aTime - bTime);
-        }
-        default:
-          return 0;
-      }
-    });
-    return entries;
-  }, [dirListing.data, sortCol, sortDir]);
+    return sortFileEntries(dirListing.data.entries, sort, (name) => folderSizes[joinPath(currentPath, name)]?.bytes);
+  }, [dirListing.data, sort, folderSizes, currentPath]);
 
   const calculateFolderSize = useCallback(async (dirPath: string) => {
-    setFolderSizes(prev => ({ ...prev, [dirPath]: { size: '', loading: true } }));
+    setFolderSizes(prev => ({ ...prev, [dirPath]: { size: '', bytes: prev[dirPath]?.bytes, loading: true } }));
     try {
       const result = await folderSize.mutateAsync(dirPath);
-      setFolderSizes(prev => ({ ...prev, [dirPath]: { size: result.data.sizeFormatted, loading: false } }));
+      setFolderSizes(prev => ({ ...prev, [dirPath]: { size: result.data.sizeFormatted, bytes: result.data.sizeBytes, loading: false } }));
     } catch {
       setFolderSizes(prev => ({ ...prev, [dirPath]: { size: 'Error', loading: false } }));
     }
@@ -750,22 +719,22 @@ export default function Files() {
                     {dirListing.data.entries.length > 0 && selected.size === dirListing.data.entries.length ? <CheckSquare size={14} /> : <Square size={14} />}
                   </button>
                 </th>
-                <th className="px-3 py-3">
-                  <button onClick={() => handleSort('name')} className="inline-flex items-center gap-1 hover:text-gray-700 dark:hover:text-gray-200">
+                <th className="px-3 py-3" aria-sort={ariaSort(sort, 'name')}>
+                  <button onClick={() => handleSort('name')} data-testid="files-sort-name" className="inline-flex items-center gap-1 hover:text-gray-700 dark:hover:text-gray-200">
                     Name
-                    {sortCol === 'name' && <ChevronDown size={14} className={`transition-transform ${sortDir === 'asc' ? 'rotate-180' : ''}`} />}
+                    {sort.column === 'name' && <ChevronDown size={14} className={`transition-transform ${sort.direction === 'asc' ? 'rotate-180' : ''}`} />}
                   </button>
                 </th>
-                <th className="px-3 py-3 w-24">
-                  <button onClick={() => handleSort('size')} className="inline-flex items-center gap-1 hover:text-gray-700 dark:hover:text-gray-200">
+                <th className="px-3 py-3 w-24" aria-sort={ariaSort(sort, 'size')}>
+                  <button onClick={() => handleSort('size')} data-testid="files-sort-size" title="Folders sort by their calculated size. Folders without one sort last." className="inline-flex items-center gap-1 hover:text-gray-700 dark:hover:text-gray-200">
                     Size
-                    {sortCol === 'size' && <ChevronDown size={14} className={`transition-transform ${sortDir === 'asc' ? 'rotate-180' : ''}`} />}
+                    {sort.column === 'size' && <ChevronDown size={14} className={`transition-transform ${sort.direction === 'asc' ? 'rotate-180' : ''}`} />}
                   </button>
                 </th>
-                <th className="px-3 py-3 w-40 hidden sm:table-cell">
-                  <button onClick={() => handleSort('modifiedAt')} className="inline-flex items-center gap-1 hover:text-gray-700 dark:hover:text-gray-200">
+                <th className="px-3 py-3 w-40 hidden sm:table-cell" aria-sort={ariaSort(sort, 'modifiedAt')}>
+                  <button onClick={() => handleSort('modifiedAt')} data-testid="files-sort-modifiedAt" className="inline-flex items-center gap-1 hover:text-gray-700 dark:hover:text-gray-200">
                     Modified
-                    {sortCol === 'modifiedAt' && <ChevronDown size={14} className={`transition-transform ${sortDir === 'asc' ? 'rotate-180' : ''}`} />}
+                    {sort.column === 'modifiedAt' && <ChevronDown size={14} className={`transition-transform ${sort.direction === 'asc' ? 'rotate-180' : ''}`} />}
                   </button>
                 </th>
                 <th className="px-3 py-3 w-28 hidden md:table-cell">Permissions</th>

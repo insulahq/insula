@@ -12,6 +12,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **The tenant file manager sorts folders by the size it shows.** Sorting by Size ordered
+  folders by their directory entry, which grows with the number of files in a folder, not with
+  what the folder holds, and which the Size column never shows. A folder of a few hundred empty
+  files sorted above one holding gigabytes.
+  - A folder now sorts by the size calculated for it. Folders without a calculated size sort
+    last, in either direction, and keep their name order.
+  - Rows with the same size or the same time, such as the files of an extracted archive, keep
+    their name order, and a row without a date sorts last.
+  - The sort headers tell screen readers which column sorts and in which direction.
+
 ## [2026.11.6] - 2026-11-06
 
 ### Added

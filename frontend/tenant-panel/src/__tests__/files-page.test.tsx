@@ -1,8 +1,9 @@
+import { StrictMode } from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Files from '../pages/Files';
 import { ApiError } from '../lib/api-client';
 
@@ -42,8 +43,10 @@ interface FmStatusMock {
   refetch?: () => void;
 }
 const mockFmStatus = vi.fn((): FmStatusMock => ({ data: fmStatusData, isLoading: false, error: null }));
+// Rows as the listing sends them; `modifiedAt` is null when stat failed.
+type ListingRow = Omit<(typeof dirEntries)[number], 'modifiedAt'> & { modifiedAt: string | null };
 const mockDirListing = vi.fn(() => ({
-  data: { path: '/', entries: dirEntries },
+  data: { path: '/', entries: dirEntries as readonly ListingRow[] },
   isLoading: false,
   error: null,
   refetch: vi.fn(),
@@ -53,6 +56,9 @@ const mockDirListing = vi.fn(() => ({
 const mockDeleteMutate = vi.fn((_vars: unknown, opts?: { onSuccess?: (r: unknown) => void }) => {
   opts?.onSuccess?.({ data: { deleted: true, trashed: true, trashEntry: { id: 'trash-entry-1' } } });
 });
+
+const defaultFolderSize = { data: { path: '/', sizeBytes: 1024, sizeFormatted: '1.0 KB' } };
+const mockFolderSizeAsync = vi.fn((_path: string) => Promise.resolve(defaultFolderSize));
 
 const mockFileContent = vi.fn(() => ({
   data: { path: '/index.html', content: '<h1>Hello</h1>', size: 14, modifiedAt: '2026-01-01T00:00:00Z' },
@@ -86,7 +92,7 @@ vi.mock('../hooks/use-file-manager', async (importOriginal) => {
     useGitClone: () => ({ mutate: mockMutate, isPending: false }),
     useAuthenticatedBlobUrl: () => ({ data: 'blob:http://localhost/test-blob', isLoading: false, error: null }),
     useDiskUsage: () => ({ data: { data: { usedBytes: 1048576, totalBytes: 10737418240, availableBytes: 10736369664, usedFormatted: '1.0 MB', totalFormatted: '10.0 GB', availableFormatted: '10.0 GB' } }, isLoading: false }),
-    useFolderSize: () => ({ mutateAsync: vi.fn().mockResolvedValue({ data: { path: '/', sizeBytes: 1024, sizeFormatted: '1.0 KB' } }), isPending: false }),
+    useFolderSize: () => ({ mutateAsync: mockFolderSizeAsync, isPending: false }),
     useChmod: () => ({ mutate: mockMutate, mutateAsync: mockMutateAsync, isPending: false }),
   };
 });
@@ -580,5 +586,82 @@ describe('Recycle-bin affordances', () => {
     expect(bar).toHaveTextContent(/Permanently deleted/);
     expect(screen.queryByTestId('undo-delete')).not.toBeInTheDocument();
     expect(bar).toHaveTextContent(/cannot be undone/i);
+  });
+});
+
+describe('Sorting', () => {
+  // Listed folder sizes are directory inodes: `vendor` has many entries, so its
+  // inode is the largest, while `media` holds by far the most bytes.
+  const sortEntries = [
+    { name: 'media', type: 'directory' as const, size: 4096, modifiedAt: '2025-02-01T00:00:00Z', permissions: '755', uid: 1000, gid: 1000 },
+    { name: 'vendor', type: 'directory' as const, size: 36864, modifiedAt: '2026-10-01T00:00:00Z', permissions: '755', uid: 1000, gid: 1000 },
+    { name: 'logs', type: 'directory' as const, size: 12288, modifiedAt: '2024-05-01T00:00:00Z', permissions: '755', uid: 1000, gid: 1000 },
+    { name: 'small.txt', type: 'file' as const, size: 10, modifiedAt: '2026-11-05T00:00:00Z', permissions: '644', uid: 1000, gid: 1000 },
+    { name: 'large.zip', type: 'file' as const, size: 9_000_000, modifiedAt: '2023-01-01T00:00:00Z', permissions: '644', uid: 1000, gid: 1000 },
+    { name: 'mid.css', type: 'file' as const, size: 4000, modifiedAt: '2025-08-01T00:00:00Z', permissions: '644', uid: 1000, gid: 1000 },
+    // stat failed: the listing sends 0 bytes and no date.
+    { name: 'broken-link', type: 'file' as const, size: 0, modifiedAt: null, permissions: '000', uid: 0, gid: 0 },
+  ];
+  const bytesByPath: Record<string, number> = { '/media': 8_000_000_000, '/vendor': 50_000_000, '/logs': 2_000 };
+
+  const rowNames = (): string[] =>
+    Array.from(document.querySelectorAll('tbody tr')).map((tr) => tr.querySelectorAll('td')[1]?.textContent?.trim() ?? '');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFmStatus.mockReturnValue({ data: fmStatusData, isLoading: false, error: null });
+    mockDirListing.mockReturnValue({ data: { path: '/', entries: sortEntries }, isLoading: false, error: null, refetch: vi.fn() });
+    mockFolderSizeAsync.mockImplementation((path: string) =>
+      Promise.resolve({ data: { path, sizeBytes: bytesByPath[path] ?? 0, sizeFormatted: `${bytesByPath[path] ?? 0} B` } }));
+  });
+
+  afterEach(() => {
+    mockFolderSizeAsync.mockImplementation(() => Promise.resolve(defaultFolderSize));
+  });
+
+  it('sorts files by size both ways and leaves folders by name until their size is calculated', () => {
+    renderFiles();
+    fireEvent.click(screen.getByTestId('files-sort-size'));
+    expect(rowNames()).toEqual(['logs', 'media', 'vendor', 'broken-link', 'small.txt', 'mid.css', 'large.zip']);
+    expect(screen.getByTestId('files-sort-size').closest('th')).toHaveAttribute('aria-sort', 'ascending');
+    fireEvent.click(screen.getByTestId('files-sort-size'));
+    expect(rowNames()).toEqual(['logs', 'media', 'vendor', 'large.zip', 'mid.css', 'small.txt', 'broken-link']);
+    expect(screen.getByTestId('files-sort-size').closest('th')).toHaveAttribute('aria-sort', 'descending');
+  });
+
+  it('sorts folders by the size calculated for them', async () => {
+    renderFiles();
+    for (const button of screen.getAllByTitle('Calculate folder size')) fireEvent.click(button);
+    await waitFor(() => expect(screen.getByText('8000000000 B')).toBeInTheDocument());
+    expect(mockFolderSizeAsync.mock.calls.map(([p]) => p).sort()).toEqual(['/logs', '/media', '/vendor']);
+
+    fireEvent.click(screen.getByTestId('files-sort-size'));
+    expect(rowNames().slice(0, 3)).toEqual(['logs', 'vendor', 'media']);
+    fireEvent.click(screen.getByTestId('files-sort-size'));
+    expect(rowNames().slice(0, 3)).toEqual(['media', 'vendor', 'logs']);
+  });
+
+  it('sorts by modified date both ways, folders first, a row without a date last', () => {
+    renderFiles();
+    fireEvent.click(screen.getByTestId('files-sort-modifiedAt'));
+    expect(rowNames()).toEqual(['logs', 'media', 'vendor', 'large.zip', 'mid.css', 'small.txt', 'broken-link']);
+    fireEvent.click(screen.getByTestId('files-sort-modifiedAt'));
+    expect(rowNames()).toEqual(['vendor', 'media', 'logs', 'small.txt', 'mid.css', 'large.zip', 'broken-link']);
+  });
+
+  it('reverses on the second click under StrictMode, which runs state updaters twice', () => {
+    render(
+      <StrictMode>
+        <QueryClientProvider client={createTestQueryClient()}>
+          <MemoryRouter><Files /></MemoryRouter>
+        </QueryClientProvider>
+      </StrictMode>,
+    );
+    const header = () => screen.getByTestId('files-sort-size').closest('th');
+    fireEvent.click(screen.getByTestId('files-sort-size'));
+    expect(header()).toHaveAttribute('aria-sort', 'ascending');
+    fireEvent.click(screen.getByTestId('files-sort-size'));
+    expect(header()).toHaveAttribute('aria-sort', 'descending');
+    expect(rowNames().slice(3)).toEqual(['large.zip', 'mid.css', 'small.txt', 'broken-link']);
   });
 });
