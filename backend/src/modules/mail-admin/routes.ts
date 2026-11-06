@@ -36,6 +36,7 @@ import { readStalwartMasterUser, MASTER_SENTINEL_DOMAIN } from './stalwart-maste
 import { getMailPvcStorage } from './mail-pvc.js';
 import { getMailNodeStorage } from './mail-node-storage.js';
 import { mailCapacityReader } from './health-capacity.js';
+import { mailOutboundReader } from './health-outbound.js';
 import { withMailTaskLiveness } from './task-liveness.js';
 import {
   startMailArchive,
@@ -212,8 +213,9 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       const capacity = mailCapacityReader({
         k8s, db: app.db, kubeconfigPath, log: { warn: (...args: unknown[]) => app.log.warn(args.join(' ')) },
       });
+      const outbound = mailOutboundReader({ k8s, db: app.db, kubeconfigPath });
       const result = await getMailHealth(
-        { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, endpoints, endpointsError, capacity },
+        { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, endpoints, endpointsError, capacity, outbound },
         { refresh },
       );
       return success(result);

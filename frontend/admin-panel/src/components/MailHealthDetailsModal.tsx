@@ -46,6 +46,7 @@ import NodeName from '@/components/nodes/NodeName';
 import { useNodeLabel, useNodeText } from '@/hooks/use-node-labels';
 import { formatVolumeBytes } from '@/lib/format-bytes';
 import SortableHeader from '@/components/ui/SortableHeader';
+import OutboundMailPorts from '@/components/nodes/OutboundMailPorts';
 import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 import type {
   DeliverabilityProbeSeverity,
@@ -53,6 +54,7 @@ import type {
   MailHealthCertComponent,
   MailHealthDeliverabilityComponent,
   MailHealthExposureComponent,
+  MailHealthOutboundComponent,
   MailHealthStandbyComponent,
   MailHealthStorageComponent,
   MailHealthJmapComponent,
@@ -165,6 +167,10 @@ function DetailsContent({ r }: { readonly r: MailHealthResponse }) {
       <Section title="Capacity" icon={<HardDrive size={14} />}>
         <StandbyCard data={r.components.standby} />
         <StorageCard data={r.components.storage} />
+      </Section>
+
+      <Section title="Outbound delivery" icon={<Network size={14} />}>
+        <OutboundCard data={r.components.outbound} />
       </Section>
 
       {r.endpoints && (
@@ -481,6 +487,69 @@ function StorageCard({ data }: { readonly data: MailHealthStorageComponent | und
         : 'Free disk space on that node or grow its disk. The mail store periodically rewrites its message files '
           + 'and holds the old and new files until it finishes, so for a while it needs about twice its size.'}
     />
+  );
+}
+
+const OUTBOUND_ROLE: Record<MailHealthOutboundComponent['nodes'][number]['role'], string> = {
+  primary: 'primary',
+  secondary: 'secondary',
+  tertiary: 'tertiary',
+  active: 'active',
+};
+
+/**
+ * Outbound port 25 from every mail placement node, with all three mail ports
+ * per node as pills (hover = what each target answered). A provider can block
+ * the port on a node where nothing on the node shows it.
+ */
+function OutboundCard({ data }: { readonly data: MailHealthOutboundComponent | undefined }) {
+  const nodeLabel = useNodeLabel();
+  const nodeText = useNodeText();
+  const assertion = 'Every mail node — primary, secondary, tertiary — can open outbound TCP 25 to other mail servers';
+  if (!data || data.status === 'not_implemented') {
+    return (
+      <div data-testid="mail-health-outbound">
+        <ProbeCard
+          title="Outbound mail ports"
+          severity="skipped"
+          assertion={assertion}
+          actual={data ? 'no mail node has reported an outbound check yet (the security-probe checks every 15 min)' : 'not reported by this backend'}
+          expected={null}
+          error={null}
+          remediation={null}
+        />
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2" data-testid="mail-health-outbound">
+      <ProbeCard
+        title="Outbound mail ports"
+        severity={severityFromHealthy(data.healthy)}
+        assertion={assertion}
+        actual={data.nodes.map((n) => `${nodeLabel(n.node)} (${OUTBOUND_ROLE[n.role]}${n.active ? ', mail server here' : ''}): `
+          + `${data.deliveryPort} ${n.delivery === 'unknown' ? (n.checkedAt === null ? 'not checked' : n.stale ? 'stale' : 'unknown') : n.delivery}`).join(' • ')}
+        expected={`port ${data.deliveryPort} open on every mail node`}
+        error={data.error === null ? null : nodeText(data.error)}
+        remediation={data.healthy
+          ? null
+          : 'Nothing on the node blocks the port — its hosting provider drops it (some do on a new server until asked). '
+            + 'Ask the provider to unblock outbound TCP 25, 465 and 587 for that server; the check reruns every 15 minutes.'}
+      />
+      <ul className="space-y-1 pl-1 text-xs">
+        {data.nodes.map((n) => (
+          <li key={n.node} className="flex flex-wrap items-center gap-2" data-testid={`mail-outbound-node-${n.node}`}>
+            <span className="font-mono text-gray-700 dark:text-gray-300"><NodeName name={n.node} /></span>
+            <span className="text-gray-500 dark:text-gray-400">{OUTBOUND_ROLE[n.role]}{n.active ? ' · mail server here' : ''}</span>
+            {n.ports.length > 0 ? (
+              <OutboundMailPorts ports={n.ports} stale={n.stale} testId={`mail-outbound-${n.node}`} />
+            ) : (
+              <span className="text-gray-400">not checked yet</span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

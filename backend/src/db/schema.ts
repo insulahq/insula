@@ -118,8 +118,8 @@ export const notificationTypeEnum = pgEnum('notification_type', ['info', 'warnin
 // original PR but renamed to avoid the prefix collision.)
 export const storageTypeEnum = pgEnum('storage_type', ['ssh', 's3', 'cifs']);
 export const metricTypeEnum = pgEnum('metric_type', ['cpu_cores', 'memory_gb', 'storage_gb', 'bandwidth_gb']);
-/** Phase 2 rollup resolution: hourly rows kept 30d, folded to daily kept 1y. */
-export const usageResolutionEnum = pgEnum('usage_resolution', ['hourly', 'daily']);
+/** Rollup resolution: hourly rows kept 30d, folded to daily kept 1y, folded to monthly kept 5y. */
+export const usageResolutionEnum = pgEnum('usage_resolution', ['hourly', 'daily', 'monthly']);
 export const cronJobTypeEnum = pgEnum('cron_job_type', ['webcron', 'deployment']);
 export const httpMethodEnum = pgEnum('http_method', ['GET', 'POST', 'PUT']);
 export const lastRunStatusEnum = pgEnum('last_run_status', ['success', 'failed', 'running']);
@@ -1072,6 +1072,71 @@ export const usageMetrics = pgTable('usage_metrics', {
   uniqueIndex('usage_metrics_bucket_uniq').on(
     table.tenantId, table.metricType, table.resolution, table.measurementTimestamp,
   ),
+]);
+
+// ─── Traffic rollup (migration 0176) ───
+//
+// Every traffic graph's series, kept in the platform database: hourly for 30
+// days, then one row per UTC day for a year, then one per UTC month for five.
+// The metrics store keeps 30 days and is not backed up, so this is what a
+// chart reaching further back reads — and what survives losing it.
+
+/** One series a traffic graph draws: a measurement, in one direction, for one subject. */
+export const trafficRollupSeries = pgTable('traffic_rollup_series', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  scope: varchar('scope', { length: 16 }).notNull(),
+  metric: varchar('metric', { length: 16 }).notNull(),
+  /** Unique within (scope, metric): `<direction>:<subject>`, a pod's `<direction>:<namespace>/<app>`, or the cluster row's own key. */
+  seriesKey: varchar('series_key', { length: 512 }).notNull(),
+  direction: varchar('direction', { length: 3 }).notNull(),
+  /** The bare subject: a node, a tenant namespace, a Traefik service, a pod's application. Null on cluster rows. */
+  subject: varchar('subject', { length: 512 }),
+  /** The tenant namespace a pod series belongs to. */
+  namespace: varchar('namespace', { length: 63 }),
+  /** What the panel sends back to select this series again (a pod's name, otherwise the subject). */
+  ref: varchar('ref', { length: 512 }),
+  name: varchar('name', { length: 512 }).notNull(),
+  kind: varchar('kind', { length: 16 }).notNull(),
+  grp: varchar('grp', { length: 16 }),
+  lastSeenAt: timestamp('last_seen_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('traffic_rollup_series_uniq').on(table.scope, table.metric, table.seriesKey),
+]);
+
+/**
+ * A series' value over one bucket: bytes or requests moved in it, or for
+ * latency the mean in milliseconds with `weight` = the requests it averages.
+ * No row in a measured bucket means nothing moved.
+ */
+export const trafficRollup = pgTable('traffic_rollup', {
+  seriesId: bigint('series_id', { mode: 'number' }).notNull()
+    .references(() => trafficRollupSeries.id, { onDelete: 'cascade' }),
+  resolution: usageResolutionEnum().notNull(),
+  bucket: timestamp('bucket').notNull(),
+  value: doublePrecision('value').notNull(),
+  weight: doublePrecision('weight'),
+}, (table) => [
+  primaryKey({ columns: [table.seriesId, table.resolution, table.bucket] }),
+  // A chart reads a series' buckets in a time range across every resolution.
+  index('traffic_rollup_series_bucket_idx').on(table.seriesId, table.bucket),
+  index('traffic_rollup_bucket_idx').on(table.resolution, table.bucket),
+]);
+
+/**
+ * Buckets the collector measured, per view and direction (and per tenant, for
+ * pod views). A bucket missing here was never measured — a gap, not a zero —
+ * even when other views were measured in it.
+ */
+export const trafficRollupCoverage = pgTable('traffic_rollup_coverage', {
+  scope: varchar('scope', { length: 16 }).notNull(),
+  metric: varchar('metric', { length: 16 }).notNull(),
+  direction: varchar('direction', { length: 3 }).notNull(),
+  /** A pod view's tenant namespace; '' for every other view. */
+  namespace: varchar('namespace', { length: 63 }).notNull().default(''),
+  resolution: usageResolutionEnum().notNull(),
+  bucket: timestamp('bucket').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.scope, table.metric, table.direction, table.namespace, table.resolution, table.bucket] }),
 ]);
 
 
@@ -4538,6 +4603,9 @@ export const nodeHealthState = pgTable('node_health_state', {
   // When the node left Ready for the outage in progress; NULL while Ready. The
   // startup notice's downtime starts here. Migration 0161.
   downSince: timestamp('down_since', { withTimezone: true }),
+  // Outbound TCP 25/465/587 as the node's security-probe measured them, judged
+  // (NodeOutboundMail in api-contracts). NULL = no check reported. Migration 0175.
+  outboundMail: jsonb('outbound_mail').$type<import('@insula/api-contracts').NodeOutboundMail>(),
 });
 
 export type NodeHealthState = typeof nodeHealthState.$inferSelect;

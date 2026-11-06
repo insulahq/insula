@@ -46,6 +46,20 @@ Two **Capacity** checks sit in the same modal and raise an admin alert when they
   data. The mail store periodically rewrites its message files and holds the old and
   new files until it finishes.
 
+An **Outbound delivery** check sits below them and alerts when it fails:
+
+- **Outbound mail ports.** Every node mail placement names — primary, secondary,
+  tertiary — must be able to open outbound TCP 25, the port the mail server delivers to
+  other mail servers on. Some hosting providers block outbound mail ports on a server
+  (often a newly ordered one), and nothing on the server shows it: the traffic leaves
+  and is dropped upstream. Each node checks every 15 minutes by opening a connection to
+  public mail servers (no mail is sent). A blocked node where the mail server runs means
+  outbound mail is queued, not delivered; a blocked secondary or tertiary means mail would
+  stop going out the moment a failover put the server there — the check fails for both,
+  and says which. Hover a port to see what each target answered, which is what to send
+  the provider when you ask them to unblock it. 465 and 587 are shown too; Node health
+  judges those, since apps on every node need them.
+
 ## Domains & Relays
 
 **Email → Domains & Relays** is the daily-driver page. It has two tabs.

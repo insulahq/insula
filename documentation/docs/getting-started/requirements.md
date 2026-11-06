@@ -152,6 +152,14 @@ If you'll run email, the mail server also needs the standard mail ports open
 providers outbound port 25 is blocked by default and must be unblocked or
 routed via a relay — see the mail operations guide.
 
+Every server should also be able to open **outbound** TCP 25, 465 and 587. Apps
+on a server send their mail on 465/587, and the mail server delivers on 25 from
+whichever server it runs on. Some providers block these outbound on a new
+server; nothing on the server shows it, and every send just times out. The
+installer's preflight checks them and warns when one is blocked (it does not
+stop the install), and **Monitoring → Node Health** keeps checking every 15
+minutes afterwards.
+
 !!! warning "Control-plane ports are never world-open"
     Insula's firewall scopes the cluster control-plane ports to known peers and
     operator-trusted source ranges. Seed your workstation/LAN with

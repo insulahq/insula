@@ -24,7 +24,7 @@ import type { Database } from '../../db/index.js';
 import { runExclusive } from '../../shared/exclusive-run.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { nodeHealthState, notifications, users } from '../../db/schema.js';
+import { nodeHealthState, notifications, systemSettings, users } from '../../db/schema.js';
 import {
   notifyAdminNodeDown,
   notifyAdminNodeShuttingDown,
@@ -43,6 +43,16 @@ import { nodeDownDedupeKey } from './fast-down-watch.js';
 import { backOnlinePayload, claimOutageEnd, endedOnSameBoot, nodeBackDedupeKey, type SameBootReturn } from './back-online.js';
 import { recordMemoryEvents } from './memory-events.js';
 import { readOomWitnesses } from './oom-witness.js';
+import {
+  blockedPortImpact,
+  blockedRequiredPorts,
+  judgeOutboundMail,
+  mailNodeNames,
+  probeFromStored,
+  readOutboundMailProbes,
+  requiredOutboundPorts,
+  storedRequiresDelivery,
+} from './outbound-mail.js';
 import { readNodeDiskStats } from './kubelet-disk.js';
 import { describeSuppression, loadJoinGrace } from './join-grace.js';
 import { outageHoldIndex } from './outage-hold.js';
@@ -54,9 +64,11 @@ import {
   overallSeverity,
   type NodeFacts,
 } from './service.js';
-import type {
-  NodeHealthEntry,
-  NodeHealthSeverity,
+import {
+  nodeOutboundMailSchema,
+  type NodeHealthEntry,
+  type NodeHealthSeverity,
+  type NodeOutboundMail,
 } from '@insula/api-contracts';
 
 const TICK_MS = 5 * 60 * 1000;
@@ -167,7 +179,29 @@ export async function reconcileNodeHealth(
   const nodeNames = (nodeList.items ?? [])
     .map((n) => n.metadata?.name)
     .filter((name): name is string => Boolean(name));
-  const diskPctByNode = await readNodeDiskStats(nodeNames);
+  // Outbound mail ports (outbound-mail.ts): the probes' results, and which
+  // nodes are mail nodes — port 25 is required only there. A read that fails
+  // keeps each node's last verdict (re-judged, so it still goes stale on
+  // schedule): treating the nodes as unchecked would clear a warning for one
+  // tick, announcing "recovered" and then warning again.
+  let outboundUnreadable = false;
+  const [diskPctByNode, liveOutbound, mailNodes] = await Promise.all([
+    readNodeDiskStats(nodeNames),
+    readOutboundMailProbes(k8s, (message) => {
+      outboundUnreadable = true;
+      console.warn(`[node-health-monitor] outbound mail checks unreadable — keeping each node's last result: ${message}`);
+    }),
+    readMailNodes(db),
+  ]);
+  const storedOutbound = outboundUnreadable || mailNodes === null
+    ? await readStoredOutboundMail(db)
+    : new Map<string, NodeOutboundMail>();
+  const outboundProbe = (name: string) => (outboundUnreadable
+    ? probeFromStored(storedOutbound.get(name))
+    : liveOutbound.get(name));
+  const isMailNode = (name: string) => (mailNodes
+    ? mailNodes.has(name)
+    : storedRequiresDelivery(storedOutbound.get(name)));
 
   const facts: NodeFacts[] = [];
   const bootFacts: BootFacts[] = [];
@@ -201,6 +235,10 @@ export async function reconcileNodeHealth(
       csiDrivers: csiByNode.get(name) ?? [],
       evictionsLastHour: evictionsByNode.get(name) ?? 0,
       diskUsedPct: diskPctByNode.get(name) ?? null,
+      outboundMail: judgeOutboundMail(outboundProbe(name), {
+        required: requiredOutboundPorts(isMailNode(name)),
+        now,
+      }),
     });
   }
 
@@ -325,6 +363,7 @@ export async function reconcileNodeHealth(
         csiDriversMissing: [...entry.csiDriversMissing],
         evictionsLastHour: entry.evictionsLastHour,
         diskUsedPct: entry.diskUsedPct === null ? null : entry.diskUsedPct.toString(),
+        outboundMail: entry.outboundMail ?? null,
         severity: entry.severity,
         lastNotifiedAt: notifiedAt,
         observedAt: now,
@@ -349,6 +388,7 @@ export async function reconcileNodeHealth(
           csiDriversMissing: [...entry.csiDriversMissing],
           evictionsLastHour: entry.evictionsLastHour,
           diskUsedPct: entry.diskUsedPct === null ? null : entry.diskUsedPct.toString(),
+          outboundMail: entry.outboundMail ?? null,
           severity: entry.severity,
           lastNotifiedAt: notifiedAt,
           observedAt: now,
@@ -458,6 +498,37 @@ export async function reconcileNodeHealth(
   return { entries, notified };
 }
 
+/** Mail placement's nodes; null on a read failure (each node then keeps its last port-25 rule). */
+async function readMailNodes(db: Database): Promise<Set<string> | null> {
+  try {
+    const [row] = await db.select({
+      mailPrimaryNode: systemSettings.mailPrimaryNode,
+      mailSecondaryNode: systemSettings.mailSecondaryNode,
+      mailTertiaryNode: systemSettings.mailTertiaryNode,
+    }).from(systemSettings).limit(1);
+    return mailNodeNames(row);
+  } catch (err) {
+    console.warn(`[node-health-monitor] mail placement unreadable — keeping each node's last port-25 rule: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+/** Each node's stored outbound mail verdict; empty on a read failure. */
+async function readStoredOutboundMail(db: Database): Promise<Map<string, NodeOutboundMail>> {
+  try {
+    const rows = await db.select({ nodeName: nodeHealthState.nodeName, outboundMail: nodeHealthState.outboundMail })
+      .from(nodeHealthState);
+    const out = new Map<string, NodeOutboundMail>();
+    for (const r of rows) {
+      const stored = storedOutboundMail(r.outboundMail);
+      if (stored) out.set(r.nodeName, stored);
+    }
+    return out;
+  } catch {
+    return new Map();
+  }
+}
+
 async function getAdminUserIds(db: Database): Promise<string[]> {
   const rows = await db.select({ id: users.id })
     .from(users)
@@ -521,7 +592,9 @@ async function fanoutNotification(
       severityLabel: entry.severity,
       recommendedAction: entry.severity === 'critical'
         ? 'Check the node in Cluster → Nodes.'
-        : '',
+        : blockedRequiredPorts(entry.outboundMail).length > 0
+          ? 'Ask the node\'s hosting provider to unblock outbound TCP 25, 465 and 587 — nothing on the node blocks them.'
+          : '',
     }, `node-health:${entry.name}:${entry.severity}:${new Date().toISOString().slice(0, 13)}`)
       .catch((err) => console.error('[node-health-monitor] notification dispatch failed:', (err as Error).message));
   }
@@ -552,6 +625,9 @@ export function conditionsFor(entry: NodeHealthEntry): string[] {
   for (const d of entry.csiDriversMissing) items.push(`CSI driver missing: ${d}`);
   if (entry.evictionsLastHour > 0) items.push(`${entry.evictionsLastHour} pod eviction(s) in the last hour`);
   if (entry.diskUsedPct !== null) items.push(`Disk ${entry.diskUsedPct.toFixed(0)}% used`);
+  for (const port of blockedRequiredPorts(entry.outboundMail)) {
+    items.push(`Outbound port ${port} blocked — ${blockedPortImpact(port)}`);
+  }
   return items;
 }
 
@@ -588,6 +664,7 @@ export async function readNodeHealthSummary(db: Database): Promise<{
     csiDriversMissing: [...(r.csiDriversMissing as string[])],
     evictionsLastHour: r.evictionsLastHour,
     diskUsedPct: r.diskUsedPct === null ? null : Number(r.diskUsedPct),
+    outboundMail: storedOutboundMail(r.outboundMail),
     severity: r.severity as NodeHealthSeverity,
     observedAt: r.observedAt.toISOString(),
   }));
@@ -609,6 +686,13 @@ export async function readNodeHealthSummary(db: Database): Promise<{
     overallSeverity: overallSeverity(entries),
     lastTickAt,
   };
+}
+
+/** A stored outbound mail result, or null when absent or not in the current shape. */
+function storedOutboundMail(raw: unknown): NodeOutboundMail | null {
+  if (raw === null || raw === undefined) return null;
+  const parsed = nodeOutboundMailSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
 }
 
 export function startNodeHealthScheduler(

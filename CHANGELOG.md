@@ -12,6 +12,134 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **Outbound mail ports are checked on every node: at install, in node health and in mail
+  health.** A hosting provider can block outbound TCP 25, 465 and 587 on a server. The host's
+  firewall lets the traffic out and the provider drops it, so nothing on the node shows it, and
+  every send from the node times out. On production a tenant's CRM failed every notification
+  with "Unable to connect to ssl://mail.<apex>:465 (Connection timed out)" for days after the
+  tenant was moved to such a node.
+  - The security-probe on each node opens a TCP connection every 15 minutes, from the node's own
+    network, to public mail servers on 25, 465 and 587. Each connection is closed at once and
+    nothing is sent. A port is open when any target accepts, blocked when the targets resolve
+    but none accept, and unknown when no target resolves. The result goes into the probe's
+    ConfigMap at `data.outboundMail`.
+  - **Node health** gets a *Mail ports out* column and raises a warning when a port the node
+    needs is blocked:
+    - 465 and 587 on every node, because apps on the node send their mail on them;
+    - 25 only on a mail placement node (primary, secondary or tertiary), because only the
+      mail server delivers on it.
+
+    The notification names the port and what it breaks, and asks for the provider to unblock it.
+    A result older than three checks is shown, not judged. If a tick cannot read the checks,
+    each node keeps its last verdict, so a warned node is not announced as recovered and then
+    warned again. It is stored in `node_health_state.outbound_mail` (migration 0175).
+  - **Mail health** gets an *Outbound delivery* component, which fails when any mail placement
+    node cannot open port 25.
+    - The node the mail server runs on means outbound mail is queued, not delivered.
+    - A secondary or tertiary means mail would stop going out once a failover puts the server
+      there.
+
+    The alert lists each blocked node with what its targets answered.
+  - **Bootstrap**'s preflight makes the same check against the same targets before anything is
+    installed. A blocked port is a warning, not a failure, and it says what the port breaks.
+    `outboundmail_test.go` and `scripts/test-bootstrap-outbound-mail.sh` keep the two target
+    lists equal.
+- **Every traffic graph keeps its history in the platform database, for up to five years.**
+  - **Before:** only a tenant's billed egress had any history past the metrics store's 30
+    days. The cluster, node, route and pod views, and requests and latency on any view, showed
+    the last 30 days with a notice. The metrics store runs as one pod and is not backed up, so
+    losing it would also have lost a month of every one of those graphs.
+  - **The collector:** it runs every 10 minutes on one replica (a scheduler lease). It writes
+    each view's full breakdown, hourly, into `traffic_rollup` (migration 0176): the cluster
+    rows, every node, route and tenant pod in both directions, and requests and latency for the
+    cluster, nodes, tenants and routes. Latency is weighted by the requests behind it. A
+    tenant's own traffic is not collected again: past 30 days it is still the meter's billed
+    egress.
+  - **Catching up:** the collector works from a watermark, two days per pass, so its first runs
+    fill in the 30 days the metrics store still holds (a few hours), and an outage is caught up
+    rather than skipped. Each view is measured on its own: one view that cannot be read leaves
+    a gap in that view for that span and nothing else, and only a store that answers nothing at
+    all holds the watermark back. An hour nobody measured stays a gap instead of becoming a
+    zero.
+  - **Folding:** the daily usage reaper folds hours older than 30 days into days, days older
+    than a year into months, and drops months older than five years. It now runs on one replica
+    under a lease; three replicas folding at once could deadlock and lose the day's fold. Past
+    30 days a chart is drawn from this, one point per UTC day within a year and one per UTC
+    month beyond, under the same names and keys as the live view. On a tenant's own route view
+    the rows are confined to its routes even when one route is asked for by name.
+  - Only a backup split outside the cluster view is not kept; asked for further back, it is
+    served short with its notice, as before.
+
+### Security
+
+- **Traefik v3.7.16 → v3.7.17 (chart 42.1.3 → 42.3.0), for GHSA-xv5x-242w-7hf7 (high).** Since
+  v3.7.14, a request carrying an `Authorization: NTLM …` or `Negotiate …` header got its own
+  backend transport, with no valid credential and no challenge from the backend. The transport
+  was never freed when the connection closed. Any unauthenticated client could open short
+  connections until Traefik ran out of memory, file descriptors and backend connections, on
+  every route, whether or not an NTLM or Kerberos backend exists.
+  - Traefik v3.7.17 is past its 7-day soak. Chart 42.3.0, the first to ship it, is still in its
+    soak, so it is taken early for the fix. Chart 42.2.0, which is out of its soak, still ships
+    v3.7.16.
+  - What else the two charts change, none of which reaches this platform:
+    - Hub-only features;
+    - two optional values, which stay unset;
+    - an `app.kubernetes.io/version` label on resource metadata. It is not on selectors, so the
+      DaemonSet's selector is unchanged.
+  - v3.7.17 is built with Go 1.27:
+    - a request with more than 500 header values is answered 431 before routing;
+    - the `GODEBUG` TLS switches Go removed are not set here;
+    - the renamed generated routers are the ingress-nginx provider's, which is not enabled.
+
+    The WAF plugin's interpreter is unchanged (yaegi v0.16.1).
+  - Existing clusters move with host-migration 2026.11.6/0001. It works as 2026.10.17/0001 did:
+    - it keeps the release's own values and the reconciler's trusted proxies;
+    - it rolls the DaemonSet node by node;
+    - it rolls back if a pod cannot load its plugins.
+
+    On a 3-server cluster it took 46 s. Each node refused new connections for about 5 s, one
+    node at a time, and the first request to a new pod could get a 404 before its routes loaded.
+
+### Changed
+
+- **Bulwark webmail 1.18.0 → 1.19.0.** It fixes no advisory.
+  - Webmail users get an Accessibility page in Settings, Undo for most mail actions, a Files
+    trash and printing.
+  - A usability pass makes dialogs, menus and wording consistent across Mail, Calendar,
+    Contacts and Files.
+  - Text size is now a share of the browser's text size instead of a fixed pixel size.
+  - Bulwark's own admin gains an Organisation area: signatures, disclaimers, session limits and
+    settings locked per domain or group.
+  - The Contacts, Calendar and Files switches still hide those apps: their navigation links are
+    unchanged.
+  - 1.19.1 and 1.20.0 follow when their soaks end.
+
+- **Rollups older than a year fold into months instead of being deleted.** This covers a
+  tenant's billed traffic, CPU, memory and storage in `usage_metrics`, and the new traffic
+  rollup. They are kept for five years.
+  - The traffic API accepts ranges up to five years, up from 400 days.
+  - The range picker marks a range starting more than a year back as **monthly rollup**.
+  - The picker now decides "daily" or "monthly" by how far back a range starts, as the server
+    does, not by how long it is.
+
+### Fixed
+
+- **A tenant's traffic over 30 days, 90 days or a year is complete again.** Ranges reaching past
+  the metrics store's 30 days are answered from the bandwidth meter's rollup. The rollup keeps
+  the newest 30 days as hourly rows and folds each older day into one daily row, and the chart
+  read only the daily rows. "Last 30 days" came back empty, and 90 days and a year stopped a
+  month short. Both panels were affected: the tenant panel and the admin panel's tenant view.
+  - The hourly rows are now summed into their UTC day, beside the folded days.
+  - The meter writes no row for an hour without traffic, so on a day the meter ran, a tenant
+    with no row is drawn as zero instead of as a gap. Days nobody was measured still draw as a
+    gap, and so do days before the tenant existed.
+  - "Last 30 days" is answered from the metrics store again, at full detail and in both
+    directions, as the range picker says. The browser computes the preset a moment before the
+    server checks it, so it always landed just past the edge and was served from the rollup.
+    A range may now start up to an hour past the edge.
+
 ## [2026.11.5] - 2026-11-03
 
 ### Fixed

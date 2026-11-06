@@ -34,6 +34,9 @@
  *              failover to start from (health-capacity.ts).
  *   storage  — every mail node has free space ≥ its mail data, the headroom
  *              the store's periodic file rewrites need (health-capacity.ts).
+ *   outbound — every mail placement node can open outbound TCP 25, as its
+ *              security-probe measured it (health-outbound.ts). A provider
+ *              that blocks the port leaves nothing on the node to see.
  *
  * Every per-node / per-address check (exposure + the deliverability DNS /
  * PTR / DNSBL probes) runs against the SAME endpoint set, which the response
@@ -66,6 +69,7 @@ import { probeDeliverability, type DeliverabilityDeps } from './deliverability.j
 import { endpointAddresses, endpointAddressNodes } from './mail-endpoints.js';
 import { probeExposure } from './exposure-probe.js';
 import { probeCapacity, type MailCapacityInput } from './health-capacity.js';
+import { probeOutbound, type MailOutboundInput } from './health-outbound.js';
 
 const MAIL_NAMESPACE = 'mail';
 const STALWART_LABEL = 'app=stalwart-mail';
@@ -160,6 +164,12 @@ export interface MailHealthDeps {
    * report `not_implemented`.
    */
   readonly capacity?: () => Promise<MailCapacityInput>;
+  /**
+   * Reads mail placement and each node's outbound mail check for the outbound
+   * component (health-outbound.ts:mailOutboundReader). Absent → it reports
+   * `not_implemented`.
+   */
+  readonly outbound?: () => Promise<MailOutboundInput>;
 }
 
 export interface GetMailHealthOpts {
@@ -181,7 +191,7 @@ export async function getMailHealth(
   // (rocksdb, jmap, cert) which need a pod name, and the exposure probe
   // (hostPorts of the active node). TCP probe + deliverability are
   // independent so they run in parallel with pod.
-  const [podResult, tcp, deliverability, { standby, storage }] = await Promise.all([
+  const [podResult, tcp, deliverability, { standby, storage }, outbound] = await Promise.all([
     probePod(deps),
     probeTcp(deps),
     probeDeliverability({
@@ -193,6 +203,7 @@ export async function getMailHealth(
       ...deps.deliverabilityOverrides,
     }),
     probeCapacity(deps.capacity),
+    probeOutbound(deps.outbound),
   ]);
   const { hostPorts, ...pod } = podResult;
   // Exec-based probes need pod.podName. They run in parallel with each other.
@@ -212,10 +223,11 @@ export async function getMailHealth(
     && deliverability.healthy
     && exposure.healthy
     && standby.healthy
-    && storage.healthy;
+    && storage.healthy
+    && outbound.healthy;
   const response = mailHealthResponseSchema.parse({
     healthy,
-    components: { pod, jmap, rocksdb, cert, tcp, deliverability, exposure, standby, storage },
+    components: { pod, jmap, rocksdb, cert, tcp, deliverability, exposure, standby, storage, outbound },
     endpoints: deps.endpoints,
     checkedAt: new Date(now).toISOString(),
     cachedFor: Math.floor(CACHE_TTL_MS / 1000),

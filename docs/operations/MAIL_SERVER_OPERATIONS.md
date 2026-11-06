@@ -34,6 +34,11 @@ These are **one-time account-level** actions that must be completed before a pro
 - Scope: **per-account / per-project**, applies to all current and future servers.
 - Turnaround: hours → several business days, case-by-case.
 - Status tracking: note the request date in this runbook (or a Linear/Jira ticket) so you can escalate if it stalls.
+- Other providers do the same per server (a new server on an otherwise unblocked account
+  can still be blocked). The platform checks it: the installer's preflight warns, **Mail
+  health → Outbound delivery** fails when a mail placement node cannot open port 25, and
+  **Node health** warns when any node cannot open 465/587. See
+  `docs/operations/NODE_HEALTH_MONITORING.md` § Outbound mail ports.
 
 **Fallback if denied (or while waiting):** Phase 3.B.1 fully wires
 Stalwart's `[queue.outbound]` from the `smtp_relay_configs` table.

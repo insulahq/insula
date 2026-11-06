@@ -34,6 +34,7 @@ import { resolveMailEndpoints } from './mail-endpoints.js';
 import type { MailEndpointSet } from '@insula/api-contracts';
 import { notifyAdminMailHealthDegraded, notifyAdminOperationalEvent } from '../notifications/events.js';
 import { capacityItems, mailCapacityReader } from './health-capacity.js';
+import { mailOutboundReader, outboundItems } from './health-outbound.js';
 import { cappedList } from '../notifications/list-items.js';
 import { MAIL_MONITORING_RESOURCE } from '../notifications/action-path.js';
 import type { Database } from '../../db/index.js';
@@ -58,6 +59,7 @@ const COMPONENT_LABELS: Record<string, string> = {
   exposure: 'mail port exposure',
   standby: 'standby mail copy',
   storage: 'mail disk headroom',
+  outbound: 'outbound mail delivery',
 };
 
 /**
@@ -67,8 +69,15 @@ const COMPONENT_LABELS: Record<string, string> = {
  * delivery is likely affected", which read as an outage for a standby that was
  * merely behind.
  */
-export function componentImpact(key: string): string {
+export function componentImpact(key: string, component?: unknown): string {
   switch (key) {
+    case 'outbound': {
+      // Only the node the mail server runs on is delivering now.
+      const nodes = (component as { nodes?: Array<{ active?: boolean; delivery?: string }> } | null)?.nodes ?? [];
+      return nodes.some((n) => n.active && n.delivery === 'blocked')
+        ? 'Mail to other mail servers is not delivered until the port is open.'
+        : 'Mail delivery is not affected now; a failover to that node would stop it.';
+    }
     case 'standby':
       // Its detail already says what a failover now would lose.
       return 'Mail delivery is not affected.';
@@ -101,6 +110,10 @@ export function componentDetail(key: string, component: unknown, items: readonly
   if (!c || typeof c !== 'object') return '';
   if (key === 'deliverability' && items.length > 0) {
     return ` ${items.length} failing check${items.length === 1 ? '' : 's'}:`;
+  }
+  if (key === 'outbound' && items.length > 0) {
+    // The nodes are the list; the panel's error sentence names them too.
+    return ` Outbound port ${String(c.deliveryPort ?? 25)} is blocked on ${items.length === 1 ? 'a mail node' : `${items.length} mail nodes`} — ask the hosting provider to unblock it:`;
   }
   const direct = typeof c.error === 'string' ? c.error : null;
   return direct ? ` ${direct}` : '';
@@ -170,6 +183,7 @@ export function failingChecks(component: unknown): DeliverabilityCheck[] {
  */
 export function componentProbes(key: string, component: unknown): string[] {
   if (key === 'standby' || key === 'storage') return capacityItems(key, component);
+  if (key === 'outbound') return outboundItems(component);
   if (key !== 'deliverability') return [];
   return failingChecks(component).map((c) => c.line);
 }
@@ -344,8 +358,9 @@ export async function runMailHealthCheckOnce(
   // refresh:true — the on-demand cache would otherwise let this scheduler
   // re-read a stale response and alert (or stay silent) on old data.
   const capacity = mailCapacityReader({ k8s, db, kubeconfigPath, log });
+  const outbound = mailOutboundReader({ k8s, db, kubeconfigPath });
   const probe = () => getMailHealth(
-    { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, endpoints, endpointsError, capacity },
+    { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, endpoints, endpointsError, capacity, outbound },
     { refresh: true },
   );
   const first = await probe();
@@ -413,7 +428,7 @@ export async function runMailHealthCheckOnce(
           mailHostname,
           detail: componentDetail(key, component, items),
           items: cappedList(items, MAX_LISTED_CHECKS),
-          impact: componentImpact(key),
+          impact: componentImpact(key, component),
           panelUrl: '/monitoring/mail',
         },
         // Per endpoint set as well: one endpoint's alert must not swallow

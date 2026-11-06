@@ -23,6 +23,14 @@
 # ran out of memory — exit 137 alone cannot tell (images/security-probe/
 # memcg.go).
 #
+# Every 15 minutes it also dials TCP 25, 465 and 587 on public mail
+# servers (images/security-probe/outboundmail.go) — open and close, no
+# SMTP — and publishes at data.outboundMail whether this node's provider
+# lets mail out. Node health and mail health read it: a provider that
+# drops outbound mail ports leaves nothing on the host to see, and every
+# send from the node just times out. Through hostNetwork the connection is
+# the node's own, which is what has to be measured.
+#
 # Security posture:
 #   * ALL mounts are readOnly: true.
 #   * capabilities.drop: [ALL]; nothing added.
@@ -91,6 +99,13 @@ spec:
             # Loop interval (seconds). Default 60 in binary.
             - name: PROBE_INTERVAL_SECONDS
               value: "60"
+            # Outbound mail check interval (seconds). Default 900 in binary.
+            # The targets default in the binary too; override with
+            # OUTBOUND_MAIL_PROBE_TARGETS ("25=host,host;465=…;587=…",
+            # empty = off) where public mail servers are not reachable by
+            # design.
+            - name: OUTBOUND_MAIL_PROBE_INTERVAL_SECONDS
+              value: "900"
           ports:
             - name: healthz
               containerPort: 8082

@@ -92,6 +92,7 @@ describe('MailHealthDetailsModal — capacity', () => {
     });
     renderModal();
     expect(await screen.findByText('Standby copies')).toBeInTheDocument();
-    expect(screen.getAllByText('not reported by this backend')).toHaveLength(2);
+    // Standby, storage — and the outbound card, which that backend lacks too.
+    expect(screen.getAllByText('not reported by this backend')).toHaveLength(3);
   });
 });
