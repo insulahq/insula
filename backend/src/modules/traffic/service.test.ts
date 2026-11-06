@@ -14,7 +14,7 @@ vi.mock('../monitoring/vm-client.js', () => ({
   queryInstant: () => Promise.resolve([]),
 }));
 
-const { fetchTrafficFrame, disambiguateNames, prettyServiceName, prettyPodName, aggregateByName } = await import('./service.js');
+const { fetchTrafficFrame, disambiguateNames, prettyServiceName, prettyPodName, aggregateByName, reachesPastRetention } = await import('./service.js');
 const { podMatcher } = await import('./promql.js');
 
 const db = { select: () => ({ from: () => ({ where: () => Promise.resolve([]), then: (r: (v: unknown) => void) => r([]) }) }) } as never;
@@ -372,5 +372,34 @@ describe('podMatcher', () => {
     const re = new RegExp(`^${m.slice('pod=~"'.length, -1)}$`);
     expect(re.test('website-aaaaaaaaaa-bbbbb')).toBe(true);
     expect(re.test('website-admin-aaaaaaaaaa-bbbbb')).toBe(false);
+  });
+});
+
+describe('the retention edge', () => {
+  const now = new Date('2031-05-15T12:30:00Z');
+  const edge = now.getTime() - 30 * 86_400_000;
+
+  it('gives a range an hour of grace past it, and not a millisecond more', () => {
+    expect(reachesPastRetention(new Date(edge), now)).toBe(false);
+    expect(reachesPastRetention(new Date(edge - 3_600_000), now)).toBe(false);
+    expect(reachesPastRetention(new Date(edge - 3_600_001), now)).toBe(true);
+  });
+
+  it('still clamps a breakdown the rollup does not keep (a backup split outside the cluster view)', async () => {
+    const frame = await fetchTrafficFrame({
+      from: new Date(edge - 60 * 86_400_000), to: now,
+      scope: 'node', metric: 'traffic', direction: 'out', backups: 'separate',
+    }, { db, now: () => now });
+    expect(frame.resolution).toBe('fine');
+    expect(frame.clamped).toBe(true);
+    expect(frame.from).toBe(new Date(edge).toISOString());
+  });
+
+  it('and leaves a "Last 30 days" on another scope unclamped', async () => {
+    const frame = await fetchTrafficFrame({
+      from: new Date(edge - 50), to: now,
+      scope: 'node', metric: 'traffic', direction: 'both', backups: 'included',
+    }, { db, now: () => now });
+    expect(frame.clamped).toBe(false);
   });
 });

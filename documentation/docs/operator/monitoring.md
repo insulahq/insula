@@ -119,9 +119,11 @@ The **time range** control is one button showing the current range. Opening it
 gives presets (last hour, 6 hours, 24 hours, 7 days, 30 days, 90 days and 12
 months), two months of calendar, a time of day for each end, and the
 resulting duration — so you can see what you are about to ask for before you
-ask for it. A range reaching past 30 days is marked **daily rollup**, both
+ask for it. A range starting more than 30 days back is marked **daily
+rollup**, and one starting more than a year back **monthly rollup**, both
 beside the duration and on the closed button, because past that only the
-daily figures survive. The longest range the API accepts is **400 days**.
+rollups survive (see [Retention](#retention)). The longest range the API
+accepts is **five years**.
 
 | Break down by | Shows |
 |---|---|
@@ -218,10 +220,35 @@ draw it, because it would contradict the allowance shown above the chart.
 
 ### Retention
 
-Detailed metrics are kept for **30 days**. Beyond that only the per-tenant
-daily egress rollup survives, and the page says which regime it is in: a
-wider request at any other breakdown is served short, and says so, rather
-than padding the missing months with zeroes.
+Detailed metrics are kept for **30 days** in the metrics store, which is not
+backed up. Every view's history is also kept in the platform database and is
+backed up with the rest of it, so it outlives losing the metrics store:
+
+| Age | Kept as | Drawn |
+|---|---|---|
+| Up to 30 days | One value per hour | At full detail, from the metrics store |
+| 30 days to a year | One value per UTC day | **Daily rollup**: one point per day |
+| A year to five years | One value per UTC month | **Monthly rollup**: one point per month |
+
+A collector writes each view's figures every hour: the cluster rows, every
+node, route and tenant pod in both directions, and requests and latency for
+the cluster, nodes, tenants and routes. Latency is kept weighted by the
+requests behind it, so a day's (or a month's) average follows the busy hours
+rather than counting a quiet hour the same as a busy one. After an upgrade it
+fills in the 30 days the metrics store still holds, two days per pass every
+ten minutes, so the backfill takes a few hours; the first day it reaches is a
+partial one, and history older than that was never kept and stays empty.
+
+A tenant's traffic in the **Tenant** breakdown is drawn from the bandwidth
+meter's billed egress, which has been kept since before the collector existed.
+It is outbound only, without the platform's own backups, so it matches the
+allowance on the tenant's page.
+
+A rolled-up range marks a day (or month) nobody measured as a gap, and one
+that was measured but moved nothing as zero. Each view is measured on its
+own: if one view cannot be read for an hour, that view has a gap there and
+the others are kept. A backup split outside the cluster
+view is not rolled up: asked for further back, it is served short and says so.
 
 ## Mail
 
@@ -398,6 +425,15 @@ node:
 - **CSI drivers** — a node missing a baseline storage driver → critical (this is
   what silently broke tenant volumes in a past incident).
 - **Evictions in the last hour** — ≥3/h warning, ≥10/h critical.
+- **Mail ports out** — whether the node can open outbound TCP 25, 465 and 587. Every
+  15 minutes the node opens a connection to public mail servers (nothing is sent). A
+  blocked **465 or 587** → warning on any node: apps on it cannot send mail through a
+  mail server, the platform's own included, and every send times out. A blocked **25**
+  → warning only on a mail node (primary, secondary or tertiary in mail placement); on
+  other nodes it is shown greyed, because only the mail server delivers on it. The
+  hosting provider blocks these ports, not the node — ask it to unblock them. Hover a
+  port for what each target answered. A node whose probe has not reported shows
+  *not checked*.
 - **Not Ready** → critical.
 
 When a node is in trouble, you get **recovery actions** without leaving the

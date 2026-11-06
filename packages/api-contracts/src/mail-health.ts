@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { mailPortExposureModeEnum } from './mail-placement.js';
+import { outboundMailPortSchema, outboundMailPortStatusSchema } from './outbound-mail.js';
 
 /**
  * GET /admin/mail/health
@@ -280,6 +281,38 @@ export const mailHealthStorageComponentSchema = componentStatusSchema.extend({
 export type MailHealthStorageComponent = z.infer<typeof mailHealthStorageComponentSchema>;
 export type MailHealthStorageNode = z.infer<typeof mailHealthStorageNodeSchema>;
 
+/**
+ * Outbound delivery from the mail nodes (outbound-mail.ts). The mail server
+ * delivers to other mail servers on port 25, from whichever node it runs on, so
+ * every node mail placement names — primary, secondary, tertiary — must be able
+ * to open it, or mail stops going out the moment the server runs there. Fails
+ * when that port is blocked on any of them; a node whose probe has not
+ * reported, or reported too long ago, is shown as unknown and does not fail it.
+ * 465 and 587 are listed for information (apps submit on them; node health
+ * judges those). `not_implemented` when no mail node has reported a check.
+ */
+export const mailHealthOutboundNodeSchema = z.object({
+  node: z.string(),
+  /** Its place in mail placement; `active` = the mail server runs on a node placement does not name. */
+  role: z.enum(['primary', 'secondary', 'tertiary', 'active']),
+  /** The mail server runs here now. */
+  active: z.boolean(),
+  /** When its probe last checked; null = no check reported. */
+  checkedAt: z.string().datetime().nullable(),
+  stale: z.boolean(),
+  ports: z.array(outboundMailPortSchema),
+  /** The delivery port as judged: unknown when unchecked or stale. */
+  delivery: outboundMailPortStatusSchema,
+});
+
+export const mailHealthOutboundComponentSchema = componentStatusSchema.extend({
+  status: optionalProbeStatusSchema,
+  deliveryPort: z.number().int(),
+  nodes: z.array(mailHealthOutboundNodeSchema),
+});
+export type MailHealthOutboundComponent = z.infer<typeof mailHealthOutboundComponentSchema>;
+export type MailHealthOutboundNode = z.infer<typeof mailHealthOutboundNodeSchema>;
+
 // ── Deliverability sub-probes (forward DNS, reverse DNS / FCrDNS, DNSBL,
 // cert SAN match, SMTP banner). These hit *external* infrastructure
 // (recursor + DNSBL providers) so they are inherently slower and
@@ -447,6 +480,8 @@ export const mailHealthResponseSchema = z.object({
     standby: mailHealthStandbyComponentSchema.optional(),
     /** Disk headroom for the mail store's rewrites. Optional — older backends omit it. */
     storage: mailHealthStorageComponentSchema.optional(),
+    /** Outbound port 25 from every mail placement node. Optional — older backends omit it. */
+    outbound: mailHealthOutboundComponentSchema.optional(),
   }),
   /**
    * The mail endpoint set every per-node / per-address check ran against.

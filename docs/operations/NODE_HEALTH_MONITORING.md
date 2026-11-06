@@ -20,6 +20,7 @@ three signal classes per node:
 | CSINode drivers vs cluster baseline (mode of cluster) | `storage.k8s.io/v1/CSINode` | Missing baseline driver → **critical** |
 | Pod evictions in last hour | `events.k8s.io reason=Evicted` | ≥3/hr → **warning**, ≥10/hr → **critical** |
 | Disk usage % (Phase 2) | kubelet `/stats/summary` (not yet wired) | ≥75% → warning, ≥90% → critical |
+| Outbound mail ports (TCP 25/465/587) | security-probe ConfigMap `data.outboundMail` | blocked 465/587 → **warning**; blocked 25 → **warning** on a mail node only |
 
 Plus `not Ready` → critical.
 
@@ -239,6 +240,7 @@ evictions/h ≥ EVICTION_CRITICAL_THRESHOLD  → critical (default 10)
 diskUsedPct  ≥ DISK_USED_PCT_CRITICAL      → critical (default 80)
 evictions/h ≥ EVICTION_WARNING_THRESHOLD   → warning  (default 3)
 diskUsedPct  ≥ DISK_USED_PCT_WARNING       → warning  (default 75)
+required outbound mail port blocked        → warning
                                             → normal
 ```
 
@@ -250,6 +252,48 @@ Critical is 80, below the kubelet's own thresholds (image GC from 70 % used,
 the root filesystem — and `nodefs.available<10%`). It was 90, which is the
 moment the kubelet starts evicting, so it never warned first. Tenant pods are
 also bounded individually — see [TENANT_DISK_LIMITS.md](TENANT_DISK_LIMITS.md).
+
+## Outbound mail ports
+
+A hosting provider can block outbound TCP 25, 465 and 587 on a server. The host
+firewall lets the traffic out and the provider drops it, so nothing on the node
+shows it: every send from the node times out (`Unable to connect to
+ssl://mail.<apex>:465 (Connection timed out)` from a tenant's PHP app), and a mail
+server running there queues everything. A production node ran that way for days
+after a tenant was moved onto it.
+
+**Measured** by the security-probe DaemonSet (`images/security-probe/outboundmail.go`)
+from the node's own network (hostNetwork), every `OUTBOUND_MAIL_PROBE_INTERVAL_SECONDS`
+(900): a TCP connect, closed at once, to public mail servers — Google, Yahoo and
+Microsoft for 25; Google and Yahoo for 465; Google, Microsoft and Yahoo for 587.
+Not the cluster's own nodes: the mail server bans sources that open bare
+connections to many ports, and one node's verdict must not depend on another's
+provider. A port is **open** when any target accepts, **blocked** when targets
+resolved but none accepted (timeout, refusal, unreachable), **unknown** when no
+target resolved. Published at `data.outboundMail` of `security-probe-<node>`.
+Override the targets with `OUTBOUND_MAIL_PROBE_TARGETS` (`25=host,host;465=…;587=…`,
+empty = off) on the DaemonSet where public mail servers are unreachable by design.
+
+**Judged** by the reconciler (`node-health/outbound-mail.ts`): 465 and 587 are
+required on every node (apps on it submit mail on them), 25 only on a mail node —
+mail placement's primary, secondary and tertiary (not the stored active node, which
+can lag the pod; mail health judges the node the server really runs on). A blocked
+required port makes the node `warning`; the notification lists the port and what
+it breaks and asks for the provider to unblock it. A result older than three
+intervals is **stale**: shown, never judged. When the probes or the placement
+cannot be read on a tick, each node keeps its last verdict (still going stale on
+schedule) — reading them as unchecked would announce a warned node as recovered
+and warn again on the next tick. Stored in
+`node_health_state.outbound_mail` (migration 0175) and served in the summary's
+`outboundMail`. Mail health judges port 25 on the mail nodes separately (its
+**Outbound delivery** component, `mail-admin/health-outbound.ts`).
+
+**Checked before install** by `bootstrap.sh`'s preflight (`check_outbound_mail_ports`,
+same targets — kept equal by `outboundmail_test.go` and
+`scripts/test-bootstrap-outbound-mail.sh`): a warning, never fatal.
+
+**Verify a node by hand** from a host-network pod on it (the HAProxy DaemonSet has
+`nc`): `kubectl -n mail exec <stalwart-haproxy pod> -- nc -z -w 6 smtp.gmail.com 587`.
 
 ## API
 

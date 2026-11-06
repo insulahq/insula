@@ -12,8 +12,10 @@
 import type {
   NodeHealthEntry,
   NodeHealthSeverity,
+  NodeOutboundMail,
   NodePressureKind,
 } from '@insula/api-contracts';
+import { blockedRequiredPorts } from './outbound-mail.js';
 
 /**
  * Number of evictions/hour at which we flip from `normal` → `warning`.
@@ -57,6 +59,12 @@ export interface NodeFacts {
   readonly evictionsLastHour: number;
   /** null = kubelet /stats/summary unreachable on this tick. */
   readonly diskUsedPct: number | null;
+  /**
+   * Outbound mail ports as the node's security-probe measured them, each
+   * marked required or not (outbound-mail.ts:judgeOutboundMail). null = no
+   * check reported.
+   */
+  readonly outboundMail?: NodeOutboundMail | null;
 }
 
 /**
@@ -136,7 +144,12 @@ export function missingDriversFor(
  *      before kubelet fires DiskPressure)
  *   6. warning : evictions/hour >= EVICTION_WARNING_THRESHOLD
  *   7. warning : diskUsedPct >= DISK_USED_PCT_WARNING
- *   8. normal  : everything green
+ *   8. warning : an outbound mail port the node needs is blocked (465/587
+ *                anywhere, 25 on a mail node) — its tenants' mail times out,
+ *                or the mail server could not deliver from it. A warning, not
+ *                critical: the node itself is fine, and the fix is the
+ *                provider's.
+ *   9. normal  : everything green
  */
 export function severityFor(
   node: NodeFacts,
@@ -167,6 +180,9 @@ export function severityFor(
   ) {
     return { severity: 'warning', missingDrivers };
   }
+  if (blockedRequiredPorts(node.outboundMail).length > 0) {
+    return { severity: 'warning', missingDrivers };
+  }
   return { severity: 'normal', missingDrivers };
 }
 
@@ -193,6 +209,7 @@ export function buildEntry(
     csiDriversMissing: missingDrivers,
     evictionsLastHour: node.evictionsLastHour,
     diskUsedPct: node.diskUsedPct,
+    outboundMail: node.outboundMail ?? null,
     severity,
     observedAt: observedAt.toISOString(),
   };

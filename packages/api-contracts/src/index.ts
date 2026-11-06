@@ -39,6 +39,7 @@ export * from './cnpg-backup-catalogue.js';
 export * from './cnpg-backup-now.js';
 export * from './postgres-barman-restore.js';
 export * from './node-health.js';
+export * from './outbound-mail.js';
 export * from './cron-jobs.js';
 export * from './cron-expression.js';
 export * from './wildcard-hostname.js';

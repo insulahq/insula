@@ -95,6 +95,30 @@ describe('mail-admin/health.getMailHealth', () => {
     expect(r.components.cert.ports[0].daysUntilExpiry).toBeGreaterThan(0);
   });
 
+  it('a mail node that cannot open outbound port 25 makes mail health unhealthy', async () => {
+    const blocked = {
+      checkedAt: new Date().toISOString(),
+      intervalSeconds: 900,
+      ports: [{ port: 25, status: 'blocked' as const, target: null, latencyMs: null, detail: 'mx.example.test timed out after 5s' }],
+    };
+    const outbound = async () => ({
+      placement: { primaryNode: 'node-1', secondaryNode: 'node-2', tertiaryNode: null, activeNode: 'node-1' },
+      probes: new Map([['node-2', blocked]]),
+      now: new Date(),
+    });
+    const r = await getMailHealth(buildDeps({ outbound }));
+    expect(r.healthy).toBe(false);
+    expect(r.components.outbound).toMatchObject({ status: 'fail', healthy: false, deliveryPort: 25 });
+    expect(r.components.outbound?.error).toContain('node-2 (the secondary mail node)');
+    // The other components are unaffected.
+    expect(r.components.pod.healthy).toBe(true);
+
+    _resetMailHealthCache();
+    const without = await getMailHealth(buildDeps());
+    expect(without.components.outbound).toMatchObject({ status: 'not_implemented', healthy: true });
+    expect(without.healthy).toBe(true);
+  });
+
   it('flags pod-not-found as unhealthy', async () => {
     const deps = buildDeps({ k8s: buildK8s(buildPodFixture({ noPod: true })) });
     const r = await getMailHealth(deps);

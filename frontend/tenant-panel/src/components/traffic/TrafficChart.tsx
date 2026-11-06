@@ -40,6 +40,8 @@ export interface TrafficChartProps {
 }
 
 export function stepLabel(seconds: number): string {
+  // A monthly rollup steps by the mean month, which is no whole number of days.
+  if (seconds >= 28 * 86_400) return '1-month steps';
   if (seconds % 86_400 === 0) return `${seconds / 86_400}-day steps`;
   if (seconds % 3_600 === 0) return `${seconds / 3_600}-hour steps`;
   return `${Math.round(seconds / 60)}-minute steps`;

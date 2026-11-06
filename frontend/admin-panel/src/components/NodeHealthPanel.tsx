@@ -10,6 +10,7 @@ import { extractOperatorError } from '@/lib/extract-operator-error';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 import { useNodeLabel } from '@/hooks/use-node-labels';
+import OutboundMailPorts from '@/components/nodes/OutboundMailPorts';
 
 const SEVERITY_BADGE: Record<NodeHealthSeverity, 'error' | 'warning' | 'healthy'> = {
   critical: 'error',
@@ -66,6 +67,13 @@ function canRecover(entry: NodeHealthEntry, stalePods: number | undefined): bool
   return entry.severity !== 'normal' || (stalePods ?? 0) > 0;
 }
 
+/** Required outbound mail ports a fresh check found blocked — what made the node `warning`. */
+function blockedMailPorts(entry: NodeHealthEntry): number[] {
+  const mail = entry.outboundMail;
+  if (!mail || mail.stale) return [];
+  return mail.ports.filter((p) => p.required && p.status === 'blocked').map((p) => p.port);
+}
+
 function pressureSummary(entry: NodeHealthEntry): string {
   const parts: string[] = [];
   if (!entry.ready) parts.push('NotReady');
@@ -73,6 +81,8 @@ function pressureSummary(entry: NodeHealthEntry): string {
   if (entry.csiDriversMissing.length > 0) parts.push(`CSI missing: ${entry.csiDriversMissing.join(', ')}`);
   if (entry.evictionsLastHour > 0) parts.push(`${entry.evictionsLastHour} evictions/h`);
   if (entry.diskUsedPct !== null) parts.push(`disk ${entry.diskUsedPct.toFixed(0)}%`);
+  const blocked = blockedMailPorts(entry);
+  if (blocked.length > 0) parts.push(`outbound mail port ${blocked.join('/')} blocked — ask the provider to unblock it`);
   return parts.length === 0 ? 'all clear' : parts.join(' · ');
 }
 
@@ -90,6 +100,8 @@ export default function NodeHealthPanel() {
     severity: (n) => SEVERITY_RANK[n.severity],
     ready: (n) => (n.ready ? 1 : 0),
     pressures: (n) => (n.pressures.length === 0 ? null : n.pressures.join(', ')),
+    // Blocked ports the node needs first; unchecked nodes last.
+    outboundMail: (n) => (n.outboundMail ? -blockedMailPorts(n).length : null),
     detail: pressureSummary,
   }), [nodeLabel]);
   const { sortedData: sortedNodes, sortKey, sortDirection, onSort } =
@@ -173,6 +185,7 @@ export default function NodeHealthPanel() {
                 {header('Pressures', 'pressures')}
                 {header('CSI drivers', 'csiDriversPresent')}
                 {header('Evictions/h', 'evictionsLastHour', `${TH_CLS} text-right`)}
+                {header('Mail ports out', 'outboundMail')}
                 {header('Detail', 'detail')}
                 <th className="px-3 py-2 font-medium text-right">Recover</th>
               </tr>
@@ -226,6 +239,15 @@ export default function NodeHealthPanel() {
                         <span className="text-gray-400">0</span>
                       )}
                     </td>
+                    <td className="px-3 py-2 text-xs">
+                      {n.outboundMail ? (
+                        <OutboundMailPorts ports={n.outboundMail.ports} stale={n.outboundMail.stale} testId={`node-outbound-${n.name}`} />
+                      ) : (
+                        <span className="text-gray-400" title="This node's security-probe has not reported an outbound mail check yet." data-testid={`node-outbound-${n.name}-unchecked`}>
+                          not checked
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
                       {pressureSummary(n)}
                     </td>
@@ -254,7 +276,9 @@ export default function NodeHealthPanel() {
       <MemoryEventsCard />
 
       <div className="text-xs text-gray-500 dark:text-gray-400">
-        Reconciler runs every 5 min. Notifications fire on severity transitions and re-fire every 24 h while a node remains warning/critical. Recovery actions audit-log every run; see{' '}
+        Reconciler runs every 5 min. Notifications fire on severity transitions and re-fire every 24 h while a node remains warning/critical.
+        Mail ports out: each node dials TCP 25, 465 and 587 on public mail servers every 15 min. A blocked 465/587 means apps on that node
+        cannot send mail; a blocked 25 matters only on a mail node. The hosting provider blocks them, not the node. Recovery actions audit-log every run; see{' '}
         <code className="rounded bg-gray-100 px-1 py-0.5 text-[10px] dark:bg-gray-800">docs/operations/NODE_HEALTH_MONITORING.md</code> for the action catalogue.
       </div>
 

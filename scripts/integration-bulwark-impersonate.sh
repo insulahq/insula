@@ -228,10 +228,15 @@ if [[ $NEG_ONLY -eq 0 ]]; then
   else
     fail "B1c missing one or both cookies: $RAW_COOKIES"
   fi
-  if echo "$RAW_COOKIES" | grep -qi 'Max-Age='; then
-    fail "B2 cookies carry Max-Age — should be session-only"
+  # Judge the two credential cookies only. Bulwark also sets a non-HttpOnly
+  # `impersonated=1` marker for 60 s (its ImpersonationReconciler tells the
+  # handoff from a plain link by it); it carries no credential, and grepping
+  # every cookie for Max-Age failed B2 on it.
+  long_lived="$(echo "$RAW_COOKIES" | tr '|' '\n' | grep -iE '^(jmap_session|jmap_stalwart_ctx)=' | grep -i 'Max-Age=' | cut -d= -f1 || true)"
+  if [[ -n "$long_lived" ]]; then
+    fail "B2 credential cookie(s) carry Max-Age — should be session-only: $(echo "$long_lived" | tr '\n' ' ')"
   else
-    pass "B2 cookies are session-only (no Max-Age)"
+    pass "B2 jmap_session + jmap_stalwart_ctx are session-only (no Max-Age)"
   fi
 
   # Use the cookies to call /api/account/stalwart/jmap

@@ -356,8 +356,8 @@ export default function TrafficTab({ tenant }: {
         <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800
           dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
         >
-          Showing from {formatInstant(frame.from)} — detailed metrics are kept for 30 days, and only
-          per-tenant traffic is rolled up beyond that.
+          Showing from {formatInstant(frame.from)} — detailed metrics are kept for 30 days, and this
+          breakdown is not rolled up beyond that.
         </p>
       )}
 
@@ -371,13 +371,13 @@ export default function TrafficTab({ tenant }: {
               : formatTrafficVolume(stats.total, frame.unit),
             // The rows the Total adds up exist only from the split's start;
             // "over 24 hours" would claim the whole range for them.
-            sub: frame.resolution === 'daily'
-              ? 'daily rollup'
+            sub: frame.resolution !== 'fine'
+              ? `${frame.resolution} rollup`
               : (scope === 'cluster' && splitStart(frame) ? `since ${formatInstant(splitStart(frame)!)}` : `over ${spanLabel(range)}`),
           },
           {
             key: 'peak',
-            label: frame.resolution === 'daily' ? 'Peak (daily)' : 'Peak',
+            label: frame.resolution === 'fine' ? 'Peak' : `Peak (${frame.resolution})`,
             value: formatTrafficRate(stats.peak, frame.unit),
             sub: stats.peakAt ? formatInstant(stats.peakAt) : '—',
           },
@@ -387,12 +387,12 @@ export default function TrafficTab({ tenant }: {
             value: formatTrafficRate(stats.avg, frame.unit),
             sub: stats.avg > 0 ? `${(stats.peak / stats.avg).toFixed(1)}× peak-to-mean` : '—',
           },
-          frame.resolution === 'daily'
+          frame.resolution !== 'fine'
             ? {
               key: 'resolution',
               label: 'Resolution',
-              value: '1 day',
-              sub: 'UTC days · spikes averaged out',
+              value: frame.resolution === 'monthly' ? '1 month' : '1 day',
+              sub: `UTC ${frame.resolution === 'monthly' ? 'months' : 'days'} · spikes averaged out`,
               alert: true,
             }
             : {

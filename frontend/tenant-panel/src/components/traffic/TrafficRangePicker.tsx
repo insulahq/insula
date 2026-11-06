@@ -35,8 +35,21 @@ export const RANGE_PRESETS: readonly Preset[] = [
   { key: '1y', label: 'Last 12 months', hours: 24 * 365 },
 ];
 
-/** Beyond this, only the daily rollup survives — the label says so. */
+/** The metrics store keeps 30 days; past that the rollup draws a range, by day for a year, by month beyond. */
 const FINE_RETENTION_HOURS = 24 * 30;
+const DAILY_ROLLUP_HOURS = 24 * 365;
+
+/**
+ * Which rollup draws a range starting at `from`, or null while the metrics
+ * store still has it — decided the way the server decides: by how far back
+ * the range starts, with the same hour of grace a preset needs.
+ */
+export function rollupFor(from: Date, now: Date = new Date()): 'daily' | 'monthly' | null {
+  const back = (now.getTime() - from.getTime()) / 3_600_000;
+  if (back > DAILY_ROLLUP_HOURS + 1) return 'monthly';
+  if (back > FINE_RETENTION_HOURS + 1) return 'daily';
+  return null;
+}
 
 export function presetRange(key: string, now: Date = new Date()): RangeValue {
   const p = RANGE_PRESETS.find((x) => x.key === key) ?? RANGE_PRESETS[2];
@@ -124,7 +137,8 @@ export default function TrafficRangePicker({ value, onChange }: TrafficRangePick
   }, [open]);
 
   const months = useMemo(() => [leftMonth, addMonths(leftMonth, 1)], [leftMonth]);
-  const coarse = (draftTo.getTime() - draftFrom.getTime()) / 3_600_000 > FINE_RETENTION_HOURS;
+  const coarse = rollupFor(draftFrom);
+  const shownRollup = rollupFor(value.from);
 
   const withTime = (day: Date, hhmm: string): Date => {
     const [h, m] = hhmm.split(':').map(Number);
@@ -185,7 +199,7 @@ export default function TrafficRangePicker({ value, onChange }: TrafficRangePick
           <Clock size={13} className="shrink-0 text-gray-400" />
           {presetLabel && <span className="font-semibold text-brand-600 dark:text-brand-400">{presetLabel}</span>}
           <span className="tabular-nums">{fmtInstant(value.from)} → {fmtInstant(value.to)}</span>
-          {coarse && <span className="font-semibold text-amber-600 dark:text-amber-400">daily rollup</span>}
+          {shownRollup && <span className="font-semibold text-amber-600 dark:text-amber-400">{shownRollup} rollup</span>}
           <ChevronDown size={13} className="ml-auto shrink-0 text-gray-400" />
         </button>
 
@@ -331,7 +345,8 @@ export default function TrafficRangePicker({ value, onChange }: TrafficRangePick
                 )}
                 >
                   {durationLabel(draftFrom, draftTo)}
-                  {coarse && ' · daily rollup beyond 30 days'}
+                  {coarse === 'daily' && ' · daily rollup beyond 30 days'}
+                  {coarse === 'monthly' && ' · monthly rollup beyond 12 months'}
                 </span>
                 <div className="flex gap-2">
                   {error && <span className="text-xs text-red-600 dark:text-red-400">{error}</span>}
