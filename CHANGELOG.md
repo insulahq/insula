@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.6] - 2026-11-06
+
 ### Added
 
 - **Outbound mail ports are checked on every node: at install, in node health and in mail
