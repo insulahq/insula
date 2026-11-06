@@ -99,6 +99,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     - it rolls the DaemonSet node by node;
     - it rolls back if a pod cannot load its plugins.
 
+    On a 3-server cluster it took 46 s. Each node refused new connections for about 5 s, one
+    node at a time, and the first request to a new pod could get a 404 before its routes loaded.
+
 ### Changed
 
 - **Bulwark webmail 1.18.0 → 1.19.0.** It fixes no advisory.
