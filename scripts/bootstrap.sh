@@ -526,7 +526,8 @@ LONGHORN_VERSION="v1.13.0"               # V1 engine only (no V2/SPDK). 1.13 add
 # unpinned drift is how the ssa-policy surprise class happens).
 # Existing clusters: host-migration 2026.11.3/0002.
 FLUX_VERSION="2.10.0"
-TRAEFIK_CHART_VERSION="42.1.3"           # app v3.7.16; verify: helm search repo traefik/traefik
+# Existing clusters: host-migration 2026.11.6/0001.
+TRAEFIK_CHART_VERSION="42.3.0"           # app v3.7.17; verify: helm search repo traefik/traefik
 
 # ─── Remote installer script integrity ──────────
 # k3s, Helm and Flux are installed by piping an upstream shell script into a

@@ -72,7 +72,46 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   - Only a backup split outside the cluster view is not kept; asked for further back, it is
     served short with its notice, as before.
 
+### Security
+
+- **Traefik v3.7.16 → v3.7.17 (chart 42.1.3 → 42.3.0), for GHSA-xv5x-242w-7hf7 (high).** Since
+  v3.7.14, a request carrying an `Authorization: NTLM …` or `Negotiate …` header got its own
+  backend transport, with no valid credential and no challenge from the backend. The transport
+  was never freed when the connection closed. Any unauthenticated client could open short
+  connections until Traefik ran out of memory, file descriptors and backend connections, on
+  every route, whether or not an NTLM or Kerberos backend exists.
+  - Traefik v3.7.17 is past its 7-day soak. Chart 42.3.0, the first to ship it, is still in its
+    soak, so it is taken early for the fix. Chart 42.2.0, which is out of its soak, still ships
+    v3.7.16.
+  - What else the two charts change, none of which reaches this platform:
+    - Hub-only features;
+    - two optional values, which stay unset;
+    - an `app.kubernetes.io/version` label on resource metadata. It is not on selectors, so the
+      DaemonSet's selector is unchanged.
+  - v3.7.17 is built with Go 1.27:
+    - a request with more than 500 header values is answered 431 before routing;
+    - the `GODEBUG` TLS switches Go removed are not set here;
+    - the renamed generated routers are the ingress-nginx provider's, which is not enabled.
+
+    The WAF plugin's interpreter is unchanged (yaegi v0.16.1).
+  - Existing clusters move with host-migration 2026.11.6/0001. It works as 2026.10.17/0001 did:
+    - it keeps the release's own values and the reconciler's trusted proxies;
+    - it rolls the DaemonSet node by node;
+    - it rolls back if a pod cannot load its plugins.
+
 ### Changed
+
+- **Bulwark webmail 1.18.0 → 1.19.0.** It fixes no advisory.
+  - Webmail users get an Accessibility page in Settings, Undo for most mail actions, a Files
+    trash and printing.
+  - A usability pass makes dialogs, menus and wording consistent across Mail, Calendar,
+    Contacts and Files.
+  - Text size is now a share of the browser's text size instead of a fixed pixel size.
+  - Bulwark's own admin gains an Organisation area: signatures, disclaimers, session limits and
+    settings locked per domain or group.
+  - The Contacts, Calendar and Files switches still hide those apps: their navigation links are
+    unchanged.
+  - 1.19.1 and 1.20.0 follow when their soaks end.
 
 - **Rollups older than a year fold into months instead of being deleted.** This covers a
   tenant's billed traffic, CPU, memory and storage in `usage_metrics`, and the new traffic
