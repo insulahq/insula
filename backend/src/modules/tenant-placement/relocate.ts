@@ -191,6 +191,9 @@ async function readVolumes(k8s: K8sClients, namespace: string): Promise<{ volume
       nodeId: r.spec?.nodeID || null,
       running: r.status?.currentState === 'running',
       failed: Boolean(r.spec?.failedAt) || r.status?.currentState === 'error',
+      // Not read here: relocation judges a copy by running and failed only,
+      // and the engines that know a rebuild are not listed.
+      rebuilding: false,
     }));
   return { volumes, replicas };
 }

@@ -34,6 +34,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   - Rows with the same size or the same time, such as the files of an extracted archive, keep
     their name order, and a row without a date sorts last.
   - The sort headers tell screen readers which column sorts and in which direction.
+- **Moving an HA tenant to a node no longer hard-pins its apps there.** A drain's re-pin, the
+  recovery wizard, a failback and the Storage card's Move wrote a hostname pin on every app,
+  whatever the tier. The tier keeps a second copy of the data so the apps can run on another
+  node when theirs is lost. The pin kept them off it: they waited for auto-repin, and a node back
+  before auto-repin ran started them again beside apps that had already taken the volume
+  elsewhere. On production, an HA tenant moved before this still had three apps hard-pinned.
+  - A move now gives the apps what a deploy on that node renders: a preference for the node, and
+    for the node the tenant's other pods run on. Other scheduling rules are kept. The file
+    manager is placed with the data when it starts, as before.
+  - Moving off a node that is up also keeps the apps off it. With preferences alone, the
+    scheduler counts the tenant's pods still stopping there, and they can pull the restarted apps
+    back. The next deploy, the next move and a failover drop that rule.
+  - Apps hard-pinned by an earlier move lose the pin at the next move of the tenant or the next
+    deploy of each app. Until then, auto-repin still clears it when their node goes down.
+- **The outage banner says when a volume's degraded state is not from the node that is down.**
+  A volume was listed as affected by any outage while Longhorn rebuilt it, even with no copy on
+  the node that was down. During restarts one node at a time, the copy the previous restart had
+  stopped was still rebuilding, and the tenant showed up under the next node.
+  - Such a volume's finding now names the node being rebuilt, says this outage did not cause it,
+    and names the node that holds the only complete copy, which should stay up until the rebuild
+    finishes.
+  - A copy lost on the node that is down reads as before, and the finding now names that node.
 
 ## [2026.11.6] - 2026-11-06
 

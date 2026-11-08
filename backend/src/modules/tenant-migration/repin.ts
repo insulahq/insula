@@ -1,9 +1,9 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { holdTenantVolumes, undoVolumeHold } from '../tenant-placement/volume-pin.js';
+import { FILE_MANAGER_DEPLOYMENT, RESTARTED_AT_ANNOTATION, pinHaTenantSoftly } from '../tenant-placement/ha-pin.js';
 
 const HOSTNAME_LABEL = 'kubernetes.io/hostname';
-const RESTARTED_AT_ANNOTATION = 'insula.host/restarted-at';
 
 /**
  * Pin the whole tenant to `nodeName`: its volumes first, then its Deployments.
@@ -24,7 +24,7 @@ export async function repinTenant(
 ): Promise<number> {
   const hold = await holdTenantVolumes(k8s, namespace, nodeName, storageTier);
   try {
-    return await repinDeployments(k8s, namespace, nodeName, opts);
+    return await repinDeployments(k8s, namespace, nodeName, { ...opts, storageTier });
   } catch (err) {
     const left = await undoVolumeHold(k8s, hold);
     if (left.length === 0) throw err;
@@ -44,20 +44,39 @@ export async function repinTenant(
  *
  * Returns how many of the Deployments were running (replicas > 0). A file
  * manager idle at 0 is re-pinned but is not a restarted workload.
+ *
+ * An HA tenant's Deployments get what a deploy on `nodeName` renders instead
+ * of the hostname pin (tenant-placement/ha-pin.ts); its file manager is pinned
+ * as before. No node is kept off: the tenant is stopped (a move that stops
+ * it) or already runs on `nodeName`, so no pod is pulled back.
  */
 export async function repinDeployments(
   k8s: K8sClients,
   namespace: string,
   nodeName: string,
-  opts: { readonly restart: boolean },
+  opts: { readonly restart: boolean; readonly storageTier: string | null },
 ): Promise<number> {
   let running = 0;
   const now = new Date().toISOString();
+  const ha = opts.storageTier === 'ha';
+
+  if (ha) {
+    const pinned = await pinHaTenantSoftly(k8s, namespace, nodeName, {
+      keepOff: null,
+      statefulSets: false,
+      ...(opts.restart ? { restartedAt: now } : {}),
+    });
+    if (pinned.failed.length > 0) {
+      throw new Error(`could not place ${pinned.failed.map((f) => `${f.workload} (${f.error})`).join(', ')} on ${nodeName}`);
+    }
+    running = pinned.running;
+  }
 
   const res = await k8s.apps.listNamespacedDeployment({ namespace });
   for (const deploy of res.items ?? []) {
     const name = deploy.metadata?.name;
     if (!name) continue;
+    if (ha && name !== FILE_MANAGER_DEPLOYMENT) continue;
     await k8s.apps.patchNamespacedDeployment({
       name,
       namespace,

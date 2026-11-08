@@ -64,8 +64,37 @@ interface RawPod {
   };
 }
 interface LhReplica {
+  metadata?: { name?: string };
   spec?: { volumeName?: string; nodeID?: string; failedAt?: string };
   status?: { currentState?: string };
+}
+interface LhEngine {
+  /** Replica name → RW (a full copy) | WO (being rebuilt) | ERR. */
+  status?: { replicaModeMap?: Record<string, string> | null };
+}
+
+/**
+ * The replicas Longhorn is rebuilding: write-only in their engine's mode map.
+ * Not under `guard`: without it the impact only loses which node a rebuild
+ * is for, and a failed read must not mark every tenant's state unknown.
+ */
+async function rebuildingReplicaNames(k8s: K8sClients): Promise<ReadonlySet<string>> {
+  try {
+    const resp = await k8s.custom.listNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'engines',
+    } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as { items?: LhEngine[] };
+    const names = new Set<string>();
+    for (const e of resp.items ?? []) {
+      for (const [replica, mode] of Object.entries(e.status?.replicaModeMap ?? {})) {
+        if (mode === 'WO') names.add(replica);
+      }
+    }
+    return names;
+  } catch (err) {
+    console.warn(`[tenant-health] longhorn engines read failed; rebuilds are not attributed to a node: ${(err as Error).message}`);
+    return new Set();
+  }
 }
 interface LhVolume {
   metadata?: { name?: string };
@@ -169,7 +198,7 @@ export async function collectFacts(
     }
   };
 
-  const [nodeResp, podResp, replicaResp, volumeResp] = await Promise.all([
+  const [nodeResp, podResp, replicaResp, volumeResp, rebuilding] = await Promise.all([
     guard('nodes', () => k8s.core.listNode() as Promise<{ items?: RawNode[] }>, { items: [] }),
     guard(
       'pods',
@@ -193,6 +222,7 @@ export async function collectFacts(
       } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as Promise<{ items?: LhVolume[] }>,
       { items: [] },
     ),
+    rebuildingReplicaNames(k8s),
   ]);
 
   // The DB reads below are guarded exactly like the cluster reads above, because
@@ -342,6 +372,7 @@ export async function collectFacts(
     // required".
     running: r.status?.currentState === 'running',
     failed: !!r.spec?.failedAt || r.status?.currentState === 'error',
+    rebuilding: rebuilding.has(r.metadata?.name ?? ''),
   })).filter((r) => r.volumeName !== '');
 
   const volumes: VolumeFact[] = (volumeResp.items ?? []).map((v) => ({
