@@ -101,6 +101,28 @@ describe('Monitoring Pods tab', () => {
     expect(screen.getByTestId('pods-count')).toHaveTextContent('1 of 5');
   });
 
+  it('opens on the class the link names: the dashboard tile of failed pods links here', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/monitoring/pods?filter=failed']}><Monitoring /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText('crash-loop')).toBeInTheDocument();
+    expect(screen.queryByText('web-abc')).not.toBeInTheDocument();
+    expect(screen.getByTestId('pods-count')).toHaveTextContent('1 of 5');
+  });
+
+  it('ignores a filter it does not know', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/monitoring/pods?filter=bogus']}><Monitoring /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId('pods-count')).toHaveTextContent('5 of 5');
+  });
+
   it('searches pods by name', async () => {
     const user = userEvent.setup();
     render(wrap(<Monitoring />));

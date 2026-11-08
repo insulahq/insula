@@ -240,13 +240,15 @@ export async function buildOrphanedPodAlert(k8s: K8sClients): Promise<DashboardA
     subtitle: entries.length === 1
       ? `${entries[0][1]} on ${entries[0][0]}`
       : `across ${entries.length} nodes · worst ${entries[0][0]}`,
-    href: '/cluster/nodes',
+    // The pods list, on the class these are: the node list showed neither the
+    // pods nor a way to clear them across nodes.
+    href: '/monitoring/pods?filter=failed',
     // The pods themselves, not only their nodes: which ones failed is the
     // symptom worth reading before clearing them.
     detail: [
       ...pods.slice(0, DASHBOARD_SUBJECT_LIMIT).map((p) => [`${p.ns}/${p.name}`, p.node] as [string, string]),
       ...moreRow(total, Math.min(total, DASHBOARD_SUBJECT_LIMIT)),
     ],
-    note: 'Failed, evicted or status-unknown pods. Clearing them is safe — Cluster → Nodes → Recovery.',
+    note: 'Failed, evicted or status-unknown pods; a node restart leaves some behind. Clearing them is safe — Prune Dead Pods on Monitoring → Pods.',
   });
 }

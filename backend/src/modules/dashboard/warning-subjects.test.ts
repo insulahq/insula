@@ -169,6 +169,9 @@ describe('Orphaned pods', () => {
       ['platform/migrate-1', 'n2'],
       ['platform/migrate-2', 'n2'],
     ]);
+    // The pods list, on the failed class — where they are listed and pruned.
+    expect(tile.href).toBe('/monitoring/pods?filter=failed');
+    expect(tile.note).toContain('Prune Dead Pods');
   });
 });
 

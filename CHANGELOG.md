@@ -56,6 +56,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     and names the node that holds the only complete copy, which should stay up until the rebuild
     finishes.
   - A copy lost on the node that is down reads as before, and the finding now names that node.
+- **The dashboard's orphaned-pods tile opens the pods list.** It linked to the node list, which
+  shows neither the pods nor a way to clear them across nodes. It now opens Monitoring → Pods
+  on the Failed filter, where Prune Dead Pods clears them. A node restart leaves such pods
+  behind.
+  - The pods list opens on the filter a link names (`?filter=failed`).
 
 ## [2026.11.6] - 2026-11-06
 
