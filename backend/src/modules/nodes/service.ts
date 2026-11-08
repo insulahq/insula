@@ -1437,8 +1437,18 @@ export async function repinTenantPlacement(
   // (a) Resolve the Longhorn host-tag for the target. Failure here
   //     skips the entire tenant — none of (b)/(c)/(d) run, so no
   //     partial state.
+  //
+  //     Not on the HA tier: its volume keeps copies on several nodes, and one
+  //     tag fences every copy onto one node (tenant-placement/volume-pin.ts,
+  //     which the Storage card's move follows). Tagged, Longhorn could place a
+  //     new copy only on the target: not the copy data locality builds where
+  //     the pods run after a later move, and not the second copy after the
+  //     target is lost. Lab staging: moved off a node this way, then moved
+  //     again, the volume never got its copy beside the pods
+  //     (LocalReplicaSchedulingFailure). The pods' preference brings them to
+  //     the target, and data locality the data.
   let nextSelector: string[] = [];
-  if (target !== '') {
+  if (target !== '' && tenant.storageTier !== 'ha') {
     try {
       nextSelector = [await ensureHostTag(target)];
     } catch (err) {

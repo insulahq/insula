@@ -145,7 +145,10 @@ function cluster(
       patchNamespacedStatefulSet: patch('patch-sts'),
     },
     custom: {
-      patchNamespacedCustomObject: async () => ({}),
+      patchNamespacedCustomObject: async ({ plural, name, body }: { plural: string; name: string; body: unknown }) => {
+        calls.push({ op: `patch-${plural}`, name, body });
+        return {};
+      },
       listNamespacedCustomObject: async () => ({ items: [] }),
     },
   } as unknown as K8sClients;
@@ -215,11 +218,21 @@ describe('repinTenantPlacement of an HA tenant to a named node', () => {
     expect(c.calls.map((x) => `${x.op}:${x.name}`)).toContain('patch-sts:db');
   });
 
-  it('a Local tenant still gets the hostname pin', async () => {
+  it('leaves the volume with no node tag: one tag would fence both copies onto the target', async () => {
+    const c = cluster(movedTenantShape());
+    await repinTenantPlacement(c.k8s, c.db, TENANT, 'node-a', 'node-d', tag);
+    // Also clears a tag an earlier move left.
+    expect(c.calls.filter((x) => x.op === 'patch-volumes')).toEqual([
+      { op: 'patch-volumes', name: 'pvc-1', body: { spec: { nodeSelector: [] } } },
+    ]);
+  });
+
+  it('a Local tenant still gets the hostname pin, and its volume the node tag', async () => {
     const c = cluster(movedTenantShape());
     await repinTenantPlacement(c.k8s, c.db, { ...TENANT, storageTier: 'local' }, 'node-a', 'node-d', tag);
     expect(bodyOf(c, 'my-mariadb')).toEqual({ nodeSelector: { [HOST]: 'node-a' } });
     expect(bodyOf(c, 'artcraft')).toBeUndefined();
+    expect(c.calls.find((x) => x.op === 'patch-volumes')?.body).toEqual({ spec: { nodeSelector: ['node-node-a'] } });
   });
 });
 

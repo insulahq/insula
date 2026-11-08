@@ -48,6 +48,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     back. The next deploy, the next move and a failover drop that rule.
   - Apps hard-pinned by an earlier move lose the pin at the next move of the tenant or the next
     deploy of each app. Until then, auto-repin still clears it when their node goes down.
+  - A drain, the recovery wizard and a failback also no longer tag an HA tenant's volume with the
+    target node. The tag let Longhorn place copies only there: after the tenant moved on, the
+    copy beside its pods could not be built, and after the target was lost the second copy could
+    not be rebuilt elsewhere. The next such move clears a tag an earlier one left. The Storage
+    card's Move never tagged HA volumes.
 - **The outage banner says when a volume's degraded state is not from the node that is down.**
   A volume was listed as affected by any outage while Longhorn rebuilt it, even with no copy on
   the node that was down. During restarts one node at a time, the copy the previous restart had
