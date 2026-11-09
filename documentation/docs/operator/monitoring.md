@@ -279,8 +279,20 @@ it is what you read when you want to know what happened.
 
 What surprises people is that Kubernetes never clears them. It only collects
 terminal pods once there are more than 12,500 of them, which on a cluster this
-size is never, so they accumulate: every node reboot leaves a batch and nothing
-takes them away again.
+size is never, so they accumulate.
+
+The records a node restart leaves are the exception: the platform deletes them
+itself.
+
+- A pod the restarting node rejected before it started is deleted within
+  5 minutes.
+- A pod the shutdown stopped is kept for 30 minutes, so you can look at it after
+  the restart, and then deleted.
+
+It deletes only pods whose controller has already replaced them, in tenant
+namespaces too. It never deletes a job's pod, a pod nothing owns, or a database
+instance. The dashboard's **Orphaned pods** tile leaves out records that are
+about to go this way, and opens this tab on the **Failed** filter.
 
 They are cheap, but not free:
 
@@ -308,7 +320,8 @@ message says so.
     a narrower, node-scoped tool: it only removes *failed* and *evicted* pods, and
     it refuses tenant and database pods entirely. Records left by a normal
     shutdown are *completed*, not failed, and most of them live in tenant
-    namespaces — so that action will not clear them. Use the Pods tab for those.
+    namespaces — so that action will not clear them. The platform deletes them
+    after 30 minutes; use the Pods tab to clear them sooner.
 
 ## Workloads that stop running
 
