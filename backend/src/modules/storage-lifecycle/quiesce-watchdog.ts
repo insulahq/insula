@@ -97,7 +97,7 @@ async function settleAbandonedMove(
   try {
     const list = await k8s.apps.listNamespacedDeployment({ namespace });
     if ((list.items ?? []).some((d) => (d.spec?.replicas ?? 1) > 0)) return;
-    await repinDeployments(k8s, namespace, target, { restart: false });
+    await repinDeployments(k8s, namespace, target, { restart: false, storageTier });
     await db.update(tenants).set({ nodeName: target }).where(eq(tenants.id, tenantId));
   } catch (err) {
     console.warn(`[quiesce-watchdog] could not settle the pins of an abandoned move in ${namespace}: ${err instanceof Error ? err.message : String(err)}`);

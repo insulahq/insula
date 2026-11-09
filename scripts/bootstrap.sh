@@ -3809,14 +3809,22 @@ pin_system_components_to_servers() {
   #
   # system-cluster-critical is what the rest of the Calico stack in
   # calico-system already carries; it moves the operator to the LAST drain
-  # group, so the node is gone before a replacement can be bound.
+  # group. That shortens the loop to that group's 20s, not to nothing: 508
+  # Failed pods from one later production reboot.
+  #
+  # So the operator also sleeps in preStop. A ReplicaSet replaces a pod only
+  # once it is terminal, and a sleeping pod stays Running for the whole group
+  # window (the kubelet caps the sleep at the group's 20s), so no replacement
+  # exists while the kubelet can still reject one. 25s; the Deployment's
+  # terminationGracePeriodSeconds is 60. The sleep action is the kubelet's own,
+  # no binary in the image.
   #
   # NOT fixable by narrowing the tolerations — the blanket NoSchedule/NoExecute
   # tolerations are what let CNI bootstrap past
   # node.kubernetes.io/network-unavailable on a cold boot. Existing clusters get
-  # this via host-migration 2026.9.5/0001.
+  # these via host-migrations 2026.9.5/0001 and 2026.11.7/0001.
   kubectl patch deployment tigera-operator -n tigera-operator --type=strategic \
-    --patch='{"spec":{"template":{"spec":{"priorityClassName":"system-cluster-critical"}}}}' \
+    --patch='{"spec":{"template":{"spec":{"priorityClassName":"system-cluster-critical","containers":[{"name":"tigera-operator","lifecycle":{"preStop":{"sleep":{"seconds":25}}}}]}}}}' \
     2>/dev/null || true
 
   # M12: CoreDNS to 2 replicas (3 with 3+ servers) — k3s ships 1, a single

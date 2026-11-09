@@ -138,7 +138,7 @@ runcmd:
   # NOT clash with the VM's own sshd on :22. Password auth (backup-config ssh_password).
   # Bounded nofile: under containerd's ~1e9 default the chrooted internal-sftp closes
   # every possible fd first and answers only minutes later (lib/lab-svc.sh). ---
-  - "docker run -d --name sftp --restart=always --ulimit nofile=65536:65536 -p 2222:22 atmoz/sftp:latest ${SFTP_USER}:${SFTP_PW}:::upload"
+  - "docker run -d --name sftp --restart=always --ulimit nofile=65536:65536 -p 2222:22 atmoz/sftp:debian ${SFTP_USER}:${SFTP_PW}:::upload"
   # CIFS/SMB (dperson/samba) — user ${SMB_USER}, writable share 'backups' at /share on :445.
   # -r: no recycle bin, so a file deleted over SMB is gone (the image keeps it in .deleted/). ---
   - "mkdir -p /srv/smb && chmod 0777 /srv/smb"

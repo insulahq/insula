@@ -169,6 +169,38 @@ describe('Orphaned pods', () => {
       ['platform/migrate-1', 'n2'],
       ['platform/migrate-2', 'n2'],
     ]);
+    // The pods list, on the failed class — where they are listed and pruned.
+    expect(tile.href).toBe('/monitoring/pods?filter=failed');
+    expect(tile.note).toContain('Prune Dead Pods');
+  });
+
+  it('leaves out the records of a node restart the reaper is about to clear, not one it is late on', async () => {
+    const now = Date.parse('2026-09-11T14:00:00Z');
+    const rejected = (name: string, minutesAgo: number) => ({
+      metadata: {
+        namespace: 'tigera-operator', name, labels: {}, ownerReferences: [{ controller: true }],
+        creationTimestamp: new Date(now - minutesAgo * 60_000).toISOString(),
+      },
+      spec: { nodeName: 'n4' },
+      status: { phase: 'Failed', reason: 'NodeShutdown', containerStatuses: [] },
+    });
+    // Production: 508 of these after one restart, all on the tile until the reaper's grace ran out.
+    const k8s = { core: { listPodForAllNamespaces: async () => ({ items: [
+      rejected('tigera-operator-a', 1), rejected('tigera-operator-b', 3), rejected('tigera-operator-late', 60),
+    ] }) } } as unknown as Parameters<typeof buildOrphanedPodAlert>[0];
+    const tile = (await buildOrphanedPodAlert(k8s, now))!;
+    expect(tile.value).toBe('1');
+    expect(tile.detail).toEqual([['tigera-operator/tigera-operator-late', 'n4']]);
+  });
+
+  it('no tile at all right after a restart whose records the reaper will clear', async () => {
+    const now = Date.parse('2026-09-11T14:00:00Z');
+    const k8s = { core: { listPodForAllNamespaces: async () => ({ items: [{
+      metadata: { namespace: 'calico-system', name: 'calico-node-x', labels: {}, ownerReferences: [{ controller: true }], creationTimestamp: '2026-09-01T00:00:00Z' },
+      spec: { nodeName: 'n4' },
+      status: { phase: 'Failed', reason: 'Terminated', containerStatuses: [{ state: { terminated: { finishedAt: '2026-09-11T13:55:00Z' } } }] },
+    }] }) } } as unknown as Parameters<typeof buildOrphanedPodAlert>[0];
+    expect(await buildOrphanedPodAlert(k8s, now)).toBeNull();
   });
 });
 

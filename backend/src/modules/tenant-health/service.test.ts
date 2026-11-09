@@ -337,6 +337,95 @@ describe('an empty rebuild target is not a surviving copy', () => {
  * standby cannot take over and nothing resolves it until the node is fixed or
  * removed. Measured wedged for the full 5m37s.
  */
+/**
+ * Production: during one node's restart, an HA tenant with its copies on two
+ * other nodes was listed as affected. Its volume was still rebuilding the copy
+ * the restart before had stopped, and the finding read as if this outage did it.
+ */
+describe('a volume degraded with no copy on the down node', () => {
+  const rebuildingOn = (volumeName: string, nodeId: string) => ({ ...replicaOn(volumeName, nodeId), rebuilding: true });
+  const haTenant = localTenant({ storageTier: 'ha', pinnedNode: 'node-b' });
+  const finding = (input: Partial<OutageInput>) => computeOutageImpact(baseInput({ tenants: [haTenant], ...input }))
+    .affectedTenants[0]?.findings.find((f) => f.kind === 'volume_degraded_rebuilding');
+
+  it('names the node being rebuilt, says this outage did not cause it, and the node that must stay up', () => {
+    const f = finding({
+      volumes: [vol({ pvcName: 'data', robustness: 'degraded' })],
+      replicas: [rebuildingOn('pvc-1', 'node-a'), replicaOn('pvc-1', 'node-b')],
+    });
+    expect(f?.severity).toBe('degraded');
+    expect(f?.detail).toBe(
+      '1 volume(s) are rebuilding their copy on node-a. None of their copies is on node-c, so this outage did not cause it — '
+      + 'most often an earlier restart is still catching up. Until it finishes, the only complete copy is on node-b: keep that node up.',
+    );
+    expect(f?.nodes).toEqual(['node-a']);
+    expect(f?.resources).toEqual(['data']);
+  });
+
+  it('without the engines read, still says this outage did not cause it', () => {
+    const f = finding({
+      volumes: [vol({ robustness: 'degraded' })],
+      replicas: [replicaOn('pvc-1', 'node-a'), replicaOn('pvc-1', 'node-b')],
+    });
+    expect(f?.detail).toBe(
+      '1 volume(s) are running on reduced redundancy while Longhorn restores it. None of their copies is on node-c, so this '
+      + 'outage did not cause it — most often an earlier restart is still catching up.',
+    );
+    expect(f?.nodes).toEqual([]);
+  });
+
+  it('a copy lost on the down node keeps its message, and now names that node', () => {
+    const f = finding({
+      volumes: [vol({ robustness: 'degraded' })],
+      replicas: [replicaOn('pvc-1', 'node-a'), replicaOn('pvc-1', 'node-c')],
+    });
+    expect(f?.detail).toBe('1 volume(s) are running on reduced redundancy while Longhorn rebuilds. No action required — this resolves itself.');
+    expect(f?.nodes).toEqual(['node-c']);
+  });
+
+  it('both in one tenant: one finding, both causes', () => {
+    const [entry] = computeOutageImpact(baseInput({
+      tenants: [haTenant],
+      volumes: [vol({ volumeName: 'pvc-1', pvcName: 'data' }), vol({ volumeName: 'pvc-2', pvcName: 'db', robustness: 'degraded' })],
+      replicas: [
+        replicaOn('pvc-1', 'node-a'), replicaOn('pvc-1', 'node-c'),
+        rebuildingOn('pvc-2', 'node-a'), replicaOn('pvc-2', 'node-b'),
+      ],
+    })).affectedTenants;
+    const rebuilds = entry.findings.filter((f) => f.kind === 'volume_degraded_rebuilding');
+    expect(rebuilds).toHaveLength(1);
+    expect(rebuilds[0]!.detail).toContain('Longhorn rebuilds.');
+    expect(rebuilds[0]!.detail).toContain('rebuilding their copy on node-a');
+    expect(rebuilds[0]!.nodes).toEqual(['node-a', 'node-c']);
+    expect(rebuilds[0]!.resources).toEqual(['data', 'db']);
+  });
+
+  it('names the node holding a volume\'s only complete copy per volume, not across them', () => {
+    const f = finding({
+      volumes: [vol({ volumeName: 'pvc-1', pvcName: 'data', robustness: 'degraded' }), vol({ volumeName: 'pvc-2', pvcName: 'db', robustness: 'degraded' })],
+      replicas: [
+        rebuildingOn('pvc-1', 'node-a'), replicaOn('pvc-1', 'node-b'),
+        // Engines not naming a rebuild here: two running copies.
+        replicaOn('pvc-2', 'node-a'), replicaOn('pvc-2', 'node-b'),
+      ],
+    });
+    expect(f?.detail).toBe(
+      '1 volume(s) are rebuilding their copy on node-a. 1 volume(s) are running on reduced redundancy while Longhorn restores it. '
+      + 'None of their copies is on node-c, so this outage did not cause it — most often an earlier restart is still catching up. '
+      + 'Until it finishes, the only complete copy is on node-b: keep that node up.',
+    );
+  });
+
+  it('with no node down, says what is rebuilding and nothing about an outage', () => {
+    const f = finding({
+      nodes: [node('node-a', true), node('node-b', true), node('node-c', true)],
+      volumes: [vol({ robustness: 'degraded' })],
+      replicas: [rebuildingOn('pvc-1', 'node-a'), replicaOn('pvc-1', 'node-b'), replicaOn('pvc-1', 'node-c')],
+    });
+    expect(f?.detail).toBe('1 volume(s) are rebuilding their copy on node-a.');
+  });
+});
+
 describe('platform services with no ready endpoint', () => {
   const downOnly = { nodes: [node('node-a', true), node('node-c', false)] };
 

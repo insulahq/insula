@@ -76,7 +76,7 @@ The recovery primitives already exist; what is missing is the mapping and the su
 |---|---|---|---|
 | `workloads_pinned_to_down_node` | `tenants.node_name` = a NotReady node | Re-pin the tenant to a live node | yes — the drain flow's `tenantPlacement` already re-pins workloads + volumes + DB row |
 | `volume_last_replica_on_down_node` | Longhorn replica set for the tenant's volumes (see §2.5) | Wait for node return, or restore from the latest tenant bundle | yes — `dr-recover` restores a tenant from a bundle |
-| `volume_degraded_rebuilding` | Longhorn `robustness=degraded` | None — informational, self-heals | n/a |
+| `volume_degraded_rebuilding` | Longhorn `robustness=degraded`. A volume with no copy on a down node is degraded from before the outage (most often a rebuild after an earlier restart): its finding says so, names the node being rebuilt (a write-only replica in the engine's `replicaModeMap`), and names the node holding the only complete copy | None — informational, self-heals. Keep the node with the only complete copy up until the rebuild finishes | n/a |
 | `mail_unavailable` | mail active node NotReady / `mail/health` unhealthy | Mail failover, then failback | yes — `/admin/mail/failover`, `/admin/mail/failback` |
 | `namespace_resources_missing` | existing namespace-integrity audit | Repair | yes — `namespace-integrity` |
 

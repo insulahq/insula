@@ -15,7 +15,9 @@ import { defaultPlacement, nodesToAvoid, placeStoppedTenants, strandedBytes } fr
 import { resolveAutoTarget } from './auto-target.js';
 import { unpinnedVolumeSharers } from '../tenant-placement/workload-pin.js';
 import { ensureHaColocation } from '../tenant-placement/ha-colocation.js';
+import { pinHaTenantSoftly } from '../tenant-placement/ha-pin.js';
 import { HA_SHARED_VOLUME_AFFINITY } from '../tenant-placement/pod-placement.js';
+import { toMergePatch } from '../../shared/merge-patch.js';
 import { loadMailRoleOnNode, type MailRoleOnNode } from './mail-role.js';
 import { assertTaintSafeForSystem, cordonNode, moveSystemPodsOff } from './system-pods.js';
 import { movePostgresInstancesOff, type MoveOptions } from './postgres-move.js';
@@ -562,29 +564,9 @@ interface AffinityLite {
   [k: string]: unknown;
 }
 
-const isPlainObject = (v: unknown): v is Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v);
-
-/**
- * The JSON merge patch that turns `before` into `after`. Pure.
- *
- * stripHostnamePin returns the affinity as it should be, with the pin's keys
- * deleted. Sent as is, a merge patch keeps every key it does not mention
- * (RFC 7396 removes only a key set to null): a workload with any other
- * affinity rule kept its required pin to the node being left.
- */
-export function toMergePatch(before: unknown, after: unknown): unknown {
-  if (after === null || after === undefined) return null;
-  if (!isPlainObject(before) || !isPlainObject(after)) return after;
-  const out: Record<string, unknown> = {};
-  for (const k of Object.keys(before)) {
-    if (before[k] !== undefined && after[k] === undefined) out[k] = null;
-  }
-  for (const [k, v] of Object.entries(after)) {
-    if (v !== undefined) out[k] = toMergePatch(before[k], v);
-  }
-  return out;
-}
+// stripHostnamePin returns the affinity as it should be; sent as a merge
+// patch, it goes through this (shared/merge-patch.ts).
+export { toMergePatch };
 
 /**
  * Remove ONLY the `kubernetes.io/hostname In [nodeName]` requirement from an
@@ -1455,8 +1437,18 @@ export async function repinTenantPlacement(
   // (a) Resolve the Longhorn host-tag for the target. Failure here
   //     skips the entire tenant — none of (b)/(c)/(d) run, so no
   //     partial state.
+  //
+  //     Not on the HA tier: its volume keeps copies on several nodes, and one
+  //     tag fences every copy onto one node (tenant-placement/volume-pin.ts,
+  //     which the Storage card's move follows). Tagged, Longhorn could place a
+  //     new copy only on the target: not the copy data locality builds where
+  //     the pods run after a later move, and not the second copy after the
+  //     target is lost. Lab staging: moved off a node this way, then moved
+  //     again, the volume never got its copy beside the pods
+  //     (LocalReplicaSchedulingFailure). The pods' preference brings them to
+  //     the target, and data locality the data.
   let nextSelector: string[] = [];
-  if (target !== '') {
+  if (target !== '' && tenant.storageTier !== 'ha') {
     try {
       nextSelector = [await ensureHostTag(target)];
     } catch (err) {
@@ -1491,7 +1483,26 @@ export async function repinTenantPlacement(
       : { 'kubernetes.io/hostname': target };
   const body = { spec: { template: { spec: { nodeSelector: selectorPatch } } } };
 
-  for (const w of tenant.workloads) {
+  // An HA tenant to a named node: not the hostname pin, but what a deploy of
+  // it there renders — for every workload, those still held to the node by
+  // the soft preference too (tenant-placement/ha-pin.ts).
+  const haToNode = target !== '' && tenant.storageTier === 'ha';
+  if (haToNode) {
+    const keepOff = releaseFromNode && releaseFromNode !== target && !(await nodeIsDown(k8s, releaseFromNode))
+      ? releaseFromNode
+      : null;
+    try {
+      const pinned = await pinHaTenantSoftly(k8s, ns, target, { keepOff, statefulSets: true });
+      counts.workloads += pinned.patched.length;
+      for (const f of pinned.failed) {
+        console.warn(`[nodes] re-pin tenant=${tenant.tenantId} ${f.workload} in ${ns} → ${target} failed:`, f.error);
+      }
+    } catch (err) {
+      console.warn(`[nodes] re-pin tenant=${tenant.tenantId} could not list the workloads in ${ns}:`, (err as Error).message);
+    }
+  }
+
+  for (const w of haToNode ? [] : tenant.workloads) {
     try {
       // A workload pinned by nodeAffinity is NOT released by the nodeSelector
       // patch above — and buildDrainImpact counts BOTH forms (detectNodePin),
@@ -1547,7 +1558,7 @@ export async function repinTenantPlacement(
   //      and the re-pinned pods waited behind it until it idled (lab staging:
   //      8 minutes). Pinned with the tenant, a running one restarts on the
   //      target, and a stopped one starts there; "auto" takes its pin off.
-  if (!tenant.workloads.some((w) => w.kind === 'Deployment' && w.name === FILE_MANAGER_DEPLOYMENT)) {
+  if (haToNode || !tenant.workloads.some((w) => w.kind === 'Deployment' && w.name === FILE_MANAGER_DEPLOYMENT)) {
     try {
       await k8s.apps.patchNamespacedDeployment({
         namespace: ns, name: FILE_MANAGER_DEPLOYMENT, body,

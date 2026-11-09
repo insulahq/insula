@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Activity, AlertTriangle, CheckCircle, XCircle, Server, Loader2, RefreshCw } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import StatCard from '@/components/ui/StatCard';
@@ -490,7 +491,13 @@ const CLASSIFICATION_BADGES: Record<string, { label: string; classes: string }> 
   unknown: { label: 'Unknown', classes: 'bg-gray-50 text-gray-600 dark:bg-gray-700 dark:text-gray-400' },
 };
 
-type PodFilter = 'all' | 'running' | 'pending' | 'failed' | 'orphaned' | 'completed';
+const POD_FILTERS = ['all', 'running', 'pending', 'failed', 'orphaned', 'completed'] as const;
+type PodFilter = typeof POD_FILTERS[number];
+
+/** `?filter=` opens the tab on one class — the dashboard's failed-pods tile links to it. */
+function linkedPodFilter(value: string | null): PodFilter {
+  return (POD_FILTERS as readonly string[]).includes(value ?? '') ? value as PodFilter : 'all';
+}
 
 function PodsTab({
   pods,
@@ -501,7 +508,8 @@ function PodsTab({
   readonly isLoading: boolean;
   readonly isError: boolean;
 }) {
-  const [filter, setFilter] = useState<PodFilter>('all');
+  const [searchParams] = useSearchParams();
+  const [filter, setFilter] = useState<PodFilter>(() => linkedPodFilter(searchParams.get('filter')));
   const [search, setSearch] = useState('');
 
   const filtered = pods.filter((p) => {
@@ -545,7 +553,7 @@ function PodsTab({
       <DeadPodPruneBar deadCount={deadCount} />
 
       <div className="flex flex-wrap items-center gap-2">
-        {(['all', 'running', 'pending', 'failed', 'orphaned', 'completed'] as const).map((f) => (
+        {POD_FILTERS.map((f) => (
           <button
             key={f}
             type="button"

@@ -191,13 +191,44 @@ describe('repinTenantPlacement of an HA tenant to Auto', () => {
     expect(c.calls.map((x) => `${x.op}:${x.name}`)).toEqual(['patch:file-manager']);
   });
 
-  it('leaves a Local tenant and a re-pin to a named node alone', async () => {
+  it('leaves a Local tenant alone (an HA tenant to a named node: ha-pin.test.ts)', async () => {
     const local = cluster(items, { nodeReady: false, podsOnNode: [podOf('website')] });
     await repinTenantPlacement(local.k8s, local.db, { ...TENANT, storageTier: 'local' }, 'sv1', 'sv4', tag);
-    const named = cluster(items, { nodeReady: false, podsOnNode: [podOf('website')] });
-    await repinTenantPlacement(named.k8s, named.db, TENANT, 'sv1', 'sv4', tag);
-    for (const c of [local, named]) {
-      expect(c.calls.filter((x) => x.op === 'patch' && x.name === 'website')).toEqual([]);
-    }
+    expect(local.calls.filter((x) => x.op === 'patch' && x.name === 'website')).toEqual([]);
+  });
+});
+
+describe('haColocationAffinityPatch and a move\'s exclusion', () => {
+  const notIn = (node: string) => ({ key: 'kubernetes.io/hostname', operator: 'NotIn', values: [node] });
+
+  it('drops the exclusion of the node an earlier move left: it may hold the surviving copy', () => {
+    expect(haColocationAffinityPatch({
+      nodeAffinity: {
+        requiredDuringSchedulingIgnoredDuringExecution: { nodeSelectorTerms: [{ matchExpressions: [notIn('sv4')] }] },
+        preferredDuringSchedulingIgnoredDuringExecution: [prefer('sv1')],
+      },
+      podAffinity: HA_SHARED_VOLUME_AFFINITY,
+    }, 'sv1')).toEqual({ nodeAffinity: null });
+  });
+
+  it('a failover clears it from a stopped app too, which has no pod on the dead node', async () => {
+    const keptOff = { nodeAffinity: { requiredDuringSchedulingIgnoredDuringExecution: { nodeSelectorTerms: [{ matchExpressions: [notIn('sv4')] }] } }, podAffinity: HA_SHARED_VOLUME_AFFINITY };
+    const stopped = { ...deployment('crm', MANAGED, keptOff), spec: { ...deployment('crm', MANAGED, keptOff).spec, replicas: 0 } };
+    const running = deployment('website', MANAGED, keptOff);
+    const c = cluster([stopped, running], { podsOnNode: [] });
+    // website runs elsewhere and keeps its rule; crm's next start must not be held off sv4.
+    expect(await ensureHaColocation(c.k8s, 'tenant-acme', 'sv1')).toEqual(['crm']);
+  });
+
+  it('keeps the rest of a term the exclusion was added to', () => {
+    const disk = { key: 'disk', operator: 'In', values: ['ssd'] };
+    expect(haColocationAffinityPatch({
+      nodeAffinity: {
+        requiredDuringSchedulingIgnoredDuringExecution: { nodeSelectorTerms: [{ matchExpressions: [disk, notIn('sv4')] }] },
+      },
+      podAffinity: HA_SHARED_VOLUME_AFFINITY,
+    }, 'sv1')).toEqual({
+      nodeAffinity: { requiredDuringSchedulingIgnoredDuringExecution: { nodeSelectorTerms: [{ matchExpressions: [disk] }] } },
+    });
   });
 });

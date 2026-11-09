@@ -11,8 +11,8 @@
  * ReadWriteOnce volume never starts.
  *
  * So the re-pin renders what a deploy of the now-Auto tenant would: the
- * preference, and no soft preference for the node being left. Every other
- * affinity rule is kept.
+ * preference, no soft preference for the node being left, and no exclusion of
+ * a node an earlier move left (ha-pin.ts). Every other affinity rule is kept.
  *
  * The template change restarts the workload, so it is made when the pod is
  * placed again anyway, and once:
@@ -36,9 +36,14 @@ interface NodeTermLike {
   };
 }
 
+interface RequiredTermLike {
+  readonly matchExpressions?: ReadonlyArray<{ readonly key?: string; readonly operator?: string; readonly values?: readonly string[] }>;
+  readonly matchFields?: readonly unknown[];
+}
+
 export interface AffinityLike {
   readonly nodeAffinity?: {
-    readonly requiredDuringSchedulingIgnoredDuringExecution?: unknown;
+    readonly requiredDuringSchedulingIgnoredDuringExecution?: { readonly nodeSelectorTerms?: readonly RequiredTermLike[] } | null;
     readonly preferredDuringSchedulingIgnoredDuringExecution?: readonly NodeTermLike[];
   };
   readonly podAffinity?: unknown;
@@ -47,6 +52,7 @@ export interface AffinityLike {
 interface DeploymentLike {
   readonly metadata?: { readonly name?: string };
   readonly spec?: {
+    readonly replicas?: number;
     readonly template?: {
       readonly metadata?: { readonly labels?: Readonly<Record<string, string>> };
       readonly spec?: { readonly affinity?: AffinityLike };
@@ -82,20 +88,53 @@ export function haColocationAffinityPatch(
   }
 
   const nodeAffinity = current?.nodeAffinity;
+  const naPatch: Record<string, unknown> = {};
   const preferred = nodeAffinity?.preferredDuringSchedulingIgnoredDuringExecution;
   if (releaseFrom && Array.isArray(preferred)) {
     const kept = preferred.filter((t) => !prefersOnly(t, releaseFrom));
     if (kept.length !== preferred.length) {
-      if (kept.length > 0) {
-        patch.nodeAffinity = { preferredDuringSchedulingIgnoredDuringExecution: kept };
-      } else if (nodeAffinity?.requiredDuringSchedulingIgnoredDuringExecution != null) {
-        patch.nodeAffinity = { preferredDuringSchedulingIgnoredDuringExecution: null };
-      } else {
-        patch.nodeAffinity = null;
-      }
+      naPatch.preferredDuringSchedulingIgnoredDuringExecution = kept.length > 0 ? kept : null;
     }
   }
+  // A move's exclusion of the node it left (ha-pin.ts): the pods are placed
+  // again now, and that node may hold the surviving copy.
+  const required = nodeAffinity?.requiredDuringSchedulingIgnoredDuringExecution;
+  const terms = required?.nodeSelectorTerms;
+  if (Array.isArray(terms)) {
+    const kept = terms.map(withoutExclusion).filter((t): t is RequiredTermLike => t !== null);
+    if (kept.length !== terms.length || kept.some((t, i) => t !== terms[i])) {
+      naPatch.requiredDuringSchedulingIgnoredDuringExecution = kept.length > 0 ? { nodeSelectorTerms: kept } : null;
+    }
+  }
+  if (Object.keys(naPatch).length > 0) {
+    const left = (key: 'preferredDuringSchedulingIgnoredDuringExecution' | 'requiredDuringSchedulingIgnoredDuringExecution') =>
+      key in naPatch ? naPatch[key] !== null : nodeAffinity?.[key] != null;
+    const anyLeft = left('preferredDuringSchedulingIgnoredDuringExecution')
+      || left('requiredDuringSchedulingIgnoredDuringExecution');
+    patch.nodeAffinity = anyLeft ? naPatch : null;
+  }
   return Object.keys(patch).length > 0 ? patch : null;
+}
+
+/** Whether a required term keeps the pod off a node by hostname (a move's exclusion). Pure. */
+function keepsOffANode(affinity: AffinityLike | undefined): boolean {
+  return (affinity?.nodeAffinity?.requiredDuringSchedulingIgnoredDuringExecution?.nodeSelectorTerms ?? [])
+    .some((t) => (t.matchExpressions ?? []).some((e) => e.key === HOSTNAME_LABEL && e.operator === 'NotIn'));
+}
+
+/**
+ * The term without `kubernetes.io/hostname NotIn [...]`; the same object when
+ * it has none; null when nothing is left of it (an empty term matches every
+ * node). Pure.
+ */
+function withoutExclusion(term: RequiredTermLike): RequiredTermLike | null {
+  const exprs = term.matchExpressions ?? [];
+  const kept = exprs.filter((e) => !(e.key === HOSTNAME_LABEL && e.operator === 'NotIn'));
+  if (kept.length === exprs.length) return term;
+  const hasFields = Array.isArray(term.matchFields) && term.matchFields.length > 0;
+  if (kept.length === 0 && !hasFields) return null;
+  const rest = Object.fromEntries(Object.entries(term).filter(([k]) => k !== 'matchExpressions'));
+  return kept.length > 0 ? { ...rest, matchExpressions: kept } : rest;
 }
 
 interface PodLike {
@@ -115,10 +154,11 @@ export function deploymentOfPod(pod: PodLike): string | null {
 
 /**
  * Give the tenant workload Deployments that have a pod on `releaseFrom` the HA
- * preference, and drop their preference for that node. Only those: their pods
- * are the ones placed again, and a template change restarts the others for
- * nothing. `skip` = Deployments the caller already patched. Returns the names
- * patched. Never throws: the re-pin itself is still right without it.
+ * preference, and drop their preference for that node. Only those, and the
+ * stopped ones an earlier move keeps off a node: their pods are the ones
+ * placed again, and a template change restarts the others for nothing.
+ * `skip` = Deployments the caller already patched. Returns the names patched.
+ * Never throws: the re-pin itself is still right without it.
  */
 export async function ensureHaColocation(
   k8s: Pick<K8sClients, 'apps' | 'core'>,
@@ -132,12 +172,15 @@ export async function ensureHaColocation(
       namespace, fieldSelector: `spec.nodeName=${releaseFrom}`,
     } as unknown as Parameters<typeof k8s.core.listNamespacedPod>[0]) as { items?: PodLike[] };
     const onNode = new Set((pods.items ?? []).map(deploymentOfPod).filter((n): n is string => n !== null));
-    if (onNode.size === 0) return patched;
 
     const list = await k8s.apps.listNamespacedDeployment({ namespace }) as { items?: DeploymentLike[] };
     for (const d of list.items ?? []) {
       const name = d.metadata?.name;
-      if (!name || !onNode.has(name) || skip.has(name)) continue;
+      // Also a stopped app still kept off a node by an earlier move: its next
+      // start would be held off a node that may now hold the only copy, and at
+      // 0 replicas the template change restarts nothing.
+      const stoppedAndKeptOff = d.spec?.replicas === 0 && keepsOffANode(d.spec.template?.spec?.affinity);
+      if (!name || !(onNode.has(name) || stoppedAndKeptOff) || skip.has(name)) continue;
       // The deployers' label (pod-placement.ts): not on the file manager or
       // the platform pods, which render their own scheduling.
       if (d.spec?.template?.metadata?.labels?.[TENANT_WORKLOAD_LABEL] !== 'true') continue;

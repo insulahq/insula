@@ -282,7 +282,7 @@ function bindSteps(db: Database, k8s: K8sClients, input: BeginMoveInput, opId: s
     waitForPodsGone: () => waitForQuiesced(k8s, namespace),
     waitForDetached: () => waitForVolumeDetachedByPvc(k8s, namespace, `${namespace}-storage`),
     repin: (node) => repinTenant(k8s, namespace, node, input.storageTier, { restart: false }),
-    pinBack: (node) => repinDeployments(k8s, namespace, node, { restart: false }),
+    pinBack: (node) => repinDeployments(k8s, namespace, node, { restart: false, storageTier: input.storageTier }),
     recordPrimary: async () => {
       await db.update(tenants).set({ nodeName: target, updatedAt: sql`NOW()` }).where(eq(tenants.id, tenantId));
     },
