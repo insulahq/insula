@@ -66,6 +66,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   on the Failed filter, where Prune Dead Pods clears them. A node restart leaves such pods
   behind.
   - The pods list opens on the filter a link names (`?filter=failed`).
+- **A node restart no longer leaves hundreds of rejected Calico operator pods.** During a
+  graceful shutdown the operator's pod was stopped, its replacement was placed straight back
+  on the shutting-down node (it tolerates every taint, so it can bring the network up on a
+  cold boot), and the node rejected it, over and over until the kubelet stopped. On
+  production, one restart left 508 such pods, even with the earlier fix that stops the
+  operator last.
+  - The operator now waits in a 25-second pre-stop sleep, so it is still running when the
+    node goes down and no replacement is made. On lab staging a restart of the node running it
+    left 15 rejected pods before and none after, in two restarts; the same operator pod came
+    back after boot, and the restart took no longer. A normal operator restart takes 25 seconds
+    longer. Host migration `2026.11.7/0001` patches existing clusters; `bootstrap.sh` sets it
+    on new ones.
+  - Pods a shutting-down node rejected never ran, so they are now deleted within 5 minutes
+    instead of after 30. Pods the shutdown stopped still stay 30 minutes for a look after the
+    restart.
+  - The dashboard's orphaned-pods tile no longer counts restart records that are about to be
+    deleted automatically. It shows them only if that clean-up is late.
 
 ## [2026.11.6] - 2026-11-06
 

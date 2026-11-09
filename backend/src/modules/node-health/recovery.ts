@@ -25,6 +25,7 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { auditLogs } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import { awaitingShutdownReap, type DebrisPod } from './shutdown-debris.js';
 import crypto from 'node:crypto';
 
 /**
@@ -328,14 +329,24 @@ export async function countStalePodsByNode(
   return counts;
 }
 
-/** The stale pod records themselves, by the same predicate — the dashboard names them. */
+/**
+ * The stale pod records themselves, by the same predicate — the dashboard names
+ * them. With `awaitingReapAt` (now, ms), node-shutdown records the node-health
+ * reaper has not reached yet are left out (shutdown-debris.ts): it clears them
+ * without anyone acting.
+ */
 export async function listStalePods(
   k8s: K8sClients,
+  opts: { readonly awaitingReapAt?: number } = {},
 ): Promise<ReadonlyArray<{ readonly ns: string; readonly name: string; readonly node: string }>> {
   const list = (await k8s.core.listPodForAllNamespaces()) as unknown as {
     items?: ReadonlyArray<RawPod>;
   };
-  return selectStalePodTargets(list.items ?? []).filter((t) => Boolean(t.node));
+  const now = opts.awaitingReapAt;
+  const pods = now === undefined
+    ? list.items ?? []
+    : (list.items ?? []).filter((p) => !awaitingShutdownReap(p as DebrisPod, now));
+  return selectStalePodTargets(pods).filter((t) => Boolean(t.node));
 }
 
 export async function cleanStalePodsOnNode(input: {

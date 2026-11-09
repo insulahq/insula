@@ -22,11 +22,16 @@
  * the rest of the drain window.
  *
  * Giving tigera-operator a real priorityClassName (PR #363) moved it into the
- * LAST drain group and cut that to 20 per reboot — — but
- * not to zero, and 20/reboot still accumulates without bound. The residue is
- * inherent: a Deployment with blanket `operator: Exists` tolerations will
- * always get a few replacements bound to a node that is draining but has not
- * yet stopped heartbeating. Kubelet does not cordon a node it is shutting down.
+ * LAST drain group, which shortened the loop to that group's 20s — not to
+ * nothing: a later production reboot still left 508. Its preStop sleep
+ * (host-migration 2026.11.7/0001) keeps the pod Running through the window, so
+ * no replacement exists while the kubelet can reject one. A residue stays
+ * possible: a Deployment with blanket `operator: Exists` tolerations can
+ * always get a replacement bound to a node that is shutting down. Kubelet does
+ * not cordon a node it is shutting down.
+ *
+ * A REJECTED pod never ran, so it is reaped at the next tick
+ * (REJECTED_GRACE_MS); a pod the shutdown stopped keeps DEBRIS_GRACE_MS.
  *
  * These records are not inert. They are pod objects with exit-code-137
  * container statuses, and they are precisely what made the OOM detectors report
@@ -61,6 +66,18 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
  * cycle is minutes; this is comfortably longer and still far short of the next.
  */
 export const DEBRIS_GRACE_MS = 30 * 60 * 1000;
+
+/**
+ * A pod the kubelet REJECTED at admission ("NodeShutdown") never started a
+ * container: there is nothing in it to diagnose, only the count. Reaped at the
+ * next tick. Production: one reboot left 508 of them in tigera-operator, and
+ * the dashboard counted every one as an orphaned pod for the half hour the
+ * grace kept them.
+ */
+export const REJECTED_GRACE_MS = 0;
+
+/** How long past its grace a record may wait for the reaper: two node-health ticks. */
+export const REAP_SLACK_MS = 2 * 5 * 60 * 1000;
 
 type K8sTime = string | Date;
 
@@ -140,10 +157,32 @@ function stoppedAtMs(pod: DebrisPod): number | null {
 }
 
 /**
+ * Debris this reaper takes, whatever its age: terminal, stopped by the node
+ * shutdown, owned by a controller, not a CNPG instance, not already deleting.
+ */
+function isShutdownDebris(pod: DebrisPod): boolean {
+  if (!pod.metadata?.name || !pod.metadata?.namespace) return false;
+  // Already on its way out — let the API server finish.
+  if (pod.metadata.deletionTimestamp) return false;
+  // Terminal, and stopped by the node shutdown. Never a Running/Pending pod.
+  if (!stoppedByShutdown(pod)) return false;
+  // Owned by a controller ⇒ a replacement already exists. A bare pod has no
+  // replacement and deleting it would destroy the only record of it.
+  if (!(pod.metadata.ownerReferences ?? []).some((o) => o.controller)) return false;
+  return !isCnpgInstance(pod);
+}
+
+/** How long a record is kept: a rejected one never ran, a stopped one did. */
+function graceFor(pod: DebrisPod, graceMs: number): number {
+  return pod.status?.phase === 'Failed' && pod.status.reason === 'NodeShutdown' ? REJECTED_GRACE_MS : graceMs;
+}
+
+/**
  * Pure: pod list → the reboot debris safe to delete. Unit tested directly.
  *
  * `nowMs` and `graceMs` are injected so the age rule is testable without
- * touching the clock.
+ * touching the clock. `graceMs` is the grace of a pod the shutdown stopped; a
+ * pod it rejected has REJECTED_GRACE_MS.
  */
 export function selectShutdownDebris(
   pods: ReadonlyArray<DebrisPod>,
@@ -152,30 +191,25 @@ export function selectShutdownDebris(
 ): DebrisTarget[] {
   const out: DebrisTarget[] = [];
   for (const pod of pods) {
-    const name = pod.metadata?.name;
-    const namespace = pod.metadata?.namespace;
-    if (!name || !namespace) continue;
-
-    // Already on its way out — let the API server finish.
-    if (pod.metadata?.deletionTimestamp) continue;
-
-    // Terminal, and stopped by the node shutdown. Never a Running/Pending pod.
-    if (!stoppedByShutdown(pod)) continue;
-
-    // Owned by a controller ⇒ a replacement already exists. A bare pod has no
-    // replacement and deleting it would destroy the only record of it.
-    const owned = (pod.metadata?.ownerReferences ?? []).some((o) => o.controller);
-    if (!owned) continue;
-
-    if (isCnpgInstance(pod)) continue;
-
+    if (!isShutdownDebris(pod)) continue;
     // Age guard — keep the immediate post-reboot picture intact.
     const stopped = stoppedAtMs(pod);
-    if (stopped === null || nowMs - stopped < graceMs) continue;
-
-    out.push({ namespace, name });
+    if (stopped === null || nowMs - stopped < graceFor(pod, graceMs)) continue;
+    out.push({ namespace: pod.metadata!.namespace!, name: pod.metadata!.name! });
   }
   return out;
+}
+
+/**
+ * Debris the reaper has not reached yet: within its grace, or past it by less
+ * than REAP_SLACK_MS. Nothing for an operator to do — the dashboard leaves it
+ * out, and counts it again only once the reaper is late, which means the
+ * reaper is failing. Pure.
+ */
+export function awaitingShutdownReap(pod: DebrisPod, nowMs: number): boolean {
+  if (!isShutdownDebris(pod)) return false;
+  const stopped = stoppedAtMs(pod);
+  return stopped !== null && nowMs - stopped < graceFor(pod, DEBRIS_GRACE_MS) + REAP_SLACK_MS;
 }
 
 /**

@@ -221,8 +221,13 @@ export async function buildOrphanedVolumeAlert(
 }
 
 /** Failed / Evicted / ContainerStatusUnknown pods left behind on a node. */
-export async function buildOrphanedPodAlert(k8s: K8sClients): Promise<DashboardAlert | null> {
-  const pods = [...await listStalePods(k8s)].sort((a, b) => a.node.localeCompare(b.node) || a.ns.localeCompare(b.ns));
+export async function buildOrphanedPodAlert(k8s: K8sClients, nowMs: number = Date.now()): Promise<DashboardAlert | null> {
+  // Not the node-shutdown records the node-health reaper is about to clear:
+  // nothing for the operator to do. After a restart the tile counted every
+  // pod a node rejected while shutting down (508 on production) until the
+  // reaper's grace ran out. One the reaper is late on still counts.
+  const pods = [...await listStalePods(k8s, { awaitingReapAt: nowMs })]
+    .sort((a, b) => a.node.localeCompare(b.node) || a.ns.localeCompare(b.ns));
   const byNode: Record<string, number> = {};
   for (const p of pods) byNode[p.node] = (byNode[p.node] ?? 0) + 1;
   const entries = Object.entries(byNode).sort((a, b) => b[1] - a[1]);
@@ -249,6 +254,6 @@ export async function buildOrphanedPodAlert(k8s: K8sClients): Promise<DashboardA
       ...pods.slice(0, DASHBOARD_SUBJECT_LIMIT).map((p) => [`${p.ns}/${p.name}`, p.node] as [string, string]),
       ...moreRow(total, Math.min(total, DASHBOARD_SUBJECT_LIMIT)),
     ],
-    note: 'Failed, evicted or status-unknown pods; a node restart leaves some behind. Clearing them is safe — Prune Dead Pods on Monitoring → Pods.',
+    note: 'Failed, evicted or status-unknown pods. Records a node restart leaves are cleared automatically and show here only when that is late. Clearing them is safe — Prune Dead Pods on Monitoring → Pods.',
   });
 }
