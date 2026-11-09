@@ -29,16 +29,16 @@ data:
   # ImagePullBackOffs — the dev overlay sets this but production didn't, so
   # file-manager was broken on every non-dev cluster (surfaced by the ADR-053
   # prod-mirror staging,).
-  file-manager-image: "ghcr.io/insulahq/insula/file-manager:latest"
+  file-manager-image: "ghcr.io/insulahq/insula/file-manager:e0f6dea@sha256:175f4f172292678f21fbeee86d4e7be6c43d0ef81c2c6d5792d4123a27269138"
   # The remaining runtime-launched images. These MUST be listed here even though
   # the values below are placeholders: cut-release.sh stamps each one from the
   # development overlay's digest-pinned value when a release is cut, and it fails
   # closed on a key that is pinned in development but absent here — without the
   # line, production would silently inherit the base `:latest` instead.
-  tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:latest"
-  migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:latest"
-  claim-validator-image: "ghcr.io/insulahq/insula/claim-validator:latest"
-  node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:latest"
+  tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:e0f6dea@sha256:a1d9419105b5ef1150309a692671d570799cac3f447a5cea8627ee99e3f4983f"
+  migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:e0f6dea@sha256:2d8201e212d630314c55e0524636b013073d25b4710ddc16f0dfc671cccbad96"
+  claim-validator-image: "ghcr.io/insulahq/insula/claim-validator:e0f6dea@sha256:5c13925e7f686e0eb2e75166f9de478b53bd1832a2da37bca60dcb90463f1f87"
+  node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:e0f6dea@sha256:debc211ad209b3eef54bf159d737dee1abf577f6cf14931f3215674aa8b42e5d"
   # Admin node-terminal (ADR-041 — super_admin-only privileged root shell
   # on cluster nodes via nsenter into host PID 1). ENABLED in production:
   # it's a break-glass tool operators need, and it's still gated by the
