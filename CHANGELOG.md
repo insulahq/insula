@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.7] - 2026-11-09
+
 ### Changed
 
 - **Bulwark webmail 1.19.0 → 1.19.1.** It fixes no advisory.
