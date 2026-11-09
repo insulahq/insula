@@ -62,7 +62,7 @@ export default function WebDefensePage() {
       </header>
 
       {/* Tab bar */}
-      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700" role="tablist">
+      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700" role="tablist" data-tab-strip>
         {TABS.map(({ id, label, hint }) => {
           const isActive = activeTab === id;
           return (

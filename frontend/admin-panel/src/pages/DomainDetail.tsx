@@ -64,7 +64,7 @@ export default function DomainDetail() {
 
   return (
     <div className="space-y-6" data-testid="domain-detail-page">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <Link
           to="/tenants/domains"
           className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
@@ -74,7 +74,7 @@ export default function DomainDetail() {
           Domains
         </Link>
         <span className="text-gray-300">/</span>
-        <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="domain-name-heading">
+        <h1 className="min-w-0 break-all text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="domain-name-heading">
           <HostnameLink host={domain.domainName} />
         </h1>
         <StatusBadge status={domain.status as 'verified' | 'unverified' | 'active' | 'pending' | 'suspended' | 'deleted'} />
@@ -196,12 +196,13 @@ export default function DomainDetail() {
         </div>
       )}
 
-      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
+      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700" data-tab-strip>
         {tabs.map((tab) => (
           <button
             key={tab.key}
             type="button"
             onClick={() => setActiveTab(tab.key)}
+            aria-current={activeTab === tab.key ? 'true' : undefined}
             className={clsx(
               'inline-flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors',
               activeTab === tab.key
@@ -775,7 +776,7 @@ function DnsRecordsTab({ tenantId, domainId }: { readonly tenantId: string; read
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="dns-records-section">
-      <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
+      <div className="flex flex-wrap items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4 gap-2">
         <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">DNS Records</h2>
         <button
           type="button"
@@ -1062,7 +1063,7 @@ function SslTlsTab({ tenantId, domainId, sslAutoRenew, domainName }: {
 
       {/* Current Certificate Status */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
-        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
+        <div className="flex flex-wrap items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4 gap-2">
           <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Certificate Status</h2>
           {!hasCustomCert && (
             <button

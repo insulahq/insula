@@ -81,7 +81,7 @@ export default function AdminUsers({ onSelectUser }: AdminUsersProps = {}) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-3">
           <Users size={28} className="text-gray-700 dark:text-gray-300" />
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="admin-users-heading">Admin Users</h1>

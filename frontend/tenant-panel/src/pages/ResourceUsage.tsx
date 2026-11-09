@@ -58,7 +58,7 @@ export default function ResourceUsage({ embedded = false }: ResourceUsageProps =
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-3">
           {!embedded && <Gauge size={28} className="text-gray-700 dark:text-gray-300" />}
           <div>

@@ -57,7 +57,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
   };
 
   return (
-    <header className="flex h-16 items-center gap-4 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 lg:px-6">
+    <header className="flex h-16 items-center gap-2 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 sm:gap-4 sm:px-4 lg:px-6">
       <button
         onClick={onMenuClick}
         className="rounded-md p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-700 dark:hover:text-gray-200 lg:hidden"
@@ -69,7 +69,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
 
       <GlobalSearch />
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
         <ResourceUsageTags />
         <AgentIndicator />
         <TaskCenterChip />
@@ -88,7 +88,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
 
           {menuOpen && (
             <div
-              className="absolute right-0 top-full mt-2 w-72 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg z-50"
+              className="absolute right-0 top-full mt-2 w-72 max-w-[calc(100vw-1rem)] rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg z-50"
               data-testid="user-menu-dropdown"
             >
               <div className="border-b border-gray-100 dark:border-gray-700 p-4">

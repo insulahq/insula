@@ -86,7 +86,9 @@ function useFilterOptions(field: TenantFilterField | ''): { readonly options: re
   }
 }
 
-const SELECT_CLASS = 'rounded-lg border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-900 '
+// min-w-0 + flex-1: on a phone the two selects share the row instead of pushing
+// the second one off the screen.
+const SELECT_CLASS = 'min-w-0 flex-1 sm:flex-none rounded-lg border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-900 '
   + 'focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:opacity-50 '
   + 'dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100';
 
@@ -100,7 +102,7 @@ export default function TenantListFilter({ filter, onChange }: {
 }) {
   const { options, loading } = useFilterOptions(filter.field);
   return (
-    <div className="flex items-center gap-2" data-testid="tenant-filter">
+    <div className="flex min-w-0 items-center gap-2" data-testid="tenant-filter">
       <label className="sr-only" htmlFor="tenant-filter-field">Filter by</label>
       <select
         id="tenant-filter-field"

@@ -39,7 +39,8 @@ export default function StatCard({
   return (
     <div
       className={clsx(
-        'rounded-xl border border-gray-200 border-l-4 bg-white p-5 shadow-sm transition-shadow hover:shadow-md dark:border-gray-700 dark:bg-gray-800',
+        // Two to a row on a phone, so a little tighter there.
+        'rounded-xl border border-gray-200 border-l-4 bg-white p-3.5 shadow-sm transition-shadow hover:shadow-md sm:p-5 dark:border-gray-700 dark:bg-gray-800',
         accentColors[accent],
       )}
       data-testid="stat-card"
@@ -47,10 +48,10 @@ export default function StatCard({
       <div className="flex items-start justify-between">
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{title}</p>
-          <p className="mt-1 text-2xl font-bold text-gray-900 dark:text-gray-100">{value}</p>
+          <p className="mt-1 break-words text-xl font-bold text-gray-900 sm:text-2xl dark:text-gray-100">{value}</p>
           {subtitle && <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{subtitle}</p>}
         </div>
-        <div className={clsx('rounded-lg p-2', iconColors[accent])}>
+        <div className={clsx('shrink-0 rounded-lg p-1.5 sm:p-2', iconColors[accent])}>
           <Icon size={22} />
         </div>
       </div>

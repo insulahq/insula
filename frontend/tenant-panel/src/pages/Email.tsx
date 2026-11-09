@@ -195,7 +195,7 @@ export default function Email() {
 
       {!domainsLoading && emailDomains.length > 0 && selectedEmailDomain && (
         <>
-          <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
+          <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700" data-tab-strip>
             {[
               { key: 'mailboxes' as Tab, label: 'Mailboxes' },
               { key: 'aliases' as Tab, label: 'Mailing Lists' },
@@ -205,7 +205,7 @@ export default function Email() {
               { key: 'abuse' as Tab, label: 'Abuse Reports' },
               { key: 'tls' as Tab, label: 'Delivery Security' },
             ].map(t => (
-              <button key={t.key} type="button" onClick={() => setTab(t.key)}
+              <button key={t.key} type="button" onClick={() => setTab(t.key)} aria-current={tab === t.key ? 'true' : undefined}
                 className={clsx('border-b-2 px-4 py-2.5 text-sm font-medium', tab === t.key ? 'border-brand-500 text-brand-600' : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200')}
                 data-testid={`tab-${t.key}`}>
                 {t.label}
@@ -2309,12 +2309,12 @@ function ImapSyncJobRow({
       data-testid={`imapsync-job-${job.id}`}
       data-focused={focused ? 'true' : undefined}
     >
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           {/* A migration is a PAIRING. Showing only the source made two jobs
               pulling from the same old server indistinguishable, and gave no
               way to tell which local mailbox was about to be written to. */}
-          <code className="font-mono text-gray-900 dark:text-gray-100">
+          <code className="min-w-0 break-all font-mono text-gray-900 dark:text-gray-100">
             {job.sourceUsername}@{job.sourceHost}
             <span className="mx-1.5 text-gray-400 dark:text-gray-500" aria-label="into">&rarr;</span>
             <span className="text-brand-600 dark:text-brand-400">

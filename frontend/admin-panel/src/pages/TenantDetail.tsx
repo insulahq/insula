@@ -456,7 +456,7 @@ export default function TenantDetail() {
           </div>
         </div>
 
-        {tenant.status !== 'archived' && <nav className="-mx-2 mt-4 flex gap-1 overflow-x-auto" aria-label="Tenant sections" data-testid="tenant-tabs">
+        {tenant.status !== 'archived' && <nav className="-mx-2 mt-4 flex gap-1 overflow-x-auto" aria-label="Tenant sections" data-testid="tenant-tabs" data-tab-strip>
           {tabs.map((key) => (
             <button
               key={key}

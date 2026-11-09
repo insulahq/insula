@@ -246,7 +246,7 @@ function RunsHistoryPanel({ runs, loading, onSelectRun }: RunsHistoryPanelProps)
   const head = { currentKey: sortKey, direction: sortDirection, onSort, padding: 'px-3 py-2' } as const;
   return (
     <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="flex items-center gap-2 text-base font-semibold text-gray-900 dark:text-gray-100">
           <Clock size={18} className="text-gray-500" />
           Recent Exports

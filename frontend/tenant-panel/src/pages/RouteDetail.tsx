@@ -20,6 +20,8 @@ import OidcSection from '@/components/OidcSection';
 import { HostnameLink } from '@/components/HostnameLink';
 import LocalTime from '@/components/ui/LocalTime';
 import SortableHeader from '@/components/ui/SortableHeader';
+import PhoneSortBar from '@/components/ui/PhoneSortBar';
+import { useIsPhone } from '@/hooks/use-is-phone';
 import { useSortable } from '@/hooks/use-sortable';
 import { WafLogSummary } from '@/components/routes/WafLogSummary';
 import { localZoneTitle } from '@/lib/format-timestamp';
@@ -103,7 +105,7 @@ export default function RouteDetail() {
   return (
     <div className="space-y-6" data-testid="route-detail-page">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
         <Link
           to="/domains"
           className="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
@@ -122,13 +124,13 @@ export default function RouteDetail() {
         <span className="text-gray-300 dark:text-gray-600">/</span>
         <span className="text-gray-500 dark:text-gray-400">Routes</span>
         <span className="text-gray-300 dark:text-gray-600">/</span>
-        <span className="font-medium text-gray-900 dark:text-gray-100">
+        <span className="min-w-0 break-all font-medium text-gray-900 dark:text-gray-100">
           {route.hostname}{route.path && route.path !== '/' ? route.path : ''}
         </span>
       </div>
 
       {/* Header */}
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <Link
           to={`/domains/${domainId}`}
           className="inline-flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
@@ -137,7 +139,7 @@ export default function RouteDetail() {
           <ArrowLeft size={16} />
           Back
         </Link>
-        <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="route-hostname-heading">
+        <h1 className="min-w-0 break-all text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="route-hostname-heading">
           <HostnameLink host={route.hostname} path={route.path} />
         </h1>
         {/* Set-up state, shown only when it is not the normal one. The
@@ -181,12 +183,13 @@ export default function RouteDetail() {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
+      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700" data-tab-strip>
         {tabs.map((tab) => (
           <button
             key={tab.key}
             type="button"
             onClick={() => setActiveTab(tab.key)}
+            aria-current={activeTab === tab.key ? 'true' : undefined}
             className={clsx(
               'inline-flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors',
               activeTab === tab.key
@@ -1314,7 +1317,17 @@ function getScore(msg: string): number | null {
   return m ? parseInt(m[1] || m[2], 10) : null;
 }
 
+const WAF_LOG_SORTS: ReadonlyArray<{ readonly key: SortKey; readonly label: string }> = [
+  { key: 'createdAt', label: 'Time' },
+  { key: 'severity', label: 'Level' },
+  { key: 'ruleId', label: 'Rule' },
+  { key: 'score', label: 'Score' },
+  { key: 'sourceIp', label: 'IP' },
+  { key: 'request', label: 'Request' },
+];
+
 function WafLogTable({ logs }: { readonly logs: readonly WafLogEntry[] }) {
+  const isPhone = useIsPhone();
   const [sortKey, setSortKey] = useState<SortKey>('createdAt');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
 
@@ -1341,10 +1354,60 @@ function WafLogTable({ logs }: { readonly logs: readonly WafLogEntry[] }) {
       className={clsx('px-2 py-2 cursor-pointer select-none hover:text-gray-300 transition-colors', className)}
       onClick={() => toggleSort(k)}
       title={title}
+      aria-sort={sortKey === k ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
     >
       {label} {sortKey === k ? (sortDir === 'asc' ? '▲' : '▼') : ''}
     </th>
   );
+
+  if (isPhone) {
+    // On a phone, one block per hit: level, rule and score, what the rule is,
+    // then the request, and when and from where. The table's six columns are
+    // wider than the screen even stacked.
+    return (
+      <div className="rounded-b-xl bg-gray-950 font-mono text-[11px]" data-testid="waf-log-entries">
+        <PhoneSortBar
+          options={WAF_LOG_SORTS}
+          sortKey={sortKey}
+          direction={sortDir}
+          onSort={(k) => toggleSort(k as SortKey)}
+          className="border-b border-gray-800 px-3 py-2 font-sans"
+        />
+        <ul className="divide-y divide-gray-800">
+          {sorted.map((log) => {
+            const score = getScore(log.message);
+            const ruleName = log.ruleId === '949110' ? 'Anomaly Threshold' : log.message;
+            return (
+              <li key={log.id} className="space-y-1 px-3 py-2.5" data-testid={`waf-log-entry-${log.id}`}>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className={clsx('inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase', SEV_STYLE[log.severity] ?? SEV_STYLE.info)}>
+                    {log.severity}
+                  </span>
+                  <span className="font-bold text-blue-400">{log.ruleId}</span>
+                  {score !== null && <span className="font-bold text-amber-400">score {score}</span>}
+                  {log.detectionOnly && (
+                    <span
+                      className="inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase bg-sky-900/60 text-sky-200"
+                      title="Logged in detection-only mode: this request was not blocked"
+                      data-testid={`waf-log-detected-${log.id}`}
+                    >
+                      detected · not blocked
+                    </span>
+                  )}
+                </div>
+                <p className="break-words text-gray-300">{ruleName}</p>
+                <p className="break-all text-green-400">{log.requestMethod ?? 'GET'} {log.requestUri ?? '/'}</p>
+                <p className="flex flex-wrap gap-x-3 text-gray-500">
+                  <LocalTime iso={log.createdAt} />
+                  <span className="text-gray-400">{log.sourceIp ?? '-'}</span>
+                </p>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    );
+  }
 
   return (
     <div className="overflow-x-auto rounded-b-xl" data-testid="waf-log-entries">

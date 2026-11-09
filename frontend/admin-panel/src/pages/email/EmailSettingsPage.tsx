@@ -35,7 +35,7 @@ export default function EmailSettingsPage() {
         storageKey="mail-settings"
         defaultOpen
       >
-        <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
+        <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700" data-tab-strip>
           {[
             { key: 'mail' as SettingsTab, label: 'Server', icon: Server },
             { key: 'webmail' as SettingsTab, label: 'Webmail', icon: Mail },
@@ -45,6 +45,7 @@ export default function EmailSettingsPage() {
               key={t.key}
               type="button"
               onClick={() => setTab(t.key)}
+              aria-current={tab === t.key ? 'true' : undefined}
               className={`flex items-center gap-1.5 border-b-2 px-4 py-2 text-sm font-medium ${
                 tab === t.key
                   ? 'border-brand-500 text-brand-600 dark:text-brand-400'

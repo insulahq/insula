@@ -51,13 +51,13 @@ export default function DnsServers() {
 
   return (
     <div className="space-y-6" data-testid="dns-servers-page">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <Globe size={28} className="text-brand-500" />
-        <div>
+        <div className="min-w-0 flex-1 basis-64">
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">DNS Providers</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">Manage DNS provider groups and servers for domain provisioning.</p>
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           {driftReport && (
             <span className="text-xs text-gray-500 dark:text-gray-400" data-testid="dns-apex-drift-last-scan">
               Drift scan: {new Date(driftReport.scannedAt).toLocaleString()}
@@ -97,7 +97,7 @@ export default function DnsServers() {
 
       {/* Servers Section */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="dns-servers-section">
-        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
+        <div className="flex flex-wrap items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4 gap-2">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Servers</h2>
           <button type="button" onClick={() => setShowAdd((p) => !p)} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600" data-testid="add-dns-server-button">
             {showAdd ? <X size={14} /> : <Plus size={14} />} {showAdd ? 'Cancel' : 'Add Server'}
@@ -124,7 +124,7 @@ function ProviderGroupsSection({ groups, servers }: {
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="dns-provider-groups-section">
-      <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
+      <div className="flex flex-wrap items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4 gap-2">
         <div className="flex items-center gap-2">
           <Layers size={18} className="text-brand-500" />
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Provider Groups</h2>
@@ -313,8 +313,8 @@ function ProviderGroupRow({ group, servers }: {
 
   return (
     <div className="px-5 py-4" data-testid={`provider-group-${group.id}`}>
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
           <Layers size={16} className="text-gray-400 dark:text-gray-500" />
           <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{group.name}</span>
           {group.isDefault && (
@@ -331,7 +331,7 @@ function ProviderGroupRow({ group, servers }: {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {!group.isDefault && (
             <button type="button" onClick={() => update.mutate({ id: group.id, is_default: true })} className="rounded-md border border-gray-200 dark:border-gray-700 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid={`set-default-group-${group.id}`}>
               Set Default

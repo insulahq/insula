@@ -77,7 +77,7 @@ export default function NotificationDropdown() {
 
       {open && (
         <div
-          className="absolute right-0 top-full mt-2 w-80 rounded-xl border border-gray-200 bg-white shadow-lg z-50 dark:border-gray-700 dark:bg-gray-800"
+          className="fixed inset-x-2 top-16 sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 sm:w-80 rounded-xl border border-gray-200 bg-white shadow-lg z-50 dark:border-gray-700 dark:bg-gray-800"
           data-testid="notification-dropdown"
         >
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-700">

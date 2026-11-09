@@ -47,8 +47,8 @@ export default function MailFailoverReadinessBanner() {
       data-testid="mail-failover-readiness-banner"
       className="mx-4 mt-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 lg:mx-6 lg:mt-6 dark:border-amber-700 dark:bg-amber-900/30"
     >
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-start gap-2 text-sm text-amber-900 dark:text-amber-200">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="flex min-w-0 flex-1 basis-60 items-start gap-2 text-sm text-amber-900 dark:text-amber-200">
           <MailWarning size={16} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
           <span>
             <strong>Mail cannot fail over.</strong>{' '}

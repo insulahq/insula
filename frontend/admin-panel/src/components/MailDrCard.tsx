@@ -311,7 +311,7 @@ export default function MailDrCard() {
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm p-5 space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-3">
           <ShieldAlert size={20} className="text-gray-700 dark:text-gray-300" />
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100" data-testid="mail-dr-heading">
@@ -577,7 +577,7 @@ export default function MailDrCard() {
             node mid-cutover.
           </p>
           <div className="flex flex-wrap items-end gap-2">
-            <div>
+            <div className="min-w-0 max-w-full">
               <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
                 Target node
               </label>
@@ -585,7 +585,7 @@ export default function MailDrCard() {
                 value={moveTarget}
                 onChange={(e) => setMoveTarget(e.target.value)}
                 data-testid="mail-dr-move-target"
-                className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                className="max-w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
               >
                 <option value="">— select node —</option>
                 {candidates.map((c) => {

@@ -515,9 +515,9 @@ export default function Files() {
           isRestoring={restoreFromTrash.isPending}
         />
       )}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <FilePageHeader />
-        <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 shrink-0" title="Storage Utilization">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400" title="Storage Utilization">
           <HardDrive size={14} />
           <span className="font-medium text-gray-600 dark:text-gray-300">Storage</span>
           <span>{used} / {total}</span>
@@ -553,7 +553,7 @@ export default function Files() {
             </span>
           ))}
         </div>
-        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <button onClick={() => dirListing.refetch()} className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300" title="Refresh"><RefreshCw size={14} /></button>
           <button
             onClick={() => setShowTrash(true)}

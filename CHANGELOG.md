@@ -12,6 +12,30 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **The admin and tenant panels work on a phone.** Every page and tab of both panels was opened at
+  375 px wide on DEV. All 93 admin views and all 33 tenant views had something cut off: content past
+  the screen's right edge, with no way to scroll to it.
+  - **Header.** The bell and the user menu were cut off. The header is compact on a phone: the
+    search box shrinks, and the Tasks chip shows its icon and count. The Tasks and Notifications
+    popovers open full width under the header.
+  - **Tables.** A table that does not fit is shown as one card per row, each value after its column
+    heading, with the row's first value as the card's title. Sorting stays available as a row of
+    heading buttons above the cards. A table that fits stays a table. One mechanism covers every
+    table in both panels, dialogs included.
+  - **WAF.** On a phone, the admin WAF events and the tenant WAF log are a compact list: severity,
+    rule, message, request, then host, source IP and time. The Ban, Allowlist and Whitelist buttons
+    are large enough to tap, and a sort bar replaces the table headings. The WAF filters are two
+    columns, each field the column's width.
+  - **Tab strips.** Tab bars with more tabs than fit (Monitoring, Posture, Email, Web Defense, a
+    tenant's admin page) keep one line and swipe sideways, and the active tab scrolls into view.
+    They wrapped onto up to three lines, and on some pages the last tabs were cut off.
+  - **Dialogs** taller than the screen scroll, so their title and buttons can be reached.
+  - **Rows that ran off the screen now wrap:** page headers with badges and buttons (domain and
+    route pages, node cards, plans, the Files toolbar), bulk-action bars, the pagination bar, the
+    traffic range picker, and the tenant Limits grid, which is one column on a phone.
+
 ## [2026.11.7] - 2026-11-09
 
 ### Changed

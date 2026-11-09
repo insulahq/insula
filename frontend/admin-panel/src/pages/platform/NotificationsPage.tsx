@@ -41,7 +41,7 @@ export default function NotificationsPage() {
   const [activeTab, setActiveTab] = useTabParam('/platform/notifications');
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6 sm:p-6">
       <header className="space-y-2">
         <div className="flex items-center gap-3">
           <Bell size={24} className="text-brand-600 dark:text-brand-400" />
@@ -60,7 +60,7 @@ export default function NotificationsPage() {
 
       <ProviderCoverageBanner />
 
-      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700" role="tablist">
+      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700" role="tablist" data-tab-strip>
         {TABS.map(({ id, label, hint }) => {
           const isActive = activeTab === id;
           return (

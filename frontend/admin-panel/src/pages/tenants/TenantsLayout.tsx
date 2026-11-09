@@ -24,7 +24,7 @@ export default function TenantsLayout() {
       <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Tenants</h1>
 
       <div className="border-b border-gray-200 dark:border-gray-700">
-        <nav className="-mb-px flex flex-wrap gap-x-6" aria-label="Tenants tabs">
+        <nav className="-mb-px flex flex-wrap gap-x-6" aria-label="Tenants tabs" data-tab-strip>
           {TABS.map((tab) => (
             <NavLink
               key={tab.to}

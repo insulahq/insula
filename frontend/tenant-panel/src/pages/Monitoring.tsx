@@ -38,7 +38,7 @@ export default function Monitoring() {
       </div>
 
       <div className="border-b border-gray-200 dark:border-gray-700">
-        <nav className="-mb-px flex gap-1" aria-label="Monitoring sections">
+        <nav className="-mb-px flex gap-1" aria-label="Monitoring sections" data-tab-strip>
           {TABS.map((tab) => (
             <button
               key={tab.key}

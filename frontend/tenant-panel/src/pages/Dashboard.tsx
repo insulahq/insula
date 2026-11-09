@@ -235,23 +235,26 @@ function SiteStrip({ sites, loading }: { sites: readonly TenantSite[]; loading: 
           <Link
             key={site.host}
             to="/applications"
-            className={`group relative grid grid-cols-1 items-center gap-y-2 gap-x-3 border-t border-gray-200 px-4 py-3 transition-colors hover:bg-gray-50 lg:grid-cols-[minmax(0,2.2fr)_minmax(0,1.3fr)_88px_96px_92px] dark:border-gray-700 dark:hover:bg-gray-700/40 ${
+            // Below lg the heading row is hidden: the site on its own line, its
+            // application, attacks blocked, certificate and state in one
+            // wrapping row under it, each saying what it is.
+            className={`group relative flex flex-wrap items-center gap-y-2 gap-x-3 border-t border-gray-200 px-4 py-3 transition-colors hover:bg-gray-50 lg:grid lg:grid-cols-[minmax(0,2.2fr)_minmax(0,1.3fr)_88px_96px_92px] dark:border-gray-700 dark:hover:bg-gray-700/40 ${
               i === sites.length - 1 ? 'rounded-b-xl' : ''
             }`}
           >
-            <span className="flex min-w-0 items-center gap-2">
+            <span className="flex min-w-0 basis-full items-center gap-2 lg:basis-auto">
               <span className={`h-2 w-2 shrink-0 rounded-full ${
                 sev === 'crit' ? 'bg-red-500' : sev === 'warn' ? 'bg-amber-500' : sev === 'off' ? 'bg-gray-400 dark:bg-gray-500' : 'bg-green-500'
               }`} />
               <b title={site.host} className="min-w-0 truncate font-mono text-[13px] font-semibold text-gray-900 dark:text-gray-100">{site.host}</b>
             </span>
-            <span className="min-w-0">
+            <span className="min-w-0 max-w-full">
               <span className="inline-flex max-w-full items-center truncate rounded-md border border-gray-300 px-1.5 py-0.5 font-mono text-[10px] text-gray-600 dark:border-gray-600 dark:text-gray-400">
                 {site.application}
               </span>
             </span>
             <span className="font-mono text-xs tabular-nums text-gray-600 lg:text-right dark:text-gray-400">
-              {site.blocked7d.toLocaleString()}
+              {site.blocked7d.toLocaleString()}<span className="lg:hidden"> blocked</span>
             </span>
             <span className="lg:text-right">
               <span className={`inline-flex min-w-[58px] items-center justify-center rounded-md border px-1.5 py-0.5 font-mono text-[10px] ${

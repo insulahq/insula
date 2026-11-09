@@ -1054,7 +1054,7 @@ export default function DatabaseManager() {
     <div className="space-y-4" data-testid="database-manager-page">
       {/* Top bar */}
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
             onClick={() => navigate(isSqlite ? '/files' : '/applications')}
