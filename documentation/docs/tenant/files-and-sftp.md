@@ -19,6 +19,9 @@ and an actions toolbar.
 
 - Click a folder to open it; use the breadcrumb (or the home icon) to go back up.
 - Tick the checkboxes to select multiple items and reveal a bulk-action toolbar.
+- Click a column heading to sort by it, and again to reverse the order. A folder
+  sorts by size once **Calculate Sizes** has measured it; until then it sorts
+  last, in name order.
 
 ### Everyday actions
 

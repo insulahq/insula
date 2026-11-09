@@ -485,7 +485,7 @@ export async function reconcileNodeHealth(
   // ── 7. Reap node-reboot debris ─────────────────────────────────
   // Nothing in Kubernetes removes these (terminated-pod-gc-threshold defaults
   // to 12500), so they pile up across reboots — 822 from one reboot in
-  // tigera-operator, still 20 per reboot after the priority-class
+  // tigera-operator, still 508 from one after the priority-class
   // fix. They are also pod objects carrying exit-137 container statuses, which
   // is what made the OOM detectors report reboot corpses as tenant OOM kills.
   // Runs AFTER recordMemoryEvents so a kill is recorded before its record goes.

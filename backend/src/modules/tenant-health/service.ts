@@ -74,6 +74,11 @@ export interface ReplicaFact {
    * gets rebuilt elsewhere. A STOPPED replica (detached volume) still is.
    */
   readonly failed: boolean;
+  /**
+   * Longhorn is rebuilding this copy: write-only in its engine's mode map. It
+   * runs and takes writes, and holds the data only once the rebuild is done.
+   */
+  readonly rebuilding: boolean;
 }
 
 export interface VolumeFact {
@@ -235,6 +240,37 @@ function liveRunningReplicaNodes(
   return (byVolumeRunning.get(volumeName) ?? []).filter((n) => !downNodeNames.has(n));
 }
 
+/**
+ * The sentence for volumes that are degraded while none of their copies is on
+ * a down node: what is rebuilding and where, and the node that must stay up
+ * when it holds the only complete copy. Pure.
+ */
+function degradedBeforeDetail(
+  volumes: ReadonlyArray<{ readonly rebuildingOn: readonly string[]; readonly completeOn: readonly string[] }>,
+  downNodeNames: ReadonlySet<string>,
+): string {
+  const join = (nodes: readonly string[]) => [...new Set(nodes)].sort().join(', ');
+  // A rebuild is named only where the engines said so; a failed engines read
+  // leaves every volume in the second sentence.
+  const named = volumes.filter((v) => v.rebuildingOn.length > 0);
+  const unnamed = volumes.length - named.length;
+  const restoring = (n: number) => `${n} volume(s) are running on reduced redundancy while Longhorn restores it.`;
+  const what = named.length === 0
+    ? restoring(unnamed)
+    : `${named.length} volume(s) are rebuilding their copy on ${join(named.flatMap((v) => v.rebuildingOn))}.`
+      + (unnamed > 0 ? ` ${restoring(unnamed)}` : '');
+  const head = downNodeNames.size === 0
+    ? what
+    : `${what} None of their copies is on ${join([...downNodeNames])}, so this outage did not cause it — `
+      + 'most often an earlier restart is still catching up.';
+  // Per volume: a node that is some volume's one complete copy.
+  const onlyCopies = [...new Set(volumes.filter((v) => v.completeOn.length === 1).map((v) => v.completeOn[0]!))].sort();
+  if (onlyCopies.length === 0) return head;
+  return onlyCopies.length === 1
+    ? `${head} Until it finishes, the only complete copy is on ${onlyCopies[0]}: keep that node up.`
+    : `${head} Until it finishes, the only complete copies are on ${onlyCopies.join(', ')}: keep those nodes up.`;
+}
+
 export function findingsForTenant(
   tenant: TenantFact,
   input: OutageInput,
@@ -276,7 +312,11 @@ export function findingsForTenant(
 
   const stranded: string[] = [];
   const strandedNodes = new Set<string>();
+  // Lost a copy on a down node: Longhorn rebuilds it elsewhere.
   const rebuilding: string[] = [];
+  const lostOn = new Set<string>();
+  // Degraded with no copy on a down node: from before this outage.
+  const degradedBefore: Array<{ name: string; rebuildingOn: string[]; completeOn: string[] }> = [];
   for (const v of nsVolumes) {
     // A volume Longhorn no longer links to a live PVC is a LEFTOVER, not this
     // tenant's data — it keeps the old namespace/pvcName in `kubernetesStatus`
@@ -316,9 +356,23 @@ export function findingsForTenant(
       // node returns or the tenant is restored from a bundle.
       stranded.push(v.pvcName ?? v.volumeName);
       dead.forEach((n) => strandedNodes.add(n));
-    } else if (dead.length > 0 || v.robustness === 'degraded') {
+    } else if (dead.length > 0) {
       // Surviving copy exists — Longhorn rebuilds. Serving, no data risk.
       rebuilding.push(v.pvcName ?? v.volumeName);
+      dead.forEach((n) => lostOn.add(n));
+    } else if (v.robustness === 'degraded') {
+      // None of its copies is on a down node, so this outage did not cause it:
+      // most often a rebuild still running after an earlier restart. Reported
+      // all the same — its one complete copy is a node that must stay up — but
+      // under its own cause. Production: a tenant with copies on two other
+      // nodes was listed under a third node's restart while it rebuilt the
+      // copy the previous restart had stopped.
+      const live = input.replicas.filter((r) => r.volumeName === v.volumeName && r.nodeId && !downNodeNames.has(r.nodeId));
+      degradedBefore.push({
+        name: v.pvcName ?? v.volumeName,
+        rebuildingOn: live.filter((r) => r.rebuilding).map((r) => r.nodeId as string),
+        completeOn: live.filter((r) => r.running && !r.rebuilding && !r.failed).map((r) => r.nodeId as string),
+      });
     }
   }
 
@@ -332,14 +386,21 @@ export function findingsForTenant(
       resources: stranded.sort(),
     });
   }
-  if (rebuilding.length > 0) {
+  if (rebuilding.length > 0 || degradedBefore.length > 0) {
+    // One finding per kind: the modal lists findings by kind.
+    const parts: string[] = [];
+    if (rebuilding.length > 0) {
+      parts.push(`${rebuilding.length} volume(s) are running on reduced redundancy while Longhorn rebuilds. `
+        + 'No action required — this resolves itself.');
+    }
+    if (degradedBefore.length > 0) parts.push(degradedBeforeDetail(degradedBefore, downNodeNames));
+    const rebuildNodes = degradedBefore.flatMap((d) => d.rebuildingOn);
     findings.push({
       kind: 'volume_degraded_rebuilding',
       severity: 'degraded',
-      detail: `${rebuilding.length} volume(s) are running on reduced redundancy while Longhorn rebuilds. `
-        + 'No action required — this resolves itself.',
-      nodes: [],
-      resources: rebuilding.sort(),
+      detail: parts.join(' '),
+      nodes: [...new Set([...lostOn, ...rebuildNodes])].sort(),
+      resources: [...rebuilding, ...degradedBefore.map((d) => d.name)].sort(),
     });
   }
 

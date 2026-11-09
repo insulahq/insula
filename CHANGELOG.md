@@ -12,6 +12,94 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **Bulwark webmail 1.19.0 → 1.19.1.** It fixes no advisory.
+  - Booking, shipping and order mail from a verified sender gets a card above the message, and a
+    booking can go into a calendar.
+  - Mail that passes DMARC shows the sender's BIMI logo. The webmail server looks the logo up in
+    the sender's DNS, through the same private-address guard as the sender icons it already
+    fetched. It makes no lookup while Bulwark's admin switch that stops third-party traffic is on.
+  - Archiving or moving the open message follows "Return to list", and a shared mailbox sends
+    with its own identity.
+  - The Contacts, Calendar and Files switches still hide those apps: their navigation links are
+    unchanged. 1.20.0 and 1.21.0 follow when their soaks end.
+- **The CronJob kubectl image `alpine/k8s` 1.36.5 → 1.36.6** (kubectl 1.36.6, helm 4.3.1,
+  aws-cli 1.46.2). It has no CRITICAL finding left, and HIGH findings drop from 209 to 131. The
+  two CRITICALs the ledger carried for 1.36.5 are fixed: kustomize is built with Go 1.27.1, and
+  the certifi that still trusted the distrusted emSign ECC Root CA - G3 was pip's own copy, now
+  2026.10.19. The job-gc, ingress-external-ips, secrets-backup and cluster-state CronJobs and the
+  Traefik plugin guard run it.
+- **The dev and lab SFTP endpoints run `atmoz/sftp:debian`.** The dev fixture
+  (`./scripts/local.sh sftp-dev-up`) ran `alpine-3.7`, a build not refreshed in years. Its
+  musl OpenSSH without PAM is the build CVE-2026-123158 (sshole) affects, and its user is
+  key-only. As configured it lacked one of the conditions the attack needs, and nothing outside
+  dev runs it. The VM lab's SFTP backup target moves from `latest`, a Debian 11 build atmoz no longer
+  updates, to the same `debian` tag (Debian 12, OpenSSH 9.2). Its next `lab.sh up svc` replaces
+  the running container; files on the target stay in the bind mount. Production SFTP is the
+  first-party `sftp-gateway` and is not affected.
+
+### Fixed
+
+- **The tenant file manager sorts folders by the size it shows.** Sorting by Size ordered
+  folders by their directory entry, which grows with the number of files in a folder, not with
+  what the folder holds, and which the Size column never shows. A folder of a few hundred empty
+  files sorted above one holding gigabytes.
+  - A folder now sorts by the size calculated for it. Folders without a calculated size sort
+    last, in either direction, and keep their name order.
+  - Rows with the same size or the same time, such as the files of an extracted archive, keep
+    their name order, and a row without a date sorts last.
+  - The sort headers tell screen readers which column sorts and in which direction.
+- **Moving an HA tenant to a node no longer hard-pins its apps there.** A drain's re-pin, the
+  recovery wizard, a failback and the Storage card's Move wrote a hostname pin on every app,
+  whatever the tier. The tier keeps a second copy of the data so the apps can run on another
+  node when theirs is lost. The pin kept them off it: they waited for auto-repin, and a node back
+  before auto-repin ran started them again beside apps that had already taken the volume
+  elsewhere. On production, an HA tenant moved before this still had three apps hard-pinned.
+  - A move now gives the apps what a deploy on that node renders: a preference for the node, and
+    for the node the tenant's other pods run on. Other scheduling rules are kept. The file
+    manager is placed with the data when it starts, as before.
+  - Moving off a node that is up also keeps the apps off it. With preferences alone, the
+    scheduler counts the tenant's pods still stopping there, and they can pull the restarted apps
+    back. The next deploy, the next move and a failover drop that rule.
+  - Apps hard-pinned by an earlier move lose the pin at the next move of the tenant or the next
+    deploy of each app. Until then, auto-repin still clears it when their node goes down.
+  - A drain, the recovery wizard and a failback also no longer tag an HA tenant's volume with the
+    target node. The tag let Longhorn place copies only there: after the tenant moved on, the
+    copy beside its pods could not be built, and after the target was lost the second copy could
+    not be rebuilt elsewhere. The next such move clears a tag an earlier one left. The Storage
+    card's Move never tagged HA volumes.
+- **The outage banner says when a volume's degraded state is not from the node that is down.**
+  A volume was listed as affected by any outage while Longhorn rebuilt it, even with no copy on
+  the node that was down. During restarts one node at a time, the copy the previous restart had
+  stopped was still rebuilding, and the tenant showed up under the next node.
+  - Such a volume's finding now names the node being rebuilt, says this outage did not cause it,
+    and names the node that holds the only complete copy, which should stay up until the rebuild
+    finishes.
+  - A copy lost on the node that is down reads as before, and the finding now names that node.
+- **The dashboard's orphaned-pods tile opens the pods list.** It linked to the node list, which
+  shows neither the pods nor a way to clear them across nodes. It now opens Monitoring → Pods
+  on the Failed filter, where Prune Dead Pods clears them. A node restart leaves such pods
+  behind.
+  - The pods list opens on the filter a link names (`?filter=failed`).
+- **A node restart no longer leaves hundreds of rejected Calico operator pods.** During a
+  graceful shutdown the operator's pod was stopped, its replacement was placed straight back
+  on the shutting-down node (it tolerates every taint, so it can bring the network up on a
+  cold boot), and the node rejected it, over and over until the kubelet stopped. On
+  production, one restart left 508 such pods, even with the earlier fix that stops the
+  operator last.
+  - The operator now waits in a 25-second pre-stop sleep, so it is still running when the
+    node goes down and no replacement is made. On lab staging a restart of the node running it
+    left 15 rejected pods before and none after, in two restarts; the same operator pod came
+    back after boot, and the restart took no longer. A normal operator restart takes 25 seconds
+    longer. Host migration `2026.11.7/0001` patches existing clusters; `bootstrap.sh` sets it
+    on new ones.
+  - Pods a shutting-down node rejected never ran, so they are now deleted within 5 minutes
+    instead of after 30. Pods the shutdown stopped still stay 30 minutes for a look after the
+    restart.
+  - The dashboard's orphaned-pods tile no longer counts restart records that are about to be
+    deleted automatically. It shows them only if that clean-up is late.
+
 ## [2026.11.6] - 2026-11-06
 
 ### Added

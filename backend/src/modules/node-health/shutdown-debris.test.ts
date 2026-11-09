@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
+  awaitingShutdownReap,
   selectShutdownDebris,
   DEBRIS_GRACE_MS,
+  REAP_SLACK_MS,
   type DebrisPod,
 } from './shutdown-debris.js';
 
@@ -104,17 +106,23 @@ describe('selectShutdownDebris', () => {
 
   // ── the age guard ──
 
-  it('leaves fresh debris alone so a post-reboot look still shows it', () => {
-    expect(selectShutdownDebris([pod({ created: FRESH })], NOW)).toEqual([]);
+  it('leaves a fresh pod the shutdown stopped alone so a post-reboot look still shows it', () => {
+    expect(selectShutdownDebris([pod({ reason: 'Terminated', created: FRESH })], NOW)).toEqual([]);
   });
 
   it('reaps it once the grace window has passed', () => {
     const justOver = NOW - DEBRIS_GRACE_MS - 1000;
     const out = selectShutdownDebris(
-      [pod({ created: new Date(justOver).toISOString() })],
+      [pod({ reason: 'Terminated', created: new Date(justOver).toISOString() })],
       NOW,
     );
     expect(out).toHaveLength(1);
+  });
+
+  it('reaps a REJECTED pod at once: it never ran, so there is nothing to look at', () => {
+    // Production: 508 of these from one reboot, counted on the dashboard for
+    // the half hour the grace kept them.
+    expect(selectShutdownDebris([pod({ created: new Date(NOW - 1000).toISOString() })], NOW)).toHaveLength(1);
   });
 
   it('ignores a pod with an unparseable creation timestamp', () => {
@@ -152,5 +160,29 @@ describe('selectShutdownDebris', () => {
       },
     } as DebrisPod;
     expect(selectShutdownDebris([p], NOW)).toHaveLength(1);
+  });
+});
+
+describe('awaitingShutdownReap — what the dashboard leaves to the reaper', () => {
+  const ago = (ms: number) => new Date(NOW - ms).toISOString();
+
+  it('a pod the shutdown stopped, inside its grace or the reaper slack after it', () => {
+    expect(awaitingShutdownReap(pod({ reason: 'Terminated', created: FRESH }), NOW)).toBe(true);
+    expect(awaitingShutdownReap(pod({ reason: 'Terminated', created: ago(DEBRIS_GRACE_MS + REAP_SLACK_MS - 1000) }), NOW)).toBe(true);
+  });
+
+  it('a rejected pod, inside the reaper slack', () => {
+    expect(awaitingShutdownReap(pod({ created: ago(1000) }), NOW)).toBe(true);
+  });
+
+  it('not once the reaper is late: then the operator should see it', () => {
+    expect(awaitingShutdownReap(pod({ reason: 'Terminated', created: ago(DEBRIS_GRACE_MS + REAP_SLACK_MS + 1000) }), NOW)).toBe(false);
+    expect(awaitingShutdownReap(pod({ created: ago(REAP_SLACK_MS + 1000) }), NOW)).toBe(false);
+  });
+
+  it('not what the reaper never takes: an Evicted pod, a bare pod, a CNPG instance', () => {
+    expect(awaitingShutdownReap(pod({ reason: 'Evicted', created: FRESH }), NOW)).toBe(false);
+    expect(awaitingShutdownReap(pod({ owned: false, created: FRESH }), NOW)).toBe(false);
+    expect(awaitingShutdownReap(pod({ created: FRESH, labels: { 'cnpg.io/cluster': 'system-db' } }), NOW)).toBe(false);
   });
 });
