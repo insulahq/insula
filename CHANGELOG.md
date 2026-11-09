@@ -14,6 +14,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **Bulwark webmail 1.19.0 → 1.19.1.** It fixes no advisory.
+  - Booking, shipping and order mail from a verified sender gets a card above the message, and a
+    booking can go into a calendar.
+  - Mail that passes DMARC shows the sender's BIMI logo. The webmail server looks the logo up in
+    the sender's DNS, through the same private-address guard as the sender icons it already
+    fetched. It makes no lookup while Bulwark's admin switch that stops third-party traffic is on.
+  - Archiving or moving the open message follows "Return to list", and a shared mailbox sends
+    with its own identity.
+  - The Contacts, Calendar and Files switches still hide those apps: their navigation links are
+    unchanged. 1.20.0 and 1.21.0 follow when their soaks end.
+- **The CronJob kubectl image `alpine/k8s` 1.36.5 → 1.36.6** (kubectl 1.36.6, helm 4.3.1,
+  aws-cli 1.46.2). It has no CRITICAL finding left, and HIGH findings drop from 209 to 131. The
+  two CRITICALs the ledger carried for 1.36.5 are fixed: kustomize is built with Go 1.27.1, and
+  the certifi that still trusted the distrusted emSign ECC Root CA - G3 was pip's own copy, now
+  2026.10.19. The job-gc, ingress-external-ips, secrets-backup and cluster-state CronJobs and the
+  Traefik plugin guard run it.
 - **The dev and lab SFTP endpoints run `atmoz/sftp:debian`.** The dev fixture
   (`./scripts/local.sh sftp-dev-up`) ran `alpine-3.7`, a build not refreshed in years. Its
   musl OpenSSH without PAM is the build CVE-2026-123158 (sshole) affects, and its user is

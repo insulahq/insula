@@ -291,7 +291,7 @@ spec:
         - name: feature-css-injector
           # Same digest as the `bulwark` container below — see the note there
           # for the version and how to re-resolve it. Both must move together.
-          image: ghcr.io/bulwarkmail/webmail@sha256:85ed249f1c7f8548364f8017d2ed601ae516d16b8b6eca00649c6f5a4d76e165
+          image: ghcr.io/bulwarkmail/webmail@sha256:dcb6ef96e3b020fa30d8a161b94ea39431f4a21a97a663cbc980b515e894879b
           imagePullPolicy: IfNotPresent
           # busybox-style sh is available in the Bulwark image (Alpine
           # base). The script is intentionally tiny + has no error
@@ -331,7 +331,7 @@ spec:
               readOnly: true
       containers:
         - name: bulwark
-          # Bulwark 1.19.0 stable. Bump per ADR-039; the digest is
+          # Bulwark 1.19.1 stable. Bump per ADR-039; the digest is
           # also recorded in security/components.yaml (component `bulwark`),
           # which ci-component-watch-check.sh asserts against this file.
           #
@@ -360,7 +360,7 @@ spec:
           #
           # Digest provenance: `gh attestation verify oci://…@<digest> --owner
           # bulwarkmail` — SLSA v1, built by the upstream release workflow
-          # from tag 1.19.0.
+          # from tag 1.19.1.
           #
           # 1.16.0 stops an HTML attachment preview from running the sender's
           # script in the webmail origin, and makes delete/move act on the
@@ -380,7 +380,12 @@ spec:
           # are off (GHSA-qc44-275p-gqw9). Taken inside the 7-day soak for those
           # fixes. It also runs on Stalwart 1.0 as well as 0.16, and signs admin
           # sessions out once. Do not roll back past 1.18.0.
-          image: ghcr.io/bulwarkmail/webmail@sha256:85ed249f1c7f8548364f8017d2ed601ae516d16b8b6eca00649c6f5a4d76e165
+          #
+          # 1.19.1 shows a sender's BIMI logo: /api/bimi reads the sender's DNS
+          # and fetches the logo and mark certificate through the same
+          # private-address guard as /api/favicon, and refuses while
+          # third-party traffic is turned off.
+          image: ghcr.io/bulwarkmail/webmail@sha256:dcb6ef96e3b020fa30d8a161b94ea39431f4a21a97a663cbc980b515e894879b
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
