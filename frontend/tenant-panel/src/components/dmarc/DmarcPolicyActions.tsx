@@ -47,15 +47,17 @@ export default function DmarcPolicyActions({ summary, endpoint, invalidateKey }:
     return (
       <p className="text-xs text-amber-700 dark:text-amber-400" data-testid={`dmarc-duplicate-${summary.policyDomain}`}>
         This domain has {summary.managedRecordCount} <code className="font-mono">_dmarc</code> records. Receivers
-        ignore a policy published twice — remove the duplicate under the domain&apos;s DNS records first.
+        ignore a policy published twice — <strong>Re-create mail records</strong> on the Settings &amp; DNS tab keeps
+        one, at the stricter policy.
       </p>
     );
   }
   if (published === null) {
     return (
       <p className="text-xs text-gray-500 dark:text-gray-400" data-testid={`dmarc-unmanaged-${summary.policyDomain}`}>
-        The <code className="font-mono">_dmarc</code> record of this domain is not managed by the platform — change its
-        policy at the domain&apos;s DNS provider.
+        The platform has no <code className="font-mono">_dmarc</code> record for this domain. If its DNS is hosted
+        elsewhere, change the policy at that DNS provider; if it is hosted here, <strong>Re-create mail records</strong>{' '}
+        on the Settings &amp; DNS tab restores the record.
       </p>
     );
   }

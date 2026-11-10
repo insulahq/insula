@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, isPlatformStaff, requireRole, requireTenantAccess } from '../../middleware/auth.js';
-import { enableEmailDomainSchema, updateEmailDomainSchema } from '@insula/api-contracts';
+import { enableEmailDomainSchema, mailDnsRepairRequestSchema, updateEmailDomainSchema } from '@insula/api-contracts';
 import * as service from './service.js';
+import { getMailDnsCheck, repairMailDns } from './mail-dns-repair.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -166,6 +167,41 @@ export async function emailDomainRoutes(app: FastifyInstance): Promise<void> {
     const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
     const result = await service.getEmailDomainDnsRecords(app.db, tenantId, domainId);
     return success(result);
+  });
+
+  // GET /api/v1/tenants/:tenantId/email/domains/:domainId/dns-check
+  //
+  // The domain's live zone against the platform's mail records: which are
+  // missing, and which records of the zone get in their way (a second SPF or
+  // DMARC record, an MX at another provider). Reads the zone only where the
+  // platform hosts it; elsewhere `checked` is false.
+  app.get('/tenants/:tenantId/email/domains/:domainId/dns-check', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'support', 'tenant_admin'), requireTenantAccess()],
+  }, async (request) => {
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
+    return success(await getMailDnsCheck(app.db, tenantId, domainId));
+  });
+
+  // POST /api/v1/tenants/:tenantId/email/domains/:domainId/dns-records/repair
+  //
+  // "Re-create mail records": publish the missing ones and remove the records
+  // the check marks removable, except the optional ones listed in `keep`.
+  // Not for `support` — it changes published DNS.
+  app.post('/tenants/:tenantId/email/domains/:domainId/dns-records/repair', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'tenant_admin'), requireTenantAccess()],
+  }, async (request) => {
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
+    const parsed = mailDnsRepairRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      const firstError = parsed.error.issues[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
+        400,
+        { field: firstError.path.join('.') },
+      );
+    }
+    return success(await repairMailDns(app.db, tenantId, domainId, parsed.data));
   });
 
   // GET /api/v1/tenants/:tenantId/email/domains/:domainId/connection-info

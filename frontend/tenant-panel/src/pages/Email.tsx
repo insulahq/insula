@@ -40,6 +40,7 @@ import {
   useEmailDomainDisablePreview,
   useUpdateEmailDomain,
   useEmailDomainDnsRecords,
+  useEmailDomainDnsCheck,
   useImapSyncJobs,
   useCreateImapSyncJob,
   useCancelImapSyncJob,
@@ -58,9 +59,11 @@ import {
 } from '@/hooks/use-email';
 import { MailboxLoginPasswordsModal } from '@/components/MailboxLoginPasswords';
 import DkimKeysCard from '@/components/email/DkimKeysCard';
+import MailDnsCheckPanel, { MailRecordStatusPill, mailRecordStatus } from '@/components/email/MailDnsCheckPanel';
 import { useTabParam } from '@/hooks/use-tab-param';
 import { useOpenFromQuery } from '@/hooks/use-open-from-query';
 import type { TabOf } from '@/routes/tabbed-pages';
+import type { MailDnsRecordStatus } from '@insula/api-contracts';
 
 // Lazy: a wall of static setup copy that most sessions never open.
 const EmailConnectionGuideModal = lazy(() => import('@/components/EmailConnectionGuideModal'));
@@ -1848,6 +1851,9 @@ function DnsRecordsCard({
 }) {
   const { data: res, isLoading, error } = useEmailDomainDnsRecords(tenantId, domain.domainId);
   const dns = res?.data;
+  // Only a zone the platform hosts is checked; the panel below owns the request's states.
+  const check = useEmailDomainDnsCheck(dns && !dns.manualRequired ? tenantId : undefined, domain.domainId).data?.data;
+  const checked = check?.checked === true;
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4" data-testid="dns-records-card">
@@ -1889,10 +1895,14 @@ function DnsRecordsCard({
                 DNS managed by platform (primary mode)
               </p>
               <p className="mt-1 text-xs text-green-800 dark:text-green-200">
-                These records are automatically published and kept in sync in the authoritative
-                zone. Shown here for reference.
+                The platform publishes these records in the domain&apos;s zone. They are checked
+                against the zone below.
               </p>
             </div>
+          )}
+
+          {!dns.manualRequired && (
+            <MailDnsCheckPanel tenantId={tenantId} domainId={domain.domainId} domainName={domain.domainName} />
           )}
 
           <div className="overflow-x-auto">
@@ -1903,11 +1913,12 @@ function DnsRecordsCard({
                   <th className="py-2 pr-3">Name</th>
                   <th className="py-2 pr-3">Value</th>
                   <th className="py-2 pr-3">TTL</th>
+                  {checked && <th className="py-2 pr-3">In DNS</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50 dark:divide-gray-700">
                 {dns.records.map((r, i) => (
-                  <DnsRecordRow key={`${r.type}-${r.name}-${i}`} record={r} />
+                  <DnsRecordRow key={`${r.type}-${r.name}-${i}`} record={r} checked={checked} status={mailRecordStatus(check, r)} />
                 ))}
               </tbody>
             </table>
@@ -1941,7 +1952,12 @@ function purposeBadgeStyle(purpose: string | undefined): { label: string; cls: s
   }
 }
 
-function DnsRecordRow({ record }: { readonly record: DnsRecordDisplay }) {
+function DnsRecordRow({ record, checked = false, status = null }: {
+  readonly record: DnsRecordDisplay;
+  /** The zone was read: the row gets an "In DNS" cell. */
+  readonly checked?: boolean;
+  readonly status?: MailDnsRecordStatus | null;
+}) {
   const [copied, setCopied] = useState(false);
   const handleCopy = async () => {
     try {
@@ -1983,6 +1999,7 @@ function DnsRecordRow({ record }: { readonly record: DnsRecordDisplay }) {
         </div>
       </td>
       <td className="py-2 pr-3 text-gray-500 dark:text-gray-400">{record.ttl}</td>
+      {checked && <td className="py-2 pr-3">{status && <MailRecordStatusPill status={status} />}</td>}
     </tr>
   );
 }

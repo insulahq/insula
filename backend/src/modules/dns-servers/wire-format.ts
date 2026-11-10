@@ -201,6 +201,21 @@ export function splitContent(input: DnsRecordInput): SplitRecordContent {
 }
 
 /**
+ * The text of a TXT value as a person reads it. A server lists TXT content
+ * quoted and, past 255 bytes, split (`"v=DKIM1; p=MII…" "…"`); a row typed
+ * into the panel is usually bare. Both are the same record.
+ */
+export function txtText(value: string): string {
+  const raw = value.trim();
+  if (!raw.startsWith('"')) return raw;
+  const parts: string[] = [];
+  const re = /"((?:[^"\\]|\\.)*)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null) parts.push(m[1].replace(/\\(.)/g, '$1'));
+  return parts.join('');
+}
+
+/**
  * The wire content in a form two spellings of the SAME value compare equal in.
  *
  * `formatContent` produces what we SEND; a server stores and echoes its own

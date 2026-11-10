@@ -280,7 +280,16 @@ one there is no evidence that all of the domain's legitimate mail aligns, so a
 sender that does not (a newsletter service, a web form, an office server) has
 its mail spam-foldered from the start, and nothing tells the sender. The DMARC
 reports show such a sender within a day or two; **Step back** (below) returns
-the domain to `p=none` while it is fixed.
+the domain to `p=none` while it is fixed. The domain owner can step back from
+the first day, on the tenant panel's **Authentication** tab; **Monitoring →
+Mail** lists a domain once its first report has arrived.
+
+Enabling email does not add a second SPF or DMARC record next to one the
+domain already publishes (often its previous host's). The tenant panel's
+**Settings & DNS** tab checks the zone, warns about those records and about an
+MX at another server, and offers **Re-create mail records**, which merges two
+SPF or DMARC records into one and removes the conflicting ones. The check needs
+a DNS server that lists the whole zone; today that is PowerDNS.
 
 Domains that already publish a policy keep it; changing the default does not
 rewrite them.

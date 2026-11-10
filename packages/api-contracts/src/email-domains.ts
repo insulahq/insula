@@ -102,3 +102,85 @@ export const emailDomainDisablePreviewSchema = z.object({
 });
 
 export type EmailDomainDisablePreview = z.infer<typeof emailDomainDisablePreviewSchema>;
+
+// ─── Mail DNS check and "Re-create mail records" ─────────────────────────
+//
+// GET  /tenants/:tenantId/email/domains/:domainId/dns-check
+// POST /tenants/:tenantId/email/domains/:domainId/dns-records/repair
+//
+// The check reads the domain's live zone (only where the platform hosts it)
+// and compares it with the mail records the platform publishes. `issues` are
+// records of the zone that get in the way — a second SPF or DMARC record, an
+// MX pointing at another provider. `repair` is exactly what the repair would
+// change, so the confirmation can list it.
+
+export const mailDnsRecordStatusSchema = z.enum(['ok', 'missing', 'replaced']);
+export type MailDnsRecordStatus = z.infer<typeof mailDnsRecordStatusSchema>;
+
+export const mailDnsIssueKindSchema = z.enum([
+  'duplicate_spf',
+  'duplicate_dmarc',
+  'foreign_mx',
+  'foreign_srv',
+  'outdated_platform_record',
+  'spf_without_platform',
+  'dmarc_reports_elsewhere',
+]);
+export type MailDnsIssueKind = z.infer<typeof mailDnsIssueKindSchema>;
+
+const mailDnsRecordRefSchema = z.object({
+  type: z.string(),
+  name: z.string(),
+  value: z.string(),
+});
+
+export const mailDnsCheckSchema = z.object({
+  /**
+   * False when the zone was not read: hosted elsewhere, a DNS server type that
+   * cannot list a whole zone, or a server that did not answer.
+   */
+  checked: z.boolean(),
+  reason: z.enum(['external_dns', 'zone_unlisted', 'zone_unreadable']).nullable(),
+  records: z.array(mailDnsRecordRefSchema.extend({
+    ttl: z.number(),
+    priority: z.number().nullable(),
+    purpose: z.string(),
+    status: mailDnsRecordStatusSchema,
+  })),
+  issues: z.array(mailDnsRecordRefSchema.extend({
+    kind: mailDnsIssueKindSchema,
+    severity: z.enum(['error', 'warning']),
+    message: z.string(),
+    /** "Re-create mail records" removes this record. */
+    removable: z.boolean(),
+  })),
+  repair: z.object({
+    add: z.array(mailDnsRecordRefSchema.extend({ priority: z.number().nullable() })),
+    remove: z.array(mailDnsRecordRefSchema.extend({
+      /** The tenant may keep it (another MX or SRV target); merged and outdated records may not. */
+      optional: z.boolean(),
+    })),
+    /** Stored rows brought in line with the zone; nothing in DNS changes for these. */
+    storedFixes: z.number(),
+  }),
+});
+export type MailDnsCheck = z.infer<typeof mailDnsCheckSchema>;
+
+/** Optional records of the plan the tenant chose to keep (another MX or SRV target). */
+export const mailDnsRepairRequestSchema = z.object({
+  keep: z.array(mailDnsRecordRefSchema).max(100).default([]),
+}).strict();
+export type MailDnsRepairRequest = z.input<typeof mailDnsRepairRequestSchema>;
+
+export const mailDnsRepairResultSchema = z.object({
+  added: z.number(),
+  removed: z.number(),
+  failures: z.array(mailDnsRecordRefSchema.extend({
+    action: z.enum(['add', 'remove']),
+    message: z.string(),
+  })),
+  /** Optional records left in place because the tenant chose to keep them. */
+  kept: z.number(),
+  check: mailDnsCheckSchema,
+});
+export type MailDnsRepairResult = z.infer<typeof mailDnsRepairResultSchema>;

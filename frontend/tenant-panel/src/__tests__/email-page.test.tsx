@@ -46,6 +46,8 @@ vi.mock('../hooks/use-email', () => ({
   useEmailDomainDisablePreview: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
   useUpdateEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
   useEmailDomainDnsRecords: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
+  useEmailDomainDnsCheck: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, error: null })),
+  useRepairEmailDomainDns: vi.fn(() => ({ mutate: vi.fn(), reset: vi.fn(), isPending: false, error: null, data: undefined })),
   useEmailConnectionInfo: vi.fn(() => ({
     data: {
       data: {

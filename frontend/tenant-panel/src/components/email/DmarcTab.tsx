@@ -201,6 +201,9 @@ export default function DmarcTab({ tenantId, domainName }: DmarcTabProps) {
   const summary: DmarcDomainSummary | undefined = overview?.domains.find(
     (d) => d.policyDomain.toLowerCase() === domainName.toLowerCase(),
   );
+  const hasReports = (summary?.reportCount ?? 0) > 0;
+  // What receivers last saw; before the first report, what is published.
+  const shownPolicy = summary?.currentPolicy ?? summary?.managedPolicy ?? null;
 
   return (
     <div className="space-y-4" data-testid="dmarc-tenant-tab">
@@ -222,7 +225,7 @@ export default function DmarcTab({ tenantId, domainName }: DmarcTabProps) {
           domain.
         </p>
 
-        {!summary ? (
+        {!hasReports && (
           // NOT an all-clear. No reports can equally mean nothing has been sent,
           // or that the reporting address is not receiving — which is the exact
           // state this platform sat in before the intake mailbox existed.
@@ -235,88 +238,92 @@ export default function DmarcTab({ tenantId, domainName }: DmarcTabProps) {
             passes&rdquo;. Providers only report once they have seen mail from this domain, and the
             first reports normally arrive within 24–48 hours of the first send.
           </div>
-        ) : (
-          <>
-            <dl className="grid gap-4 sm:grid-cols-3">
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                  Passing authentication
-                </dt>
-                <dd className="mt-1 text-sm" data-testid="dmarc-tenant-pass-rate">
-                  <PassRate rate={summary.passRate} total={summary.totalMessages} />
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                  Failing senders
-                </dt>
-                <dd className="mt-1 text-sm" data-testid="dmarc-tenant-failing">
-                  {summary.failingSources > 0 ? (
-                    <span className="text-red-600 dark:text-red-400">
-                      {summary.failingSources} {summary.failingSources === 1 ? 'server' : 'servers'}
-                    </span>
-                  ) : (
-                    <span className="text-gray-500 dark:text-gray-400">none</span>
-                  )}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                  Reports received
-                </dt>
-                <dd className="mt-1 text-sm text-gray-700 dark:text-gray-300">
-                  {summary.reportCount.toLocaleString()}
-                  {summary.lastReportAt && (
-                    <span className="ml-1 text-xs text-gray-500 dark:text-gray-400">
-                      last {new Date(summary.lastReportAt).toLocaleDateString()}
-                    </span>
-                  )}
-                </dd>
-              </div>
-            </dl>
-
-            <div className="rounded-md border border-gray-200 p-3 dark:border-gray-700">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                  Current policy
-                </span>
-                {summary.currentPolicy ? (
-                  <span
-                    className={`rounded px-1.5 py-0.5 text-xs font-medium ${POLICY_COPY[summary.currentPolicy].cls}`}
-                    data-testid="dmarc-tenant-policy"
-                  >
-                    {POLICY_COPY[summary.currentPolicy].label}
-                  </span>
-                ) : (
-                  <span className="text-sm text-gray-500 dark:text-gray-400" data-testid="dmarc-tenant-policy">
-                    not published
-                  </span>
-                )}
-              </div>
-              <p className="mt-1.5 text-xs text-gray-600 dark:text-gray-400">
-                {summary.currentPolicy
-                  ? POLICY_COPY[summary.currentPolicy].detail
-                  : 'Receivers have no instructions for mail that fails the check, so forged mail is treated like any other message.'}
-              </p>
-              <p className="mt-2 flex items-start gap-1.5 text-xs text-gray-600 dark:text-gray-400">
-                {summary.recommendation.ready ? (
-                  <ShieldCheck size={13} className="mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                ) : (
-                  <ShieldAlert size={13} className="mt-0.5 shrink-0 text-gray-500 dark:text-gray-400" />
-                )}
-                <span data-testid="dmarc-tenant-recommendation">
-                  {summary.recommendation.reason}
-                </span>
-              </p>
-              <div className="mt-3">
-                <DmarcPolicyActions
-                  summary={summary}
-                  endpoint={`/api/v1/tenants/${tenantId}/mail/dmarc/policy`}
-                  invalidateKey={['tenant-dmarc', tenantId]}
-                />
-              </div>
+        )}
+        {hasReports && summary && (
+          <dl className="grid gap-4 sm:grid-cols-3">
+            <div>
+              <dt className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                Passing authentication
+              </dt>
+              <dd className="mt-1 text-sm" data-testid="dmarc-tenant-pass-rate">
+                <PassRate rate={summary.passRate} total={summary.totalMessages} />
+              </dd>
             </div>
-          </>
+            <div>
+              <dt className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                Failing senders
+              </dt>
+              <dd className="mt-1 text-sm" data-testid="dmarc-tenant-failing">
+                {summary.failingSources > 0 ? (
+                  <span className="text-red-600 dark:text-red-400">
+                    {summary.failingSources} {summary.failingSources === 1 ? 'server' : 'servers'}
+                  </span>
+                ) : (
+                  <span className="text-gray-500 dark:text-gray-400">none</span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                Reports received
+              </dt>
+              <dd className="mt-1 text-sm text-gray-700 dark:text-gray-300">
+                {summary.reportCount.toLocaleString()}
+                {summary.lastReportAt && (
+                  <span className="ml-1 text-xs text-gray-500 dark:text-gray-400">
+                    last {new Date(summary.lastReportAt).toLocaleDateString()}
+                  </span>
+                )}
+              </dd>
+            </div>
+          </dl>
+        )}
+        {/* The policy is shown, and can be changed, from the first day: a new
+            domain starts at p=quarantine, and stepping back must not wait for
+            the first report. */}
+        {summary && (
+          <div className="rounded-md border border-gray-200 p-3 dark:border-gray-700">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                Current policy
+              </span>
+              {shownPolicy ? (
+                <span
+                  className={`rounded px-1.5 py-0.5 text-xs font-medium ${POLICY_COPY[shownPolicy].cls}`}
+                  data-testid="dmarc-tenant-policy"
+                >
+                  {POLICY_COPY[shownPolicy].label}
+                </span>
+              ) : (
+                <span className="text-sm text-gray-500 dark:text-gray-400" data-testid="dmarc-tenant-policy">
+                  not published
+                </span>
+              )}
+            </div>
+            <p className="mt-1.5 text-xs text-gray-600 dark:text-gray-400">
+              {shownPolicy
+                ? POLICY_COPY[shownPolicy].detail
+                : 'Receivers have no instructions for mail that fails the check, so forged mail is treated like any other message.'}
+            </p>
+            {/* Before the first report the box above already says there is nothing to judge on. */}
+            {hasReports && <p className="mt-2 flex items-start gap-1.5 text-xs text-gray-600 dark:text-gray-400">
+              {summary.recommendation.ready ? (
+                <ShieldCheck size={13} className="mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+              ) : (
+                <ShieldAlert size={13} className="mt-0.5 shrink-0 text-gray-500 dark:text-gray-400" />
+              )}
+              <span data-testid="dmarc-tenant-recommendation">
+                {summary.recommendation.reason}
+              </span>
+            </p>}
+            <div className="mt-3">
+              <DmarcPolicyActions
+                summary={summary}
+                endpoint={`/api/v1/tenants/${tenantId}/mail/dmarc/policy`}
+                invalidateKey={['tenant-dmarc', tenantId]}
+              />
+            </div>
+          </div>
         )}
       </div>
 

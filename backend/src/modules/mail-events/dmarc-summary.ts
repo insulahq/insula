@@ -16,7 +16,7 @@
  */
 
 import { and, desc, eq, gte, sql } from 'drizzle-orm';
-import { emailDmarcReports, emailDmarcSources } from '../../db/schema.js';
+import { domains as domainsTable, emailDmarcReports, emailDmarcSources, emailDomains } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
   recommendPolicy,
@@ -76,7 +76,18 @@ function spanDays(first: Date | null, last: Date | null): number {
  */
 export async function dmarcDomainSummaries(
   db: Database,
-  opts: { windowDays?: number; tenantId?: string; now?: Date } = {},
+  opts: {
+    windowDays?: number;
+    tenantId?: string;
+    now?: Date;
+    /**
+     * Also list the tenant's email domains no report has arrived for (needs
+     * `tenantId`). Their policy can be changed from the first day: a new
+     * domain starts at p=quarantine, and stepping back must not wait one or
+     * two days for the first report.
+     */
+    includeUnreported?: boolean;
+  } = {},
 ): Promise<DmarcDomainSummary[]> {
   const windowDays = opts.windowDays ?? DMARC_WINDOW_DAYS;
   const now = opts.now ?? new Date();
@@ -130,7 +141,10 @@ export async function dmarcDomainSummaries(
     if (f.policyDomain) failingByDomain.set(f.policyDomain, f.failingSources);
   }
 
-  const reported = rows.filter((r): r is typeof r & { policyDomain: string } => typeof r.policyDomain === 'string');
+  const withReports = rows.filter((r): r is typeof r & { policyDomain: string } => typeof r.policyDomain === 'string');
+  const reported = opts.includeUnreported && opts.tenantId
+    ? [...withReports, ...(await unreportedEmailDomains(db, opts.tenantId, withReports.map((r) => r.policyDomain)))]
+    : withReports;
   const managed = await managedDmarcRecords(db, reported.map((r) => r.policyDomain));
 
   return reported
@@ -173,6 +187,33 @@ export async function dmarcDomainSummaries(
       };
     })
     .sort((a, b) => b.totalMessages - a.totalMessages);
+}
+
+/** A tenant's email domains with no report in the window, as empty report rows. */
+async function unreportedEmailDomains(db: Database, tenantId: string, reported: readonly string[]) {
+  const seen = new Set(reported.map((d) => d.toLowerCase()));
+  const rows = await db
+    .select({ domainName: domainsTable.domainName })
+    .from(emailDomains)
+    .innerJoin(domainsTable, eq(domainsTable.id, emailDomains.domainId))
+    .where(eq(emailDomains.tenantId, tenantId));
+  return rows
+    .filter((r) => !seen.has(r.domainName.toLowerCase()))
+    .map((r) => ({
+      policyDomain: r.domainName,
+      tenantId,
+      reportCount: 0,
+      totalMessages: 0,
+      passMessages: 0,
+      failMessages: 0,
+      dkimPassMessages: 0,
+      spfPassMessages: 0,
+      quarantinedMessages: 0,
+      rejectedMessages: 0,
+      firstReportAt: null,
+      lastReportAt: null,
+      latestPolicy: null,
+    }));
 }
 
 export interface DmarcSourceSummary {

@@ -261,5 +261,33 @@ describe('DmarcTab (tenant) — acting on the recommendation', () => {
     expect(await screen.findByTestId('dmarc-unmanaged-alpha.test')).toBeInTheDocument();
     expect(screen.queryByTestId('dmarc-apply-alpha.test')).not.toBeInTheDocument();
   });
-});
 
+  // A new domain starts at p=quarantine; its first report arrives a day or two
+  // after its first mail. The way back must be there before that.
+  it('offers the step back before the first report', async () => {
+    renderWith({
+      reportCount: 0, totalMessages: 0, passMessages: 0, passRate: null, currentPolicy: null,
+      firstReportAt: null, lastReportAt: null, windowDays: 0,
+      managedPolicy: 'quarantine', managedRecordCount: 1,
+      recommendation: { policyDomain: 'alpha.test', currentPolicy: null, recommendedPolicy: null, passRate: null, reason: 'No DMARC reports received yet for this domain — nothing to judge a policy change on.', ready: false },
+    });
+    expect(await screen.findByTestId('dmarc-tenant-empty')).toBeInTheDocument();
+    expect(screen.getByTestId('dmarc-tenant-policy')).toHaveTextContent('Quarantine failures');
+    expect(screen.queryByTestId('dmarc-tenant-pass-rate')).not.toBeInTheDocument();
+    // Said once, in the box above, not again under the policy.
+    expect(screen.queryByTestId('dmarc-tenant-recommendation')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dmarc-apply-alpha.test')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('dmarc-step-back-alpha.test'));
+    fireEvent.click(screen.getByTestId('dmarc-confirm-alpha.test'));
+    await waitFor(() => {
+      const post = apiFetch.mock.calls.find(([, init]) => (init as { method?: string } | undefined)?.method === 'POST');
+      expect(JSON.parse((post?.[1] as { body: string }).body)).toEqual({ domain: 'alpha.test', policy: 'none' });
+    });
+  });
+
+  it('points a duplicate _dmarc record at Re-create mail records', async () => {
+    renderWith({ managedPolicy: null, managedRecordCount: 2 });
+    expect(await screen.findByTestId('dmarc-duplicate-alpha.test')).toHaveTextContent('Re-create mail records');
+  });
+});

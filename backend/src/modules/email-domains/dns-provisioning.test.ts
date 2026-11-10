@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { dnsRecords } from '../../db/schema.js';
 import { buildEmailDnsRecordsForDisplay } from './dns-provisioning.js';
 
 const MOCK_DKIM_SELECTOR = 'default';
@@ -176,20 +177,25 @@ describe('buildEmailDnsRecordsForDisplay', () => {
 vi.mock('./dkim.js', () => ({ formatDkimDnsValue: (k: string) => `v=DKIM1; p=${k}` }));
 
 const activeServersMock = vi.fn();
+const zoneMock = vi.fn();
+const createRecordMock = vi.fn();
 vi.mock('../dns-servers/service.js', () => ({
   getActiveServersForDomain: (...a: unknown[]) => activeServersMock(...a),
   getProviderForServer: () => ({
-    createRecord: vi.fn().mockResolvedValue(undefined),
+    createRecord: (...a: unknown[]) => createRecordMock(...a),
     deleteRecord: vi.fn().mockResolvedValue(undefined),
+    listRecords: (...a: unknown[]) => zoneMock(...a),
   }),
 }));
 
-function dbFor(dnsMode: string) {
+function dbFor(dnsMode: string, storedRows: Record<string, unknown>[] = []) {
   const inserted: Record<string, unknown>[] = [];
   const updated: Record<string, unknown>[] = [];
   const rows = [{ dnsMode }];
   const db = {
-    select: () => ({ from: () => ({ where: () => Promise.resolve(rows) }) }),
+    // dns_records answers with the domain's stored rows; every other table
+    // with the domain row.
+    select: () => ({ from: (table: unknown) => ({ where: () => Promise.resolve(table === dnsRecords ? storedRows : rows) }) }),
     insert: () => ({ values: (v: Record<string, unknown>) => { inserted.push(v); return Promise.resolve(); } }),
     update: () => ({
       set: (v: Record<string, unknown>) => ({ where: () => { updated.push(v); return Promise.resolve(); } }),
@@ -201,7 +207,11 @@ function dbFor(dnsMode: string) {
 const PROV_ARGS = ['sel', 'PUBKEY', 'key', 'mail.platform.test'] as const;
 
 describe('provisionEmailDns — recorded vs published', () => {
-  beforeEach(() => { activeServersMock.mockReset(); });
+  beforeEach(() => {
+    activeServersMock.mockReset();
+    zoneMock.mockReset().mockResolvedValue([]);
+    createRecordMock.mockReset().mockResolvedValue(undefined);
+  });
 
   it('primary + enabled primary server → records stored AND flagged provisioned', async () => {
     activeServersMock.mockResolvedValue([
@@ -265,6 +275,62 @@ describe('provisionEmailDns — recorded vs published', () => {
     expect(msg).toMatch(/customer-managed DNS/i);
     expect(msg).toMatch(/NOT published/i);
     expect(msg).toMatch(/DNS Records page/i);
+    warn.mockRestore();
+  });
+});
+
+// Enabling email on a domain moved in from another provider used to add every
+// record next to what the zone held: a second SPF record (a permanent error,
+// SPF fails for all mail) and a second DMARC record (receivers ignore both).
+describe('provisionEmailDns — what the domain already has', () => {
+  const PRIMARY = [{ id: 's1', providerType: 'powerdns', enabled: 1, role: 'primary' }];
+  const published = () => createRecordMock.mock.calls.map((c) => (c[1] as { type: string; name: string; content: string }));
+  const run = async (db: unknown) => {
+    const { provisionEmailDns } = await import('./dns-provisioning.js');
+    await provisionEmailDns(db as never, 'dom-9', 'example.test', '', '', 'key', 'mail.platform.test');
+  };
+
+  beforeEach(() => {
+    activeServersMock.mockReset().mockResolvedValue(PRIMARY);
+    zoneMock.mockReset().mockResolvedValue([]);
+    createRecordMock.mockReset().mockResolvedValue(undefined);
+  });
+
+  it("keeps the zone's own SPF and DMARC records instead of adding a second one", async () => {
+    zoneMock.mockResolvedValue([
+      { type: 'TXT', name: 'example.test.', content: '"v=spf1 include:_spf.old-provider.test ~all"' },
+      { type: 'TXT', name: '_dmarc.example.test.', content: '"v=DMARC1; p=reject; rua=mailto:r@old-provider.test"' },
+    ]);
+    const { db, inserted } = dbFor('primary');
+    await run(db);
+
+    expect(published().some((r) => r.type === 'TXT')).toBe(false);
+    expect(published().some((r) => r.type === 'MX')).toBe(true);
+    // The tenant's DMARC record gets a row (the policy buttons act on it); no SPF row is added.
+    const txtRows = inserted.filter((r) => r.recordType === 'TXT');
+    expect(txtRows).toEqual([expect.objectContaining({
+      recordName: '_dmarc.example.test', recordValue: 'v=DMARC1; p=reject; rua=mailto:r@old-provider.test',
+    })]);
+  });
+
+  it('does not publish what the zone already holds, nor store a row twice', async () => {
+    zoneMock.mockResolvedValue([{ type: 'MX', name: 'example.test.', content: '10 mail.platform.test.' }]);
+    const { db, inserted } = dbFor('primary', [
+      { id: 'r1', recordType: 'MX', recordName: 'example.test', recordValue: 'mail.platform.test', priority: 10 },
+    ]);
+    await run(db);
+    expect(published().some((r) => r.type === 'MX')).toBe(false);
+    expect(inserted.some((r) => r.recordType === 'MX')).toBe(false);
+    // Everything else is still written.
+    expect(published().some((r) => r.type === 'TXT' && r.name === 'example.test')).toBe(true);
+  });
+
+  it('a zone it cannot read is not taken for an empty one: every record is still published', async () => {
+    zoneMock.mockRejectedValue(new Error('PowerDNS API error: 503'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { db } = dbFor('primary');
+    await run(db);
+    expect(published().map((r) => r.type).sort()).toEqual(['MX', 'SRV', 'SRV', 'SRV', 'SRV', 'SRV', 'TXT', 'TXT']);
     warn.mockRestore();
   });
 });

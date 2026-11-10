@@ -37,6 +37,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   - **Domain status.** A tenant can no longer set its domain's status through the API (to
     `verified`, for instance). Only DNS verification sets it; staff keep a manual override.
 
+### Added
+
+- **Settings & DNS checks a domain's mail records against its zone, and can re-create them.**
+  For a domain whose DNS the platform hosts, the DNS records card on the tenant panel's Email →
+  Settings & DNS tab marks each mail record as published or missing. It warns about records in
+  the zone that get in the way: a second SPF or DMARC record, an MX or mail-app (SRV) record at
+  another server, an old DKIM or webmail value. **Re-create mail records** lists every change
+  first, then publishes the missing records and removes the conflicting ones.
+  - Two SPF records are merged into one that keeps every sender either allowed. Two DMARC
+    records are merged into one at the stricter policy, with every report address.
+  - An MX or SRV record at another server can be kept (a backup mail server, a filtering
+    service).
+  - A record whose new value cannot be published is not removed, so a domain never ends up
+    without an MX.
+  - The check needs a DNS server that lists the whole zone (PowerDNS); for others it says so.
+
 ### Changed
 
 - **New email domains publish `p=quarantine`.** The DMARC record a newly enabled domain gets is
@@ -51,6 +67,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Enabling email no longer adds a second SPF or DMARC record.** It added every mail record next
+  to what the domain's zone already held, so a domain that came with its previous host's records
+  got two SPF records (SPF then fails for all its mail) and two DMARC records (receivers then
+  ignore DMARC). A domain's own SPF and DMARC records are now kept, and the Settings & DNS tab
+  says what they lack. A record the zone already holds is not added again.
+- **The DMARC policy buttons appear for a domain from the first day.** The Authentication tab
+  showed the policy, and **Step back**, only after the domain's first DMARC report had arrived,
+  so a new domain at `p=quarantine` had no way back for a day or two. They were also missing
+  when the domain's `_dmarc` record had been pulled from the DNS server, in its quoted spelling;
+  the tab then said the record was "not managed by the platform".
+- **`webmail.<domain>` points at the same host however webmail was turned on.** Turning webmail
+  on when enabling email pointed it at the mail server's hostname, while the webmail toggle
+  pointed it at the platform webmail host.
 - **The admin and tenant panels work on a phone.** Every page and tab of both panels was opened at
   375 px wide on DEV. All 93 admin views and all 33 tenant views had something cut off: content past
   the screen's right edge, with no way to scroll to it.
