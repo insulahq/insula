@@ -22,6 +22,14 @@
 #   - tenant-lifecycle — opt-in behind RUN_LIFECYCLE_INTEGRATION=1 and needs a
 #     real cluster (KUBECONFIG).
 # They are named here so the exclusion is a visible decision, not a silent gap.
+#
+# One suite needs a PowerDNS NEXT TO Postgres: email-domains/mail-dns-repair
+# enables mail, checks and repairs records, and reads the zone back from the
+# server. Unless PDNS_API_URL names one, this script starts a throwaway
+# powerdns/pdns-auth-49 for the run (as integration-dns-powerdns.sh does) — it
+# is not excluded, because without a server that suite would skip and fail
+# the zero-skip check below. PDNS_HOST: where the test process reaches the
+# container (127.0.0.1; the docker host when the daemon is remote, e.g. DinD).
 
 set -euo pipefail
 
@@ -33,7 +41,37 @@ VITEST="${REPO_ROOT}/node_modules/.bin/vitest"
 [ -x "${VITEST}" ] || { echo "vitest not found — run npm ci first" >&2; exit 1; }
 
 REPORT="$(mktemp -t integration-report.XXXXXX.json)"
-trap 'rm -f "${REPORT}"' EXIT
+PDNS_CONTAINER=""
+cleanup() {
+  rm -f "${REPORT}"
+  if [ -n "${PDNS_CONTAINER}" ]; then docker rm -f "${PDNS_CONTAINER}" >/dev/null 2>&1 || true; fi
+}
+trap cleanup EXIT
+
+export PDNS_API_KEY="${PDNS_API_KEY:-probekey}"
+if [ -z "${PDNS_API_URL:-}" ]; then
+  command -v docker >/dev/null 2>&1 || {
+    echo "FAIL: the mail DNS suite needs a PowerDNS; set PDNS_API_URL or make docker available" >&2
+    exit 1
+  }
+  PDNS_CONTAINER="insula-pdns-integration-$$"
+  PDNS_PORT="${PDNS_PORT:-18082}"
+  docker run -d --name "${PDNS_CONTAINER}" -p "${PDNS_PORT}:8081" "${PDNS_IMAGE:-powerdns/pdns-auth-49:latest}" \
+    --webserver=yes --webserver-address=0.0.0.0 --webserver-allow-from=0.0.0.0/0 \
+    --api=yes --api-key="${PDNS_API_KEY}" \
+    --launch=gsqlite3 --gsqlite3-database=/var/lib/powerdns/pdns.sqlite3 >/dev/null
+  export PDNS_API_URL="http://${PDNS_HOST:-127.0.0.1}:${PDNS_PORT}"
+  ready=0
+  for _ in $(seq 1 30); do
+    if curl -fsS -m 2 -H "X-API-Key: ${PDNS_API_KEY}" "${PDNS_API_URL}/api/v1/servers/localhost" >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 1
+  done
+  [ "${ready}" = "1" ] || { docker logs "${PDNS_CONTAINER}" 2>&1 | tail -20 >&2; echo "FAIL: PowerDNS never answered at ${PDNS_API_URL}" >&2; exit 1; }
+fi
+echo "PowerDNS for the mail DNS suite: ${PDNS_API_URL}"
 
 echo "── backend integration suites ────────────────────────────────────"
 echo "DATABASE_URL host: $(printf '%s' "${DATABASE_URL:-unset}" | sed -E 's|^[^@]*@||; s|/.*$||')"

@@ -3,8 +3,8 @@
  * email next to an old provider's records, the check, and "Re-create mail
  * records". Every assertion on DNS reads the zone back from the server.
  *
- * Skipped unless `PDNS_API_URL` is set (and a database is available) — run
- * with a throwaway `powerdns/pdns-auth-49`, as scripts/integration-dns-powerdns.sh does.
+ * Needs `PDNS_API_URL` and a database. scripts/ci-integration-tests.sh starts
+ * a throwaway `powerdns/pdns-auth-49` for it, so in CI this suite runs, never skips.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import crypto from 'node:crypto';
