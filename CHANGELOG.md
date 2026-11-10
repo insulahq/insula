@@ -12,6 +12,43 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **A tenant can no longer add a domain that overlaps another account's.** Adding a domain checked
+  only for the exact same name and for the platform's reserved hostnames.
+  - **Subdomains and parents.** A tenant adding its own domain is refused a name inside another
+    account's domain (`shop.example.test` when someone else has `example.test`), a name that
+    contains one, and any name under the platform's own domain. Every primary-mode zone lives on
+    the same nameservers, which answer from the most specific zone they hold, so such a zone took
+    the name over from the other account's zone as soon as it was created, and its verification
+    passed. The error does not say which domain or account it overlaps. Staff in the admin panel
+    are not checked, so an operator can still give a customer a subdomain on purpose. An operator
+    using "Login as tenant" is checked like the tenant.
+  - **Letter case.** Domain names are stored lowercased and compared case-insensitively. A name that
+    differed only in case from an existing domain was accepted as a new one. Migration 0177 adds a
+    unique index on the lowercased name; on a cluster that already has two names differing only in
+    case, it logs a warning and skips the index, and the API still refuses new ones.
+  - **Routes.** A hostname and path can have only one route across all domains, not one per domain.
+  - **Mail.** A tenant can turn email on only for a domain that has passed DNS verification, or
+    whose MX record already points to the platform's mail host (for a domain used only for mail).
+    Stalwart delivers mail for the domains it hosts locally, so mail for a domain nobody had proven
+    was theirs could be kept on the platform. Staff, the Plesk import and archive restores are
+    not checked.
+  - **Domain status.** A tenant can no longer set its domain's status through the API (to
+    `verified`, for instance). Only DNS verification sets it; staff keep a manual override.
+
+### Changed
+
+- **New email domains publish `p=quarantine`.** The DMARC record a newly enabled domain gets is
+  `v=DMARC1; p=quarantine; rua=mailto:dmarc@<domain>`; it was `p=none`, which protects nothing.
+  Mail from a sender that does not align (a newsletter service, a web form, an office server) now
+  goes to spam from the start. The DMARC reports show such a sender, and Monitoring → Mail can
+  move the domain back to `p=none` while it is fixed. Domains that already publish a policy keep
+  it. Alignment stays relaxed (no `adkim=`/`aspf=`).
+  - The DNS records a tenant is shown to publish now carry the domain's published DMARC record,
+    not the template's, so a change of default or a policy applied from Monitoring → Mail no
+    longer shows a different value from the one the domain has.
+
 ### Fixed
 
 - **The admin and tenant panels work on a phone.** Every page and tab of both panels was opened at

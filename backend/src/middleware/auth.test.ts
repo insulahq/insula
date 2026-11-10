@@ -3,7 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import {
   registerAuth, authenticate, requirePanel, requireRole, requireTenantAccess,
-  requireTenantRoleByMethod, assertAccessToken, verifyAccessToken,
+  requireTenantRoleByMethod, assertAccessToken, verifyAccessToken, isPlatformStaff,
 } from './auth.js';
 import { errorHandler } from './error-handler.js';
 
@@ -553,5 +553,25 @@ describe('authenticate — a tenant archived since the token was signed', () => 
     status = 'archived';
     const adminToken = archivedApp.jwt.sign({ sub: 'a', role: 'admin', panel: 'admin' });
     expect((await archivedApp.inject({ method: 'GET', url: '/tenant-thing', headers: { authorization: `Bearer ${adminToken}` } })).statusCode).toBe(200);
+  });
+});
+
+describe('isPlatformStaff', () => {
+  it('is true for a staff role on an admin-panel token', () => {
+    for (const role of ['super_admin', 'admin', 'support'] as const) {
+      expect(isPlatformStaff({ role, panel: 'admin' })).toBe(true);
+    }
+  });
+
+  it('is false on a tenant-panel token, including an operator logged in as a tenant', () => {
+    expect(isPlatformStaff({ role: 'tenant_admin', panel: 'tenant' })).toBe(false);
+    expect(isPlatformStaff({ role: 'admin', panel: 'tenant' })).toBe(false);
+  });
+
+  it('is false for the non-staff admin roles and for no user', () => {
+    expect(isPlatformStaff({ role: 'billing', panel: 'admin' })).toBe(false);
+    expect(isPlatformStaff({ role: 'read_only', panel: 'admin' })).toBe(false);
+    expect(isPlatformStaff(undefined)).toBe(false);
+    expect(isPlatformStaff(null)).toBe(false);
   });
 });

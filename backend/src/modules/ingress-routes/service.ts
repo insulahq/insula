@@ -5,7 +5,7 @@
  * Each route generates: hostname → {slug}.ingress.platform.net → node → IP
  */
 
-import { eq, and, isNotNull } from 'drizzle-orm';
+import { eq, and, isNotNull, sql } from 'drizzle-orm';
 import {
   isWildcardHostname,
   normalizeHostname,
@@ -444,14 +444,18 @@ export async function createRoute(
     }
   }
 
-  // Check for duplicate hostname+path combination
+  // Check for duplicate hostname+path combination — across ALL domains, not
+  // only this one. Two domains can both cover a hostname (`example.test` and
+  // `shop.example.test` each accept `shop.example.test`), and two routes for
+  // the same host and path are two Ingress rules for one request: whichever
+  // Traefik picks, the other domain's owner has lost it. The message does not
+  // say where the other route is; it may be another tenant's.
   const [existing] = await db
     .select({ id: ingressRoutes.id })
     .from(ingressRoutes)
     .where(and(
-      eq(ingressRoutes.hostname, hostname),
+      sql`lower(${ingressRoutes.hostname}) = ${hostname.toLowerCase()}`,
       eq(ingressRoutes.path, routePath),
-      eq(ingressRoutes.domainId, domainId),
     ));
 
   if (existing) {

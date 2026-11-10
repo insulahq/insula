@@ -149,6 +149,8 @@ All error responses must follow this structure:
 | `PLAN_CHANGE_IN_PROGRESS` | 409 | Plan change already in progress | Wait for current change to complete |
 | `SYSTEM_TENANT_PROTECTED` | 409 | Cannot {action} SYSTEM tenant — platform-protected (ADR-040) | No action — SYSTEM tenant is by design indelible |
 | `RESERVED_PLATFORM_HOSTNAME` | 409 | '{hostname}' is reserved for platform use ({reason}) | Pick a different hostname, or update Settings → Platform URLs first |
+| `DOMAIN_OVERLAPS_ANOTHER_ACCOUNT` | 409 | '{domain}' is inside / contains a domain another account uses on this platform (or the platform's own domain) | Check for typos; if the domain is yours, ask the hosting provider to add it. Staff are not checked |
+| `DOMAIN_DNS_CONTROL_UNPROVEN` | 409 | Email can be turned on for '{domain}' once the domain is verified, or once its MX record points to {mailHost} | Verify the domain, or (mail-only domain) set its MX to the mail host first. Staff are not checked |
 
 ### Resource Limits (5000-5999)
 

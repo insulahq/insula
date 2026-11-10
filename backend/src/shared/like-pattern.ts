@@ -29,6 +29,11 @@ export function likePrefixPattern(term: string): string {
   return `${escapeLike(term)}%`;
 }
 
+/** A safe `%…` pattern: the term at the END of the value. Same escaping as {@link likePattern}. */
+export function likeSuffixPattern(term: string): string {
+  return `%${escapeLike(term)}`;
+}
+
 function escapeLike(term: string): string {
   return term
     .replace(/\\/g, '\\\\')

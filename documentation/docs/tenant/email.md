@@ -27,6 +27,14 @@ tabs:
     **Settings & DNS** tab shows exactly which records are needed and whether
     the platform publishes them for you (see [DNS for mail](#dns-for-mail)).
 
+!!! info "Verify the domain first"
+    *Enable Email* works once the domain has passed verification (see
+    [Verify your domain](domains-and-websites.md#verify-your-domain)). For a
+    domain you use only for email, whose website lives elsewhere, set its MX
+    record to the platform's mail server first; the message under the button
+    names it. Either one shows that the domain is yours, so nobody else can
+    have the platform keep mail meant for it.
+
 !!! info "If your plan includes no mailboxes"
     When your account is allocated **0 mailboxes**, the page says so instead of
     offering an *Enable Email* button that cannot work. Any mailboxes you
@@ -178,6 +186,14 @@ more).
 
 The **DKIM keys** card lets you view the cryptographic keys that prove your mail
 is genuine (these are part of the DNS records above).
+
+A newly enabled domain's DMARC record is `p=quarantine`: mail that claims to
+come from your domain but fails its checks goes to the recipient's spam folder.
+If you also send through another service (a newsletter tool, a web form, an
+office mail server), set it up to sign or send for your domain, or its mail is
+treated the same way. Once the domain's first DMARC reports arrive (usually
+within two days), the **Authentication** tab shows any such sender and can step
+the policy back to `p=none` while you fix it.
 
 ## Statistics (how much your domains sent)
 

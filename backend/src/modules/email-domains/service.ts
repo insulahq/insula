@@ -3,6 +3,8 @@ import { emailDomains, domains, mailboxes, tenants, emailAliases, dnsRecords } f
 import { ApiError } from '../../shared/errors.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
 import { getMailServerHostname, getDefaultWebmailUrl } from '../webmail-settings/service.js';
+import { assertDnsControlForMail } from './dns-control.js';
+import { managedDmarcRecords } from '../mail-events/dmarc-record.js';
 import { notifyTenantEmailBootstrapped } from '../notifications/events.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { assertTenantActive } from '../tenants/guards.js';
@@ -108,6 +110,12 @@ export async function enableEmailForDomain(
      * — the hooks that make it active push mail state onto them.
      */
     readonly restoringArchivedTenant?: boolean;
+    /**
+     * Refuse a NEW enable until the tenant has shown it controls the
+     * domain's DNS (dns-control.ts). Set for tenant callers; staff, the
+     * Plesk import and archive restore act for the operator and skip it.
+     */
+    readonly requireDnsControl?: boolean;
   } = {},
 ) {
   if (!opts.restoringArchivedTenant) {
@@ -149,6 +157,9 @@ export async function enableEmailForDomain(
         { limit: 0, source: mailboxLimit.source },
         'Ask your administrator to allocate mailboxes to this account',
       );
+    }
+    if (opts.requireDnsControl) {
+      await assertDnsControlForMail(db, domain);
     }
   }
 
@@ -779,6 +790,16 @@ export async function getEmailDomainDnsRecords(
     ),
     await readPublishedDkimRecords(db, ed.domainId, ed.domainName),
   );
+  // DMARC as published, not as the builder would write it today: the default
+  // policy has changed between releases, and Monitoring → Mail changes a
+  // domain's policy in place. The builder's value would tell a tenant on
+  // external DNS to publish a policy their domain is not on.
+  const publishedDmarc = (await managedDmarcRecords(db, [ed.domainName]))
+    .get(ed.domainName)
+    ?.find((r) => r.domainId === ed.domainId);
+  const records = publishedDmarc
+    ? withDkim.map((s) => (s.purpose === 'dmarc' ? { ...s, recordValue: publishedDmarc.recordValue } : s))
+    : withDkim;
 
   return {
     dnsMode: (ed.dnsMode as string) ?? 'cname',
@@ -787,7 +808,7 @@ export async function getEmailDomainDnsRecords(
     // MUST publish the records at their own DNS provider.
     manualRequired: ed.dnsMode !== 'primary',
     mailServerHostname,
-    records: withDkim.map((s) => ({
+    records: records.map((s) => ({
       type: s.recordType,
       name: s.recordName,
       value: s.recordValue,

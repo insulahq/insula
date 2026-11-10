@@ -274,14 +274,22 @@ describe('the published DMARC policy for a NEW domain', () => {
     buildEmailDnsRecordsForDisplay(domain, MOCK_DKIM_SELECTOR, MOCK_DKIM_PUBLIC_KEY, MOCK_MAIL_HOSTNAME)
       .find((r) => r.purpose === 'dmarc');
 
-  it('starts at p=none — a new domain has no evidence its mail aligns', () => {
-    // Enforcement on day one spam-folders whatever does not align yet (a CRM,
-    // a newsletter provider, the tenant's own office server) and does it
-    // silently from the sender's side. Pinned so it cannot drift back without
-    // a deliberate decision.
-    expect(dmarcOf()?.recordValue).toContain('p=none');
-    expect(dmarcOf()?.recordValue).not.toContain('p=quarantine');
+  it('starts at p=quarantine — enforcing, but not yet rejecting', () => {
+    // An operator decision: p=none protects nothing. p=reject stays a step
+    // the reports must earn (mail-events/dmarc-policy.ts), because on a new
+    // domain an unaligned legitimate sender would stop being delivered at all.
+    // Pinned so the default cannot change without a deliberate decision.
+    expect(dmarcOf()?.recordValue).toMatch(/^v=DMARC1; p=quarantine;/);
+    expect(dmarcOf()?.recordValue).not.toContain('p=none');
     expect(dmarcOf()?.recordValue).not.toContain('p=reject');
+  });
+
+  it('leaves alignment relaxed (no adkim=/aspf=): a subdomain sender of the tenant still aligns', () => {
+    // Strict alignment would fail mail From a subdomain signed by the parent,
+    // and senders that align only through a bounce subdomain. The threat
+    // strict guards against, someone else controlling a subdomain, is closed
+    // where the domain is added (domains/overlap.ts).
+    expect(dmarcOf()?.recordValue).not.toMatch(/adkim=|aspf=/);
   });
 
   it('points rua= at a same-domain address the platform actually creates', () => {

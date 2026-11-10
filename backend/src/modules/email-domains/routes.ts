@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
+import { authenticate, isPlatformStaff, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { enableEmailDomainSchema, updateEmailDomainSchema } from '@insula/api-contracts';
 import * as service from './service.js';
 import { success } from '../../shared/response.js';
@@ -53,7 +53,9 @@ export async function emailDomainRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const result = await service.enableEmailForDomain(app.db, tenantId, domainId, parsed.data, encryptionKey());
+    const result = await service.enableEmailForDomain(app.db, tenantId, domainId, parsed.data, encryptionKey(), {
+      requireDnsControl: !isPlatformStaff(request.user),
+    });
     app.log.info(
       { tenantId, domainId, emailDomainId: result.id },
       'email-domains: enableEmailForDomain completed',
