@@ -14,6 +14,7 @@ import clsx from 'clsx';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 import { isMysqlFamily, quoteId, quoteSqlString } from '@/lib/quote-sql-identifier';
+import { statementShape } from '@/lib/sql-statement-shape';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import {
   useDeployments,
@@ -114,17 +115,6 @@ function getQueryErrorHint(error: string): string | null {
 // ─── Helper: detect engine from catalog entry ────────────────────────────────
 
 type DbEngine = 'sql' | 'redis' | 'mongodb';
-
-/**
- * What the result message needs to know about the SQL that ran. Every engine
- * reports the LAST statement's count, so a query with more than one says whose
- * count it is. Both tests are text-level: a `;` inside a string literal reads
- * as a second statement, which only adds "by the last statement" — still true.
- */
-function statementShape(sql: string): { readonly several: boolean; readonly hasUpdate: boolean } {
-  const body = sql.trim().replace(/;\s*$/, '');
-  return { several: /;\s*\S/.test(body), hasUpdate: /(^|;)\s*update\s/i.test(body) };
-}
 
 function detectEngine(catalogEntryName: string | undefined): DbEngine {
   if (!catalogEntryName) return 'sql';
