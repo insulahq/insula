@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.8-rc.1] - 2026-11-11
+
 ### Security
 
 - **A tenant can no longer add a domain that overlaps another account's.** Adding a domain checked
