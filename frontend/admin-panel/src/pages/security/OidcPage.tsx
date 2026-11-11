@@ -243,7 +243,7 @@ function ProvidersSection({ providers }: { readonly providers: readonly OidcProv
   const [showAdd, setShowAdd] = useState(false);
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="providers-section">
-      <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
+      <div className="flex flex-wrap items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4 gap-2">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">OIDC Providers</h2>
         <button type="button" onClick={() => setShowAdd((p) => !p)} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600" data-testid="add-provider-button">
           {showAdd ? <X size={14} /> : <Plus size={14} />} {showAdd ? 'Cancel' : 'Add Provider'}

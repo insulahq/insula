@@ -50,8 +50,8 @@ export default function LifecycleHooksSettings() {
   };
 
   return (
-    <div className="space-y-6 p-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-6 sm:p-6">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">Lifecycle Hooks</h1>
         <div className="flex items-center gap-2">
           <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
@@ -137,7 +137,7 @@ export default function LifecycleHooksSettings() {
             const runs = list.data?.data.hookRuns[t.id] ?? [];
             return (
               <details key={t.id} className="group">
-                <summary className="flex cursor-pointer items-center gap-3 px-4 py-2 text-xs hover:bg-gray-50 dark:hover:bg-gray-700/40">
+                <summary className="flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-xs hover:bg-gray-50 dark:hover:bg-gray-700/40">
                   <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${TRANSITION_BADGE[t.state]}`}>{t.state}</span>
                   <span className="font-mono text-gray-700 dark:text-gray-200">{t.transitionKind}</span>
                   <span className="text-gray-500 dark:text-gray-400">tenant {t.tenantId.slice(0, 8)}…</span>

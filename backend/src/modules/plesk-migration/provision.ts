@@ -25,7 +25,7 @@
  * driven by the read-only discovery snapshot.
  */
 
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { pleskMigrations, domains as domainsTable, tenants, hostingPlans, pleskSources, emailDomains, mailboxes as mailboxesTable } from '../../db/schema.js';
 import { createDomain } from '../domains/service.js';
 import { enableEmailForDomain } from '../email-domains/service.js';
@@ -380,7 +380,7 @@ async function provisionDomains(
       const [existing] = await db
         .select({ id: domainsTable.id })
         .from(domainsTable)
-        .where(and(eq(domainsTable.tenantId, tenantId), eq(domainsTable.domainName, d.name)))
+        .where(and(eq(domainsTable.tenantId, tenantId), sql`lower(${domainsTable.domainName}) = ${d.name.trim().toLowerCase()}`))
         .limit(1);
       if (existing) {
         items.push({ name: d.name, status: 'skipped', message: 'already exists' });
@@ -395,7 +395,9 @@ async function provisionDomains(
         items.push({ name: d.name, status: 'failed', message: `invalid domain name: ${parsed.error.issues[0]?.message ?? 'format'}` });
         continue;
       }
-      await createDomain(db, tenantId, parsed.data, k8s);
+      // Run by a super_admin (routes.ts), so an overlap with another tenant's
+      // domain is the operator's call, as it is for staff in the admin panel.
+      await createDomain(db, tenantId, parsed.data, k8s, { allowCrossAccountOverlap: true });
       items.push({
         name: d.name, status: 'completed',
         message: dnsMode === 'primary' ? 'PRIMARY DNS (Plesk was authoritative — review the DNS provider group + records)' : undefined,

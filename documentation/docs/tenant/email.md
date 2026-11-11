@@ -27,6 +27,14 @@ tabs:
     **Settings & DNS** tab shows exactly which records are needed and whether
     the platform publishes them for you (see [DNS for mail](#dns-for-mail)).
 
+!!! info "Verify the domain first"
+    *Enable Email* works once the domain has passed verification (see
+    [Verify your domain](domains-and-websites.md#verify-your-domain)). For a
+    domain you use only for email, whose website lives elsewhere, set its MX
+    record to the platform's mail server first; the message under the button
+    names it. Either one shows that the domain is yours, so nobody else can
+    have the platform keep mail meant for it.
+
 !!! info "If your plan includes no mailboxes"
     When your account is allocated **0 mailboxes**, the page says so instead of
     offering an *Enable Email* button that cannot work. Any mailboxes you
@@ -166,9 +174,30 @@ more).
 
 === "Platform-managed (Primary mode)"
 
-    If your domain is in **Primary** DNS mode, a green banner says the records
-    are published and kept in sync automatically. They're shown for reference
-    only — there's nothing to do.
+    If your domain is in **Primary** DNS mode, a green banner says the platform
+    publishes the records in your domain's zone. The card also checks the
+    zone itself: the **In DNS** column marks each record **Published** or
+    **Missing**, and a warning lists any record in the zone that gets in the
+    way of your mail:
+
+    - **a second SPF or DMARC record** — mail providers treat two SPF records
+      as an error (SPF then fails for all your mail) and ignore DMARC when it
+      is published twice;
+    - **an MX record at another mail server** — part of your mail is delivered
+      there instead;
+    - **mail-app records (SRV) at another server**, and **old values** at the
+      platform's own names (a DKIM key, the `webmail` record).
+
+    These usually come from your previous host. **Re-create mail records**
+    publishes the missing records and removes the ones in the way. It first
+    lists every change it will make. Two SPF or DMARC records are merged into
+    one, so every service your old record allowed to send stays allowed, and
+    the DMARC policy is never made weaker. An MX or SRV record at another server
+    can be unticked to keep it, if you use it on purpose (a backup mail server,
+    a filtering service). Your own single SPF or DMARC record is left as it is;
+    the warning says what it lacks.
+
+    The same button also brings back mail records deleted by accident.
 
 === "Manual (CNAME / Secondary mode)"
 
@@ -178,6 +207,15 @@ more).
 
 The **DKIM keys** card lets you view the cryptographic keys that prove your mail
 is genuine (these are part of the DNS records above).
+
+A newly enabled domain's DMARC record is `p=quarantine`: mail that claims to
+come from your domain but fails its checks goes to the recipient's spam folder.
+If you also send through another service (a newsletter tool, a web form, an
+office mail server), set it up to sign or send for your domain, or its mail is
+treated the same way. The **Authentication** tab can step the policy back to
+`p=none` from the first day, before any report has arrived; once the domain's
+first DMARC reports arrive (usually within two days), it also shows any such
+sender.
 
 ## Statistics (how much your domains sent)
 

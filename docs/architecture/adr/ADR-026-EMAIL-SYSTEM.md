@@ -81,10 +81,12 @@ When email is enabled for a domain, auto-create via existing DNS provider adapte
 - A record → `mail.clientdomain.com` → Stalwart IP
 - SPF TXT → `v=spf1 mx ~all` (+ relay include if configured)
 - DKIM TXT → per-domain 2048-bit RSA public key
-- DMARC TXT → `v=DMARC1; p=none; rua=mailto:dmarc@<domain>`
-  *(was `p=quarantine` with no working `rua=`; changed 2026-09-14 — a new
-  domain has no evidence its mail aligns, and since R5 the platform ingests
-  DMARC reports and says when it is safe to tighten. See ROADMAP R5.)*
+- DMARC TXT → `v=DMARC1; p=quarantine; rua=mailto:dmarc@<domain>`
+  *(was `p=quarantine` with no working `rua=`; `p=none` from 2026-09-14,
+  while R5 started ingesting DMARC reports; back to `p=quarantine` by operator
+  decision, since `p=none` protects nothing. Alignment is left relaxed (no
+  `adkim=`/`aspf=`); a tenant cannot add a domain inside another account's, so
+  a subdomain that aligns is the tenant's own. See ROADMAP R5.)*
 
 ## Consequences
 

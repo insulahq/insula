@@ -46,11 +46,12 @@ export default function Applications() {
       </div>
 
       <div className="border-b border-gray-200 dark:border-gray-700">
-        <nav className="-mb-px flex gap-6" data-testid="tab-bar">
+        <nav className="-mb-px flex gap-6" data-testid="tab-bar" data-tab-strip>
           {TABS.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
+              aria-current={activeTab === tab.id ? 'true' : undefined}
               className={clsx(
                 'whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium transition-colors',
                 activeTab === tab.id
@@ -1108,7 +1109,7 @@ function InstalledTab() {
   return (
     <div className="space-y-4" data-testid="installed-tab">
       {/* Filter bar */}
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <select
           value={statusFilter}
           onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
@@ -1124,7 +1125,7 @@ function InstalledTab() {
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Search by app, tenant, status, node…"
-          className="flex-1 max-w-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+          className="min-w-0 flex-1 basis-40 max-w-sm rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
           data-testid="installed-search"
         />
         <span className="text-sm text-gray-500 dark:text-gray-400">
@@ -1134,9 +1135,9 @@ function InstalledTab() {
 
       {/* Bulk action bar */}
       {selected.size > 0 && (
-        <div className="flex items-center gap-3 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 px-4 py-2.5" data-testid="bulk-action-bar">
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 px-4 py-2.5" data-testid="bulk-action-bar">
           <span className="text-sm font-medium text-brand-700 dark:text-brand-300">{selected.size} selected</span>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => { setBulkAction('start'); }}

@@ -101,6 +101,27 @@ probe() { # label  method  path  json
   rm -f "$out"
 }
 
+# probe() with the body labelled application/octet-stream, as the panels send
+# raw transport (ADR-060): the same JSON, never parsed into ARGS.
+rawprobe() { # label  method  path  json
+  local label="$1" method="$2" path="$3" body="$4" out code
+  out=$(mktemp)
+  for _attempt in 1 2; do
+    code=$(curl -sk -o "$out" -w '%{http_code}' -m 30 -X "$method" "$API$path" \
+      -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/octet-stream' -H 'Expect:' --data-binary "$body")
+    [ "$code" = "000" ] || break
+    sleep 2
+  done
+  if [ "$code" = "403" ] && ! grep -q '"error"' "$out" 2>/dev/null; then
+    printf '  BLOCKED BY WAF  %s\n' "$label"; fail=$((fail+1))
+  elif [ "$code" = "000" ]; then
+    printf '  NO RESPONSE     %-44s (curl failed)\n' "$label"; fail=$((fail+1))
+  else
+    printf '  reached API     %-44s (%s)\n' "$label" "$code"; pass=$((pass+1))
+  fi
+  rm -f "$out"
+}
+
 echo "── legitimate values that CRS dictionaries happen to contain ──"
 # 930130 restricted-files.data. Every one of these was a 403 before 9000111/9000112.
 probe "rename .htaccess"      POST "/api/v1/tenants/$TENANT/files/rename" '{"oldPath":"/probe/.htaccess","newPath":"/probe/a"}'
@@ -173,6 +194,24 @@ done
 probe "app terminal upgrade" GET \
   "/api/v1/tenants/$TENANT/deployments/00000000-0000-0000-0000-000000000000/terminal?cmd=%2Fbin%2Fsh%20-c%20exec%20php-fpm"
 
+echo "── the SQL Manager's statements must reach the API (9000121) ──"
+# The panel sends them as raw transport. As JSON an ordinary SELECT … WHERE was
+# a 942100 at the edge — measured on production. A nonexistent deployment id:
+# the API answers 404, which proves the WAF let it through.
+NODEP=00000000-0000-0000-0000-000000000000
+rawprobe "SQL Manager SELECT … WHERE"   POST "/api/v1/tenants/$TENANT/deployments/$NODEP/query" \
+  '{"database":"app","query":"SELECT name, value FROM app_settings WHERE name = '"'"'absolutePath'"'"'"}'
+rawprobe "SQL Manager stacked UPDATEs"  POST "/api/v1/tenants/$TENANT/deployments/$NODEP/query" \
+  '{"database":"app","query":"UPDATE t SET v = '"'"'a'"'"' WHERE id = 1; UPDATE t SET v = '"'"'b'"'"' WHERE id = 2;"}'
+rawprobe "SQL Manager UNION / HTML value" POST "/api/v1/tenants/$TENANT/deployments/$NODEP/query" \
+  '{"database":"app","query":"SELECT id FROM a UNION SELECT id FROM b WHERE body = '"'"'<script>x</script>'"'"'"}'
+rawprobe "SQLite console SELECT … WHERE" POST "/api/v1/tenants/$TENANT/sqlite/query" \
+  '{"file_path":"waf-probe/none.db","query":"SELECT * FROM s WHERE name = '"'"'x'"'"' OR 1=1"}'
+# Response bodies are not inspected (MODSEC_RESP_BODY_ACCESS off): the stub
+# echoes the request, so a saved .php file scored as "PHP source leakage".
+probe "file editor saves index.php" POST "/api/v1/tenants/$TENANT/files/write" \
+  '{"path":"/waf-probe/index.php","content":"<?php echo phpinfo(); ?>\n"}'
+
 echo "── an exclusion must actually UNBLOCK (create → verify → delete) ──"
 # THE test this suite was missing. the panel's default and
 # recommended scope was `args_names_only`, which removes the ARGS_NAMES target
@@ -210,9 +249,14 @@ waf_blocks() { # json → 0 when the WAF blocks it
 if [ -n "${WAF_PROBE_SKIP_ROUNDTRIP:-}" ]; then
   echo "  skipped         WAF_PROBE_SKIP_ROUNDTRIP is set"
 else
-  # 930100 path traversal — reliably blocked, and the control case above
-  # already proves it. Scoped to this host only, for the length of this test.
+  # The rule that blocks this request ON THIS ROUTE, and the only one: 932160
+  # (Unix shell code, `etc/passwd` in the argument; score 5). It used to be
+  # 930100, but 9000111 stopped the traversal rules reading file-manager
+  # arguments (safePath() refuses traversal there), so an exclusion of 930100
+  # could never unblock it and this test failed on every run — measured on
+  # DEV and against the pinned image. Scoped to this host, for this test only.
   ROUNDTRIP_SCOPE="${WAF_PROBE_ROUNDTRIP_SCOPE:-args}"
+  ROUNDTRIP_RULE="${WAF_PROBE_ROUNDTRIP_RULE:-932160}"
   TRAVERSAL='{"oldPath":"/x/../../../../etc/passwd","newPath":"/x/a"}'
   API_HOST="$(printf '%s' "$API" | sed -E 's#^https?://##; s#/.*##')"
   HOST_RX="^$(printf '%s' "$API_HOST" | sed 's/\./\\./g')$"
@@ -225,8 +269,8 @@ else
     # Build with json.dumps — HOST_RX contains regex backslashes (\.) and a
     # hand-interpolated "\." is an INVALID JSON escape, which Fastify rejects
     # as FST_ERR_CTP_INVALID_JSON_BODY before the request is ever evaluated.
-    CREATE_BODY=$(HOST_RX="$HOST_RX" SCOPE="$ROUNDTRIP_SCOPE" python3 -c \
-      'import json,os;print(json.dumps({"ruleId":"930100","hostnameRegex":os.environ["HOST_RX"],"scope":os.environ["SCOPE"],"reason":"waf-probe round-trip; auto-deleted"}))')
+    CREATE_BODY=$(HOST_RX="$HOST_RX" SCOPE="$ROUNDTRIP_SCOPE" RULE="$ROUNDTRIP_RULE" python3 -c \
+      'import json,os;print(json.dumps({"ruleId":os.environ["RULE"],"hostnameRegex":os.environ["HOST_RX"],"scope":os.environ["SCOPE"],"reason":"waf-probe round-trip; auto-deleted"}))')
     curl -sk -o "$CREATE_OUT" -m 30 -X POST "$API/api/v1/admin/security/waf-rule-exclusions" \
       -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
       -d "$CREATE_BODY"
@@ -255,7 +299,7 @@ else
         sleep 2
       done
       if [ "$unblocked" -eq 0 ]; then
-        printf '  UNBLOCKED       exclusion 930100 scope=%s took effect\n' "$ROUNDTRIP_SCOPE"; pass=$((pass+1))
+        printf '  UNBLOCKED       exclusion %s scope=%s took effect\n' "$ROUNDTRIP_RULE" "$ROUNDTRIP_SCOPE"; pass=$((pass+1))
       else
         printf '  STILL BLOCKED   exclusion saved but never took effect  ← the 2026-08-31 bug\n'; fail=$((fail+1))
       fi
@@ -290,7 +334,9 @@ ctl() { # label json  → expects a WAF block
   fi
   rm -f "$out"
 }
-ctl "path traversal (930100/930110)" '{"oldPath":"/x/../../../../etc/passwd","newPath":"/x/a"}'
+# On the file-manager routes the traversal rules do not read arguments
+# (9000111; safePath() refuses traversal); /etc/passwd is still caught (932160).
+ctl "/etc/passwd in a file path (932160)" '{"oldPath":"/x/../../../../etc/passwd","newPath":"/x/a"}'
 ctl "shell code on a NON-exempt path" '{"oldPath":"/a","newPath":"/bin/sh -c exec sh"}'
 
 # The 932xxx carve-out is scoped to the command-carrying endpoints. Injection
@@ -310,6 +356,25 @@ ctl2() { # label json  → expects a WAF block on /deployments
 }
 ctl2 "SQLi on /deployments (942)"     '{"env":{"A":"1'"'"' UNION SELECT username,password FROM users-- "}}'
 ctl2 "traversal on /deployments (930)" '{"env":{"A":"/x/../../../../etc/passwd"}}'
+
+# 9000121 lets an octet-stream body through on the two query routes ONLY. The
+# DB manager's other routes keep the full rule set, octet-stream included.
+ctlraw() { # label path json → expects a WAF block
+  local out code
+  out=$(mktemp)
+  code=$(curl -sk -o "$out" -w '%{http_code}' -m 30 -X POST "$API$2" \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/octet-stream' -H 'Expect:' --data-binary "$3")
+  if [ "$code" = "403" ] && ! grep -q '"error"' "$out" 2>/dev/null; then
+    printf '  still blocked   %s\n' "$1"; pass=$((pass+1))
+  else
+    printf '  NOT BLOCKED     %-44s (%s)  ← 9000121 is too wide\n' "$1" "$code"; fail=$((fail+1))
+  fi
+  rm -f "$out"
+}
+ctlraw "octet-stream on …/import-from-file" "/api/v1/tenants/$TENANT/deployments/$NODEP/import-from-file" '{"database":"app","file_path":"x.sql"}'
+ctlraw "traversal in /query's query string" "/api/v1/tenants/$TENANT/deployments/$NODEP/query?f=../../../../etc/passwd" '{"database":"app","query":"SELECT 1"}'
+# REQUEST_URI carries the query string: this reaches PATCH /tenants/<id>, not a query route.
+ctlraw "'/query' only in the query string" "/api/v1/tenants/$TENANT?/sqlite/query" '{"name":"x"}'
 
 echo
 echo "── RESULT: $pass ok, $fail problem(s) ──"

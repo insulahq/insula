@@ -12,7 +12,7 @@ import crypto from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } from '../../test-helpers/db.js';
 import { seedRegion, seedPlan, seedTenant, seedDomain } from '../../test-helpers/fixtures.js';
-import { dnsRecords, emailDmarcReports } from '../../db/schema.js';
+import { dnsRecords, emailDmarcReports, emailDomains } from '../../db/schema.js';
 import { applyDmarcPolicy } from './dmarc-apply.js';
 import { dmarcDomainSummaries } from './dmarc-summary.js';
 
@@ -24,6 +24,7 @@ describe.skipIf(!dbAvailable)('apply DMARC policy (integration)', () => {
   let tenantId = '';
   let otherTenantId = '';
   let recordId = '';
+  let domainId = '';
 
   beforeAll(async () => { await runMigrations(); });
   afterAll(async () => { await closeTestDb(); });
@@ -35,6 +36,7 @@ describe.skipIf(!dbAvailable)('apply DMARC policy (integration)', () => {
     tenantId = (await seedTenant(db(), regionId, planId)).id;
     otherTenantId = (await seedTenant(db(), regionId, planId)).id;
     const domain = await seedDomain(db(), tenantId, { domainName: DOMAIN });
+    domainId = domain.id;
     recordId = crypto.randomUUID();
     await db().insert(dnsRecords).values({
       id: recordId, domainId: domain.id, recordType: 'TXT', recordName: `_dmarc.${DOMAIN}`,
@@ -94,5 +96,38 @@ describe.skipIf(!dbAvailable)('apply DMARC policy (integration)', () => {
     await expect(applyDmarcPolicy(db(), { domain: DOMAIN, policy: 'quarantine', tenantId: otherTenantId }))
       .rejects.toMatchObject({ code: 'DMARC_RECORD_NOT_MANAGED' });
     expect(await recordValue()).toBe(`v=DMARC1; p=none; rua=mailto:dmarc@${DOMAIN}`);
+  });
+
+  // A row pulled from the DNS server (Sync Records → pull, a provider-group
+  // move) stores the server's spelling, quoted. It used to read as "no
+  // managed record", and the panel sent the owner to "your DNS provider".
+  it('finds and changes a `_dmarc` row stored in the server\'s quoted spelling', async () => {
+    await db().update(dnsRecords).set({ recordName: `_dmarc.${DOMAIN}.`, recordValue: `"v=DMARC1; p=quarantine; rua=mailto:dmarc@${DOMAIN}"` })
+      .where(eq(dnsRecords.id, recordId));
+    await db().insert(emailDomains).values({ id: crypto.randomUUID(), domainId, tenantId, enabled: 1 } as typeof emailDomains.$inferInsert);
+    const [summary] = await dmarcDomainSummaries(db(), { tenantId, includeUnreported: true });
+    expect(summary).toMatchObject({ managedPolicy: 'quarantine', managedRecordCount: 1 });
+
+    await applyDmarcPolicy(db(), { domain: DOMAIN, policy: 'none', tenantId });
+    expect(await recordValue()).toBe(`v=DMARC1; p=none; rua=mailto:dmarc@${DOMAIN}`);
+  });
+
+  // A new domain starts at p=quarantine and gets its first report a day or
+  // two later. Its owner must be able to step back before that.
+  it('lists an email domain with no report yet, with its published policy', async () => {
+    await db().insert(emailDomains).values({ id: crypto.randomUUID(), domainId, tenantId, enabled: 1 } as typeof emailDomains.$inferInsert);
+    expect(await dmarcDomainSummaries(db(), { tenantId })).toEqual([]);
+
+    const [summary] = await dmarcDomainSummaries(db(), { tenantId, includeUnreported: true });
+    expect(summary).toMatchObject({
+      policyDomain: DOMAIN, reportCount: 0, totalMessages: 0, passRate: null, currentPolicy: null,
+      managedPolicy: 'none', managedRecordCount: 1,
+    });
+    expect(summary.recommendation.ready).toBe(false);
+    // Another tenant does not see it.
+    expect(await dmarcDomainSummaries(db(), { tenantId: otherTenantId, includeUnreported: true })).toEqual([]);
+    // Listed once, not twice, once its reports arrive.
+    await reports(1, 0);
+    expect(await dmarcDomainSummaries(db(), { tenantId, includeUnreported: true })).toHaveLength(1);
   });
 });

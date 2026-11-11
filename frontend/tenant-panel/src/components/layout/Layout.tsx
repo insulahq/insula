@@ -7,11 +7,13 @@ import LifecycleBanner from '@/components/LifecycleBanner';
 import { useTokenRefresh } from '@/hooks/use-token-refresh';
 import { useDocumentTitle } from '@/hooks/use-system-info';
 import { useFileManagerKeepalive } from '@/hooks/use-file-manager-keepalive';
+import { usePhoneLayout } from '@/hooks/use-phone-layout';
 
 export default function Layout() {
   useTokenRefresh();
   useDocumentTitle();
   useFileManagerKeepalive();
+  usePhoneLayout();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const openSidebar = useCallback(() => setSidebarOpen(true), []);

@@ -332,7 +332,7 @@ K3S_FRESH_INSTALL=false
 # Kubernetes API surface and needs its own Longhorn / Calico / CNPG /
 # system-upgrade-controller compatibility check. Existing clusters take this pin
 # through the upgrade run's opt-in Kubernetes step (ADR-064 §8), not a host-migration.
-K3S_VERSION="v1.36.5+k3s1"
+K3S_VERSION="v1.36.6+k3s1"
 CALICO_VERSION="v3.33.0"
 
 # Pod CIDR — passed to k3s as --cluster-cidr and used in the firewall
@@ -576,13 +576,13 @@ TRAEFIK_CHART_VERSION="42.3.0"           # app v3.7.17; verify: helm search repo
 # and diff it against the previous tag's before trusting it.
 #
 # Provenance of this value, verified rather than assumed: it is
-# raw.githubusercontent.com/k3s-io/k3s at tag v1.36.5+k3s1 (byte-identical to the
-# v1.36.2+k3s1 installer it replaced — same digest). Against the
+# raw.githubusercontent.com/k3s-io/k3s at tag v1.36.6+k3s1 (byte-identical to the
+# v1.36.5+k3s1 and v1.36.2+k3s1 installers it replaced — same digest). Against the
 # master installer it was previously pinned to, the only differences are
 # SUSE/SLE-Micro RPM repo selection, CoreOS/Flatcar detection, and the
 # generated uninstall script's k3s-selinux removal — none of which touches
 # any OS in the support matrix (Debian/Ubuntu, RHEL family).
-K3S_INSTALLER_PINNED_VERSION="v1.36.5+k3s1"
+K3S_INSTALLER_PINNED_VERSION="v1.36.6+k3s1"
 K3S_INSTALLER_SHA256="46177d4c99440b4c0311b67233823a8e8a2fc09693f6c89af1a7161e152fbfad"
 
 # Resolved at FETCH time, not here: `--k3s-version` is parsed long after this

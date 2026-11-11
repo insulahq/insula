@@ -122,14 +122,14 @@ export default function StorageUsageTab() {
       {/* Docker Image Inventory */}
       {inventory && (
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
-          <div className="px-5 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between gap-4">
+          <div className="px-5 py-3 border-b border-gray-200 dark:border-gray-700 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
             <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
               Docker Image Inventory
               <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">
                 ({inventory.images.length} images, {formatVolumeBytes(inventory.totalBytes)} total)
               </span>
             </h3>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {(['all', 'in-use', 'purgeable'] as const).map(f => (
                 <button
                   key={f}

@@ -1,4 +1,5 @@
-import type { MailUsageResponse, MailDomainStatsResponse, EmailConnectionInfo, CreateImapSyncJobRequest, UpdateImapSyncJobRequest, CreateLoginPasswordRequest, DkimKeysResponse, DkimRotateResult } from '@insula/api-contracts';
+import type { MailUsageResponse, MailDomainStatsResponse, EmailConnectionInfo, CreateImapSyncJobRequest, UpdateImapSyncJobRequest, CreateLoginPasswordRequest, DkimKeysResponse, DkimRotateResult, MailDnsCheck, MailDnsRepairRequest, MailDnsRepairResult } from '@insula/api-contracts';
+export type { MailDnsCheck, MailDnsRepairResult } from '@insula/api-contracts';
 export type { DkimKey, DkimRotateResult } from '@insula/api-contracts';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
@@ -190,6 +191,38 @@ export function useEmailConnectionInfo(tenantId?: string, domainId?: string) {
       ),
     enabled: !!tenantId && !!domainId,
     staleTime: 5 * 60 * 1000,
+  });
+}
+
+/** The live zone against the platform's mail records (only where the platform hosts the zone). */
+export function useEmailDomainDnsCheck(tenantId?: string, domainId?: string) {
+  return useQuery({
+    queryKey: ['email-domain-dns-check', tenantId, domainId],
+    queryFn: () =>
+      apiFetch<{ data: MailDnsCheck }>(
+        `/api/v1/tenants/${tenantId}/email/domains/${domainId}/dns-check`,
+      ),
+    enabled: !!tenantId && !!domainId,
+    staleTime: 30_000,
+  });
+}
+
+/** "Re-create mail records": publish the missing ones, remove the conflicting ones. */
+export function useRepairEmailDomainDns(tenantId?: string, domainId?: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: MailDnsRepairRequest) =>
+      apiFetch<{ data: MailDnsRepairResult }>(
+        `/api/v1/tenants/${tenantId}/email/domains/${domainId}/dns-records/repair`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+    onSuccess: (res) => {
+      queryClient.setQueryData(['email-domain-dns-check', tenantId, domainId], { data: res.data.check });
+      void queryClient.invalidateQueries({ queryKey: ['email-domain-dns-records', tenantId, domainId] });
+      void queryClient.invalidateQueries({ queryKey: ['dns-records', tenantId, domainId] });
+      // The DMARC policy buttons read the `_dmarc` rows the repair settles.
+      void queryClient.invalidateQueries({ queryKey: ['tenant-dmarc', tenantId] });
+    },
   });
 }
 

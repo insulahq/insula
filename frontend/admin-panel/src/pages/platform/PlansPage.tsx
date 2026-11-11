@@ -72,7 +72,7 @@ export default function PlanManagement() {
       </div>
 
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
-        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
+        <div className="flex flex-wrap items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4 gap-2">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Plans</h2>
           <button type="button" onClick={() => setShowAdd((p) => !p)} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600" data-testid="add-plan-button">
             {showAdd ? <X size={14} /> : <Plus size={14} />} {showAdd ? 'Cancel' : 'Add Plan'}
@@ -319,7 +319,7 @@ function PlanRowComp({ plan }: { readonly plan: PlanRow }) {
 
   return (
     <div className={clsx('px-5 py-4', isDeprecated && 'opacity-50')} data-testid={`plan-${plan.id}`}>
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <div className="flex items-center gap-3">
           <div>
             <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{plan.name}</span>
@@ -327,7 +327,7 @@ function PlanRowComp({ plan }: { readonly plan: PlanRow }) {
             {isDeprecated && <span className="ml-2 rounded bg-red-100 dark:bg-red-900/20 px-2 py-0.5 text-xs text-red-600 dark:text-red-400">deprecated</span>}
           </div>
         </div>
-        <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
           <span>{formatCurrency(plan.monthlyPriceUsd, currency)}/mo</span>
           <span data-testid={`plan-tier-${plan.code}`}>{plan.cpuTier ?? 'high'} CPU share</span>
           <span>bursts to {plan.cpuBurstCores} cores</span>

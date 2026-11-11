@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { bulkDomainActionSchema } from '@insula/api-contracts';
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole, requireTenantAccess, requireTenantRoleByMethod } from '../../middleware/auth.js';
+import { authenticate, isPlatformStaff, requireRole, requireTenantAccess, requireTenantRoleByMethod } from '../../middleware/auth.js';
 import { domains, tenants } from '../../db/schema.js';
 import { createDomainSchema, updateDomainSchema } from './schema.js';
 import * as service from './service.js';
@@ -66,7 +66,9 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const domain = await service.createDomain(app.db, tenantId, parsed.data, getK8s());
+    const domain = await service.createDomain(app.db, tenantId, parsed.data, getK8s(), {
+      allowCrossAccountOverlap: isPlatformStaff(request.user),
+    });
     reply.status(201).send(success(domain));
   });
 
@@ -99,6 +101,17 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
         `Validation error: ${firstError.message} (${firstError.path.join('.')})`,
         400,
         { field: firstError.path.join('.') },
+      );
+    }
+    // The status is what DNS verification decided (and what suspension set).
+    // A tenant writing it could mark its own domain verified, or lift a
+    // suspension. Neither panel sends it; staff keep it as a manual override.
+    if (parsed.data.status !== undefined && !isPlatformStaff(request.user)) {
+      throw new ApiError(
+        'INSUFFICIENT_PERMISSIONS',
+        "A domain's status is set by DNS verification and cannot be changed from the tenant panel",
+        403,
+        { field: 'status' },
       );
     }
 

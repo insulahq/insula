@@ -45,6 +45,8 @@ export interface DnsLike {
   resolve6(hostname: string): Promise<string[]>;
   resolveNs(hostname: string): Promise<string[]>;
   resolveCname(hostname: string): Promise<string[]>;
+  /** Optional so existing stubs still fit; both real resolvers have it. */
+  resolveMx?(hostname: string): Promise<Array<{ exchange: string; priority: number }>>;
 }
 
 /**

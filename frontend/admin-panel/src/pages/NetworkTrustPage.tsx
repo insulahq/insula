@@ -88,7 +88,7 @@ export default function NetworkTrustPage() {
       </header>
 
       <div className="border-b border-gray-200 dark:border-gray-700">
-        <nav className="flex gap-1 -mb-px" data-testid="cluster-network-tabs">
+        <nav className="flex gap-1 -mb-px" data-testid="cluster-network-tabs" data-tab-strip>
           {(
             [
               { id: 'trusted-ranges' as const, label: 'Trusted Ranges' },
@@ -102,6 +102,7 @@ export default function NetworkTrustPage() {
               <button
                 key={t.id}
                 onClick={() => setActiveTab(t.id)}
+                aria-current={activeTab === t.id ? 'true' : undefined}
                 className={[
                   'px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 transition-colors',
                   isActive
@@ -153,11 +154,11 @@ function TrustedRangesTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-gray-600 dark:text-gray-400">
           {list.isLoading ? 'Loading…' : `${ranges.length} trusted range${ranges.length === 1 ? '' : 's'}`}
         </p>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => list.refetch()}
@@ -362,11 +363,11 @@ function PendingPeersTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-gray-600 dark:text-gray-400">
           {list.isLoading ? 'Loading…' : `${peers.length} pending peer${peers.length === 1 ? '' : 's'} (TTL-enforced; auto-cleared after claim)`}
         </p>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => list.refetch()}
@@ -661,7 +662,7 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog">
       <div className="w-full max-w-xl rounded-xl bg-white dark:bg-gray-800 shadow-xl">
-        <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between border-b border-gray-200 dark:border-gray-700 px-4 py-3 gap-2">
           <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">{title}</h2>
           <button
             type="button"
@@ -783,11 +784,11 @@ function BlacklistTab() {
         current IP are refused (you can't lock the cluster out). For automatic, expiring bans use Web Defense → CrowdSec.
       </div>
 
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-gray-600 dark:text-gray-400">
           {list.isLoading ? 'Loading…' : `${entries.length} blacklisted ${entries.length === 1 ? 'entry' : 'entries'}`}
         </p>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => list.refetch()}

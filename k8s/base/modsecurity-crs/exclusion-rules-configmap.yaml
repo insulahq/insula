@@ -532,8 +532,11 @@ data:
     # app spilling source it did not mean to; an endpoint whose entire job is
     # returning file bytes is not that.
     #
-    # Scoped to the file read/download endpoints only. Every other response on
-    # the platform keeps outbound inspection.
+    # Scoped to the file read/download endpoints only.
+    #
+    # Response bodies are no longer inspected at all (MODSEC_RESP_BODY_ACCESS
+    # off in deployment.yaml): the WAF only ever saw the stub's echo of the
+    # request, never an app's response. Kept for the case that changes.
     SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
         "id:9000107,\
          phase:1,\
@@ -704,7 +707,7 @@ data:
          ctl:ruleRemoveById=920420,\
          ctl:ruleRemoveTargetByTag=OWASP_CRS;REQUEST_BODY,\
          ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS_POST"
-        SecRule REQUEST_URI "@rx ^/api/v1/admin/notifications/providers(/[^/]+)?(\?|$)" "t:none"
+        SecRule REQUEST_URI "@rx ^/api/v1/admin/notifications/providers(/[^/?;#]+)?(\?|$)" "t:none"
 
     # ── Mail: the message is the payload ─────────────────────────
     #
@@ -796,6 +799,53 @@ data:
          t:none,\
          ctl:ruleRemoveTargetByTag=attack-rce;REQUEST_FILENAME"
 
+    # ── ADR-060: raw transport for the SQL Manager's statements ────────
+    #
+    # POST …/deployments/<id>/query and POST …/sqlite/query carry the SQL a
+    # tenant runs against their OWN database, through the panel's SQL Manager:
+    # the query console, and the statements its row edit, insert, delete and
+    # table tools build. SQL is what the 942 family is built to score, so sent
+    # as application/json an ordinary query was refused at the edge, a 403
+    # the API never saw. Measured on production: 942100 (libinjection) on
+    # three tenant-panel queries in one afternoon. Measured on DEV:
+    #   UPDATE t SET v = 'x' WHERE name = 'y'            reaches the API
+    #   SELECT name, value FROM t WHERE id = 1           403
+    #   UPDATE …; UPDATE …                               403
+    # Excluding 942 alone would only move the treadmill to 941/932/933 for a
+    # query that holds HTML, a shell command or PHP in a string. So, as for
+    # compose documents (9000115), the panel sends the SAME JSON labelled
+    # application/octet-stream, which ModSecurity never parses into ARGS. The
+    # API parses it as JSON (registerRawBodyParser, on these two routes only).
+    #
+    # Why this costs nothing: the statement runs with the tenant's own root
+    # credentials, in the tenant's own database pod, after authentication and
+    # the tenant check, and an API token needs the `delete` scope for it. The
+    # tenant could run the same SQL from any client. The WAF never stood
+    # between a tenant and their database; it only broke the panel's way in.
+    #
+    # Same two removals as 9000115: 920420 (CRS rejects octet-stream by
+    # default) and the REQUEST_BODY / ARGS_POST targets. URL, method, header,
+    # cookie and query-string rules still apply on these routes, and every
+    # other DB-manager route (tables, table-data, row-count, export, import)
+    # keeps the whole rule set: the pattern ends at `/query`.
+    #
+    # A path segment here is `[^/?;#]+`, not `[^/]+`, and so in 9000115 and
+    # 9000116. REQUEST_URI includes the query string, so `[^/]+` also matched
+    # `T?`: `/tenants/T?/sqlite/query` fitted the rule while the route it
+    # reaches is /tenants/T, with `/sqlite/query` only its query string. That
+    # failed safe only because no parser there accepts octet-stream.
+    # `t:none` keeps an action list on the chain's second rule (see 9000112).
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\.${DOMAIN}(:[0-9]+)?$" \
+        "id:9000121,\
+         phase:1,\
+         pass,\
+         nolog,\
+         chain,\
+         ctl:ruleRemoveById=920420,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;REQUEST_BODY,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS_POST"
+        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/?;#]+/(deployments/[^/?;#]+/query|sqlite/query)(\?|$)" "t:none"
+
     # ── ADR-060: raw transport for custom-container specs ─────────────
     #
     # A compose document and its env files are shell commands and KEY=value
@@ -848,5 +898,5 @@ data:
          ctl:ruleRemoveById=920420,\
          ctl:ruleRemoveTargetByTag=OWASP_CRS;REQUEST_BODY,\
          ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS_POST"
-        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/custom-deployments(/[^/]+)?(\?|$)" "t:none"
+        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/?;#]+/custom-deployments(/[^/?;#]+)?(\?|$)" "t:none"
 

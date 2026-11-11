@@ -343,7 +343,11 @@ Click **Details** on a card to see and change:
   straight into the file manager or an SFTP client.
 - **Terminal** — a shell inside the running app. Paste with ++ctrl+v++,
   ++ctrl+shift+v++ or right-click; ++ctrl+shift+c++ copies the selection.
-  ++ctrl+c++ still interrupts a running command, as in any terminal.
+  ++ctrl+c++ still interrupts a running command, as in any terminal. The shell
+  is **Auto** by default: bash if the app's image has it, otherwise ash, so
+  ++arrow-up++ brings back earlier commands and ++tab++ completes names. Pick
+  `/bin/sh` only if you need it: on Debian and Ubuntu based images it is dash,
+  which has neither.
 - **Logs** — click **Logs** to see recent output. It shows a snapshot by
   default; toggle **Stream Live** to watch new lines as they arrive. This is
   the first place to look when an app misbehaves.
@@ -611,8 +615,7 @@ the **Configuration** section of each deployment's **Details** panel, described
 above. For working directly with database contents, use the
 [SQL Manager](databases.md).
 
-!!! info "What's not here"
-    The tenant panel does **not** give you a shell/terminal into your running
-    apps. To inspect what an app is doing, use its **Logs**; to work with files,
-    use the [File Manager](files-and-sftp.md); to work with data, use the
-    [SQL Manager](databases.md).
+!!! info "Where to look"
+    To inspect what an app is doing, use its **Logs**, or its **Terminal** for a
+    shell inside it; to work with files, use the [File Manager](files-and-sftp.md);
+    to work with data, use the [SQL Manager](databases.md).

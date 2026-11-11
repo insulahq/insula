@@ -39,11 +39,11 @@ export default function PaginationBar({
 
   return (
     <div
-      className="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800"
+      className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-gray-200 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800"
       data-testid={tid('pagination-bar')}
     >
       {/* Left: range text */}
-      <p className="text-sm text-gray-700 dark:text-gray-300">
+      <p className="whitespace-nowrap text-sm text-gray-700 dark:text-gray-300">
         Showing{' '}
         <span className="font-medium">{rangeStart}</span>
         {'-'}
@@ -56,7 +56,7 @@ export default function PaginationBar({
       <div className="flex items-center gap-2">
         <label
           htmlFor={selectId}
-          className="text-sm text-gray-600 dark:text-gray-400"
+          className="whitespace-nowrap text-sm text-gray-600 dark:text-gray-400"
         >
           Rows per page:
         </label>

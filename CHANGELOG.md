@@ -12,6 +12,154 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **A tenant can no longer add a domain that overlaps another account's.** Adding a domain checked
+  only for the exact same name and for the platform's reserved hostnames.
+  - **Subdomains and parents.** A tenant adding its own domain is refused a name inside another
+    account's domain (`shop.example.test` when someone else has `example.test`), a name that
+    contains one, and any name under the platform's own domain. Every primary-mode zone lives on
+    the same nameservers, which answer from the most specific zone they hold, so such a zone took
+    the name over from the other account's zone as soon as it was created, and its verification
+    passed. The error does not say which domain or account it overlaps. Staff in the admin panel
+    are not checked, so an operator can still give a customer a subdomain on purpose. An operator
+    using "Login as tenant" is checked like the tenant.
+  - **Letter case.** Domain names are stored lowercased and compared case-insensitively. A name that
+    differed only in case from an existing domain was accepted as a new one. Migration 0177 adds a
+    unique index on the lowercased name; on a cluster that already has two names differing only in
+    case, it logs a warning and skips the index, and the API still refuses new ones.
+  - **Routes.** A hostname and path can have only one route across all domains, not one per domain.
+  - **Mail.** A tenant can turn email on only for a domain that has passed DNS verification, or
+    whose MX record already points to the platform's mail host (for a domain used only for mail).
+    Stalwart delivers mail for the domains it hosts locally, so mail for a domain nobody had proven
+    was theirs could be kept on the platform. Staff, the Plesk import and archive restores are
+    not checked.
+  - **Domain status.** A tenant can no longer set its domain's status through the API (to
+    `verified`, for instance). Only DNS verification sets it; staff keep a manual override.
+
+### Added
+
+- **A double-click on a row in the SQL Manager's Browse view opens the row editor**, as the pencil
+  does. Tables without a primary key have no editor, so nothing opens.
+- **Settings & DNS checks a domain's mail records against its zone, and can re-create them.**
+  For a domain whose DNS the platform hosts, the DNS records card on the tenant panel's Email →
+  Settings & DNS tab marks each mail record as published or missing. It warns about records in
+  the zone that get in the way: a second SPF or DMARC record, an MX or mail-app (SRV) record at
+  another server, an old DKIM or webmail value. **Re-create mail records** lists every change
+  first, then publishes the missing records and removes the conflicting ones.
+  - Two SPF records are merged into one that keeps every sender either allowed. Two DMARC
+    records are merged into one at the stricter policy, with every report address.
+  - An MX or SRV record at another server can be kept (a backup mail server, a filtering
+    service).
+  - A record whose new value cannot be published is not removed, so a domain never ends up
+    without an MX.
+  - The check needs a DNS server that lists the whole zone (PowerDNS); for others it says so.
+
+### Changed
+
+- **Bulwark webmail 1.19.1 → 1.20.0.** It fixes no published advisory. Two security fixes: a
+  sender on the trusted list no longer loads remote content while the organisation blocks it
+  (replies, re-opened drafts and attachment previews included), and plugins no longer receive
+  their secret settings when the user is also signed in to Bulwark's admin console.
+  - Users can turn on **Keep mail on this device** (Settings → Backup & reset): the last 30 days
+    of the Inbox and the folders they opened, kept encrypted in the browser, to read, sort and
+    write without a connection. Every sign-out deletes it.
+  - Mail can be imported from mbox, Outlook `.pst`/`.ost`, `.eml` and ZIP files, and exported as
+    mbox or a ZIP of `.eml` files.
+  - Attachments show as a bar of tiles under the message header.
+  - Opening a mailbox from the platform as support works more than five times, and Bulwark
+    deletes an expired support session's app password itself.
+  - It talks to no outside host 1.19.1 did not. The Contacts, Calendar and Files switches still
+    hide those apps: their navigation links are unchanged.
+  - Rolling back below 1.20.0 needs logos and icons uploaded in Bulwark's own admin console
+    uploaded again. 1.21 follows when its soak ends.
+- **k3s v1.36.5+k3s1 → v1.36.6+k3s1** (Kubernetes 1.36.6, containerd 2.3.7, runc 1.4.2; etcd
+  stays 3.6). New installs get it directly. On an existing cluster, the review of the upgrade
+  to this release offers **Also upgrade Kubernetes v1.36.5+k3s1 → v1.36.6+k3s1** (off by
+  default), or run `insula cluster upgrade`. Fixable HIGH findings in the k3s image drop from 48
+  to 13, with no CRITICAL in either. The k3s install script is byte-identical to v1.36.5's, so
+  its pinned digest is unchanged.
+
+- **New email domains publish `p=quarantine`.** The DMARC record a newly enabled domain gets is
+  `v=DMARC1; p=quarantine; rua=mailto:dmarc@<domain>`; it was `p=none`, which protects nothing.
+  Mail from a sender that does not align (a newsletter service, a web form, an office server) now
+  goes to spam from the start. The DMARC reports show such a sender, and Monitoring → Mail can
+  move the domain back to `p=none` while it is fixed. Domains that already publish a policy keep
+  it. Alignment stays relaxed (no `adkim=`/`aspf=`).
+  - The DNS records a tenant is shown to publish now carry the domain's published DMARC record,
+    not the template's, so a change of default or a policy applied from Monitoring → Mail no
+    longer shows a different value from the one the domain has.
+
+### Fixed
+
+- **The SQL Manager says how many rows a write affected.** After an `UPDATE`, `INSERT` or `DELETE`
+  it said "0 rows affected" whatever the statement did, because it counted the rows the statement
+  returned. It now shows the count the database reports: for MariaDB and MySQL the rows whose value
+  changed (an `UPDATE` that sets a value a row already holds counts 0, and the panel says why), for
+  PostgreSQL and SQLite every row matched. With several statements it is the last one's count. An
+  empty `SELECT` reads "No rows returned". On PostgreSQL, a write's `UPDATE 1` status line no
+  longer shows up as a column, and a `RETURNING` result no longer gains it as an extra row.
+- **The SQL Manager's queries are no longer refused by the firewall.** The WAF in front of the
+  panel scored the SQL a tenant runs against their own database as SQL injection, so an ordinary
+  `SELECT … FROM … WHERE …` or two statements joined by `;` came back as "Blocked by the Web
+  Application Firewall" (production recorded it on the tenant panel). The SQL Manager now sends
+  its statements labelled `application/octet-stream`, which the WAF does not parse into
+  arguments, and a new exclusion (9000121) allows that on the two query routes only. Every other
+  SQL Manager route, and the query string, headers and cookies of these two, stay inspected.
+- **WAF Events no longer records false "Outbound Anomaly Score Exceeded" events.** The WAF's
+  response rules only ever saw its test upstream's echo of the request, never an app's response,
+  so a webmail message that mentions PHP, or a `.php` file saved in the file editor, was logged
+  as "PHP source code leakage" and counted toward auto-banning the user's own IP. Response-body
+  inspection is off (`MODSEC_RESP_BODY_ACCESS`); it never inspected a real response.
+- **Arrow-up and Tab work in a deployment's terminal.** The terminal started `/bin/sh`, which on
+  Debian and Ubuntu based images is dash: no command history and no completion, so arrow-up printed
+  `^[[A` and Tab inserted a tab. The new default shell, **Auto**, starts bash if the image has it,
+  then ash, then sh; the explicit choices stay. The shell now starts with `TERM=xterm-256color`, and
+  the terminal's size reaches it: the backend dropped every resize, so the shell kept 80 columns
+  and a recalled command longer than that redrew garbled.
+- **The file manager's menus stay on screen.** A right-click menu opened near the right or bottom
+  edge ran off the screen; it now opens left or up where it would not fit. The row's Actions menu
+  sat at the middle of the right edge whatever row it was for; it now opens next to its button.
+  A menu taller than the window scrolls.
+- **The Extract dialog scrolls a long folder list.** In a folder with many sub-folders the dialog
+  grew past the top and bottom of the window with no way to scroll. The list now has a limited
+  height and its own scrollbar, the current folder stays above it, and the dialog never grows
+  taller than the window.
+- **Enabling email no longer adds a second SPF or DMARC record.** It added every mail record next
+  to what the domain's zone already held, so a domain that came with its previous host's records
+  got two SPF records (SPF then fails for all its mail) and two DMARC records (receivers then
+  ignore DMARC). A domain's own SPF and DMARC records are now kept, and the Settings & DNS tab
+  says what they lack. A record the zone already holds is not added again.
+- **The DMARC policy buttons appear for a domain from the first day.** The Authentication tab
+  showed the policy, and **Step back**, only after the domain's first DMARC report had arrived,
+  so a new domain at `p=quarantine` had no way back for a day or two. They were also missing
+  when the domain's `_dmarc` record had been pulled from the DNS server, in its quoted spelling;
+  the tab then said the record was "not managed by the platform".
+- **`webmail.<domain>` points at the same host however webmail was turned on.** Turning webmail
+  on when enabling email pointed it at the mail server's hostname, while the webmail toggle
+  pointed it at the platform webmail host.
+- **The admin and tenant panels work on a phone.** Every page and tab of both panels was opened at
+  375 px wide on DEV. All 93 admin views and all 33 tenant views had something cut off: content past
+  the screen's right edge, with no way to scroll to it.
+  - **Header.** The bell and the user menu were cut off. The header is compact on a phone: the
+    search box shrinks, and the Tasks chip shows its icon and count. The Tasks and Notifications
+    popovers open full width under the header.
+  - **Tables.** A table that does not fit is shown as one card per row, each value after its column
+    heading, with the row's first value as the card's title. Sorting stays available as a row of
+    heading buttons above the cards. A table that fits stays a table. One mechanism covers every
+    table in both panels, dialogs included.
+  - **WAF.** On a phone, the admin WAF events and the tenant WAF log are a compact list: severity,
+    rule, message, request, then host, source IP and time. The Ban, Allowlist and Whitelist buttons
+    are large enough to tap, and a sort bar replaces the table headings. The WAF filters are two
+    columns, each field the column's width.
+  - **Tab strips.** Tab bars with more tabs than fit (Monitoring, Posture, Email, Web Defense, a
+    tenant's admin page) keep one line and swipe sideways, and the active tab scrolls into view.
+    They wrapped onto up to three lines, and on some pages the last tabs were cut off.
+  - **Dialogs** taller than the screen scroll, so their title and buttons can be reached.
+  - **Rows that ran off the screen now wrap:** page headers with badges and buttons (domain and
+    route pages, node cards, plans, the Files toolbar), bulk-action bars, the pagination bar, the
+    traffic range picker, and the tenant Limits grid, which is one column on a phone.
+
 ## [2026.11.7] - 2026-11-09
 
 ### Changed

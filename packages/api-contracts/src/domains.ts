@@ -6,7 +6,10 @@ const domainNameRegex = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a
 // ─── Input Schemas ───────────────────────────────────────────────────────────
 
 export const createDomainSchema = z.object({
-  domain_name: z.string().min(1).max(255).regex(domainNameRegex, 'Invalid domain name format'),
+  // Trimmed and lowercased before the format check: DNS names are
+  // case-insensitive, and a second domain that differs only in case would
+  // share the first one's zone and hostnames.
+  domain_name: z.string().trim().toLowerCase().min(1).max(255).regex(domainNameRegex, 'Invalid domain name format'),
   dns_mode: z.enum(['primary', 'cname', 'secondary']).default('cname'),
   deployment_id: uuidField.optional(),
   dns_group_id: uuidField.optional(),

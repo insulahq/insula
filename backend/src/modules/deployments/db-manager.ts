@@ -21,6 +21,13 @@ import {
   validateExistingName,
 } from '../../shared/sql-identifiers.js';
 import { dbEngineApiError } from './db-errors.js';
+import {
+  affectedRowsField,
+  affectedRowsMarker,
+  psqlRowCountCommand,
+  splitRowCount,
+  withMysqlRowCount,
+} from './affected-rows.js';
 
 // ─── Binary Not Found Detection ────────────────────────────────────────────
 
@@ -340,6 +347,12 @@ export interface QueryResult {
   readonly columns: readonly string[];
   readonly rows: readonly (readonly string[])[];
   readonly rowCount: number;
+  /**
+   * Rows the statement wrote, when it returned no result set (affected-rows.ts).
+   * MariaDB/MySQL count only rows whose value changed; PostgreSQL and SQLite
+   * count every row the statement matched. Absent when the engine reported none.
+   */
+  readonly affectedRows?: number;
   readonly executionTimeMs: number;
   readonly error?: string;
 }
@@ -811,6 +824,10 @@ async function pgSetPassword(
 
 /**
  * Execute a PostgreSQL query with --csv output for result parsing.
+ *
+ * With `rowCountMarker`, psql runs quietly — no `UPDATE 1` status line for the
+ * CSV parser to take as a header — and then prints the statement's row count
+ * under that marker (affected-rows.ts).
  */
 async function pgExecCsv(
   kubeconfigPath: string | undefined,
@@ -819,14 +836,16 @@ async function pgExecCsv(
   containerName: string,
   database: string,
   sql: string,
+  rowCountMarker?: string,
 ): Promise<string> {
+  const rowCount = rowCountMarker ? ['-q', '-c', sql, '-c', psqlRowCountCommand(rowCountMarker)] : ['-c', sql];
   const { stdout, stderr } = await execInPod(
     kubeconfigPath,
     namespace,
     podName,
     containerName,
     // A bare `-d x=y` is read as a connection string; see pgConnInfoDbName.
-    ['psql', '-U', 'postgres', '-d', pgConnInfoDbName(database), '-c', sql, '--csv'],
+    ['psql', '-U', 'postgres', '-d', pgConnInfoDbName(database), ...rowCount, '--csv'],
   );
   if (stderr && stderr.includes('ERROR')) {
     throw dbEngineApiError(redactDbSecrets(stderr));
@@ -1461,18 +1480,21 @@ async function mysqlExecuteQuery(
   query: string,
   startTime: number,
 ): Promise<QueryResult> {
-  const sql = `USE ${quoteMysqlIdentifier(database)}; ${query}`;
+  const marker = affectedRowsMarker();
+  const sql = `USE ${quoteMysqlIdentifier(database)}; ${withMysqlRowCount(query, marker)}`;
   const output = await mysqlExecWithHeaders(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
     ctx.rootPassword, sql,
   );
   const elapsed = Date.now() - startTime;
-  const { columns, rows } = parseMysqlBatchOutput(output);
+  const counted = splitRowCount(output, marker, '\n');
+  const { columns, rows } = parseMysqlBatchOutput(counted.output);
 
   return {
     columns,
     rows,
     rowCount: rows.length,
+    ...affectedRowsField(columns, counted.count),
     executionTimeMs: elapsed,
   };
 }
@@ -1483,17 +1505,20 @@ async function pgExecuteQuery(
   query: string,
   startTime: number,
 ): Promise<QueryResult> {
+  const marker = affectedRowsMarker();
   const output = await pgExecCsv(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-    database, query,
+    database, query, marker,
   );
   const elapsed = Date.now() - startTime;
-  const { columns, rows } = parsePgCsvOutput(output);
+  const counted = splitRowCount(output, marker, ' ');
+  const { columns, rows } = parsePgCsvOutput(counted.output);
 
   return {
     columns,
     rows,
     rowCount: rows.length,
+    ...affectedRowsField(columns, counted.count),
     executionTimeMs: elapsed,
   };
 }

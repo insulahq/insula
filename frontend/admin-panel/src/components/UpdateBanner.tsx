@@ -23,8 +23,8 @@ export default function UpdateBanner() {
       data-testid="update-banner"
       className="mx-4 mt-4 lg:mx-6 lg:mt-6 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/30 px-4 py-3"
     >
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2 text-sm text-blue-800 dark:text-blue-200">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="flex min-w-0 flex-1 basis-60 items-center gap-2 text-sm text-blue-800 dark:text-blue-200">
           <RefreshCw size={16} className="shrink-0" />
           <span>
             {/* `available` — the cosign-VERIFIED version the poller stored — is
@@ -41,7 +41,7 @@ export default function UpdateBanner() {
           </span>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2">
           {/* Route to the real upgrade flow (pre-flight → interruption preview →
               confirm → live progress + a re-openable Tasks entry). The old inline
               "Update Now" trigger was a no-op on the pull model — removed

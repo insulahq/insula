@@ -240,6 +240,7 @@ describe('enableEmailForDomain', () => {
     const provisionSpy = vi.mocked(dnsMod.provisionEmailDns);
     provisionSpy.mockClear();
 
+    vi.mocked(getDefaultWebmailUrl).mockResolvedValueOnce('https://webmail.platform.test');
     const db = createMockDb();
     await enableEmailForDomain(
       db,
@@ -252,8 +253,20 @@ describe('enableEmailForDomain', () => {
     const insertCall = (db as any)._mocks.insertValues.mock.calls[0][0];
     expect(insertCall.webmailEnabled).toBe(1);
 
+    // At the platform webmail host, as the webmail toggle publishes it — it
+    // used to point at the mail host when set at enable time.
     const lastArg = provisionSpy.mock.calls.at(-1)?.[7];
-    expect(lastArg).toEqual({ webmailEnabled: true });
+    expect(lastArg).toEqual({ webmailEnabled: true, webmailHostname: 'webmail.platform.test' });
+  });
+
+  it('publishes no webmail CNAME that would point at its own name', async () => {
+    const dnsMod = await import('./dns-provisioning.js');
+    const provisionSpy = vi.mocked(dnsMod.provisionEmailDns);
+    provisionSpy.mockClear();
+    const db = createMockDb();
+    // The domain IS the platform domain: webmail.<domain> is the webmail host.
+    await enableEmailForDomain(db, 'c1', 'd1', { webmail_enabled: true } as any, '0'.repeat(64));
+    expect(provisionSpy.mock.calls.at(-1)?.[7]).toEqual({ webmailEnabled: false, webmailHostname: undefined });
   });
 
   // A tenant allocated 0 mailboxes has mail switched off. Enabling email on

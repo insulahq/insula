@@ -44,8 +44,8 @@ export default function SystemHealthBanner() {
       data-testid="system-health-banner"
       className={`mx-4 mt-4 lg:mx-6 lg:mt-6 rounded-lg border ${borderColor} ${bgColor} px-4 py-3`}
     >
-      <div className="flex items-center justify-between gap-4">
-        <div className={`flex items-center gap-2 text-sm ${textColor}`}>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className={`flex min-w-0 flex-1 basis-60 items-center gap-2 text-sm ${textColor}`}>
           <Icon size={16} className={`shrink-0 ${iconColor}`} />
           <span>
             <strong>System {isUnhealthy ? 'unhealthy' : 'degraded'}</strong>
@@ -63,7 +63,7 @@ export default function SystemHealthBanner() {
           </span>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2">
           <Link
             to="/monitoring/health"
             className={`text-sm font-medium underline ${textColor}`}

@@ -45,13 +45,13 @@ export default function TemplatesTable() {
       {/* Filter chips */}
       <section className="flex flex-wrap items-center gap-2 rounded-lg border border-gray-200 bg-white p-3 text-xs dark:border-gray-700 dark:bg-gray-800">
         <span className="text-gray-500 dark:text-gray-400">Filter:</span>
-        <label className="flex items-center gap-1">
+        <label className="flex min-w-0 max-w-full items-center gap-1">
           <span className="text-gray-600 dark:text-gray-300">Category</span>
           <select
             value={categoryId ?? ''}
             onChange={(e) => setCategoryId(e.target.value || undefined)}
             data-testid="filter-category"
-            className="rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+            className="min-w-0 max-w-full rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
           >
             <option value="">all</option>
             {categories.data?.data.map((c) => (

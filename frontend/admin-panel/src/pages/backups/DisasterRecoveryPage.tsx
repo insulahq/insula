@@ -75,7 +75,7 @@ export default function DisasterRecoveryPage() {
   };
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6 sm:p-6">
       <header className="flex items-start gap-3">
         <LifeBuoy size={24} className="mt-0.5 text-gray-700 dark:text-gray-300" />
         <div>
@@ -94,7 +94,7 @@ export default function DisasterRecoveryPage() {
         aria-label="DR sections"
         className="border-b border-gray-200 dark:border-gray-700"
       >
-        <div className="-mb-px flex flex-wrap gap-x-2">
+        <div className="-mb-px flex flex-wrap gap-x-2" data-tab-strip>
           {SECTIONS.map((s) => {
             const Icon = s.icon;
             const active = section === s.id;

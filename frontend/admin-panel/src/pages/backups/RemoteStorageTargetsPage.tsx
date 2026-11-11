@@ -337,11 +337,11 @@ export default function RemoteStorageTargetsPage() {
   };
 
   return (
-    <div className="space-y-6 p-6">
-      <header className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+    <div className="space-y-6 sm:p-6">
+      <header className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-3">
           <Cloud size={28} className="text-gray-700 dark:text-gray-300" />
-          <div>
+          <div className="min-w-0 flex-1 basis-64">
             <h1
               className="text-2xl font-semibold text-gray-900 dark:text-gray-100"
               data-testid="remote-storage-targets-heading"
@@ -1000,7 +1000,7 @@ function SpeedtestResultRow({ config }: { readonly config: SpeedtestResultConfig
   const lat = config.lastSpeedtestLatencyMs;
   const fmtMbps = (m: number | null) => m !== null ? `${m.toFixed(1)} Mbps` : '—';
   return (
-    <div className={`mt-2 inline-flex items-center gap-3 rounded-lg border px-3 py-1.5 text-xs ${stale ? 'border-amber-200 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-900/10 text-amber-700 dark:text-amber-300' : 'border-purple-200 dark:border-purple-700 bg-purple-50/50 dark:bg-purple-900/10 text-purple-700 dark:text-purple-300'}`}>
+    <div className={`mt-2 inline-flex max-w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border px-3 py-1.5 text-xs ${stale ? 'border-amber-200 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-900/10 text-amber-700 dark:text-amber-300' : 'border-purple-200 dark:border-purple-700 bg-purple-50/50 dark:bg-purple-900/10 text-purple-700 dark:text-purple-300'}`}>
       <Gauge size={12} />
       <span className="font-medium">Speedtest:</span>
       <span title="Upload">↑ {fmtMbps(up)}</span>

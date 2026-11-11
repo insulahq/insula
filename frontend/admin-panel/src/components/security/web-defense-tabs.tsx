@@ -25,6 +25,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import UserLabel from '@/components/ui/UserLabel';
 import SortableHeader from '@/components/ui/SortableHeader';
+import PhoneSortBar from '@/components/ui/PhoneSortBar';
 import ScenariosCard from './ScenariosCard';
 import { CommunityBlocklistBanner, CommunityBlocklistCard } from './CommunityBlocklist';
 import Disclosure from '@/components/ui/Disclosure';
@@ -45,6 +46,7 @@ import {
   type DecisionGroup,
 } from './ban-presentation';
 import { useSortable } from '@/hooks/use-sortable';
+import { useIsPhone } from '@/hooks/use-is-phone';
 import {
   RefreshCw,
   Network,
@@ -217,6 +219,26 @@ export function WafEventsTab() {
   // operator is looking at rather than silently implying a global ordering.
   const { sortedData: sortedEvents, sortKey, sortDirection, onSort } =
     useSortable<WafEvent>(payload?.events ?? [], 'occurredAt', 'desc');
+  const isPhone = useIsPhone();
+  // What an event's Ban / Allowlist / Whitelist buttons do — the same from a
+  // table row and from a phone card.
+  const eventActions = (ev: WafEvent) => ({
+    onBan: (ip: string) => setBanModalPrefill({
+      value: ip,
+      reason: `WAF: rule ${ev.ruleId} on ${ev.hostname} (${ev.requestMethod ?? 'GET'} ${ev.requestUri ?? '/'})`,
+    }),
+    onAllowlist: (ip: string) => addAllowlistMut.mutate({
+      value: ip,
+      scope: 'Ip',
+      comment: `WAF: false-positive on rule ${ev.ruleId} (${ev.hostname})`,
+    }),
+    onWhitelist: () => setWhitelistPrefill({
+      ruleId: ev.ruleId,
+      hostnameRegex: buildHostnameRegexFromEventHost(ev.hostname || ''),
+      eventPathRegex: buildPathRegexFromEventUri(ev.requestUri),
+      reason: `False-positive on ${ev.requestMethod ?? 'GET'} ${ev.requestUri ?? '/'}`,
+    }),
+  });
   const refresh = useRefreshWafScraper();
 
   const onRefresh = () => {
@@ -294,7 +316,9 @@ export function WafEventsTab() {
           to a specific time" decision is the leftmost control, then
           the row-attribute filters (rule, severity, host, IP, …). */}
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3" data-testid="waf-filters">
-        <div className="flex flex-wrap items-end gap-3">
+        {/* Two columns on a phone, every field the column's width; a wrapping
+            row of fixed-width fields elsewhere. */}
+        <div className="grid grid-cols-2 items-end gap-3 sm:flex sm:flex-wrap">
           <FilterField label="From" hint={utcOffsetLabel()}>
             <input
               type="datetime-local"
@@ -310,7 +334,7 @@ export function WafEventsTab() {
                 const el = e.currentTarget as HTMLInputElement & { showPicker?: () => void };
                 try { el.showPicker?.(); } catch { /* unsupported — fall back to typing */ }
               }}
-              className="w-[160px] rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm [&::-webkit-calendar-picker-indicator]:hidden"
+              className="w-full sm:w-[160px] rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm [&::-webkit-calendar-picker-indicator]:hidden"
               data-testid="waf-filter-from-time"
             />
           </FilterField>
@@ -323,7 +347,7 @@ export function WafEventsTab() {
                 const el = e.currentTarget as HTMLInputElement & { showPicker?: () => void };
                 try { el.showPicker?.(); } catch { /* unsupported — fall back to typing */ }
               }}
-              className="w-[160px] rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm [&::-webkit-calendar-picker-indicator]:hidden"
+              className="w-full sm:w-[160px] rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm [&::-webkit-calendar-picker-indicator]:hidden"
               data-testid="waf-filter-to-time"
             />
           </FilterField>
@@ -333,7 +357,7 @@ export function WafEventsTab() {
               value={ruleId}
               onChange={(e) => setRuleId(e.target.value)}
               placeholder="930120,931100"
-              className="w-40 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm font-mono"
+              className="w-full sm:w-40 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm font-mono"
               data-testid="waf-filter-rule"
             />
           </FilterField>
@@ -341,7 +365,7 @@ export function WafEventsTab() {
             <select
               value={severity}
               onChange={(e) => setSeverity(e.target.value as '' | WafEventSeverity)}
-              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
+              className="w-full sm:w-auto rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
               data-testid="waf-filter-severity"
             >
               {SEVERITY_OPTIONS.map((o) => (
@@ -355,7 +379,7 @@ export function WafEventsTab() {
               value={host}
               onChange={(e) => setHost(e.target.value)}
               placeholder="admin."
-              className="w-44 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm font-mono"
+              className="w-full sm:w-44 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm font-mono"
               data-testid="waf-filter-host"
             />
           </FilterField>
@@ -365,7 +389,7 @@ export function WafEventsTab() {
               value={sourceIp}
               onChange={(e) => setSourceIp(e.target.value)}
               placeholder="1.2.3.4"
-              className="w-40 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm font-mono"
+              className="w-full sm:w-40 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm font-mono"
               data-testid="waf-filter-source-ip"
             />
           </FilterField>
@@ -373,7 +397,7 @@ export function WafEventsTab() {
             <select
               value={scope}
               onChange={(e) => setScope(e.target.value as '' | WafEventScope)}
-              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
+              className="w-full sm:w-auto rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"
               data-testid="waf-filter-scope"
             >
               {SCOPE_OPTIONS.map((o) => (
@@ -389,7 +413,7 @@ export function WafEventsTab() {
               value={sinceSeconds}
               onChange={(e) => setSinceSeconds(Number(e.target.value))}
               disabled={rangeActive}
-              className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full sm:w-auto rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid="waf-filter-since"
               title={rangeActive ? 'Disabled while a datetime range is set. Clear From/To to use the Window selector.' : undefined}
             >
@@ -410,7 +434,7 @@ export function WafEventsTab() {
               setFromTime('');
               setToTime('');
             }}
-            className="ml-auto inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1 text-xs text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+            className="justify-self-end sm:ml-auto inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1 text-xs text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
             data-testid="waf-filter-clear"
           >
             <Filter size={12} /> Clear filters
@@ -483,6 +507,32 @@ export function WafEventsTab() {
                 operator can read "what triggered" right next to "who".
               - The wrapping `overflow-x-auto` is replaced with `w-full`
                 so the table is locked to the parent's width. */}
+          {isPhone ? (
+            <>
+              <PhoneSortBar
+                options={WAF_EVENT_SORTS}
+                sortKey={sortKey}
+                direction={sortDirection}
+                onSort={onSort}
+                className="border-b border-gray-200 px-4 py-2 dark:border-gray-700"
+              />
+              {payload.events.length === 0 ? (
+                <div className="px-4 py-8 text-center text-sm text-gray-500">
+                  <WafEmptyState
+                    scraperStatus={payload.scraperStatus}
+                    lastInsertAt={payload.stats.mostRecentAt}
+                    hasActiveFilters={Boolean(ruleId || severity || host || sourceIp || scope || rangeActive)}
+                  />
+                </div>
+              ) : (
+                <ul className="divide-y divide-gray-200 dark:divide-gray-700" data-testid="waf-events-cards">
+                  {sortedEvents.map((ev) => (
+                    <WafEventCard key={ev.id} ev={ev} {...eventActions(ev)} isAllowlistPending={addAllowlistMut.isPending} />
+                  ))}
+                </ul>
+              )}
+            </>
+          ) : (
           <div className="w-full">
             <table className="w-full table-fixed text-sm" data-testid="waf-events-table">
               <colgroup>
@@ -507,26 +557,7 @@ export function WafEventsTab() {
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
                 {sortedEvents.map((ev) => (
-                  <WafEventRow
-                    key={ev.id}
-                    ev={ev}
-                    onBan={(ip) => setBanModalPrefill({
-                      value: ip,
-                      reason: `WAF: rule ${ev.ruleId} on ${ev.hostname} (${ev.requestMethod ?? 'GET'} ${ev.requestUri ?? '/'})`,
-                    })}
-                    onAllowlist={(ip) => addAllowlistMut.mutate({
-                      value: ip,
-                      scope: 'Ip',
-                      comment: `WAF: false-positive on rule ${ev.ruleId} (${ev.hostname})`,
-                    })}
-                    onWhitelist={() => setWhitelistPrefill({
-                      ruleId: ev.ruleId,
-                      hostnameRegex: buildHostnameRegexFromEventHost(ev.hostname || ''),
-                      eventPathRegex: buildPathRegexFromEventUri(ev.requestUri),
-                      reason: `False-positive on ${ev.requestMethod ?? 'GET'} ${ev.requestUri ?? '/'}`,
-                    })}
-                    isAllowlistPending={addAllowlistMut.isPending}
-                  />
+                  <WafEventRow key={ev.id} ev={ev} {...eventActions(ev)} isAllowlistPending={addAllowlistMut.isPending} />
                 ))}
                 {payload.events.length === 0 && (
                   <tr>
@@ -542,6 +573,7 @@ export function WafEventsTab() {
               </tbody>
             </table>
           </div>
+          )}
         </div>
       )}
 
@@ -768,19 +800,8 @@ function WafStatsPanel({ stats }: { stats: WafEventsResponse['stats'] }) {
   );
 }
 
-function WafEventRow({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending }: {
-  ev: WafEvent;
-  onBan: (ip: string) => void;
-  onAllowlist: (ip: string) => void;
-  onWhitelist: () => void;
-  isAllowlistPending: boolean;
-}) {
-  const sevTone =
-    ev.severity === 'critical'
-      ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200'
-      : ev.severity === 'warning'
-        ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200'
-        : 'bg-gray-100 text-gray-700 dark:bg-gray-700/40 dark:text-gray-300';
+function WafEventRow({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending }: WafEventActionsProps) {
+  const sevTone = severityTone(ev.severity);
   // Don't offer Ban/Allowlist buttons when the parser couldn't
   // extract a usable IP (sourceIp null or sentinel '0.0.0.0').
   const ipAvailable = Boolean(ev.sourceIp && ev.sourceIp !== '0.0.0.0');
@@ -806,22 +827,7 @@ function WafEventRow({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending }
             Detected · not blocked
           </span>
         )}
-        {whitelistAvailable && (
-          <button
-            type="button"
-            onClick={onWhitelist}
-            className="mt-1 inline-flex items-center justify-center rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-700 p-1 text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40"
-            data-testid={`waf-whitelist-${ev.id}`}
-            // Native tooltip — accessible AND adds zero JS weight. The
-            // sr-only label below gives screen readers an action name
-            // since the icon alone is not announceable.
-            title={`Whitelist rule ${ev.ruleId} for ${ev.hostname} (add CRS exclusion)`}
-            aria-label={`Whitelist rule ${ev.ruleId} for ${ev.hostname}`}
-          >
-            <ShieldOff size={12} />
-            <span className="sr-only">Whitelist rule</span>
-          </button>
-        )}
+        {whitelistAvailable && <WhitelistRuleButton ev={ev} onClick={onWhitelist} className="mt-1" />}
       </td>
       <td className="px-2 py-2 align-top">
         <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${sevTone}`}>
@@ -838,32 +844,8 @@ function WafEventRow({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending }
         <div className="font-mono text-xs text-gray-700 dark:text-gray-200">{ev.sourceIp || '—'}</div>
         {ipAvailable && (
           <div className="mt-1 flex flex-wrap gap-1">
-            <button
-              type="button"
-              onClick={() => onBan(ev.sourceIp as string)}
-              className="inline-flex items-center justify-center rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 p-1 text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40"
-              data-testid={`waf-ban-${ev.id}`}
-              title={`Ban ${ev.sourceIp} — opens the ban dialog with Permanent preselected (you can pick a shorter duration)`}
-              aria-label={`Block ${ev.sourceIp} permanently`}
-            >
-              <Ban size={12} />
-              <span className="sr-only">Block IP permanently</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => onAllowlist(ev.sourceIp as string)}
-              disabled={isAllowlistPending}
-              className="inline-flex items-center justify-center rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-700 p-1 text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 disabled:opacity-50"
-              data-testid={`waf-allowlist-${ev.id}`}
-              // Distinct icon (ShieldCheck = protect-this-IP) from the
-              // Whitelist Rule button above (ShieldOff = disable-this-rule).
-              // Same emerald colour because both are "trust this".
-              title={`Add ${ev.sourceIp} to CrowdSec allowlist (will never be banned, including by L4 enforcement)`}
-              aria-label={`Allowlist ${ev.sourceIp}`}
-            >
-              <ShieldCheck size={12} />
-              <span className="sr-only">Allowlist IP</span>
-            </button>
+            <BanIpButton ev={ev} onBan={onBan} />
+            <AllowlistIpButton ev={ev} onAllowlist={onAllowlist} disabled={isAllowlistPending} />
           </div>
         )}
       </td>
@@ -872,6 +854,139 @@ function WafEventRow({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending }
         {ev.requestMethod ? `${ev.requestMethod} ` : ''}{ev.requestUri || '/'}
       </td>
     </tr>
+  );
+}
+
+interface WafEventActionsProps {
+  ev: WafEvent;
+  onBan: (ip: string) => void;
+  onAllowlist: (ip: string) => void;
+  onWhitelist: () => void;
+  isAllowlistPending: boolean;
+}
+
+const WAF_EVENT_SORTS = [
+  { key: 'occurredAt', label: 'When' },
+  { key: 'ruleId', label: 'Rule' },
+  { key: 'severity', label: 'Severity' },
+  { key: 'hostname', label: 'Host' },
+  { key: 'sourceIp', label: 'Source IP' },
+  { key: 'message', label: 'Message' },
+] as const;
+
+function severityTone(severity: WafEvent['severity']): string {
+  return severity === 'critical'
+    ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-200'
+    : severity === 'warning'
+      ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200'
+      : 'bg-gray-100 text-gray-700 dark:bg-gray-700/40 dark:text-gray-300';
+}
+
+// The three per-event actions, shared by the table row and the phone card.
+// The card's buttons are larger: a 20 px icon button is too small to hit with
+// a thumb.
+function WhitelistRuleButton({ ev, onClick, className = '', large = false }: { ev: WafEvent; onClick: () => void; className?: string; large?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center justify-center rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-700 ${large ? 'p-2' : 'p-1'} text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 ${className}`}
+      data-testid={`waf-whitelist-${ev.id}`}
+      // Native tooltip — accessible AND adds zero JS weight. The
+      // sr-only label below gives screen readers an action name
+      // since the icon alone is not announceable.
+      title={`Whitelist rule ${ev.ruleId} for ${ev.hostname} (add CRS exclusion)`}
+      aria-label={`Whitelist rule ${ev.ruleId} for ${ev.hostname}`}
+    >
+      <ShieldOff size={large ? 16 : 12} />
+      <span className="sr-only">Whitelist rule</span>
+    </button>
+  );
+}
+
+function BanIpButton({ ev, onBan, large = false }: { ev: WafEvent; onBan: (ip: string) => void; large?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onBan(ev.sourceIp as string)}
+      className={`inline-flex items-center justify-center rounded-md border border-red-300 bg-red-50 dark:bg-red-900/20 dark:border-red-700 ${large ? 'p-2' : 'p-1'} text-red-700 dark:text-red-200 hover:bg-red-100 dark:hover:bg-red-900/40`}
+      data-testid={`waf-ban-${ev.id}`}
+      title={`Ban ${ev.sourceIp} — opens the ban dialog with Permanent preselected (you can pick a shorter duration)`}
+      aria-label={`Block ${ev.sourceIp} permanently`}
+    >
+      <Ban size={large ? 16 : 12} />
+      <span className="sr-only">Block IP permanently</span>
+    </button>
+  );
+}
+
+function AllowlistIpButton({ ev, onAllowlist, disabled, large = false }: { ev: WafEvent; onAllowlist: (ip: string) => void; disabled: boolean; large?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onAllowlist(ev.sourceIp as string)}
+      disabled={disabled}
+      className={`inline-flex items-center justify-center rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-700 ${large ? 'p-2' : 'p-1'} text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 disabled:opacity-50`}
+      data-testid={`waf-allowlist-${ev.id}`}
+      // Distinct icon (ShieldCheck = protect-this-IP) from the
+      // Whitelist Rule button (ShieldOff = disable-this-rule).
+      // Same emerald colour because both are "trust this".
+      title={`Add ${ev.sourceIp} to CrowdSec allowlist (will never be banned, including by L4 enforcement)`}
+      aria-label={`Allowlist ${ev.sourceIp}`}
+    >
+      <ShieldCheck size={large ? 16 : 12} />
+      <span className="sr-only">Allowlist IP</span>
+    </button>
+  );
+}
+
+/**
+ * One WAF event on a phone. The table's seven columns in four lines, most
+ * telling first: severity and rule, what fired, the request, then who and
+ * where, with the actions beside them.
+ */
+function WafEventCard({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending }: WafEventActionsProps) {
+  const ipAvailable = Boolean(ev.sourceIp && ev.sourceIp !== '0.0.0.0');
+  return (
+    <li className="space-y-1 px-4 py-3" data-testid={`waf-event-card-${ev.id}`}>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${severityTone(ev.severity)}`}>
+          {ev.severity}
+        </span>
+        <span className="font-mono text-xs font-semibold text-gray-900 dark:text-gray-100">{ev.ruleId}</span>
+        {ev.detectionOnly && (
+          <span
+            className="inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200"
+            title="The route's WAF is in detection-only mode: this request was logged, not blocked"
+          >
+            Detected · not blocked
+          </span>
+        )}
+        <span className="ml-auto font-mono text-[11px] text-gray-500 dark:text-gray-400">
+          <LocalTime iso={ev.occurredAt} seconds />
+        </span>
+      </div>
+      <p className="break-words text-sm text-gray-800 dark:text-gray-100">{ev.message}</p>
+      <p className="break-all font-mono text-xs text-gray-600 dark:text-gray-300">
+        {ev.requestMethod ? `${ev.requestMethod} ` : ''}{ev.requestUri || '/'}
+      </p>
+      <div className="flex items-end gap-2 pt-0.5">
+        <div className="min-w-0 flex-1 text-xs text-gray-500 dark:text-gray-400">
+          <div className="break-all font-mono">
+            {ev.hostname || '(unknown)'}
+            {ev.scope === 'admin-host' && (
+              <span className="ml-1 text-[9px] uppercase text-amber-700 dark:text-amber-300">admin</span>
+            )}
+          </div>
+          <div className="font-mono">{ev.sourceIp || '—'}</div>
+        </div>
+        <div className="flex shrink-0 gap-1.5">
+          {ev.hostname && <WhitelistRuleButton ev={ev} onClick={onWhitelist} large />}
+          {ipAvailable && <BanIpButton ev={ev} onBan={onBan} large />}
+          {ipAvailable && <AllowlistIpButton ev={ev} onAllowlist={onAllowlist} disabled={isAllowlistPending} large />}
+        </div>
+      </div>
+    </li>
   );
 }
 
@@ -986,7 +1101,7 @@ export function BannedIpsTab() {
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="1.2.3.4 or US"
-              className="w-44 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm font-mono"
+              className="w-full sm:w-44 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm font-mono"
               data-testid="bans-filter-q"
             />
           </FilterField>
@@ -2324,8 +2439,8 @@ function CrowdsecConsoleCard() {
         </div>
       )}
 
-      <div className="pt-2 border-t border-blue-200 dark:border-blue-800 flex items-center justify-between text-[11px] text-gray-600 dark:text-gray-400">
-        <span>
+      <div className="pt-2 border-t border-blue-200 dark:border-blue-800 flex flex-wrap items-center justify-between gap-2 text-[11px] text-gray-600 dark:text-gray-400">
+        <span className="min-w-0 break-all">
           Meta flag (airgapped operators):{' '}
           <code className="text-[10px]">platform_settings.security.crowdsec.console_visible</code>
         </span>

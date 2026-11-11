@@ -130,18 +130,25 @@ export function useTerminal(
   options: { component?: string; shell?: string; enabled?: boolean } = {},
 ) {
   const { tenantId } = useTenantContext();
-  const { component, shell = '/bin/sh', enabled = true } = options;
+  // `auto`: the backend starts the first of bash, ash, sh the image has —
+  // /bin/sh alone is dash on Debian images, with no history or completion.
+  const { component, shell = 'auto', enabled = true } = options;
   const wsRef = useRef<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const connect = useCallback(
-    (onData: (data: string) => void) => {
+    (onData: (data: string) => void, size?: { readonly cols: number; readonly rows: number }) => {
       if (!tenantId || !deploymentId) return;
 
       const params = new URLSearchParams();
       if (component) params.set('component', component);
       params.set('shell', shell);
+      // The shell starts at this size; later changes go as `resize` messages.
+      if (size) {
+        params.set('cols', String(size.cols));
+        params.set('rows', String(size.rows));
+      }
 
       const url = buildWsUrl(`/api/v1/tenants/${tenantId}/deployments/${deploymentId}/terminal?${params}`);
       const ws = new WebSocket(url);

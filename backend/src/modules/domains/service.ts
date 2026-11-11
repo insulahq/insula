@@ -10,6 +10,7 @@ import { getActiveServersForDomain, getProviderForServer, getDefaultGroup, getPr
 import { canManageDnsZone } from '../dns-servers/authority.js';
 import { getReservedPlatformHostnames } from '../system-tenant/reserved-subdomains.js';
 import { reconcileIngress } from './k8s-ingress.js';
+import { assertNoCrossAccountOverlap, normalizeDomainName } from './overlap.js';
 import { deleteDomainCertificate, ensureDomainCertificate } from '../certificates/service.js';
 import { createRoute } from '../ingress-routes/service.js';
 import { removeWebmailIngress, destroyStalwartArtifactsForEmailDomain } from '../email-domains/service.js';
@@ -206,7 +207,26 @@ async function enrichWithCertInfo(
 import type { DomainDeletePreview } from '@insula/api-contracts';
 import { encodeListCursor, listCursorCondition, listOrderBy, listSortKeySelect, resolveListSort, withoutSortKey, type SortFields } from '../../shared/list-sort.js';
 
-export async function createDomain(db: Database, tenantId: string, input: CreateDomainInput & { master_ip?: string; dns_group_id?: string }, k8s?: K8sClients) {
+export interface CreateDomainOptions {
+  /**
+   * Skip the cross-account overlap check (overlap.ts). For staff only: an
+   * operator may give a tenant a subdomain of another tenant's domain, or of
+   * the platform apex, on purpose. A tenant adding its own domain never may.
+   */
+  readonly allowCrossAccountOverlap?: boolean;
+}
+
+export async function createDomain(
+  db: Database,
+  tenantId: string,
+  rawInput: CreateDomainInput & { master_ip?: string; dns_group_id?: string },
+  k8s?: K8sClients,
+  opts: CreateDomainOptions = {},
+) {
+  // DNS names are case-insensitive, so `Example.test` IS `example.test`. The
+  // contract schema lowercases already; this covers callers that bypass it.
+  const input = { ...rawInput, domain_name: normalizeDomainName(rawInput.domain_name) };
+
   // Verify tenant exists
   const tenant = await getTenantById(db, tenantId);
   assertTenantActive(tenant, 'configure domains');
@@ -230,9 +250,11 @@ export async function createDomain(db: Database, tenantId: string, input: Create
   // but operator-driven SYSTEM-owned subdomains (e.g. for transactional
   // mailboxes under noreply.<apex>) need this path. Skip the reserved
   // check only when the caller is the SYSTEM tenant.
+  let platformApex = '';
   if (!tenant.isSystem) {
     const reserved = await getReservedPlatformHostnames(db);
-    const requestedHost = input.domain_name.trim().replace(/\.+$/, '').toLowerCase();
+    platformApex = reserved.apex;
+    const requestedHost = input.domain_name;
     if (reserved.fqdns.has(requestedHost)) {
       const reason = reserved.reasons.get(requestedHost) ?? 'platform-reserved hostname';
       throw new ApiError(
@@ -257,12 +279,6 @@ export async function createDomain(db: Database, tenantId: string, input: Create
     }
   }
 
-  // Check for duplicate domain name
-  const [existing] = await db.select().from(domains).where(eq(domains.domainName, input.domain_name));
-  if (existing) {
-    throw duplicateEntry('domain', input.domain_name);
-  }
-
   // Resolve DNS group: use provided, or fall back to default
   let dnsGroupId = input.dns_group_id ?? null;
   if (!dnsGroupId) {
@@ -278,15 +294,39 @@ export async function createDomain(db: Database, tenantId: string, input: Create
   }
 
   const id = crypto.randomUUID();
-  await db.insert(domains).values({
-    id,
-    tenantId,
-    domainName: input.domain_name,
-    dnsMode: input.dns_mode,
-    masterIp: input.dns_mode === 'secondary' ? (input.master_ip ?? null) : null,
-    deploymentId: input.deployment_id ?? null,
-    dnsGroupId,
-    status: 'unverified',
+  // The duplicate and overlap checks and the insert hold one advisory lock,
+  // keyed on the name's last two labels: any two names that could overlap
+  // share them, so two tenants adding `example.test` and `shop.example.test`
+  // at once cannot both pass the check.
+  await db.transaction(async (txRaw) => {
+    const tx = txRaw as unknown as Database;
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`domain-name/${input.domain_name.split('.').slice(-2).join('.')}`}, 0))`);
+
+    // Check for duplicate domain name. Case-insensitive: rows written before
+    // names were lowercased may hold capitals, and a second row that differs
+    // only in case would share the first one's zone and hostnames.
+    const [existing] = await tx
+      .select({ id: domains.id })
+      .from(domains)
+      .where(sql`lower(${domains.domainName}) = ${input.domain_name}`);
+    if (existing) {
+      throw duplicateEntry('domain', input.domain_name);
+    }
+
+    if (!tenant.isSystem && !opts.allowCrossAccountOverlap) {
+      await assertNoCrossAccountOverlap(tx, tenantId, input.domain_name, platformApex);
+    }
+
+    await tx.insert(domains).values({
+      id,
+      tenantId,
+      domainName: input.domain_name,
+      dnsMode: input.dns_mode,
+      masterIp: input.dns_mode === 'secondary' ? (input.master_ip ?? null) : null,
+      deploymentId: input.deployment_id ?? null,
+      dnsGroupId,
+      status: 'unverified',
+    });
   });
 
   const [created] = await db.select().from(domains).where(eq(domains.id, id));

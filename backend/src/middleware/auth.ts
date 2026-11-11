@@ -57,6 +57,19 @@ function shouldSkipAuth(request: FastifyRequest): boolean {
 
 export const PLATFORM_SESSION_COOKIE = 'platform_session';
 
+const STAFF_ROLES: ReadonlySet<AnyRole> = new Set<AnyRole>(['super_admin', 'admin', 'support']);
+
+/**
+ * A platform operator acting from the admin side: a staff role on a token that
+ * is not a tenant-panel token. "Login as tenant" mints a tenant-panel token,
+ * so an operator impersonating a tenant is held to the tenant's rules.
+ * Fail-closed: no user, or an unrecognised role, is not staff.
+ */
+export function isPlatformStaff(user: Pick<JwtPayload, 'role' | 'panel'> | null | undefined): boolean {
+  if (!user || user.panel === 'tenant') return false;
+  return STAFF_ROLES.has(user.role);
+}
+
 /**
  * Reject any JWT that is not a full access token.
  *

@@ -20,10 +20,10 @@ export default function BulkActionBar({
       )}
       data-testid="bulk-action-bar"
     >
-      <div className="mx-auto max-w-7xl px-4 py-3">
+      <div className="mx-auto max-w-7xl px-2 py-2 sm:px-4 sm:py-3">
         <div
           className={clsx(
-            'flex items-center justify-between rounded-lg px-4 py-3 shadow-lg',
+            'flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-3 shadow-lg sm:px-4',
             'bg-gray-900 text-white',
             'dark:bg-gray-800 dark:text-white',
           )}
@@ -47,8 +47,8 @@ export default function BulkActionBar({
             </button>
           </div>
 
-          {/* Right: action buttons */}
-          <div className="flex items-center gap-2">
+          {/* Right: action buttons — they wrap under the count on a phone. */}
+          <div className="flex flex-wrap items-center gap-2">
             {children}
           </div>
         </div>
