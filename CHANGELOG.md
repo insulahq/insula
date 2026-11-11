@@ -12,6 +12,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Files the file manager creates belong to `www-data:www-data`.** Uploads and archive extraction
+  left root-owned files in a tenant's storage, which a PHP site running as `www-data` could not
+  write to.
+  - **Extraction** set no owner at all: a zip's files became root's, and a tar's kept whatever
+    user the archive recorded (often 1000, or 501 from a Mac). The archive tools now run as
+    `www-data`, so everything they create is `www-data`'s. Files keep the permissions the archive
+    recorded, as before. A folder that already existed keeps its owner and permissions, and a file
+    the archive replaces becomes `www-data`'s.
+  - **Uploads** gave the file itself to `www-data`, but the folders created for an uploaded folder
+    stayed root's. Every folder created for it is now `www-data`'s, and the same goes for
+    **New Folder**, the editor, **From URL**, **Clone Website** and folders the recycle bin
+    recreates on restore.
+  - **Copies, new archives and Git clones** were root's. They are `www-data`'s now, and a copy
+    keeps its source's permissions. A copy merged into an existing folder leaves that folder and
+    the files it already held alone. Copying a folder into itself, or a named pipe or device, is
+    refused.
+  - Files that already exist keep their owner; **Ownership** still changes it.
+
 ## [2026.11.8] - 2026-11-11
 
 ### Security

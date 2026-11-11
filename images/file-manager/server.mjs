@@ -6,9 +6,9 @@
 
 import { createServer } from 'node:http';
 import * as fs from 'node:fs';
-import { readdir, stat, lstat, readFile, writeFile, mkdir, rm, rename, cp, chown as fsChown, realpath } from 'node:fs/promises';
+import { readdir, stat, lstat, readFile, writeFile, mkdir, rm, rename, chown as fsChown, lchown, realpath } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { join, resolve, basename, extname, dirname, relative } from 'node:path';
+import { join, resolve, basename, extname, dirname, relative, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 import { execFile, spawn } from 'node:child_process';
@@ -46,8 +46,9 @@ const TOOL_TIMEOUT_MS = 120_000;
  * Use this instead of execFileAsync for anything whose output length scales
  * with the number of files it touches.
  */
-function runTool(file, args, opts = {}) {
-  return execFileAsync(file, args, {
+async function runTool(file, args, { owner = false, exactModes = false, ...opts } = {}) {
+  const [cmd, argv] = await ownerCommand(file, args, owner, exactModes);
+  return execFileAsync(cmd, argv, {
     timeout: TOOL_TIMEOUT_MS,
     maxBuffer: TOOL_MAX_BUFFER,
     ...opts,
@@ -76,15 +77,19 @@ function runTool(file, args, opts = {}) {
 // The per-file chatter that caused the original bug is the progress feed here,
 // so the tools are deliberately run in VERBOSE mode and never with -q.
 const TOOL_IDLE_TIMEOUT_MS = 120_000;
+// A copy has no output to measure progress by, so it gets a ceiling instead:
+// long enough for any tenant volume, short enough that a stuck cp ends.
+const COPY_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Spawn a tool and invoke onLine(line) for every line it writes to stdout or
  * stderr. Resolves when the process exits 0, rejects otherwise. Never buffers
  * more than a single line, so memory is independent of archive size.
  */
-function runToolStreaming(file, args, { cwd, env, onLine } = {}) {
+async function runToolStreaming(file, args, { cwd, env, onLine, owner = false } = {}) {
+  const [cmd, argv] = await ownerCommand(file, args, owner);
   return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(cmd, argv, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let idle;
     let settled = false;
     let stderrTail = '';
@@ -242,6 +247,82 @@ const PORT = 8111;
 // Default ownership for files created by the file-manager (www-data, compatible with PHP apps)
 const DEFAULT_UID = 33;
 const DEFAULT_GID = 33;
+
+// ─── Ownership of what the file manager creates ─────────────────────────────
+// Everything the file manager creates belongs to www-data, the user PHP and
+// most web images run as, not to root, which this process runs as. Two
+// mechanisms, by who creates the file:
+//
+//  • This process (uploads, editor saves, new folders, URL fetches, site
+//    clones): Node cannot create a file as another user, so it creates it and
+//    chowns it, and mkdirOwned() chowns every folder `mkdir -p` made for it.
+//    The parent folders of an uploaded folder used to stay root's.
+//
+//  • An external tool (unzip, tar, zip, cp, git): the tool runs AS www-data
+//    and keeps only DAC_OVERRIDE and FOWNER, so it can still write into folders
+//    other users own and set times on them. The kernel then makes everything it
+//    creates www-data's, whatever owner an archive recorded, with no list of
+//    members to keep or walk afterwards. Folders that already existed keep
+//    their owner, and a file the tool replaces becomes www-data's. Modes stay
+//    what they were as root: unzip keeps the archive's, tar is told to (-p),
+//    and cp runs with umask 0 so a copy keeps its source's mode, as fs.cp did.
+//    A setuid file an archive or copy brings in is www-data's, never root's.
+//    Measured under the pod's own capabilities and no-new-privileges.
+//    Extraction used to leave everything root's (unzip) or owned by whatever
+//    uid the archive recorded (tar).
+//
+// Only root can give files away, so when this process is not root (the unit
+// tests) both fall back to plain creation.
+const IS_ROOT = typeof process.getuid === 'function' && process.getuid() === 0;
+const OWNER_CAPS = '+dac_override,+fowner';
+const SETPRIV_ARGS = [
+  `--reuid=${DEFAULT_UID}`, `--regid=${DEFAULT_GID}`, '--clear-groups',
+  `--inh-caps=${OWNER_CAPS}`, `--ambient-caps=${OWNER_CAPS}`, '--',
+];
+
+let ownerRunnerWorks = null;
+/** Whether tools can be run as the default owner here; probed once. */
+function canRunAsOwner() {
+  if (!IS_ROOT) return Promise.resolve(false);
+  ownerRunnerWorks ??= execFileAsync('setpriv', [...SETPRIV_ARGS, 'true'], { timeout: 10_000 }).then(
+    () => true,
+    (err) => {
+      console.warn(`[owner] cannot run tools as ${DEFAULT_UID}:${DEFAULT_GID} (${err.message}); `
+        + 'archives, copies and clones will create root-owned files');
+      return false;
+    },
+  );
+  return ownerRunnerWorks;
+}
+
+// `sh -c` with a fixed script; the tool and its arguments arrive as "$@".
+const UMASK0 = ['/bin/sh', '-c', 'umask 0 && exec "$@"', 'sh'];
+
+/**
+ * The command line that runs `file args`, as the default owner when asked and
+ * possible. `exactModes` drops the umask too: only for a tool whose every new
+ * entry takes a source's mode (cp), never one that makes folders of its own
+ * (tar's parents) or files without a recorded mode (a zip from Windows).
+ */
+async function ownerCommand(file, args, owner, exactModes = false) {
+  if (owner && await canRunAsOwner()) {
+    return ['setpriv', [...SETPRIV_ARGS, ...(exactModes ? UMASK0 : []), file, ...args]];
+  }
+  return [file, args];
+}
+
+/** `mkdir -p dir`, giving every folder it creates to the default owner. */
+async function mkdirOwned(dir) {
+  const first = await mkdir(dir, { recursive: true }); // the topmost folder created, if any
+  if (!first || !IS_ROOT) return;
+  let cur = first;
+  await lchown(cur, DEFAULT_UID, DEFAULT_GID).catch(() => {});
+  const below = relative(first, dir);
+  for (const segment of below ? below.split(sep) : []) {
+    cur = join(cur, segment);
+    await lchown(cur, DEFAULT_UID, DEFAULT_GID).catch(() => {}); // eslint-disable-line no-await-in-loop
+  }
+}
 
 // ─── UID/GID → Name Resolution ──────────────────────────────────────────────
 const uidNameCache = new Map();
@@ -427,6 +508,7 @@ const trash = createTrash({
   execFileAsync,
   defaultUid: DEFAULT_UID,
   defaultGid: DEFAULT_GID,
+  mkdirOwned,
   log: (...a) => console.warn(...a),
 });
 
@@ -621,8 +703,7 @@ async function handleMkdir(req, res) {
   if (!full) return sendError(res, 404, 'Not found');
 
   try {
-    await mkdir(full, { recursive: true });
-    await fsChown(full, DEFAULT_UID, DEFAULT_GID).catch(() => {});
+    await mkdirOwned(full);
     sendJson(res, 201, { path: p, created: true });
   } catch (err) {
     console.error('[handleMkdir]', err.message);
@@ -645,7 +726,7 @@ async function handleWrite(req, res) {
   if (!full) return sendError(res, 404, 'Not found');
 
   try {
-    await mkdir(dirname(full), { recursive: true });
+    await mkdirOwned(dirname(full));
     await writeFile(full, content, 'utf-8');
     await fsChown(full, DEFAULT_UID, DEFAULT_GID).catch(() => {});
     const s = await stat(full);
@@ -776,15 +857,39 @@ async function handleCopy(req, res) {
   const fullDest = await safePath(destPath, { allowHidden: bypass });
   if (!fullSrc || !fullDest) return sendError(res, 404, 'Not found');
 
+  // The backend waits for as long as a copy takes, so a cp left running after
+  // its caller has gone would run (and hold the volume) for nothing.
+  const abort = new AbortController();
+  res.on('close', () => { if (!res.writableFinished) abort.abort(); });
   try {
-    // Ensure parent directory exists
-    await mkdir(dirname(fullDest), { recursive: true });
-    await cp(fullSrc, fullDest, { recursive: true });
+    const src = await lstat(fullSrc);
+    if (src.isDirectory() && (fullDest === fullSrc || fullDest.startsWith(fullSrc + '/'))) {
+      return sendError(res, 400, 'Cannot copy a folder into itself');
+    }
+    // cp would open a named pipe and wait on it forever; fs.cp refused one too.
+    if (!src.isDirectory() && !src.isFile() && !src.isSymbolicLink()) {
+      return sendError(res, 400, 'Only files, folders and links can be copied');
+    }
+    await mkdirOwned(dirname(fullDest));
+    // A copy is new files, so cp runs as the default owner, with modes kept
+    // (see "Ownership"). A folder copies its contents into destPath, creating
+    // it or merging into an existing one; a file or symlink copies onto
+    // destPath and refuses a folder there. That is what fs.cp did, which made
+    // the copies root's. cp prints nothing, so there is no idle timer to keep
+    // alive; the ceiling only catches a cp that is stuck.
+    const args = src.isDirectory()
+      ? ['-R', '--', `${fullSrc}/.`, fullDest]
+      : ['-P', '-f', '-T', '--', fullSrc, fullDest];
+    await runTool('cp', args, {
+      owner: true, exactModes: true, timeout: COPY_TIMEOUT_MS, killSignal: 'SIGKILL', signal: abort.signal,
+    });
     sendJson(res, 200, { sourcePath, destPath, copied: true });
   } catch (err) {
     if (err.code === 'ENOENT') return sendError(res, 404, 'Source not found');
+    if (err.name === 'AbortError') return; // the caller is gone; nobody to answer
     console.error('[handleCopy]', err.message);
-    if (!res.headersSent) sendError(res, 500, 'Failed to copy');
+    const full = /No space left/.test(String(err.stderr ?? err.message));
+    if (!res.headersSent) sendError(res, 500, full ? 'Failed to copy: not enough free space.' : 'Failed to copy');
   }
 }
 
@@ -822,13 +927,14 @@ async function handleArchive(req, res) {
   res.write(JSON.stringify({ type: 'start', total: null, destPath, format }) + '\n');
 
   try {
-    await mkdir(dirname(fullDest), { recursive: true });
+    await mkdirOwned(dirname(fullDest));
     const relPaths = safePaths.map(p => p.replace(BASE + '/', ''));
 
     if (format === 'zip') {
       // Verbose (no -q): "  adding: <path>" per file is the progress feed.
       await runToolStreaming('zip', ['-r', fullDest, ...relPaths], {
         cwd: BASE,
+        owner: true, // the archive is a new file (see "Ownership")
         onLine: line => {
           const m = /^\s*adding:\s+(.*?)(?:\s+\(.*\))?$/.exec(line);
           if (m) progress.tick(basename(m[1].trim()));
@@ -837,6 +943,7 @@ async function handleArchive(req, res) {
     } else {
       await runToolStreaming('tar', [format === 'tar' ? 'cvf' : 'czvf', fullDest, ...relPaths], {
         cwd: BASE,
+        owner: true,
         onLine: line => progress.tick(basename(line)),
       });
     }
@@ -883,12 +990,15 @@ async function handleExtract(req, res) {
   res.write(JSON.stringify({ type: 'start', total, path: archivePath, destPath }) + '\n');
 
   try {
-    await mkdir(fullDest, { recursive: true });
+    await mkdirOwned(fullDest);
 
     // Verbose on purpose: this chatter IS the progress feed. runToolStreaming
     // consumes it a line at a time, so its volume no longer bounds the job.
+    // The tools run as the default owner, so everything they create is
+    // www-data's whatever the archive recorded (see "Ownership").
     if (isZip) {
       await runToolStreaming('unzip', ['-o', fullArchive, '-d', fullDest], {
+        owner: true,
         onLine: line => {
           // "  inflating: path", "   creating: path", "  extracting: path"
           const m = /^\s*(?:inflating|extracting|creating|linking):\s+(.*)$/.exec(line);
@@ -899,7 +1009,11 @@ async function handleExtract(req, res) {
       // tar has no cheap member count, so progress is a running total with
       // no percentage. Verbose output goes to stdout for GNU tar and stderr
       // for some busybox builds, so tick on either rather than guessing.
-      await runToolStreaming('tar', [isTarGz ? 'xzvf' : 'xvf', fullArchive, '-C', fullDest], {
+      // -p: the archive's modes, as root's tar restored them (a non-root tar
+      // otherwise applies the umask: 664 became 644). --no-overwrite-dir: a
+      // folder that already exists keeps its mode and times, as unzip leaves it.
+      await runToolStreaming('tar', ['--no-overwrite-dir', '-p', isTarGz ? '-xzvf' : '-xvf', fullArchive, '-C', fullDest], {
+        owner: true,
         onLine: line => progress.tick(basename(line)),
       });
     }
@@ -958,8 +1072,8 @@ async function handleWriteRaw(req, res) {
   const hasTotal = Number.isFinite(totalN) && totalN >= 0;
 
   try {
-    const dir = dirname(full);
-    await mkdir(dir, { recursive: true });
+    // The upload's own folders too: uploading a folder creates its parents here.
+    await mkdirOwned(dirname(full));
 
     if (chunked) {
       // pwrite-style write at explicit offset. Don't truncate; don't
@@ -1045,13 +1159,14 @@ async function handleGitClone(req, res) {
   if (!fullDest) return sendError(res, 404, 'Not found');
 
   try {
-    await mkdir(dirname(fullDest), { recursive: true });
+    await mkdirOwned(dirname(fullDest));
     // Same buffer class as the archive tools: git writes clone progress and
     // every "Cloning into…"/warning to stderr, which execFile caps at the same
     // 1 MiB. Progress is normally suppressed when stdout is not a TTY, so this
     // has not bitten — but a repo with thousands of LFS or checkout warnings
     // would fail with a message about buffers rather than about git.
     await runTool('git', ['clone', '--depth', '1', '--', url, fullDest], {
+      owner: true, // the clone is new files (see "Ownership")
       timeout: 300_000, // 5 min for large repos
       // GIT_TERMINAL_PROMPT=0 blocks auth prompts; GIT_ALLOW_PROTOCOL=https
       // restricts git to the https transport (no ext::/file:: smuggling).
@@ -1375,7 +1490,7 @@ async function handleFetchUrl(req, res) {
   if (!full) return sendError(res, 404, 'Destination path not allowed');
 
   try {
-    await mkdir(dirname(full), { recursive: true });
+    await mkdirOwned(dirname(full));
 
     // Check available disk space on PVC
     const fsStats = await statfs(BASE);
@@ -1612,7 +1727,7 @@ async function handleCloneSite(req, res) {
   const send = (obj) => { if (!aborted) try { res.write(JSON.stringify(obj) + '\n'); } catch {} };
 
   try {
-    await mkdir(full, { recursive: true });
+    await mkdirOwned(full);
 
     const baseUrl = new URL(url);
     const baseOrigin = baseUrl.origin;
@@ -1735,7 +1850,7 @@ async function handleCloneSite(req, res) {
 
       const localPath = urlToPath(normalized) || 'index.html';
       const fullPath = join(full, localPath);
-      await mkdir(dirname(fullPath), { recursive: true });
+      await mkdirOwned(dirname(fullPath));
 
       // Detect binary files — skip text processing for non-text files
       const isBinary = /\.(jpg|jpeg|png|gif|webp|avif|ico|bmp|tiff?|woff2?|ttf|otf|eot|mp4|webm|mp3|wav|ogg|pdf|zip|gz|tar|exe|dll|so|dylib)$/i.test(localPath);
@@ -1796,7 +1911,7 @@ async function handleCloneSite(req, res) {
       if (!assetBuf) continue;
 
       const fullPath = join(full, localPath);
-      await mkdir(dirname(fullPath), { recursive: true });
+      await mkdirOwned(dirname(fullPath));
       // Prettify text assets if enabled per-type
       const isTextAsset = /\.(css|scss|js|mjs|html?|svg|xml)$/i.test(localPath);
       if (isTextAsset && shouldPrettify(localPath, prettifyHtml, prettifyCss, prettifyJs)) {
