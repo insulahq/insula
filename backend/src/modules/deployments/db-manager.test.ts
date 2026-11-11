@@ -821,12 +821,109 @@ describe('db-manager', () => {
       ).rejects.toThrow('exceeds maximum length');
     });
 
+    // A write prints no rows, so the count has to come from the engine: the
+    // panel used to report the number of result rows, "0 rows affected" for
+    // every UPDATE. The mock answers the way each client was measured to,
+    // with the marker the command carries.
+    describe('affected rows', () => {
+      const markerIn = (command: string[]): string =>
+        command.join(' ').match(/insula_affected_[0-9a-f]{16}/)?.[0] ?? 'no-marker';
+
+      function answer(render: (marker: string, command: string[]) => string): void {
+        mockExecFn.mockImplementation(
+          (
+            _ns: string, _pod: string, _container: string, command: string[],
+            stdoutStream: NodeJS.WritableStream, _stderr: NodeJS.WritableStream,
+            _stdin: null, _tty: boolean, callback: (status: Record<string, unknown>) => void,
+          ) => {
+            stdoutStream.write(Buffer.from(render(markerIn(command), command)));
+            setTimeout(() => callback({ status: 'Success' }), 0);
+            return Promise.resolve({} as unknown);
+          },
+        );
+      }
+
+      it('reports the rows a MariaDB UPDATE changed', async () => {
+        answer((m) => `${m}\n1\n`);
+        const result = await executeQuery(mariaCtx, 'school', "UPDATE app_settings SET value = '/srv' WHERE name = 'absolutePath'");
+        expect(result.affectedRows).toBe(1);
+        expect(result.columns).toEqual([]);
+        expect(result.rows).toEqual([]);
+      });
+
+      it('reports 0 for a MariaDB UPDATE that set the value the row already held', async () => {
+        answer((m) => `${m}\n0\n`);
+        const result = await executeQuery(mariaCtx, 'school', "UPDATE app_settings SET value = '/srv' WHERE name = 'absolutePath'");
+        expect(result.affectedRows).toBe(0);
+      });
+
+      it('keeps a MariaDB result set whole and reports no write count for it', async () => {
+        answer((m) => `name\tvalue\nabsolutePath\t/srv\n${m}\n-1\n`);
+        const result = await executeQuery(mariaCtx, 'school', 'SELECT name, value FROM app_settings');
+        expect(result.columns).toEqual(['name', 'value']);
+        expect(result.rows).toEqual([['absolutePath', '/srv']]);
+        expect(result.rowCount).toBe(1);
+        expect(result.affectedRows).toBeUndefined();
+      });
+
+      it('tells an empty MariaDB SELECT from a write', async () => {
+        // An empty result set prints no header at all; only ROW_COUNT() = -1 says it was a read.
+        answer((m) => `${m}\n-1\n`);
+        const result = await executeQuery(mariaCtx, 'school', 'SELECT * FROM app_settings WHERE 0');
+        expect(result.columns).toEqual([]);
+        expect(result.affectedRows).toBeUndefined();
+      });
+
+      it('ends a trailing comment before the count statement', async () => {
+        answer((m) => `${m}\n1\n`);
+        await executeQuery(mariaCtx, 'school', 'DELETE FROM t WHERE id = 1; -- one row');
+        const sqlArg = (mockExecFn.mock.calls[0][3] as string[]).find((a) => a.startsWith('USE ')) ?? '';
+        expect(sqlArg).toMatch(/-- one row\n;\nSELECT ROW_COUNT\(\) AS `insula_affected_[0-9a-f]{16}`$/);
+      });
+
+      it('leaves a script that changes the client DELIMITER alone', async () => {
+        answer(() => '');
+        const script = 'DELIMITER //\nCREATE PROCEDURE p() BEGIN SELECT 1; END //';
+        const result = await executeQuery(mariaCtx, 'school', script);
+        const sqlArg = (mockExecFn.mock.calls[0][3] as string[]).find((a) => a.startsWith('USE ')) ?? '';
+        expect(sqlArg).toBe(`USE \`school\`; ${script}`);
+        expect(result.affectedRows).toBeUndefined();
+      });
+
+      it('runs psql quietly, so the UPDATE status line is not read as a column', async () => {
+        answer((m) => `${m} 3\n`);
+        const result = await executeQuery(pgCtx, 'mydb', "UPDATE s SET value = 'x'");
+        const command = mockExecFn.mock.calls[0][3] as string[];
+        expect(command).toContain('-q');
+        expect(command.at(-2)).toMatch(/^\\echo insula_affected_[0-9a-f]{16} :ROW_COUNT$/);
+        expect(result.columns).toEqual([]);
+        expect(result.affectedRows).toBe(3);
+      });
+
+      it('keeps the rows of a PostgreSQL RETURNING and reports no write count over them', async () => {
+        answer((m) => `name\nabsolutePath\n${m} 1\n`);
+        const result = await executeQuery(pgCtx, 'mydb', "UPDATE s SET value = 'x' RETURNING name");
+        expect(result.columns).toEqual(['name']);
+        expect(result.rows).toEqual([['absolutePath']]);
+        expect(result.affectedRows).toBeUndefined();
+      });
+
+      it('reports no count when psql printed none', async () => {
+        // A backslash command leaves :ROW_COUNT unset, so psql echoes it literally.
+        answer((m) => `${m} :ROW_COUNT\n`);
+        const result = await executeQuery(pgCtx, 'mydb', '\\conninfo');
+        expect(result.affectedRows).toBeUndefined();
+        expect(result.columns).toEqual([]);
+      });
+    });
+
     // A database the engine holds is valid by definition; it is quoted, never
     // placed raw. Only what no engine can hold is refused.
     it('quotes any existing database name and refuses only impossible ones', async () => {
       setupExecSuccess('1\n1');
       await executeQuery(mariaCtx, '2024-we`ird', 'SELECT 1');
-      expect((mockExecFn.mock.calls[0][3] as string[])).toContain('USE `2024-we``ird`; SELECT 1');
+      const sqlArg = (mockExecFn.mock.calls[0][3] as string[]).find((a) => a.startsWith('USE ')) ?? '';
+      expect(sqlArg.split('\n;\n')[0]).toBe('USE `2024-we``ird`; SELECT 1');
       await expect(executeQuery(mariaCtx, '', 'SELECT 1')).rejects.toThrow('Invalid database name');
       await expect(executeQuery(mariaCtx, 'a\0b', 'SELECT 1')).rejects.toThrow('Invalid database name');
       await expect(executeQuery(mariaCtx, 'x'.repeat(65), 'SELECT 1')).rejects.toThrow('Invalid database name');
@@ -1197,8 +1294,10 @@ describe('db-manager', () => {
       const result = await browseTable(ctx, 'school', '1-StudentsTb', { orderBy: 'first name', orderDir: 'desc' });
 
       expect(result.rows).toEqual([['1', 'Northfield']]);
-      const sqlArg = (mockExecFn.mock.calls[0][3] as string[]).find((a) => a.includes('LIMIT'));
-      expect(sqlArg).toBe('USE `school`; SELECT * FROM `1-StudentsTb` ORDER BY `first name` DESC LIMIT 50 OFFSET 0');
+      const sqlArg = (mockExecFn.mock.calls[0][3] as string[]).find((a) => a.includes('LIMIT')) ?? '';
+      const [statement, rowCount] = sqlArg.split('\n;\n');
+      expect(statement).toBe('USE `school`; SELECT * FROM `1-StudentsTb` ORDER BY `first name` DESC LIMIT 50 OFFSET 0');
+      expect(rowCount).toMatch(/^SELECT ROW_COUNT\(\) AS `insula_affected_[0-9a-f]{16}`$/);
     });
 
     it('quotes postgresql names with doubled double quotes', async () => {

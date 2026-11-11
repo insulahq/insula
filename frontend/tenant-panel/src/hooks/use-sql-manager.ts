@@ -7,6 +7,12 @@ export interface QueryResult {
   readonly columns: string[];
   readonly rows: string[][];
   readonly rowCount: number;
+  /**
+   * Rows the statement wrote, when it returned no result set. MariaDB/MySQL
+   * count only rows whose value changed; PostgreSQL and SQLite count every
+   * row matched. Absent when the engine reported none.
+   */
+  readonly affectedRows?: number;
   readonly executionTimeMs: number;
   readonly error?: string;
 }

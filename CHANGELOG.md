@@ -39,6 +39,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **A double-click on a row in the SQL Manager's Browse view opens the row editor**, as the pencil
+  does. Tables without a primary key have no editor, so nothing opens.
 - **Settings & DNS checks a domain's mail records against its zone, and can re-create them.**
   For a domain whose DNS the platform hosts, the DNS records card on the tenant panel's Email →
   Settings & DNS tab marks each mail record as published or missing. It warns about records in
@@ -67,6 +69,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **The SQL Manager says how many rows a write affected.** After an `UPDATE`, `INSERT` or `DELETE`
+  it said "0 rows affected" whatever the statement did, because it counted the rows the statement
+  returned. It now shows the count the database reports: for MariaDB and MySQL the rows whose value
+  changed (an `UPDATE` that sets a value a row already holds counts 0, and the panel says why), for
+  PostgreSQL and SQLite every row matched. With several statements it is the last one's count. An
+  empty `SELECT` reads "No rows returned". On PostgreSQL, a write's `UPDATE 1` status line no
+  longer shows up as a column, and a `RETURNING` result no longer gains it as an extra row.
 - **Enabling email no longer adds a second SPF or DMARC record.** It added every mail record next
   to what the domain's zone already held, so a domain that came with its previous host's records
   got two SPF records (SPF then fails for all its mail) and two DMARC records (receivers then

@@ -95,10 +95,15 @@ With a database selected, the main area gives you:
   or view its **Structure** (columns and types). You can create and drop tables,
   and add or remove columns.
 - **Browse** view — page through rows, sort by clicking a column, and edit
-  individual rows.
+  individual rows: use the pencil, or double-click the row. Editing needs a
+  table with a primary key.
 - **Query (SQL)** view — type any SQL statement and run it. Results appear in a
   table below. This is the power-user tool; a typo in a `DELETE` or `DROP` can
-  remove data, so be careful.
+  remove data, so be careful. After an `INSERT`, `UPDATE` or `DELETE` the panel
+  shows how many rows the statement affected (the last one, when you run several).
+  MariaDB and MySQL count only rows whose value changed: an `UPDATE` that sets a
+  value a row already holds reports **0 rows affected**, and the value is still
+  right. PostgreSQL and SQLite count every row the statement matched.
 
 !!! tip "Not sure about SQL?"
     For everyday changes, use **Browse** to edit rows directly. Reach for the

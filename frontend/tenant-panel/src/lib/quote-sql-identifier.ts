@@ -1,4 +1,4 @@
-const isMysqlFamily = (runtime: string | undefined): boolean => {
+export const isMysqlFamily = (runtime: string | undefined): boolean => {
   const r = (runtime ?? '').toLowerCase();
   return r.includes('mariadb') || r.includes('mysql');
 };

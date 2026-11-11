@@ -11,7 +11,12 @@ import type { CatalogEntry, Deployment } from '@/types/api';
 // `data`, rendered the refusal as "No data". In the same session the panel
 // asked a freshly created database for the table selected in the previous one.
 
-vi.mock('@monaco-editor/react', () => ({ default: () => <div data-testid="monaco-stub" /> }));
+// A textarea stands in for the editor, so a test can type the statement it runs.
+vi.mock('@monaco-editor/react', () => ({
+  default: ({ value, onChange }: { value?: string; onChange?: (v: string) => void }) => (
+    <textarea data-testid="monaco-stub" value={value ?? ''} onChange={(e) => onChange?.(e.target.value)} />
+  ),
+}));
 
 const DEPLOYMENT_ID = 'dep-1';
 const CATALOG_ENTRY_ID = 'cat-mariadb';
@@ -277,5 +282,103 @@ describe('SQL Manager row edits', () => {
 
     expect(await screen.findByText(/Data too long for column 'path'/)).toBeTruthy();
     expect(screen.getByTestId('edit-row-form')).toBeTruthy();
+  });
+
+  it('opens the row editor on a double-click on the row', async () => {
+    tableDataQuery = browseRow('/srv/old');
+    executeQueryMutation = answerWith({});
+
+    await renderPage();
+    await openTable('legacy_records');
+    expect(screen.queryByTestId('edit-row-form')).toBeNull();
+    fireEvent.doubleClick(await screen.findByText('/srv/old'));
+
+    expect(screen.getByTestId('edit-row-form')).toBeTruthy();
+    expect((screen.getByTestId('edit-field-path') as HTMLInputElement).value).toBe('/srv/old');
+    fireEvent.change(screen.getByTestId('edit-field-path'), { target: { value: '/srv/new' } });
+    fireEvent.click(screen.getByTestId('save-edit-row'));
+    expect(sent).toEqual(["UPDATE `legacy_records` SET `path` = '/srv/new' WHERE `id` = '1'"]);
+  });
+
+  it('does not open the editor for a double-click on the row buttons', async () => {
+    tableDataQuery = browseRow('/srv/old');
+
+    await renderPage();
+    await openTable('legacy_records');
+    fireEvent.doubleClick(await screen.findByTestId('delete-row-0'));
+
+    expect(screen.queryByTestId('edit-row-form')).toBeNull();
+  });
+
+  it('opens nothing on a double-click when the table has no primary key', async () => {
+    tableDataQuery = browseRow('/srv/old');
+    structureQuery = { ...idleQuery, data: { data: [
+      { name: 'id', type: 'int(11)', nullable: false, defaultValue: null, key: '' },
+      { name: 'path', type: 'varchar(80)', nullable: true, defaultValue: null, key: '' },
+    ] } };
+
+    await renderPage();
+    await openTable('legacy_records');
+    fireEvent.doubleClick(await screen.findByText('/srv/old'));
+
+    expect(screen.queryByTestId('edit-row-form')).toBeNull();
+  });
+});
+
+// Reported from production: an UPDATE of an application setting read "0 rows
+// affected". The panel showed the number of RESULT rows, which is 0 for every
+// write; the count now comes from the engine (`affectedRows`).
+describe('SQL Manager query results', () => {
+  const answerWith = (result: Record<string, unknown>) => ({
+    ...idleMutation,
+    mutate: (_vars: unknown, opts?: { onSuccess?: (res: unknown) => void }) => {
+      opts?.onSuccess?.({ data: { columns: [], rows: [], rowCount: 0, executionTimeMs: 1, ...result } });
+    },
+  });
+
+  beforeEach(() => {
+    tableDataQuery = { ...idleQuery };
+    structureQuery = { ...idleQuery };
+    rowCountQuery = { ...idleQuery };
+  });
+
+  async function run(statement: string) {
+    await renderPage();
+    fireEvent.change(await screen.findByTestId('monaco-stub'), { target: { value: statement } });
+    fireEvent.click(screen.getByTestId('run-query-button'));
+    return screen.findByTestId('query-message');
+  }
+
+  it('says how many rows a write changed', async () => {
+    executeQueryMutation = answerWith({ affectedRows: 1 });
+    const message = await run("UPDATE app_settings SET value = '/srv' WHERE name = 'absolutePath'");
+    expect(message.textContent).toMatch(/1 row affected\./);
+    expect(screen.queryByTestId('query-unchanged-rows-note')).toBeNull();
+  });
+
+  it('explains a MariaDB 0 for an UPDATE that set a value the row already held', async () => {
+    executeQueryMutation = answerWith({ affectedRows: 0 });
+    const message = await run("UPDATE app_settings SET value = '/srv' WHERE name = 'absolutePath'");
+    expect(message.textContent).toMatch(/0 rows affected\./);
+    expect(screen.getByTestId('query-unchanged-rows-note').textContent).toMatch(/only the rows whose value changed/);
+  });
+
+  it('says whose count it is when the query held several statements', async () => {
+    executeQueryMutation = answerWith({ affectedRows: 2 });
+    const message = await run("UPDATE a SET x = 1; DELETE FROM b WHERE y = 2;");
+    expect(message.textContent).toMatch(/2 rows affected by the last statement\./);
+  });
+
+  it('keeps the unchanged-rows note to an UPDATE', async () => {
+    executeQueryMutation = answerWith({ affectedRows: 0 });
+    await run('CREATE TABLE t (id int)');
+    expect(screen.queryByTestId('query-unchanged-rows-note')).toBeNull();
+  });
+
+  it('claims no write for a read that returned nothing', async () => {
+    executeQueryMutation = answerWith({});
+    const message = await run('SELECT * FROM app_settings WHERE 0');
+    expect(message.textContent).toMatch(/No rows returned\./);
+    expect(message.textContent).not.toMatch(/affected/);
   });
 });

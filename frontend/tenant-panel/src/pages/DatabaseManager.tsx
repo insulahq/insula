@@ -13,7 +13,7 @@ import Editor from '@monaco-editor/react';
 import clsx from 'clsx';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
-import { quoteId, quoteSqlString } from '@/lib/quote-sql-identifier';
+import { isMysqlFamily, quoteId, quoteSqlString } from '@/lib/quote-sql-identifier';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import {
   useDeployments,
@@ -115,6 +115,17 @@ function getQueryErrorHint(error: string): string | null {
 
 type DbEngine = 'sql' | 'redis' | 'mongodb';
 
+/**
+ * What the result message needs to know about the SQL that ran. Every engine
+ * reports the LAST statement's count, so a query with more than one says whose
+ * count it is. Both tests are text-level: a `;` inside a string literal reads
+ * as a second statement, which only adds "by the last statement" — still true.
+ */
+function statementShape(sql: string): { readonly several: boolean; readonly hasUpdate: boolean } {
+  const body = sql.trim().replace(/;\s*$/, '');
+  return { several: /;\s*\S/.test(body), hasUpdate: /(^|;)\s*update\s/i.test(body) };
+}
+
 function detectEngine(catalogEntryName: string | undefined): DbEngine {
   if (!catalogEntryName) return 'sql';
   const lower = catalogEntryName.toLowerCase();
@@ -145,6 +156,8 @@ export default function DatabaseManager() {
   const [resultsView, setResultsView] = useState<ResultsView>('query');
   const [sidebarView, setSidebarView] = useState<SidebarView>('tables');
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
+  // The statement `queryResult` answers: the editor may change after a run.
+  const [queryRun, setQueryRun] = useState('');
   const [queryError, setQueryError] = useState<string | null>(null);
 
   // Browse state
@@ -538,6 +551,7 @@ export default function DatabaseManager() {
     if (!isSqlite && !selectedDatabase) return;
     setQueryError(null);
     setQueryResult(null);
+    setQueryRun(sqlValue.trim());
     setResultsView('query');
 
     if (isSqlite && sqliteFile) {
@@ -1914,6 +1928,8 @@ export default function DatabaseManager() {
                 result={queryResult}
                 error={queryError}
                 isLoading={queryIsPending}
+                statement={queryRun}
+                countsChangedRowsOnly={!isSqlite && isMysqlFamily(dbRuntime)}
               />
             )}
 
@@ -2399,10 +2415,16 @@ function QueryResultsPanel({
   result,
   error,
   isLoading,
+  statement,
+  countsChangedRowsOnly,
 }: {
   readonly result: QueryResult | null;
   readonly error: string | null;
   readonly isLoading: boolean;
+  /** The SQL `result` answers. */
+  readonly statement: string;
+  /** MariaDB/MySQL: an UPDATE's count leaves out rows that already held the new value. */
+  readonly countsChangedRowsOnly: boolean;
 }) {
   if (isLoading) {
     return (
@@ -2460,14 +2482,27 @@ function QueryResultsPanel({
     );
   }
 
-  // Non-SELECT (INSERT/UPDATE/DELETE) result
+  // No result set: a write (INSERT/UPDATE/DELETE/DDL), or a read that matched
+  // nothing. `rowCount` counts result rows, so it is 0 for every write; only the
+  // engine's own count says how many rows a write touched.
   if (result.columns.length === 0) {
+    const affected = result.affectedRows;
+    const shape = statementShape(statement);
     return (
       <div className="p-4" data-testid="query-message">
         <div className="rounded-lg border border-green-200 dark:border-green-700 bg-green-50 dark:bg-green-900/20 px-4 py-3">
           <p className="text-sm text-green-800 dark:text-green-300">
-            Query executed successfully. {result.rowCount} row{result.rowCount !== 1 ? 's' : ''} affected.
+            Query executed successfully.{' '}
+            {affected === undefined
+              ? 'No rows returned.'
+              : `${affected} row${affected !== 1 ? 's' : ''} affected${shape.several ? ' by the last statement' : ''}.`}
           </p>
+          {affected === 0 && countsChangedRowsOnly && shape.hasUpdate && (
+            <p className="mt-1 text-xs text-green-700 dark:text-green-400" data-testid="query-unchanged-rows-note">
+              MariaDB and MySQL count only the rows whose value changed, so an UPDATE that sets the
+              value a row already holds reports 0.
+            </p>
+          )}
         </div>
       </div>
     );
@@ -2788,6 +2823,17 @@ function BrowsePanel({
                       'border-t border-gray-100 dark:border-gray-700/50 group',
                       rowIdx % 2 === 1 && 'bg-gray-50/50 dark:bg-gray-900/25',
                     )}
+                    // Same editor as the pencil. Only with a primary key: the
+                    // save writes `WHERE <pk> = …`, so without one there is no
+                    // editor to open. A double-click on the row's own buttons
+                    // is two clicks on them, not a request to edit, and one
+                    // during a save must not swap the row being saved.
+                    onDoubleClick={pkColumn ? (e) => {
+                      if (rowActionPending || (e.target as HTMLElement).closest('button')) return;
+                      window.getSelection()?.removeAllRanges();
+                      onEditRow({ ...rowMap }, { ...rowMap });
+                    } : undefined}
+                    data-testid={`browse-row-${rowIdx}`}
                   >
                     {pkColumn && (
                       <td className="px-2 py-1.5">
@@ -2796,7 +2842,7 @@ function BrowsePanel({
                             type="button"
                             onClick={() => onEditRow({ ...rowMap }, { ...rowMap })}
                             className="rounded p-0.5 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400"
-                            title="Edit row"
+                            title="Edit row (or double-click the row)"
                             data-testid={`edit-row-${rowIdx}`}
                           >
                             <Edit3 size={12} />
