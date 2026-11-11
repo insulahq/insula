@@ -61,7 +61,7 @@ components:
     name: k3s (Kubernetes distribution / kube-apiserver, kubelet, etcd, kube-proxy)
     tier: "0"
     kind: binary
-    pinned: "v1.36.5+k3s1"
+    pinned: "v1.36.6+k3s1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     repos: [rancher/k3s]
@@ -302,11 +302,11 @@ components:
     name: Bulwark webmail (JMAP-native SPA)
     tier: "0"
     kind: image
-    pinned: "sha256:dcb6ef96e3b020fa30d8a161b94ea39431f4a21a97a663cbc980b515e894879b"
+    pinned: "sha256:df2074bd1f714f89643da127acf547d4167b4960a22cc1a3fa1570b4584ad16f"
     pin_source: k8s/base/bulwark/deployment.yaml
     pin_check: true
     repos: [bulwarkmail/webmail]
-    watch: { type: github_releases, repo: bulwarkmail/webmail, advisories: bulwarkmail/webmail, pinned_version: "1.19.1" }
+    watch: { type: github_releases, repo: bulwarkmail/webmail, advisories: bulwarkmail/webmail, pinned_version: "1.20.0" }
     scan: trivy
     owner: platform
     notes: Internet-facing webmail, handles mail creds/content. Digest-pinned (good). Upstream advisories sparse → also watch manually.

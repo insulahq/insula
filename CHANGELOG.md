@@ -57,6 +57,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **Bulwark webmail 1.19.1 → 1.20.0.** It fixes no published advisory. Two security fixes: a
+  sender on the trusted list no longer loads remote content while the organisation blocks it
+  (replies, re-opened drafts and attachment previews included), and plugins no longer receive
+  their secret settings when the user is also signed in to Bulwark's admin console.
+  - Users can turn on **Keep mail on this device** (Settings → Backup & reset): the last 30 days
+    of the Inbox and the folders they opened, kept encrypted in the browser, to read, sort and
+    write without a connection. Every sign-out deletes it.
+  - Mail can be imported from mbox, Outlook `.pst`/`.ost`, `.eml` and ZIP files, and exported as
+    mbox or a ZIP of `.eml` files.
+  - Attachments show as a bar of tiles under the message header.
+  - Opening a mailbox from the platform as support works more than five times, and Bulwark
+    deletes an expired support session's app password itself.
+  - It talks to no outside host 1.19.1 did not. The Contacts, Calendar and Files switches still
+    hide those apps: their navigation links are unchanged.
+  - Rolling back below 1.20.0 needs logos and icons uploaded in Bulwark's own admin console
+    uploaded again. 1.21 follows when its soak ends.
+- **k3s v1.36.5+k3s1 → v1.36.6+k3s1** (Kubernetes 1.36.6, containerd 2.3.7, runc 1.4.2; etcd
+  stays 3.6). New installs get it directly. On an existing cluster, the review of the upgrade
+  to this release offers **Also upgrade Kubernetes v1.36.5+k3s1 → v1.36.6+k3s1** (off by
+  default), or run `insula cluster upgrade`. Fixable HIGH findings in the k3s image drop from 48
+  to 13, with no CRITICAL in either. The k3s install script is byte-identical to v1.36.5's, so
+  its pinned digest is unchanged.
+
 - **New email domains publish `p=quarantine`.** The DMARC record a newly enabled domain gets is
   `v=DMARC1; p=quarantine; rua=mailto:dmarc@<domain>`; it was `p=none`, which protects nothing.
   Mail from a sender that does not align (a newsletter service, a web form, an office server) now
@@ -69,6 +92,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **The SQL Manager says how many rows a write affected.** After an `UPDATE`, `INSERT` or `DELETE`
+  it said "0 rows affected" whatever the statement did, because it counted the rows the statement
+  returned. It now shows the count the database reports: for MariaDB and MySQL the rows whose value
+  changed (an `UPDATE` that sets a value a row already holds counts 0, and the panel says why), for
+  PostgreSQL and SQLite every row matched. With several statements it is the last one's count. An
+  empty `SELECT` reads "No rows returned". On PostgreSQL, a write's `UPDATE 1` status line no
+  longer shows up as a column, and a `RETURNING` result no longer gains it as an extra row.
 - **The SQL Manager's queries are no longer refused by the firewall.** The WAF in front of the
   panel scored the SQL a tenant runs against their own database as SQL injection, so an ordinary
   `SELECT … FROM … WHERE …` or two statements joined by `;` came back as "Blocked by the Web
@@ -81,7 +111,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   so a webmail message that mentions PHP, or a `.php` file saved in the file editor, was logged
   as "PHP source code leakage" and counted toward auto-banning the user's own IP. Response-body
   inspection is off (`MODSEC_RESP_BODY_ACCESS`); it never inspected a real response.
-
 - **Arrow-up and Tab work in a deployment's terminal.** The terminal started `/bin/sh`, which on
   Debian and Ubuntu based images is dash: no command history and no completion, so arrow-up printed
   `^[[A` and Tab inserted a tab. The new default shell, **Auto**, starts bash if the image has it,
@@ -96,13 +125,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   grew past the top and bottom of the window with no way to scroll. The list now has a limited
   height and its own scrollbar, the current folder stays above it, and the dialog never grows
   taller than the window.
-- **The SQL Manager says how many rows a write affected.** After an `UPDATE`, `INSERT` or `DELETE`
-  it said "0 rows affected" whatever the statement did, because it counted the rows the statement
-  returned. It now shows the count the database reports: for MariaDB and MySQL the rows whose value
-  changed (an `UPDATE` that sets a value a row already holds counts 0, and the panel says why), for
-  PostgreSQL and SQLite every row matched. With several statements it is the last one's count. An
-  empty `SELECT` reads "No rows returned". On PostgreSQL, a write's `UPDATE 1` status line no
-  longer shows up as a column, and a `RETURNING` result no longer gains it as an extra row.
 - **Enabling email no longer adds a second SPF or DMARC record.** It added every mail record next
   to what the domain's zone already held, so a domain that came with its previous host's records
   got two SPF records (SPF then fails for all its mail) and two DMARC records (receivers then
