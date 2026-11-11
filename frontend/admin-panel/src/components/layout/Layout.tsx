@@ -10,9 +10,11 @@ import MailFailoverReadinessBanner from '../outage/MailFailoverReadinessBanner';
 import PlatformStorageHaBanner from '../PlatformStorageHaBanner';
 import { useTokenRefresh } from '@/hooks/use-token-refresh';
 import { useDocumentTitle } from '@/hooks/use-system-info';
+import { usePhoneLayout } from '@/hooks/use-phone-layout';
 
 export default function Layout() {
   useTokenRefresh();
+  usePhoneLayout();
   // Keep <title> in sync with the platform name. Individual pages can still
   // call useDocumentTitle('Something') to prepend a page-specific prefix.
   useDocumentTitle();

@@ -251,11 +251,13 @@ defensible only while the platform ingested no reports: starting at `none` meant
 never learning when tightening was safe, so `quarantine` at least ended
 somewhere.
 
-R5 removes that constraint. The default is now **`p=none`** — report-only,
-protecting nothing, but collecting the evidence — and `dmarc-policy.ts` says when
-the domain is ready for `quarantine` and then `reject` (operator decision: it is
-never applied automatically). `dns-provisioning.ts` carries the reasoning; a test
-in `dns-provisioning.test.ts` pins the emitted value so it cannot drift back.
+R5 removed that constraint, and the default became `p=none` for a while:
+report-only, collecting the evidence. It is **`p=quarantine`** again (operator
+decision: `p=none` protects nothing). The reports now show a sender that breaks,
+Monitoring → Mail can move a domain back to `p=none` while it is fixed, and
+`dmarc-policy.ts` says when the domain is ready for `reject` (never applied
+automatically). `dns-provisioning.ts` carries the reasoning; a test in
+`dns-provisioning.test.ts` pins the emitted value so it cannot drift.
 
 **Newly provisioned records only.** Domains already publishing `p=quarantine` or
 `p=reject` are untouched: silently loosening enforcement a domain already has is

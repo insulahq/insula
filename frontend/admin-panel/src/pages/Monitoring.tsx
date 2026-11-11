@@ -302,7 +302,7 @@ export default function Monitoring() {
           placeholders. Real metrics live in the Health tab below
           (sourced from /admin/health). The remaining 3 cards show
           actual data so they stay. */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4">
         <StatCard
           title="Platform Status"
           value={platformStatus}
@@ -342,12 +342,13 @@ export default function Monitoring() {
 
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
         <div className="border-b border-gray-200 dark:border-gray-700">
-          <nav className="flex gap-0" data-testid="tab-bar">
+          <nav className="flex gap-0" data-testid="tab-bar" data-tab-strip>
             {TABS.map((tab) => (
               <button
                 key={tab.key}
                 type="button"
                 onClick={() => setActiveTab(tab.key)}
+                aria-current={activeTab === tab.key ? 'true' : undefined}
                 className={
                   activeTab === tab.key
                     ? 'border-b-2 border-brand-500 px-5 py-3 text-sm font-medium text-brand-600 dark:text-brand-400'

@@ -402,7 +402,7 @@ export default function EmailConnectionGuideModal({
           </button>
         </div>
 
-        <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700 px-5">
+        <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700 px-5" data-tab-strip>
           {tabs.map((t) => (
             <button
               key={t.key}

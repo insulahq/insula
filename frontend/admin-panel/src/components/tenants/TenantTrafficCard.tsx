@@ -124,7 +124,7 @@ export default function TenantTrafficCard({ namespace }: TenantTrafficCardProps)
         title="Open Monitoring → Traffic for this tenant, last 7 days"
         data-testid="tenant-traffic-link"
       >
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Traffic (7 days)</h2>
           <ChevronRight size={18} className="text-gray-400 transition-transform group-hover:translate-x-0.5 dark:text-gray-500" />
         </div>

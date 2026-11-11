@@ -34,6 +34,14 @@ mode, and certificate (SSL) state. Click any row to open its detail page.
 The new domain appears with an **Unverified** badge until DNS is pointed
 correctly.
 
+!!! note "Domains another account uses"
+    A domain inside one that another account on this platform uses (for
+    example `shop.example.com` when someone else has `example.com`), a domain
+    that contains one, and a domain under the platform's own domain cannot be
+    added: it would take over part of that account's DNS and mail. If the
+    domain is yours, ask your hosting provider to add it to your account.
+    Subdomains of your own domains are fine.
+
 ## Verify your domain
 
 After you add a domain you must point it at the platform, then verify it.

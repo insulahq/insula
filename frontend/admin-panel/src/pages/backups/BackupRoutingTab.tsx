@@ -133,7 +133,7 @@ export default function BackupRoutingTab({ shimClass, scheduleSubsystems }: Prop
         className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800"
         data-testid="routing-tab-targets"
       >
-        <header className="mb-2 flex items-center justify-between gap-3">
+        <header className="mb-2 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Cloud size={16} className="text-gray-500" />
             <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">

@@ -278,7 +278,7 @@ export async function mailUsageRoutes(app: FastifyInstance): Promise<void> {
     const { tenantId } = request.params as { tenantId: string };
     const q = dmarcOverviewQuerySchema.safeParse(request.query ?? {});
     const windowDays = q.success ? (q.data.windowDays ?? DMARC_WINDOW_DAYS) : DMARC_WINDOW_DAYS;
-    const domains = await dmarcDomainSummaries(app.db, { windowDays, tenantId });
+    const domains = await dmarcDomainSummaries(app.db, { windowDays, tenantId, includeUnreported: true });
     const overview: DmarcOverview = {
       windowDays,
       domains,

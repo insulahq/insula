@@ -367,7 +367,7 @@ export default function CpuSchedulingPage() {
 
   return (
     <div className="space-y-6" data-testid="cpu-scheduling-page">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Cpu size={20} className="text-gray-600 dark:text-gray-400" />
         <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">CPU scheduling</h1>
         {/* Tenants still on the old model are moved by the platform itself

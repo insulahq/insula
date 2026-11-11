@@ -14,6 +14,7 @@ import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { tenants } from '../../db/schema.js';
 import * as sqliteService from './service.js';
+import { registerRawBodyParser } from '../custom-deployments/raw-body-transport.js';
 
 export async function sqliteRoutes(app: FastifyInstance): Promise<void> {
   // Phase 6: method-aware role guard — read open, writes staff+tenant_admin only
@@ -45,21 +46,28 @@ export async function sqliteRoutes(app: FastifyInstance): Promise<void> {
   }
 
   // POST /api/v1/tenants/:tenantId/sqlite/query
-  app.post('/tenants/:tenantId/sqlite/query', async (request) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const body = (request.body ?? {}) as { file_path?: string; query?: string };
+  // Sent as application/octet-stream by the SQL Manager, the same JSON the
+  // edge WAF never parses into ARGS (ADR-060, WAF rule 9000121), as for
+  // …/deployments/:id/query. JSON stays accepted; the parser is scoped here.
+  await app.register(async (scope) => {
+    registerRawBodyParser(scope);
 
-    if (!body.file_path) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'file_path is required', 400, { field: 'file_path' });
-    }
-    if (!body.query) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'query is required', 400, { field: 'query' });
-    }
+    scope.post('/tenants/:tenantId/sqlite/query', async (request) => {
+      const { tenantId } = request.params as { tenantId: string };
+      const body = (request.body ?? {}) as { file_path?: string; query?: string };
 
-    const { k8sTenants, kubeconfigPath } = requireK8s();
-    const namespace = await resolveNamespace(tenantId);
-    const result = await sqliteService.executeQuery(k8sTenants, kubeconfigPath, namespace, body.file_path, body.query);
-    return success(result);
+      if (!body.file_path) {
+        throw new ApiError('MISSING_REQUIRED_FIELD', 'file_path is required', 400, { field: 'file_path' });
+      }
+      if (!body.query) {
+        throw new ApiError('MISSING_REQUIRED_FIELD', 'query is required', 400, { field: 'query' });
+      }
+
+      const { k8sTenants, kubeconfigPath } = requireK8s();
+      const namespace = await resolveNamespace(tenantId);
+      const result = await sqliteService.executeQuery(k8sTenants, kubeconfigPath, namespace, body.file_path, body.query);
+      return success(result);
+    });
   });
 
   // GET /api/v1/tenants/:tenantId/sqlite/tables?file_path=path/to/db.sqlite

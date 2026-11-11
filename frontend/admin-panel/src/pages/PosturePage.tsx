@@ -167,9 +167,9 @@ export default function PosturePage() {
         </p>
       </header>
 
-      <div className="flex items-center justify-between">
-        <div className="border-b border-gray-200 dark:border-gray-700 flex-1">
-          <nav className="flex gap-1 -mb-px" data-testid="security-hardening-tabs">
+      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="border-b border-gray-200 dark:border-gray-700 min-w-0 flex-1">
+          <nav className="flex gap-1 -mb-px" data-testid="security-hardening-tabs" data-tab-strip>
             {TABS.map((t) => {
               const isActive = activeTab === t.id;
               return (
@@ -177,6 +177,7 @@ export default function PosturePage() {
                   key={t.id}
                   type="button"
                   onClick={() => setActiveTab(t.id)}
+                  aria-current={activeTab === t.id ? 'true' : undefined}
                   className={[
                     'px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 transition-colors',
                     isActive
@@ -191,7 +192,7 @@ export default function PosturePage() {
             })}
           </nav>
         </div>
-        <div className="flex items-center gap-2 ml-4">
+        <div className="flex items-center gap-2 sm:ml-4">
           <button
             type="button"
             onClick={() => {

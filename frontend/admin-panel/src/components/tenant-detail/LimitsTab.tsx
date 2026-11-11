@@ -235,9 +235,11 @@ export default function LimitsTab({ tenant, tenantId }: { readonly tenant: Tenan
 
       {GROUPS.map((g) => (
         <Card key={g} title={g} bodyClassName="" testId={`limits-group-${g.toLowerCase().replace(/\s+/g, '-')}`}>
-          <div className="overflow-x-auto">
-            <div className="min-w-[860px]">
-              <div className="grid grid-cols-[minmax(0,24fr)_minmax(0,22fr)_minmax(0,32fr)_minmax(0,22fr)] gap-5 border-b border-gray-200 px-5 py-2.5 text-xs font-medium text-gray-500 dark:border-gray-700 dark:text-gray-400">
+          {/* A phone gets one column per limit, each value under its own
+              label; the four-column grid needs 860 px. */}
+          <div className="sm:overflow-x-auto">
+            <div className="sm:min-w-[860px]">
+              <div className="hidden grid-cols-[minmax(0,24fr)_minmax(0,22fr)_minmax(0,32fr)_minmax(0,22fr)] gap-5 border-b sm:grid border-gray-200 px-5 py-2.5 text-xs font-medium text-gray-500 dark:border-gray-700 dark:text-gray-400">
                 <div>Limit</div><div>In use</div><div>This tenant gets</div><div>In force</div>
               </div>
               {rows.filter((r) => r.group === g).map((r) => (
@@ -360,6 +362,11 @@ export default function LimitsTab({ tenant, tenantId }: { readonly tenant: Tenan
   );
 }
 
+/** A column heading repeated inside its cell on a phone, where the heading row is hidden. */
+function PhoneLabel({ children }: { children: ReactNode }) {
+  return <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500 sm:hidden dark:text-gray-400">{children}</div>;
+}
+
 function LimitRowView({ row, usage, editing, draft, change, invalid, onDraft, status }: {
   readonly row: LimitRow;
   readonly usage: Usage | undefined;
@@ -377,7 +384,7 @@ function LimitRowView({ row, usage, editing, draft, change, invalid, onDraft, st
   return (
     <div
       className={clsx(
-        'grid grid-cols-[minmax(0,24fr)_minmax(0,22fr)_minmax(0,32fr)_minmax(0,22fr)] items-center gap-5 border-b border-gray-100 px-5 py-3.5 text-[13px] last:border-0 dark:border-gray-700',
+        'grid grid-cols-1 gap-2 border-b border-gray-100 px-4 py-3.5 text-[13px] last:border-0 sm:grid-cols-[minmax(0,24fr)_minmax(0,22fr)_minmax(0,32fr)_minmax(0,22fr)] sm:items-center sm:gap-5 sm:px-5 dark:border-gray-700',
         change && 'bg-brand-50 dark:bg-brand-950',
       )}
       data-testid={`limit-${row.id}`}
@@ -387,6 +394,7 @@ function LimitRowView({ row, usage, editing, draft, change, invalid, onDraft, st
         {row.hint && <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{row.hint}</div>}
       </div>
       <div className="min-w-0">
+        <PhoneLabel>In use</PhoneLabel>
         {usage ? (
           <>
             {pct !== null && <div className="flex items-center gap-2.5"><div className="min-w-[70px] flex-1"><Meter pct={pct} /></div><span className="w-9 text-right text-xs tabular-nums text-gray-700 dark:text-gray-300">{Math.round(pct)}%</span></div>}
@@ -395,6 +403,7 @@ function LimitRowView({ row, usage, editing, draft, change, invalid, onDraft, st
         ) : <span className="text-gray-400">—</span>}
       </div>
       <div className="min-w-0">
+        <PhoneLabel>This tenant gets</PhoneLabel>
         {!editing || !draft ? (
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-[15px] font-bold text-gray-900 dark:text-gray-100" data-testid={`limit-value-${row.id}`}>{formatLimit(row, effective)}</span>
@@ -444,6 +453,7 @@ function LimitRowView({ row, usage, editing, draft, change, invalid, onDraft, st
         )}
       </div>
       <div className="min-w-0">
+        <PhoneLabel>In force</PhoneLabel>
         {editing && change ? (
           <>
             <Chip tone="info">Changes: {change.from} → {change.to}</Chip>

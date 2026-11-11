@@ -158,7 +158,7 @@ export default function NotificationPreferences() {
 
       {/* ─── Per-category channel matrix ─────────────────────────── */}
       <section className="rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
-        <div className="flex items-center justify-between border-b border-gray-200 px-5 py-3 dark:border-gray-700">
+        <div className="flex flex-wrap items-center justify-between border-b border-gray-200 px-5 py-3 dark:border-gray-700 gap-2">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Categories</h2>
           <button
             type="button"

@@ -831,7 +831,7 @@ function BackupsTab(p: BackupsTabProps) {
                   return (
                     <li
                       key={r.tenantId}
-                      className="flex items-center justify-between gap-2 py-1"
+                      className="flex flex-wrap items-center justify-between gap-2 py-1"
                       data-testid={`inclusion-row-${r.tenantId}`}
                     >
                       <span className="flex items-center gap-2">
@@ -854,7 +854,7 @@ function BackupsTab(p: BackupsTabProps) {
                           {r.archived ? 'archived' : r.backupsPaused ? 'paused — suspended' : r.includedInScheduledBundles ? 'included' : 'excluded'}
                         </span>
                       </span>
-                      <span className="inline-flex items-center gap-1.5">
+                      <span className="inline-flex flex-wrap items-center gap-1.5">
                         {busy && <Loader2 size={11} className="animate-spin text-gray-400" />}
                         {/* Replaces the "Trigger a bundle for a single
                             tenant" section, which made you pick a tenant

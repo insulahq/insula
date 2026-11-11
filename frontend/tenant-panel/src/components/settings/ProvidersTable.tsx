@@ -49,7 +49,7 @@ export default function ProvidersTable<T extends ProviderRow>({
 
   return (
     <section className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid={`${testIdPrefix}-section`}>
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{title}</h2>
         <button
           type="button"

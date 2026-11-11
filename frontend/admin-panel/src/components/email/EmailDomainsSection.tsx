@@ -51,7 +51,7 @@ export default function EmailDomainsSection() {
 
   return (
     <div className="space-y-4">
-      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
+      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700" data-tab-strip>
         {[
           { key: 'domains' as DomainsTab, label: 'Email Domains' },
           { key: 'relays' as DomainsTab, label: 'SMTP Relays' },
@@ -60,6 +60,7 @@ export default function EmailDomainsSection() {
             key={t.key}
             type="button"
             onClick={() => setTab(t.key)}
+            aria-current={tab === t.key ? 'true' : undefined}
             className={`border-b-2 px-4 py-2.5 text-sm font-medium ${
               tab === t.key
                 ? 'border-brand-500 text-brand-600 dark:text-brand-400'

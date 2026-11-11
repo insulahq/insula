@@ -65,11 +65,11 @@ export default function Backups() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400">
           <Archive size={20} />
         </div>
-        <div className="flex-1">
+        <div className="min-w-0 flex-1 basis-64">
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="backups-heading">
             Backups
           </h1>

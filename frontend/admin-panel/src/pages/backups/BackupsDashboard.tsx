@@ -251,7 +251,7 @@ function TargetStorageSection() {
   const rows = (data?.data.targets ?? []).filter((t) => t.enabled || (t.usage?.usedByBackupsBytes ?? 0) > 0);
   return (
     <section aria-label="Storage by target" data-testid="backups-dashboard-storage">
-      <div className="mb-2 flex items-baseline justify-between gap-3">
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-3">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
           <HardDrive size={16} />
           Storage by target
@@ -295,7 +295,7 @@ export default function BackupsDashboard() {
   const summaries = rows ?? [];
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6 sm:p-6">
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">Backups</h1>
         <p className="text-sm text-gray-600 dark:text-gray-400">
@@ -347,7 +347,7 @@ export default function BackupsDashboard() {
       <TargetStorageSection />
 
       <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800">
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
             <Database size={16} />
             Recent backup activity

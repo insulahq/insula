@@ -69,7 +69,7 @@ export default function ProviderCoverageBanner() {
       className="mb-4 flex items-start gap-3 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200"
     >
       <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-      <div className="space-y-1">
+      <div className="min-w-0 space-y-1 break-words">
         <p className="font-medium">
           {broken.length === 1
             ? 'One channel cannot deliver'

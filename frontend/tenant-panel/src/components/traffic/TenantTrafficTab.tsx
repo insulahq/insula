@@ -161,7 +161,7 @@ export default function TenantTrafficTab() {
       )}
 
       <div className="flex flex-wrap items-end gap-x-3.5 gap-y-2.5">
-        <div className="min-w-[320px]"><TrafficRangePicker value={range} onChange={setRange} /></div>
+        <div className="w-full min-w-0 sm:w-auto sm:min-w-[320px]"><TrafficRangePicker value={range} onChange={setRange} /></div>
         <div className="min-w-[180px]">
           <TrafficPicker
             id="tenant-traffic-scope"

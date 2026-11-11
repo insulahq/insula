@@ -92,7 +92,7 @@ export default function CatalogRepoSettings() {
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid="catalog-repos-section">
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <GitBranch size={20} className="text-gray-600 dark:text-gray-400" />
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Catalog Repositories</h2>

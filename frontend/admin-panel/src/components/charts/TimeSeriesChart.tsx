@@ -284,7 +284,7 @@ export default function TimeSeriesChart({
     : null;
 
   const notes = fullBleed && (cornerNote || badge) ? (
-    <div className="flex items-center justify-between gap-3 pb-1.5">
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 pb-1.5">
       <div className="min-w-0">{cornerNote}</div>
       <div className="shrink-0">{badge}</div>
     </div>

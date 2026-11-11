@@ -7,6 +7,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { dnsRecords, domains } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { DmarcPolicy } from './dmarc-policy.js';
+import { txtText } from '../dns-servers/wire-format.js';
 
 export const DMARC_POLICY_ORDER: readonly DmarcPolicy[] = ['none', 'quarantine', 'reject'];
 
@@ -37,7 +38,14 @@ export function isTightening(from: DmarcPolicy | null, to: DmarcPolicy): boolean
   return DMARC_POLICY_ORDER.indexOf(to) > DMARC_POLICY_ORDER.indexOf(from ?? 'none');
 }
 
-/** Managed `_dmarc` TXT rows for the given domain names, keyed by domain name. */
+/**
+ * Managed `_dmarc` TXT rows for the given domain names, keyed by domain name.
+ *
+ * `recordValue` is the record's text. A row pulled from the DNS server stores
+ * the server's spelling, quoted (`"v=DMARC1; p=none; …"`); matching only the
+ * bare spelling made such a domain read as having no `_dmarc` record at all,
+ * so the policy buttons sent its owner to "your DNS provider" — the platform.
+ */
 export async function managedDmarcRecords(
   db: Database,
   domainNames: readonly string[],
@@ -58,13 +66,13 @@ export async function managedDmarcRecords(
     .where(and(
       inArray(domains.domainName, [...domainNames]),
       eq(dnsRecords.recordType, 'TXT'),
-      sql`lower(${dnsRecords.recordValue}) LIKE 'v=dmarc1%'`,
+      sql`lower(ltrim(${dnsRecords.recordValue}, '" ')) LIKE 'v=dmarc1%'`,
     ));
   for (const r of rows) {
     const name = (r.recordName ?? '').toLowerCase().replace(/\.$/, '');
     if (name !== '_dmarc' && name !== `_dmarc.${r.domainName.toLowerCase()}`) continue;
     const list = out.get(r.domainName) ?? [];
-    list.push({ id: r.id, domainId: r.domainId, tenantId: r.tenantId, recordName: r.recordName ?? '_dmarc', recordValue: r.recordValue ?? '' });
+    list.push({ id: r.id, domainId: r.domainId, tenantId: r.tenantId, recordName: r.recordName ?? '_dmarc', recordValue: txtText(r.recordValue ?? '') });
     out.set(r.domainName, list);
   }
   return out;

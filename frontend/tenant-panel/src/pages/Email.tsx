@@ -40,6 +40,7 @@ import {
   useEmailDomainDisablePreview,
   useUpdateEmailDomain,
   useEmailDomainDnsRecords,
+  useEmailDomainDnsCheck,
   useImapSyncJobs,
   useCreateImapSyncJob,
   useCancelImapSyncJob,
@@ -58,9 +59,11 @@ import {
 } from '@/hooks/use-email';
 import { MailboxLoginPasswordsModal } from '@/components/MailboxLoginPasswords';
 import DkimKeysCard from '@/components/email/DkimKeysCard';
+import MailDnsCheckPanel, { MailRecordStatusPill, mailRecordStatus } from '@/components/email/MailDnsCheckPanel';
 import { useTabParam } from '@/hooks/use-tab-param';
 import { useOpenFromQuery } from '@/hooks/use-open-from-query';
 import type { TabOf } from '@/routes/tabbed-pages';
+import type { MailDnsRecordStatus } from '@insula/api-contracts';
 
 // Lazy: a wall of static setup copy that most sessions never open.
 const EmailConnectionGuideModal = lazy(() => import('@/components/EmailConnectionGuideModal'));
@@ -195,7 +198,7 @@ export default function Email() {
 
       {!domainsLoading && emailDomains.length > 0 && selectedEmailDomain && (
         <>
-          <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
+          <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700" data-tab-strip>
             {[
               { key: 'mailboxes' as Tab, label: 'Mailboxes' },
               { key: 'aliases' as Tab, label: 'Mailing Lists' },
@@ -205,7 +208,7 @@ export default function Email() {
               { key: 'abuse' as Tab, label: 'Abuse Reports' },
               { key: 'tls' as Tab, label: 'Delivery Security' },
             ].map(t => (
-              <button key={t.key} type="button" onClick={() => setTab(t.key)}
+              <button key={t.key} type="button" onClick={() => setTab(t.key)} aria-current={tab === t.key ? 'true' : undefined}
                 className={clsx('border-b-2 px-4 py-2.5 text-sm font-medium', tab === t.key ? 'border-brand-500 text-brand-600' : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200')}
                 data-testid={`tab-${t.key}`}>
                 {t.label}
@@ -1848,6 +1851,9 @@ function DnsRecordsCard({
 }) {
   const { data: res, isLoading, error } = useEmailDomainDnsRecords(tenantId, domain.domainId);
   const dns = res?.data;
+  // Only a zone the platform hosts is checked; the panel below owns the request's states.
+  const check = useEmailDomainDnsCheck(dns && !dns.manualRequired ? tenantId : undefined, domain.domainId).data?.data;
+  const checked = check?.checked === true;
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4" data-testid="dns-records-card">
@@ -1889,10 +1895,14 @@ function DnsRecordsCard({
                 DNS managed by platform (primary mode)
               </p>
               <p className="mt-1 text-xs text-green-800 dark:text-green-200">
-                These records are automatically published and kept in sync in the authoritative
-                zone. Shown here for reference.
+                The platform publishes these records in the domain&apos;s zone. They are checked
+                against the zone below.
               </p>
             </div>
+          )}
+
+          {!dns.manualRequired && (
+            <MailDnsCheckPanel tenantId={tenantId} domainId={domain.domainId} domainName={domain.domainName} />
           )}
 
           <div className="overflow-x-auto">
@@ -1903,11 +1913,12 @@ function DnsRecordsCard({
                   <th className="py-2 pr-3">Name</th>
                   <th className="py-2 pr-3">Value</th>
                   <th className="py-2 pr-3">TTL</th>
+                  {checked && <th className="py-2 pr-3">In DNS</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50 dark:divide-gray-700">
                 {dns.records.map((r, i) => (
-                  <DnsRecordRow key={`${r.type}-${r.name}-${i}`} record={r} />
+                  <DnsRecordRow key={`${r.type}-${r.name}-${i}`} record={r} checked={checked} status={mailRecordStatus(check, r)} />
                 ))}
               </tbody>
             </table>
@@ -1941,7 +1952,12 @@ function purposeBadgeStyle(purpose: string | undefined): { label: string; cls: s
   }
 }
 
-function DnsRecordRow({ record }: { readonly record: DnsRecordDisplay }) {
+function DnsRecordRow({ record, checked = false, status = null }: {
+  readonly record: DnsRecordDisplay;
+  /** The zone was read: the row gets an "In DNS" cell. */
+  readonly checked?: boolean;
+  readonly status?: MailDnsRecordStatus | null;
+}) {
   const [copied, setCopied] = useState(false);
   const handleCopy = async () => {
     try {
@@ -1983,6 +1999,7 @@ function DnsRecordRow({ record }: { readonly record: DnsRecordDisplay }) {
         </div>
       </td>
       <td className="py-2 pr-3 text-gray-500 dark:text-gray-400">{record.ttl}</td>
+      {checked && <td className="py-2 pr-3">{status && <MailRecordStatusPill status={status} />}</td>}
     </tr>
   );
 }
@@ -2309,12 +2326,12 @@ function ImapSyncJobRow({
       data-testid={`imapsync-job-${job.id}`}
       data-focused={focused ? 'true' : undefined}
     >
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           {/* A migration is a PAIRING. Showing only the source made two jobs
               pulling from the same old server indistinguishable, and gave no
               way to tell which local mailbox was about to be written to. */}
-          <code className="font-mono text-gray-900 dark:text-gray-100">
+          <code className="min-w-0 break-all font-mono text-gray-900 dark:text-gray-100">
             {job.sourceUsername}@{job.sourceHost}
             <span className="mx-1.5 text-gray-400 dark:text-gray-500" aria-label="into">&rarr;</span>
             <span className="text-brand-600 dark:text-brand-400">

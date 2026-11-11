@@ -77,7 +77,7 @@ export default function ManagedCertificateCard({ tenantId, domainId, canManage }
       className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm"
       data-testid="managed-certificate-card"
     >
-      <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
+      <div className="flex flex-wrap items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4 gap-2">
         <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Managed Certificates</h2>
         {canManage && (
           <button

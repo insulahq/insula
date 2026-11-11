@@ -22,7 +22,7 @@ function TenantAgentsSwitch({ enabled, tenantCount }: { readonly enabled: boolea
 
   return (
     <section className={card} data-testid="tenant-agents-switch-card">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Tenant AI agents</h2>
           <p className="mt-1 max-w-2xl text-sm text-gray-600 dark:text-gray-300">

@@ -70,5 +70,8 @@ describe('raw transport stays inside WAF rule 9000115', () => {
     const scope = rule9000115Uri();
     expect(scope.test('/api/v1/tenants/t1/custom-deployments/x1/compose')).toBe(false);
     expect(scope.test('/api/v1/tenants/t1/custom-deployments/x1/pull-credentials')).toBe(false);
+    // REQUEST_URI carries the query string: this reaches /tenants/t1.
+    expect(scope.test('/api/v1/tenants/t1?/custom-deployments')).toBe(false);
+    expect(scope.test('/api/v1/tenants/t1/custom-deployments/x1?/pull-credentials')).toBe(true); // = PATCH /x1, in scope
   });
 });

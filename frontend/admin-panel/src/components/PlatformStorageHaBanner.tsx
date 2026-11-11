@@ -43,8 +43,8 @@ export default function PlatformStorageHaBanner() {
       aria-live="polite"
       className="mx-4 mt-4 lg:mx-6 lg:mt-6 rounded-lg border border-purple-300 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/30 px-4 py-3"
     >
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-start gap-2 text-sm text-purple-800 dark:text-purple-200">
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+        <div className="flex min-w-0 flex-1 basis-60 items-start gap-2 text-sm text-purple-800 dark:text-purple-200">
           <Rocket size={16} className="mt-0.5 shrink-0 text-purple-500 dark:text-purple-400" />
           <span>
             <strong>Cluster reached HA size.</strong>
@@ -57,7 +57,7 @@ export default function PlatformStorageHaBanner() {
           </span>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2">
           <Link
             to="/cluster/cluster-policies"
             data-testid="platform-storage-ha-banner-link"

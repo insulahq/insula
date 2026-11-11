@@ -172,7 +172,7 @@ export default function DeliveryLogTable() {
       )}
 
       <section className="rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
-        <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2 dark:border-gray-700">
+        <div className="flex flex-wrap items-center justify-between border-b border-gray-200 px-4 py-2 dark:border-gray-700 gap-2">
           <h2 className="text-sm font-medium text-gray-900 dark:text-gray-100">
             Deliveries ({list.data?.data.length ?? 0})
           </h2>

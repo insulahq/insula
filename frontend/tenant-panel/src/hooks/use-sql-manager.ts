@@ -7,6 +7,12 @@ export interface QueryResult {
   readonly columns: string[];
   readonly rows: string[][];
   readonly rowCount: number;
+  /**
+   * Rows the statement wrote, when it returned no result set. MariaDB/MySQL
+   * count only rows whose value changed; PostgreSQL and SQLite count every
+   * row matched. Absent when the engine reported none.
+   */
+  readonly affectedRows?: number;
   readonly executionTimeMs: number;
   readonly error?: string;
 }
@@ -26,6 +32,15 @@ interface TableDataOptions {
   readonly orderDir?: 'ASC' | 'DESC';
 }
 
+/**
+ * The SQL a query carries is sent labelled application/octet-stream: the same
+ * JSON body, which the edge WAF never parses into ARGS. As application/json an
+ * ordinary `SELECT … WHERE …` was refused there as SQL injection, a 403 the API
+ * never saw. The API parses either. See ADR-060 and WAF rule 9000121, which
+ * allows this on the two query routes only (sql-manager-waf-scope.test.ts).
+ */
+const RAW_JSON_HEADERS = { 'Content-Type': 'application/octet-stream' } as const;
+
 // ─── Hooks ──────────────────────────────────────────────────────────────────
 
 export function useExecuteQuery(tenantId: string | null | undefined, deploymentId: string | undefined) {
@@ -34,7 +49,7 @@ export function useExecuteQuery(tenantId: string | null | undefined, deploymentI
       if (!tenantId || !deploymentId) throw new Error('Missing tenant or deployment');
       return apiFetch<{ data: QueryResult }>(
         `/api/v1/tenants/${tenantId}/deployments/${deploymentId}/query`,
-        { method: 'POST', body: JSON.stringify({ database, query }) },
+        { method: 'POST', headers: RAW_JSON_HEADERS, body: JSON.stringify({ database, query }) },
       );
     },
   });
@@ -321,7 +336,7 @@ export function useSqliteQuery(tenantId: string | null | undefined) {
       if (!tenantId) throw new Error('No tenant selected');
       return apiFetch<{ data: QueryResult }>(
         `/api/v1/tenants/${tenantId}/sqlite/query`,
-        { method: 'POST', body: JSON.stringify({ file_path: filePath, query }) },
+        { method: 'POST', headers: RAW_JSON_HEADERS, body: JSON.stringify({ file_path: filePath, query }) },
       );
     },
   });

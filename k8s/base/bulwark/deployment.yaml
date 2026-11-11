@@ -291,7 +291,7 @@ spec:
         - name: feature-css-injector
           # Same digest as the `bulwark` container below — see the note there
           # for the version and how to re-resolve it. Both must move together.
-          image: ghcr.io/bulwarkmail/webmail@sha256:dcb6ef96e3b020fa30d8a161b94ea39431f4a21a97a663cbc980b515e894879b
+          image: ghcr.io/bulwarkmail/webmail@sha256:df2074bd1f714f89643da127acf547d4167b4960a22cc1a3fa1570b4584ad16f
           imagePullPolicy: IfNotPresent
           # busybox-style sh is available in the Bulwark image (Alpine
           # base). The script is intentionally tiny + has no error
@@ -331,7 +331,7 @@ spec:
               readOnly: true
       containers:
         - name: bulwark
-          # Bulwark 1.19.1 stable. Bump per ADR-039; the digest is
+          # Bulwark 1.20.0 stable. Bump per ADR-039; the digest is
           # also recorded in security/components.yaml (component `bulwark`),
           # which ci-component-watch-check.sh asserts against this file.
           #
@@ -360,7 +360,7 @@ spec:
           #
           # Digest provenance: `gh attestation verify oci://…@<digest> --owner
           # bulwarkmail` — SLSA v1, built by the upstream release workflow
-          # from tag 1.19.1.
+          # from tag 1.20.0.
           #
           # 1.16.0 stops an HTML attachment preview from running the sender's
           # script in the webmail origin, and makes delete/move act on the
@@ -385,7 +385,15 @@ spec:
           # and fetches the logo and mark certificate through the same
           # private-address guard as /api/favicon, and refuses while
           # third-party traffic is turned off.
-          image: ghcr.io/bulwarkmail/webmail@sha256:dcb6ef96e3b020fa30d8a161b94ea39431f4a21a97a663cbc980b515e894879b
+          #
+          # 1.20.0 adds opt-in offline mail (kept encrypted in the browser,
+          # deleted on every sign-out), mail import/export, admin phishing
+          # reports and device policies. It talks to no outside host 1.19.1 did
+          # not, keeps /api/health, the impersonation route and the "Support
+          # session <jti>" app-password name, and stops a trusted sender from
+          # loading remote content the organisation blocks. Rolling back below
+          # 1.20.0 needs logos uploaded in its admin console uploaded again.
+          image: ghcr.io/bulwarkmail/webmail@sha256:df2074bd1f714f89643da127acf547d4167b4960a22cc1a3fa1570b4584ad16f
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

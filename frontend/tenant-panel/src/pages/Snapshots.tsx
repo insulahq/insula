@@ -113,11 +113,11 @@ export default function Snapshots() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-400">
           <Camera size={20} />
         </div>
-        <div className="flex-1">
+        <div className="min-w-0 flex-1 basis-64">
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100" data-testid="snapshots-heading">
             Snapshots
           </h1>
@@ -322,7 +322,7 @@ function Modal({ title, onClose, children }: { readonly title: string; readonly 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
       <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl dark:bg-gray-800">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{title}</h2>
           <button type="button" onClick={onClose} className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700"><X size={18} /></button>
         </div>

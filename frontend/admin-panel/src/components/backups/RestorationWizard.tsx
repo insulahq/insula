@@ -196,7 +196,7 @@ export default function RestorationWizard({
         </header>
 
         <ol
-          className="flex border-b border-gray-200 dark:border-gray-700"
+          className="flex border-b border-gray-200 dark:border-gray-700" data-tab-strip
           aria-label="Restore steps"
         >
           {(hideWhereStep ? [1, 3] : [1, 2, 3]).map((n) => (

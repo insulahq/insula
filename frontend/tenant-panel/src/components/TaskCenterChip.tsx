@@ -94,6 +94,9 @@ export default function TaskCenterChip() {
       : succeededCount > 0
         ? `${succeededCount} done`
         : 'Tasks';
+  // On a phone the chip is the icon and this number: the tone already says
+  // running, failed or done, and the header has no room for the words.
+  const chipCount = runningCount || failedCount || succeededCount;
 
   const onSelect = (task: TaskRow) => {
     if (task.target.type === 'route') {
@@ -122,12 +125,13 @@ export default function TaskCenterChip() {
           size={14}
           className={runningCount > 0 ? 'animate-spin' : undefined}
         />
-        <span>{chipLabel}</span>
+        <span className="hidden sm:inline">{chipLabel}</span>
+        {chipCount > 0 && <span className="sm:hidden">{chipCount}</span>}
       </button>
 
       {open && (
         <div
-          className="absolute right-0 z-50 mt-2 w-96 rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-800"
+          className="fixed inset-x-2 top-16 z-50 rounded-xl sm:absolute sm:inset-x-auto sm:right-0 sm:top-auto sm:mt-2 sm:w-96 border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-800"
           data-testid="task-center-popover"
         >
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-700">

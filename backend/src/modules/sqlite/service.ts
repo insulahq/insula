@@ -16,6 +16,7 @@ import { quoteAnsiIdentifier, validateExistingName } from '../../shared/sql-iden
 import { dbEngineApiError } from '../deployments/db-errors.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { QueryResult, ColumnInfo, ImportResult } from '../deployments/db-manager.js';
+import { affectedRowsField, affectedRowsMarker, splitRowCount, withSqliteRowCount } from '../deployments/affected-rows.js';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -286,12 +287,13 @@ export async function executeQuery(
   const podName = await findFileManagerPod(k8s, namespace);
   const dbPath = `/data/${filePath}`;
 
+  const marker = affectedRowsMarker();
   try {
     const { stdout, stderr } = await execInPod(
       kubeconfigPath,
       namespace,
       podName,
-      ['sqlite3', '-header', '-csv', dbPath, sql],
+      ['sqlite3', '-header', '-csv', dbPath, withSqliteRowCount(sql, marker)],
     );
 
     const elapsed = Date.now() - start;
@@ -300,8 +302,9 @@ export async function executeQuery(
       return { columns: [], rows: [], rowCount: 0, executionTimeMs: elapsed, error: stderr };
     }
 
-    const { columns, rows } = parseCsvOutput(stdout);
-    return { columns, rows, rowCount: rows.length, executionTimeMs: elapsed };
+    const counted = splitRowCount(stdout, marker, '\n');
+    const { columns, rows } = parseCsvOutput(counted.output);
+    return { columns, rows, rowCount: rows.length, ...affectedRowsField(columns, counted.count), executionTimeMs: elapsed };
   } catch (err) {
     const elapsed = Date.now() - start;
     const message = err instanceof Error ? err.message : String(err);

@@ -192,7 +192,7 @@ export default function TrafficRangePicker({ value, onChange }: TrafficRangePick
           onClick={() => setOpen((o) => !o)}
           aria-expanded={open}
           data-testid="traffic-range-button"
-          className="inline-flex w-full items-center gap-[9px] whitespace-nowrap rounded-[7px] border
+          className="inline-flex w-full flex-wrap items-center gap-x-[9px] gap-y-0.5 rounded-[7px] border text-left sm:flex-nowrap sm:whitespace-nowrap
             border-gray-300 bg-white px-[11px] py-1.5 text-[13px] text-gray-900 hover:border-brand-500
             dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
         >
@@ -205,12 +205,15 @@ export default function TrafficRangePicker({ value, onChange }: TrafficRangePick
 
         {open && (
           <div
-            className="absolute left-0 top-[calc(100%+6px)] z-40 flex gap-3.5 rounded-[10px] border
-              border-gray-300 bg-white p-3 shadow-xl dark:border-gray-600 dark:bg-gray-800"
+            // A phone gets the picker as a sheet under the header, scrolling on
+            // its own: two months side by side are wider than the screen.
+            className="fixed inset-x-2 top-20 z-40 flex max-h-[calc(100dvh-6rem)] flex-col gap-3.5 overflow-y-auto rounded-[10px] border
+              border-gray-300 bg-white p-3 shadow-xl sm:absolute sm:inset-x-auto sm:left-0 sm:top-[calc(100%+6px)] sm:max-h-none
+              sm:flex-row sm:overflow-visible dark:border-gray-600 dark:bg-gray-800"
             role="dialog"
             aria-label="Choose a time range"
           >
-            <div className="flex min-w-[132px] flex-col gap-0.5 border-r border-gray-200 pr-3 dark:border-gray-700">
+            <div className="flex flex-wrap gap-0.5 border-b border-gray-200 pb-2 sm:min-w-[132px] sm:flex-col sm:flex-nowrap sm:border-b-0 sm:border-r sm:pb-0 sm:pr-3 dark:border-gray-700">
               {RANGE_PRESETS.map((p) => (
                 <button
                   key={p.key}
@@ -230,9 +233,9 @@ export default function TrafficRangePicker({ value, onChange }: TrafficRangePick
             </div>
 
             <div>
-              <div className="flex gap-3.5">
+              <div className="flex flex-col gap-3.5 sm:flex-row">
                 {months.map((m, mi) => (
-                  <div key={m.toISOString()} className="w-[210px]">
+                  <div key={m.toISOString()} className="w-full sm:w-[210px]">
                     <div className="mb-1.5 flex items-center justify-between">
                       {mi === 0 ? (
                         <button
@@ -307,7 +310,7 @@ export default function TrafficRangePicker({ value, onChange }: TrafficRangePick
               </div>
 
               <div className="mt-2.5 flex items-end gap-2.5">
-                <label className="flex flex-col gap-[5px] text-[10.5px] font-semibold uppercase
+                <label className="flex min-w-0 flex-1 flex-col gap-[5px] text-[10.5px] font-semibold uppercase sm:flex-none
                   tracking-[0.1em] text-gray-500 dark:text-gray-400"
                 >
                   From
@@ -315,12 +318,12 @@ export default function TrafficRangePicker({ value, onChange }: TrafficRangePick
                     type="time"
                     value={fromTime}
                     onChange={(e) => setFromTime(e.target.value)}
-                    className="w-[138px] rounded-md border border-gray-300 bg-white px-2.5 py-1.5
+                    className="w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 sm:w-[138px]
                       text-[13px] font-normal normal-case tracking-normal text-gray-900
                       dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
                   />
                 </label>
-                <label className="flex flex-col gap-[5px] text-[10.5px] font-semibold uppercase
+                <label className="flex min-w-0 flex-1 flex-col gap-[5px] text-[10.5px] font-semibold uppercase sm:flex-none
                   tracking-[0.1em] text-gray-500 dark:text-gray-400"
                 >
                   To
@@ -328,7 +331,7 @@ export default function TrafficRangePicker({ value, onChange }: TrafficRangePick
                     type="time"
                     value={toTime}
                     onChange={(e) => setToTime(e.target.value)}
-                    className="w-[138px] rounded-md border border-gray-300 bg-white px-2.5 py-1.5
+                    className="w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 sm:w-[138px]
                       text-[13px] font-normal normal-case tracking-normal text-gray-900
                       dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
                   />
@@ -336,7 +339,7 @@ export default function TrafficRangePicker({ value, onChange }: TrafficRangePick
                 <span className="pb-1.5 text-[11px] text-gray-400">{utcOffsetLabel()}</span>
               </div>
 
-              <div className="mt-2.5 flex items-center justify-between gap-3.5 border-t border-gray-200
+              <div className="mt-2.5 flex flex-wrap items-center justify-between gap-3.5 border-t border-gray-200
                 pt-2.5 dark:border-gray-700"
               >
                 <span className={clsx(

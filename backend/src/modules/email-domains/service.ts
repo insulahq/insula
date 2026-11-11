@@ -3,6 +3,9 @@ import { emailDomains, domains, mailboxes, tenants, emailAliases, dnsRecords } f
 import { ApiError } from '../../shared/errors.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
 import { getMailServerHostname, getDefaultWebmailUrl } from '../webmail-settings/service.js';
+import { assertDnsControlForMail } from './dns-control.js';
+import { managedDmarcRecords } from '../mail-events/dmarc-record.js';
+import { expectedMailDnsRecords, webmailCnameTarget } from './mail-dns-repair.js';
 import { notifyTenantEmailBootstrapped } from '../notifications/events.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { assertTenantActive } from '../tenants/guards.js';
@@ -29,7 +32,6 @@ import { removeAllDkimSignaturesForDomain } from '../email-dkim/cleanup.js';
 import { purgeSpamTrainingSamplesForPrincipal } from '../mail-admin/spam-sample-cleanup.js';
 import { normalizeDomainDkim } from '../email-dkim/normalize.js';
 import { upsertDkimTxtRecord } from '../email-dkim/dns-publish.js';
-import { readPublishedDkimRecords, withPublishedDkim } from '../email-dkim/keys.js';
 import { redactPemBlocks } from '../email-dkim/signatures.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 
@@ -108,6 +110,12 @@ export async function enableEmailForDomain(
      * — the hooks that make it active push mail state onto them.
      */
     readonly restoringArchivedTenant?: boolean;
+    /**
+     * Refuse a NEW enable until the tenant has shown it controls the
+     * domain's DNS (dns-control.ts). Set for tenant callers; staff, the
+     * Plesk import and archive restore act for the operator and skip it.
+     */
+    readonly requireDnsControl?: boolean;
   } = {},
 ) {
   if (!opts.restoringArchivedTenant) {
@@ -149,6 +157,9 @@ export async function enableEmailForDomain(
         { limit: 0, source: mailboxLimit.source },
         'Ask your administrator to allocate mailboxes to this account',
       );
+    }
+    if (opts.requireDnsControl) {
+      await assertDnsControlForMail(db, domain);
     }
   }
 
@@ -198,6 +209,9 @@ export async function enableEmailForDomain(
   // webmail.<clientdomain> CNAME is only added when webmailEnabledFlag=1
   // (opt-in per default flip).
   const mailServerHostname = await getMailServerHostname(db);
+  // The webmail CNAME points where the webmail toggle points it (the platform
+  // webmail host); it used to point at the mail host when set at enable time.
+  const webmailHostname = webmailEnabledFlag === 1 ? await webmailCnameTarget(db, domain.domainName) : null;
   await provisionEmailDns(
     db,
     domainId,
@@ -206,7 +220,7 @@ export async function enableEmailForDomain(
     '', // dkimPublicKey: empty — DKIM not provisioned here in M13
     encryptionKey,
     mailServerHostname,
-    { webmailEnabled: webmailEnabledFlag === 1 },
+    { webmailEnabled: webmailHostname !== null, webmailHostname: webmailHostname ?? undefined },
   );
 
   // Provision the domain principal in Stalwart 0.16 via JMAP.
@@ -759,26 +773,24 @@ export async function getEmailDomainDnsRecords(
 }> {
   const ed = await getEmailDomain(db, tenantId, domainId);
 
-  // Import lazily so dns-provisioning is only loaded when the route
-  // is actually hit — keeps the module's import cycle flat.
-  const { buildEmailDnsRecordsForDisplay } = await import('./dns-provisioning.js');
-  const mailServerHostname = await getMailServerHostname(db);
-
-  // The DKIM key lives in Stalwart, not in email_domains, so the builder gets
-  // no selector and leaves DKIM out. The TXT records enable and rotation
-  // published are read back from dns_records and slotted in where the builder
-  // would have put them. Leaving them out meant a tenant on external DNS was
-  // never shown the one record that carries a key.
-  const withDkim = withPublishedDkim(
-    buildEmailDnsRecordsForDisplay(
-      ed.domainName,
-      '',
-      '',
-      mailServerHostname,
-      { webmailEnabled: ed.webmailEnabled === 1 },
-    ),
-    await readPublishedDkimRecords(db, ed.domainId, ed.domainName),
-  );
+  // The same list the mail DNS check compares the zone with. The DKIM key
+  // lives in Stalwart, not in email_domains, so the DKIM TXT records enable
+  // and rotation published are read back from dns_records. Leaving them out
+  // meant a tenant on external DNS was never shown the one record that
+  // carries a key.
+  const { mailHost: mailServerHostname, records: withDkim } = await expectedMailDnsRecords(db, {
+    domainId: ed.domainId, domainName: ed.domainName, webmailEnabled: ed.webmailEnabled === 1,
+  });
+  // DMARC as published, not as the builder would write it today: the default
+  // policy has changed between releases, and Monitoring → Mail changes a
+  // domain's policy in place. The builder's value would tell a tenant on
+  // external DNS to publish a policy their domain is not on.
+  const publishedDmarc = (await managedDmarcRecords(db, [ed.domainName]))
+    .get(ed.domainName)
+    ?.find((r) => r.domainId === ed.domainId);
+  const records = publishedDmarc
+    ? withDkim.map((s) => (s.purpose === 'dmarc' ? { ...s, recordValue: publishedDmarc.recordValue } : s))
+    : withDkim;
 
   return {
     dnsMode: (ed.dnsMode as string) ?? 'cname',
@@ -787,7 +799,7 @@ export async function getEmailDomainDnsRecords(
     // MUST publish the records at their own DNS provider.
     manualRequired: ed.dnsMode !== 'primary',
     mailServerHostname,
-    records: withDkim.map((s) => ({
+    records: records.map((s) => ({
       type: s.recordType,
       name: s.recordName,
       value: s.recordValue,

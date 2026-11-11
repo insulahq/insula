@@ -552,6 +552,9 @@ export const domains = pgTable('domains', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
+  // Case-sensitive. Migration 0177 adds domains_name_lower_unique on
+  // lower(domain_name) where existing rows allow it; not declared here
+  // because a cluster with case-only duplicates skips it.
   uniqueIndex('domains_name_unique').on(table.domainName),
   index('domains_tenant_idx').on(table.tenantId),
   index('domains_status_idx').on(table.status),

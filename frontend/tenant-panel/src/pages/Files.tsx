@@ -7,7 +7,7 @@ interface FileSystemDirectoryReader { readEntries(cb: (entries: FileSystemEntry[
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 import '@/lib/monaco-setup';
-import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   FolderOpen, File, FilePlus, ChevronRight, ChevronLeft, ArrowLeft, Trash2, Edit3,
@@ -39,6 +39,7 @@ import ErrorPanel from '@/components/ErrorPanel';
 import { ApiError } from '@/lib/api-client';
 import { useFileManagerError, clearFileManagerError } from '@/hooks/use-file-manager-errors';
 import FolderPickerDialog, { joinPath } from '@/components/FolderPickerDialog';
+import { placeMenu, type MenuAnchor, type MenuPlacement } from '@/lib/menu-placement';
 import type { OperatorError } from '@insula/api-contracts';
 import { config } from '@/lib/runtime-config';
 import CloneSiteModal from '@/components/CloneSiteModal';
@@ -131,7 +132,7 @@ export default function Files() {
   const [gitDest, setGitDest] = useState('');
   const [moveTarget, setMoveTarget] = useState<{ paths: string[]; mode: 'copy' | 'move' } | null>(null);
   const [extractTarget, setExtractTarget] = useState<string | null>(null);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ anchor: MenuAnchor; entry: FileEntry } | null>(null);
   const [chmodTarget, setChmodTarget] = useState<{ path: string; currentMode: string; isDir: boolean } | null>(null);
   const [chmodMode, setChmodMode] = useState('');
   const [chmodRecursive, setChmodRecursive] = useState(false);
@@ -353,7 +354,7 @@ export default function Files() {
 
   const handleContextMenu = useCallback((e: React.MouseEvent, entry: FileEntry) => {
     e.preventDefault();
-    setContextMenu({ x: e.clientX, y: e.clientY, entry });
+    setContextMenu({ anchor: { kind: 'point', x: e.clientX, y: e.clientY }, entry });
   }, []);
 
   // Directories in current listing (for extract dialog)
@@ -515,9 +516,9 @@ export default function Files() {
           isRestoring={restoreFromTrash.isPending}
         />
       )}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <FilePageHeader />
-        <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 shrink-0" title="Storage Utilization">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400" title="Storage Utilization">
           <HardDrive size={14} />
           <span className="font-medium text-gray-600 dark:text-gray-300">Storage</span>
           <span>{used} / {total}</span>
@@ -553,7 +554,7 @@ export default function Files() {
             </span>
           ))}
         </div>
-        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <button onClick={() => dirListing.refetch()} className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300" title="Refresh"><RefreshCw size={14} /></button>
           <button
             onClick={() => setShowTrash(true)}
@@ -761,7 +762,10 @@ export default function Files() {
                     onToggleSelect={() => toggleSelect(entry.name)}
                     onClick={() => handleFileClick(entry)}
                     onContextMenu={(e) => handleContextMenu(e, entry)}
-                    onActionClick={(entry) => setContextMenu({ x: 0, y: 0, entry })}
+                    onActionClick={(entry, button) => setContextMenu({
+                      anchor: { kind: 'rect', top: button.top, bottom: button.bottom, left: button.left, right: button.right },
+                      entry,
+                    })}
                     folderSizeInfo={entry.type === 'directory' ? folderSizes[fullPath] : undefined}
                     onCalculateSize={entry.type === 'directory' ? () => calculateFolderSize(fullPath) : undefined}
                   />
@@ -913,7 +917,7 @@ export default function Files() {
       {contextMenu && (
         <ContextMenu
           entry={contextMenu.entry}
-          position={contextMenu.x > 0 ? { x: contextMenu.x, y: contextMenu.y } : undefined}
+          anchor={contextMenu.anchor}
           currentPath={currentPath}
           onClose={() => setContextMenu(null)}
           onEdit={(path) => { setEditingFile(path); setContextMenu(null); }}
@@ -1451,7 +1455,8 @@ function FileRow({
   readonly onToggleSelect: () => void;
   readonly onClick: () => void;
   readonly onContextMenu: (e: React.MouseEvent) => void;
-  readonly onActionClick: (entry: FileEntry) => void;
+  /** `button` is where the Actions button sits, so the menu opens next to it. */
+  readonly onActionClick: (entry: FileEntry, button: DOMRect) => void;
   readonly folderSizeInfo?: { size: string; loading: boolean };
   readonly onCalculateSize?: () => void;
 }) {
@@ -1511,7 +1516,7 @@ function FileRow({
         <span className="text-xs text-gray-500 dark:text-gray-400">{entry.owner ?? entry.uid}:{entry.group ?? entry.gid}</span>
       </td>
       <td className="px-3 py-3 text-right" data-action="actions">
-        <button onClick={(e) => { e.stopPropagation(); onActionClick(entry); }} className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity" title="Actions">
+        <button onClick={(e) => { e.stopPropagation(); onActionClick(entry, e.currentTarget.getBoundingClientRect()); }} className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 opacity-0 group-hover:opacity-100 transition-opacity" title="Actions">
           <MoreVertical size={16} />
         </button>
       </td>
@@ -1520,10 +1525,11 @@ function FileRow({
 }
 
 function ContextMenu({
-  entry, position, currentPath, onClose, onEdit, onViewImage, onDownload, onRename, onDelete, onCopy, onMove, onExtract, onNavigate, onOpenSqlite, onCalculateFolderSize, onChmod, onChown,
+  entry, anchor, currentPath, onClose, onEdit, onViewImage, onDownload, onRename, onDelete, onCopy, onMove, onExtract, onNavigate, onOpenSqlite, onCalculateFolderSize, onChmod, onChown,
 }: {
   readonly entry: FileEntry;
-  readonly position?: { x: number; y: number };
+  /** The pointer for a right-click, the Actions button for the row menu. */
+  readonly anchor: MenuAnchor;
   readonly currentPath: string;
   readonly onClose: () => void;
   readonly onEdit: (path: string) => void;
@@ -1548,17 +1554,53 @@ function ContextMenu({
   const isArchive = !isDir && isArchiveFile(entry.name);
   const isSqlite = !isDir && isSqliteFile(entry.name);
 
-  // Position the menu (if from right-click, use mouse pos; if from button, show as dropdown)
-  const style: React.CSSProperties = position
-    ? { position: 'fixed', left: position.x, top: position.y, zIndex: 100 }
-    : { position: 'fixed', right: 40, top: '50%', transform: 'translateY(-50%)', zIndex: 100 };
+  // Keep the whole menu on screen. It used to open at the pointer however
+  // close to the edge that was, and the Actions button's menu sat at the
+  // middle of the right edge, so a tall menu on a short screen lost its top and
+  // bottom items. Measured before paint (hidden until placed), and again on
+  // resize. scrollHeight is the full content height even once maxHeight caps
+  // it; offsetHeight - clientHeight adds the border it leaves out.
+  const [placement, setPlacement] = useState<MenuPlacement | null>(null);
+  useLayoutEffect(() => {
+    const place = () => {
+      const el = menuRef.current;
+      if (!el) return;
+      setPlacement(placeMenu(
+        anchor,
+        { width: el.offsetWidth, height: el.scrollHeight + el.offsetHeight - el.clientHeight },
+        { width: window.innerWidth, height: window.innerHeight },
+      ));
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [anchor]);
+
+  // The anchor is where the row was when the menu opened: once the page
+  // scrolls, the menu would point at another row. Scrolling the menu itself
+  // (a capped one) is not that.
+  useEffect(() => {
+    const onScroll = (e: Event) => {
+      if (e.target instanceof Node && menuRef.current?.contains(e.target)) return;
+      onClose();
+    };
+    window.addEventListener('scroll', onScroll, true);
+    return () => window.removeEventListener('scroll', onScroll, true);
+  }, [onClose]);
+
+  const style: React.CSSProperties = placement
+    ? {
+        position: 'fixed', left: placement.left, top: placement.top, zIndex: 100,
+        ...(placement.maxHeight !== undefined ? { maxHeight: placement.maxHeight, overflowY: 'auto' } : {}),
+      }
+    : { position: 'fixed', left: 0, top: 0, visibility: 'hidden', zIndex: 100 };
 
   const itemClass = "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700";
 
   return (
     <>
       <div className="fixed inset-0 z-99" onClick={onClose} />
-      <div ref={menuRef} style={style} className="min-w-[180px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800">
+      <div ref={menuRef} style={style} data-testid="file-context-menu" className="min-w-[180px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800">
         {isDir && <button className={itemClass} onClick={() => onNavigate(fullPath)}><FolderOpen size={14} /> Open</button>}
         {isDir && <button className={itemClass} onClick={() => onCalculateFolderSize(fullPath)}><Calculator size={14} /> Calculate Folder Size</button>}
         {isImage && <button className={itemClass} onClick={() => onViewImage(fullPath)}><ImageIcon size={14} /> View Image</button>}
@@ -1705,9 +1747,12 @@ function ExtractDialog({
   const filename = archivePath.split('/').pop() ?? '';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={(e) => { if (e.target === e.currentTarget && status !== 'extracting') onClose(); }}>
-      <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl dark:bg-gray-800">
-        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-3">
+    // The folder list used to grow with every sub-folder, pushing the dialog
+    // past the top and bottom of the screen with no way to scroll. The dialog
+    // is now capped to the screen and the list scrolls inside it.
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={(e) => { if (e.target === e.currentTarget && status !== 'extracting') onClose(); }}>
+      <div className="flex max-h-full w-full max-w-md flex-col overflow-y-auto rounded-xl bg-white p-5 shadow-xl dark:bg-gray-800" data-testid="extract-dialog">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-3 shrink-0">
           Extract Archive
         </h3>
 
@@ -1731,14 +1776,15 @@ function ExtractDialog({
           </div>
         ) : (
           <>
-            <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-3 shrink-0">
               Extract <strong>{filename}</strong> to:
             </p>
 
-            <div className="space-y-2 mb-3">
-              <button onClick={() => setDest(currentPath)} className={`w-full text-left px-3 py-2 rounded-lg border text-sm ${dest === currentPath ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20' : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50'}`}>
-                Current folder ({currentPath})
-              </button>
+            <button onClick={() => setDest(currentPath)} className={`shrink-0 mb-2 w-full text-left px-3 py-2 rounded-lg border text-sm ${dest === currentPath ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20' : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50'}`}>
+              Current folder ({currentPath})
+            </button>
+            {/* min-h-0 lets the list give way on a short screen; max-h-64 caps it on a tall one. */}
+            <div className="min-h-0 max-h-64 overflow-y-auto space-y-2 mb-3 pr-1" data-testid="extract-folder-list">
               {currentDirs.map(dir => {
                 const dirPath = joinPath(currentPath, dir);
                 return (
@@ -1749,7 +1795,7 @@ function ExtractDialog({
               })}
             </div>
 
-            <div className="mb-4">
+            <div className="mb-4 shrink-0">
               <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Or enter custom path</label>
               <input type="text" value={dest} onChange={(e) => setDest(e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100" />
             </div>
@@ -1758,7 +1804,7 @@ function ExtractDialog({
               // This bar used to be `width: 70%` with animate-pulse — a fixed
               // decoration that moved for every archive and meant nothing for
               // any of them. It now tracks real extracted-member counts.
-              <div className="mb-4">
+              <div className="mb-4 shrink-0">
                 <div className="flex items-center justify-between gap-2 text-sm text-brand-600 dark:text-brand-400">
                   <span className="flex items-center gap-2 min-w-0">
                     <Loader2 size={14} className="animate-spin shrink-0" />
@@ -1790,7 +1836,7 @@ function ExtractDialog({
               </div>
             )}
 
-            <div className="flex justify-end gap-2">
+            <div className="flex shrink-0 justify-end gap-2">
               <button onClick={onClose} disabled={status === 'extracting'} className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700 disabled:opacity-50">Cancel</button>
               <button onClick={handleExtract} disabled={status === 'extracting' || !dest.trim()} className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
                 {status === 'extracting' ? <><Loader2 size={14} className="animate-spin inline mr-1" />Extracting...</> : 'Extract'}

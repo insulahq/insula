@@ -373,7 +373,7 @@ function PlacementSummaryCard({ tenant, tenantId, placement }: { readonly tenant
       className="block rounded-xl border border-gray-200 bg-white shadow-sm hover:border-brand-500 hover:ring-1 hover:ring-brand-500 dark:border-gray-700 dark:bg-gray-800"
       data-testid="placement-summary-card"
     >
-      <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-5 py-3.5 dark:border-gray-700">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-5 py-3.5 dark:border-gray-700">
         <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Placement</h2>
         {misplaced ? <Chip tone="warn">Away from pinned node</Chip> : placement?.status === 'placed' ? <Chip tone="ok">On its pinned node</Chip> : null}
       </div>
@@ -444,7 +444,7 @@ function PlanCard({ tenant, tenantId, planName, pendingCpu }: { readonly tenant:
       className="block rounded-xl border border-gray-200 bg-white shadow-sm hover:border-brand-500 hover:ring-1 hover:ring-brand-500 dark:border-gray-700 dark:bg-gray-800"
       data-testid="plan-summary-card"
     >
-      <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-5 py-3.5 dark:border-gray-700">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-5 py-3.5 dark:border-gray-700">
         <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Plan</h2>
         <span className="text-[13px] font-medium text-brand-600 dark:text-brand-400">Plan &amp; limits →</span>
       </div>
@@ -475,7 +475,7 @@ function BackupsSummaryCard({ tenantId, lastBundle, lastComplete }: {
       className="block rounded-xl border border-gray-200 bg-white shadow-sm hover:border-brand-500 hover:ring-1 hover:ring-brand-500 dark:border-gray-700 dark:bg-gray-800"
       data-testid="backups-summary-card"
     >
-      <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-5 py-3.5 dark:border-gray-700">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-5 py-3.5 dark:border-gray-700">
         <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Backups</h2>
         <span className="text-[13px] font-medium text-brand-600 dark:text-brand-400">Storage &amp; backups →</span>
       </div>
@@ -508,7 +508,7 @@ function EmailSummaryCard({ tenantId, outboundSuspended }: { readonly tenantId: 
       className="block rounded-xl border border-gray-200 bg-white shadow-sm hover:border-brand-500 hover:ring-1 hover:ring-brand-500 dark:border-gray-700 dark:bg-gray-800"
       data-testid="email-summary-card"
     >
-      <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-5 py-3.5 dark:border-gray-700">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-5 py-3.5 dark:border-gray-700">
         <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Email</h2>
         <span className="text-[13px] font-medium text-brand-600 dark:text-brand-400">Email →</span>
       </div>

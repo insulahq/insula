@@ -164,11 +164,12 @@ export default function Applications() {
       )}
 
       <div className="border-b border-gray-200 dark:border-gray-700">
-        <nav className="-mb-px flex gap-6" data-testid="tab-bar">
+        <nav className="-mb-px flex gap-6" data-testid="tab-bar" data-tab-strip>
           {visibleTabs.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
+              aria-current={activeTab === tab.id ? 'true' : undefined}
               className={clsx(
                 'whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium transition-colors',
                 activeTab === tab.id

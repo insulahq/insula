@@ -8,6 +8,9 @@ import { getActiveServersForDomain, getProviderForServer } from '../dns-servers/
 import { canManageDnsZone } from '../dns-servers/authority.js';
 import { formatDkimDnsValue } from './dkim.js';
 import type { Database } from '../../db/index.js';
+import { qualifyName, txtText } from '../dns-servers/wire-format.js';
+import { recordKey } from '../dns-records/diff.js';
+import { isDmarcText, isSpfText, type ZoneRecord } from './mail-dns-check.js';
 
 // The webmail record is a CNAME at the platform webmail hostname, so this
 // module no longer resolves any IP itself. MAIL_SERVER_IP / MAIL_SERVER_IPV6
@@ -283,27 +286,25 @@ function buildBaseRecords(
     {
       recordType: 'TXT',
       recordName: `_dmarc.${domainName}`,
-      // p=none, NOT p=quarantine(changed, operator decision).
+      // p=quarantine (operator decision; it was p=none for a while).
       //
-      // A newly-enabled domain has no evidence that its legitimate mail
-      // aligns. Publishing enforcement on day one spam-folders whatever does
-      // not — a CRM, a newsletter provider, a web form, the tenant's own
-      // office server — and it does so SILENTLY from the sender's side. The
-      // tenant finds out when a customer says the invoice never arrived.
+      // `p=none` protects nothing: anyone may send as the domain and
+      // receivers deliver it normally. A new domain starts enforcing instead.
       //
-      // `p=none` is report-only: it protects nothing, but it collects the
-      // evidence. Until R5 the platform never ingested DMARC reports, so
-      // starting at `none` meant never learning when it was safe to tighten,
-      // and `quarantine` was the defensible default. That changed: reports are
-      // ingested now and Monitoring → Mail says when a domain is ready to move
-      // to quarantine and then reject (see mail-events/dmarc-policy.ts, which
-      // refuses to recommend a tightening while ANY source is still failing).
+      // The cost, and why it was p=none: a newly enabled domain has no
+      // evidence that its legitimate mail aligns, so mail from a sender
+      // that does not (a CRM, a newsletter provider, a web form, the
+      // tenant's own office server) goes to spam, and nothing tells the
+      // sender. The tenant finds out when a customer says the invoice never
+      // arrived. The reports collected at the rua= address show such a
+      // sender; Monitoring → Mail can move a domain back to p=none while it
+      // is fixed, and says when it is ready for p=reject
+      // (mail-events/dmarc-policy.ts).
       //
-      // This affects NEWLY provisioned records only. Domains already
-      // publishing p=quarantine keep it — silently loosening enforcement on a
-      // domain that is already enforcing would be a downgrade nobody asked
-      // for.
-      recordValue: `v=DMARC1; p=none; rua=mailto:${DMARC_REPORT_LOCAL_PART}@${domainName}`,
+      // This affects NEWLY provisioned records only. A domain already
+      // publishing a policy keeps it: nothing rewrites a published DMARC
+      // record except that apply action.
+      recordValue: `v=DMARC1; p=quarantine; rua=mailto:${DMARC_REPORT_LOCAL_PART}@${domainName}`,
       ttl: 3600,
       priority: null,
       purpose: 'dmarc',
@@ -408,7 +409,7 @@ export async function provisionEmailDns(
   dkimPublicKey: string,
   encryptionKey: string,
   mailServerHostname: string,
-  options: { readonly webmailEnabled?: boolean } = {},
+  options: WebmailRecordOptions = {},
 ): Promise<void> {
   const records = buildEmailDnsRecords(
     domainName,
@@ -424,23 +425,62 @@ export async function provisionEmailDns(
   const platformOwnsZone = await isZoneWritable(db, domainId);
   const rejected: string[] = [];
 
+  // What the domain already has. Enabling email used to add every record next
+  // to whatever was there, so a domain moved in with its old provider's
+  // records got a second SPF record (a permanent error: SPF fails for all of
+  // its mail) and a second DMARC record (receivers then ignore DMARC).
+  const keyOf = (type: string, name: string | null, content: string, priority?: number | null): string =>
+    recordKey(domainName, { type, name, content, priority });
+  const stored = await db.select().from(dnsRecords).where(eq(dnsRecords.domainId, domainId));
+  const storedKeys = new Set(stored.map((r) => keyOf(r.recordType, r.recordName, r.recordValue ?? '', r.priority)));
+  const zone = platformOwnsZone ? (await readMailZone(db, domainId, domainName)).zone : null;
+  const zoneKeys = new Set((zone ?? []).map((z) => keyOf(z.type, z.name, z.content)));
+  const zoneTxt = (name: string, test: (text: string) => boolean): ZoneRecord[] =>
+    (zone ?? []).filter((z) => z.type.toUpperCase() === 'TXT'
+      && qualifyName(domainName, z.name) === qualifyName(domainName, name) && test(txtText(z.content)));
+
   for (const rec of records) {
+    const key = keyOf(rec.recordType, rec.recordName, rec.recordValue, rec.priority);
+
+    // SPF and DMARC are one record per domain. A domain that already
+    // publishes its own keeps it; the mail DNS check on the Settings & DNS
+    // tab says what it lacks, and "Re-create mail records" replaces it.
+    if ((rec.purpose === 'spf' || rec.purpose === 'dmarc') && !zoneKeys.has(key)) {
+      const own = zoneTxt(rec.recordName, rec.purpose === 'spf' ? isSpfText : isDmarcText);
+      if (own.length > 0) {
+        console.info(`[email-dns] '${domainName}' already publishes ${rec.purpose.toUpperCase()}; the platform's record was not added next to it`);
+        // The DMARC policy buttons act on a stored `_dmarc` row; give the
+        // domain's own record one when it has none.
+        const ownKey = keyOf('TXT', own[0].name, own[0].content);
+        if (rec.purpose === 'dmarc' && own.length === 1 && !storedKeys.has(ownKey)) {
+          await db.insert(dnsRecords).values({
+            id: crypto.randomUUID(), domainId, recordType: 'TXT',
+            recordName: rec.recordName, recordValue: txtText(own[0].content), ttl: rec.ttl, priority: null,
+          });
+        }
+        continue;
+      }
+    }
+
     // The row is written in EVERY dnsMode, deliberately. In cname/secondary
     // mode the customer runs their own DNS, so the platform cannot publish
     // these — but the operator still needs to SEE the exact MX/SPF/DKIM/DMARC
     // values to paste into their provider. Withholding the rows would leave
     // the DNS page empty and the mail domain quietly unusable with nothing on
-    // screen explaining why.
-    const id = crypto.randomUUID();
-    await db.insert(dnsRecords).values({
-      id,
-      domainId,
-      recordType: rec.recordType as 'A' | 'AAAA' | 'CNAME' | 'MX' | 'TXT' | 'SRV' | 'NS',
-      recordName: rec.recordName,
-      recordValue: rec.recordValue,
-      ttl: rec.ttl,
-      priority: rec.priority,
-    });
+    // screen explaining why. A row that is already there is not written twice.
+    if (!storedKeys.has(key)) {
+      await db.insert(dnsRecords).values({
+        id: crypto.randomUUID(),
+        domainId,
+        recordType: rec.recordType as 'A' | 'AAAA' | 'CNAME' | 'MX' | 'TXT' | 'SRV' | 'NS',
+        recordName: rec.recordName,
+        recordValue: rec.recordValue,
+        ttl: rec.ttl,
+        priority: rec.priority,
+      });
+      storedKeys.add(key);
+    }
+    if (zoneKeys.has(key)) continue;
 
     // No-ops (with a per-record info log) when the platform isn't
     // authoritative — never throws, so a cname-mode enable is not an error.
@@ -523,6 +563,42 @@ export async function isZoneWritable(db: Database, domainId: string): Promise<bo
     });
   } catch {
     return false;
+  }
+}
+
+export type MailZoneRead =
+  | { readonly zone: readonly ZoneRecord[]; readonly reason: null }
+  | { readonly zone: null; readonly reason: 'external_dns' | 'zone_unlisted' | 'zone_unreadable' };
+
+/**
+ * DNS server types whose record listing is the whole zone, in wire format.
+ * The others cannot be checked: BIND over rndc and Route 53 list nothing,
+ * Hetzner and Cloudflare stop at the first 100 records, and ClouDNS drops
+ * the MX priority from the value. An incomplete listing would read as
+ * missing records and hide the duplicates the check is for.
+ */
+const COMPLETE_LISTING = new Set(['powerdns']);
+
+/**
+ * The domain's zone as its primary server lists it — only where the platform
+ * hosts it. A read that fails is `zone_unreadable`, never an empty zone: an
+ * empty zone would read as "every record is missing".
+ */
+export async function readMailZone(db: Database, domainId: string, domainName: string): Promise<MailZoneRead> {
+  if (!(await isZoneWritable(db, domainId))) return { zone: null, reason: 'external_dns' };
+  try {
+    const servers = await getActiveServersForDomain(db, domainId);
+    const server = servers.find((s) => s.role === 'primary') ?? servers[0];
+    if (!server) return { zone: null, reason: 'zone_unreadable' };
+    if (!COMPLETE_LISTING.has(server.providerType)) return { zone: null, reason: 'zone_unlisted' };
+    const key = process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires PLATFORM_ENCRYPTION_KEY env var */;
+    const records = await getProviderForServer(server, key).listRecords(domainName);
+    return { zone: records.map((r) => ({ type: r.type, name: r.name, content: r.content })), reason: null };
+  } catch (err) {
+    // The cause stays in the log: the answer reaches tenants, and a provider
+    // error names internal addresses.
+    console.warn(`[email-dns] could not read the zone of '${domainName}': ${err instanceof Error ? err.message : String(err)}`);
+    return { zone: null, reason: 'zone_unreadable' };
   }
 }
 

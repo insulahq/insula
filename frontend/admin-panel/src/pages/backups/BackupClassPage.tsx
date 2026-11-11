@@ -76,9 +76,9 @@ export default function BackupClassPage(props: BackupClassPageProps) {
   const tab: TabId = tabs.some((t) => t.id === requested) ? requested : fallback;
 
   return (
-    <div className="space-y-6 p-6" data-testid={`${testId}-page`}>
+    <div className="space-y-6 sm:p-6" data-testid={`${testId}-page`}>
       <header className="flex items-start gap-3">
-        <HeaderIcon size={24} className="mt-0.5 text-gray-700 dark:text-gray-300" />
+        <HeaderIcon size={24} className="mt-0.5 shrink-0 text-gray-700 dark:text-gray-300" />
         <div>
           <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100">{props.title}</h1>
           <p className="text-sm text-gray-600 dark:text-gray-400">{props.subtitle}</p>
@@ -90,7 +90,7 @@ export default function BackupClassPage(props: BackupClassPageProps) {
         aria-label={`${props.title} sub-tabs`}
         className="border-b border-gray-200 dark:border-gray-700"
       >
-        <div className="-mb-px flex flex-wrap gap-x-2">
+        <div className="-mb-px flex flex-wrap gap-x-2" data-tab-strip>
           {tabs.map((t) => {
             const Icon = t.icon;
             const active = tab === t.id;

@@ -390,7 +390,7 @@ function NodeCard({ node, usage, subsystem, health, cli }: {
       <div
         onClick={toggle}
         className={clsx(
-          'flex items-center justify-between gap-3 px-5 py-4 cursor-pointer select-none',
+          'flex flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-5 cursor-pointer select-none',
           'hover:bg-gray-50 dark:hover:bg-gray-700/40',
           expanded && 'border-b border-gray-100 dark:border-gray-700',
           'rounded-xl',
@@ -583,7 +583,7 @@ function NodeCard({ node, usage, subsystem, health, cli }: {
           )}
         </div>
 
-        <div className="flex items-center gap-2 shrink-0" onClick={stop}>
+        <div className="flex flex-wrap items-center gap-2 sm:shrink-0" onClick={stop}>
           <span
             className={clsx(
               'text-xs whitespace-nowrap',

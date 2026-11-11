@@ -255,7 +255,7 @@ export default function SshKeys() {
       {editKey && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setEditKeyId(null)}>
           <div className="w-full max-w-lg rounded-xl bg-white dark:bg-gray-800 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex flex-wrap items-center justify-between mb-4 gap-2">
               <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Edit SSH Key</h2>
               <button type="button" onClick={() => setEditKeyId(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"><X size={18} /></button>
             </div>
