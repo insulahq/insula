@@ -12,6 +12,7 @@ import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { reconcileDeploymentStatuses } from './status-reconciler.js';
 import { restartDeployment } from './k8s-deployer.js';
 import * as dbManager from './db-manager.js';
+import { registerRawBodyParser } from '../custom-deployments/raw-body-transport.js';
 import { generateSecurePassword } from './service.js';
 import { eq, and, ne, inArray, desc, sql, or, ilike } from 'drizzle-orm';
 import { catalogEntries, deployments, tenants } from '../../db/schema.js';
@@ -658,20 +659,30 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/tenants/:tenantId/deployments/:id/query
   // Raw SQL can drop or overwrite anything in the database: an API token
   // needs the `delete` scope for it, whatever the statement says.
-  app.post('/tenants/:tenantId/deployments/:id/query', { config: { apiScope: 'delete' } }, async (request) => {
-    const { tenantId, id } = request.params as { tenantId: string; id: string };
-    const body = (request.body ?? {}) as { database?: string; query?: string };
+  //
+  // The SQL Manager sends this body as application/octet-stream — the same
+  // JSON, which the edge WAF never parses into ARGS (ADR-060, WAF rule
+  // 9000121): as JSON, an ordinary `SELECT … WHERE …` was refused there as SQL
+  // injection. JSON stays accepted for API clients and the panel/API rollout
+  // window. The parser is scoped to this route only.
+  await app.register(async (scope) => {
+    registerRawBodyParser(scope);
 
-    if (!body.database) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'Database name is required', 400, { field: 'database' });
-    }
-    if (!body.query) {
-      throw new ApiError('MISSING_REQUIRED_FIELD', 'Query is required', 400, { field: 'query' });
-    }
+    scope.post('/tenants/:tenantId/deployments/:id/query', { config: { apiScope: 'delete' } }, async (request) => {
+      const { tenantId, id } = request.params as { tenantId: string; id: string };
+      const body = (request.body ?? {}) as { database?: string; query?: string };
 
-    const ctx = await buildDbCtx(tenantId, id);
-    const result = await dbManager.executeQuery(ctx, body.database, body.query);
-    return success(result);
+      if (!body.database) {
+        throw new ApiError('MISSING_REQUIRED_FIELD', 'Database name is required', 400, { field: 'database' });
+      }
+      if (!body.query) {
+        throw new ApiError('MISSING_REQUIRED_FIELD', 'Query is required', 400, { field: 'query' });
+      }
+
+      const ctx = await buildDbCtx(tenantId, id);
+      const result = await dbManager.executeQuery(ctx, body.database, body.query);
+      return success(result);
+    });
   });
 
   // GET /api/v1/tenants/:tenantId/deployments/:id/tables?database=mydb

@@ -101,6 +101,27 @@ probe() { # label  method  path  json
   rm -f "$out"
 }
 
+# probe() with the body labelled application/octet-stream, as the panels send
+# raw transport (ADR-060): the same JSON, never parsed into ARGS.
+rawprobe() { # label  method  path  json
+  local label="$1" method="$2" path="$3" body="$4" out code
+  out=$(mktemp)
+  for _attempt in 1 2; do
+    code=$(curl -sk -o "$out" -w '%{http_code}' -m 30 -X "$method" "$API$path" \
+      -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/octet-stream' -H 'Expect:' --data-binary "$body")
+    [ "$code" = "000" ] || break
+    sleep 2
+  done
+  if [ "$code" = "403" ] && ! grep -q '"error"' "$out" 2>/dev/null; then
+    printf '  BLOCKED BY WAF  %s\n' "$label"; fail=$((fail+1))
+  elif [ "$code" = "000" ]; then
+    printf '  NO RESPONSE     %-44s (curl failed)\n' "$label"; fail=$((fail+1))
+  else
+    printf '  reached API     %-44s (%s)\n' "$label" "$code"; pass=$((pass+1))
+  fi
+  rm -f "$out"
+}
+
 echo "── legitimate values that CRS dictionaries happen to contain ──"
 # 930130 restricted-files.data. Every one of these was a 403 before 9000111/9000112.
 probe "rename .htaccess"      POST "/api/v1/tenants/$TENANT/files/rename" '{"oldPath":"/probe/.htaccess","newPath":"/probe/a"}'
@@ -172,6 +193,24 @@ done
 # request, so a command in the query string must not 403 the handshake.
 probe "app terminal upgrade" GET \
   "/api/v1/tenants/$TENANT/deployments/00000000-0000-0000-0000-000000000000/terminal?cmd=%2Fbin%2Fsh%20-c%20exec%20php-fpm"
+
+echo "── the SQL Manager's statements must reach the API (9000121) ──"
+# The panel sends them as raw transport. As JSON an ordinary SELECT … WHERE was
+# a 942100 at the edge — measured on production. A nonexistent deployment id:
+# the API answers 404, which proves the WAF let it through.
+NODEP=00000000-0000-0000-0000-000000000000
+rawprobe "SQL Manager SELECT … WHERE"   POST "/api/v1/tenants/$TENANT/deployments/$NODEP/query" \
+  '{"database":"app","query":"SELECT name, value FROM app_settings WHERE name = '"'"'absolutePath'"'"'"}'
+rawprobe "SQL Manager stacked UPDATEs"  POST "/api/v1/tenants/$TENANT/deployments/$NODEP/query" \
+  '{"database":"app","query":"UPDATE t SET v = '"'"'a'"'"' WHERE id = 1; UPDATE t SET v = '"'"'b'"'"' WHERE id = 2;"}'
+rawprobe "SQL Manager UNION / HTML value" POST "/api/v1/tenants/$TENANT/deployments/$NODEP/query" \
+  '{"database":"app","query":"SELECT id FROM a UNION SELECT id FROM b WHERE body = '"'"'<script>x</script>'"'"'"}'
+rawprobe "SQLite console SELECT … WHERE" POST "/api/v1/tenants/$TENANT/sqlite/query" \
+  '{"file_path":"waf-probe/none.db","query":"SELECT * FROM s WHERE name = '"'"'x'"'"' OR 1=1"}'
+# Response bodies are not inspected (MODSEC_RESP_BODY_ACCESS off): the stub
+# echoes the request, so a saved .php file scored as "PHP source leakage".
+probe "file editor saves index.php" POST "/api/v1/tenants/$TENANT/files/write" \
+  '{"path":"/waf-probe/index.php","content":"<?php echo phpinfo(); ?>\n"}'
 
 echo "── an exclusion must actually UNBLOCK (create → verify → delete) ──"
 # THE test this suite was missing. the panel's default and
@@ -310,6 +349,25 @@ ctl2() { # label json  → expects a WAF block on /deployments
 }
 ctl2 "SQLi on /deployments (942)"     '{"env":{"A":"1'"'"' UNION SELECT username,password FROM users-- "}}'
 ctl2 "traversal on /deployments (930)" '{"env":{"A":"/x/../../../../etc/passwd"}}'
+
+# 9000121 lets an octet-stream body through on the two query routes ONLY. The
+# DB manager's other routes keep the full rule set, octet-stream included.
+ctlraw() { # label path json → expects a WAF block
+  local out code
+  out=$(mktemp)
+  code=$(curl -sk -o "$out" -w '%{http_code}' -m 30 -X POST "$API$2" \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/octet-stream' -H 'Expect:' --data-binary "$3")
+  if [ "$code" = "403" ] && ! grep -q '"error"' "$out" 2>/dev/null; then
+    printf '  still blocked   %s\n' "$1"; pass=$((pass+1))
+  else
+    printf '  NOT BLOCKED     %-44s (%s)  ← 9000121 is too wide\n' "$1" "$code"; fail=$((fail+1))
+  fi
+  rm -f "$out"
+}
+ctlraw "octet-stream on …/import-from-file" "/api/v1/tenants/$TENANT/deployments/$NODEP/import-from-file" '{"database":"app","file_path":"x.sql"}'
+ctlraw "traversal in /query's query string" "/api/v1/tenants/$TENANT/deployments/$NODEP/query?f=../../../../etc/passwd" '{"database":"app","query":"SELECT 1"}'
+# REQUEST_URI carries the query string: this reaches PATCH /tenants/<id>, not a query route.
+ctlraw "'/query' only in the query string" "/api/v1/tenants/$TENANT?/sqlite/query" '{"name":"x"}'
 
 echo
 echo "── RESULT: $pass ok, $fail problem(s) ──"

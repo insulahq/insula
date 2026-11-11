@@ -69,6 +69,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **The SQL Manager's queries are no longer refused by the firewall.** The WAF in front of the
+  panel scored the SQL a tenant runs against their own database as SQL injection, so an ordinary
+  `SELECT … FROM … WHERE …` or two statements joined by `;` came back as "Blocked by the Web
+  Application Firewall" (production recorded it on the tenant panel). The SQL Manager now sends
+  its statements labelled `application/octet-stream`, which the WAF does not parse into
+  arguments, and a new exclusion (9000121) allows that on the two query routes only. Every other
+  SQL Manager route, and the query string, headers and cookies of these two, stay inspected.
+- **WAF Events no longer records false "Outbound Anomaly Score Exceeded" events.** The WAF's
+  response rules only ever saw its test upstream's echo of the request, never an app's response,
+  so a webmail message that mentions PHP, or a `.php` file saved in the file editor, was logged
+  as "PHP source code leakage" and counted toward auto-banning the user's own IP. Response-body
+  inspection is off (`MODSEC_RESP_BODY_ACCESS`); it never inspected a real response.
+
 - **Arrow-up and Tab work in a deployment's terminal.** The terminal started `/bin/sh`, which on
   Debian and Ubuntu based images is dash: no command history and no completion, so arrow-up printed
   `^[[A` and Tab inserted a tab. The new default shell, **Auto**, starts bash if the image has it,

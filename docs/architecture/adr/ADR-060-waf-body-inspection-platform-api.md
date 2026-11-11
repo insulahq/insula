@@ -288,3 +288,33 @@ Two failure modes it catches, both hit while writing this ADR:
 - a chained `SecRule` with no action list at end-of-file bleeds into the next
   rule file — nginx refuses to start, 502 for every WAF request;
 - an unsupported `ctl:` action makes the whole file unparseable.
+
+## Amendment (2026-11-11): the SQL Manager's statements, and response bodies
+
+**Raw transport for SQL (`9000121`).** `POST …/deployments/<id>/query` and
+`POST …/sqlite/query` carry the SQL a tenant runs against their own database
+through the panel's SQL Manager. As `application/json` the 942 family scored
+ordinary statements: production recorded 942100 on three tenant-panel queries in
+one afternoon, and on DEV `SELECT … FROM … WHERE …` and two statements joined by
+`;` were refused while a plain `UPDATE … WHERE` passed. The two routes now use
+this ADR's transport pattern: the panel labels the same JSON
+`application/octet-stream`, the API parses it with `registerRawBodyParser` on
+those two routes only, and `9000121` allows the content type there with the
+same removals as `9000115`. Every other DB-manager route keeps the full rule
+set (`sql-manager-waf-scope.test.ts` asserts the scope from the rule's own
+pattern). The statement runs with the tenant's own credentials in the tenant's
+own database pod, after authentication and the tenant check; the WAF never
+stood between a tenant and their data, it only broke the panel's way in.
+
+**Response bodies are not inspected (`MODSEC_RESP_BODY_ACCESS=off`).** The
+plugin sends the request to the sidecar and acts on the verdict's status; the
+app's real response never reaches ModSecurity. The response the sidecar
+inspects is the stub's (`traefik/whoami`), which echoes the request, body
+included, so the 95x "leakage" rules re-scored request bodies, where none of
+the request-side exclusions apply. Production, 30 days: all 19 outbound
+(959100) events were that — 17 webmail messages mentioning PHP, two `.php`
+saves in the file editor. Replayed against the pinned image, they did not
+change the verdict (the stub's 200 has gone out before the outbound score is
+added), but they were recorded as `critical` events for the user's own IP,
+which the auto-ban counts. Turning response-body access off removes no
+protection: no real response was ever inspected.

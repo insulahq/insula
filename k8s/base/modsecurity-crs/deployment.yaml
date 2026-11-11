@@ -21,11 +21,12 @@
 #     is mostly regex matching against request body — scales with
 #     body size and CRS rule depth.
 #
-# The plugin sets BACKEND=http://echo to a dummy upstream the OWASP
-# image expects; the plugin discards the proxied response and only
-# reads the status code. Setting BACKEND to any always-200 endpoint
-# is fine — we point at `crowdsec` LAPI's /health for convenience
-# (always returns 200 OK).
+# The OWASP image proxies a request that passes the rules to BACKEND, the
+# modsec-stub (traefik/whoami, deployment-stub.yaml), and the plugin reads
+# the verdict's status code. The app's REAL response never comes through
+# here: the plugin sends the request only, then forwards it to the app
+# itself. See MODSEC_RESP_BODY_ACCESS below for what that means for the
+# response rules.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -109,6 +110,28 @@ spec:
               value: "5"
             - name: ANOMALY_OUTBOUND
               value: "4"
+            - name: MODSEC_RESP_BODY_ACCESS
+              # off. The only response this container ever sees is the
+              # stub's, and whoami's response is an ECHO of the request,
+              # body included. So the response rules (950–959: PHP, SQL,
+              # Java and IIS "leakage") never inspected an app's response.
+              # They scored the request a second time, through the echo,
+              # where none of the request-side exclusions in
+              # exclusion-rules-configmap.yaml apply. Production, 30 days:
+              # every one of the 19 outbound events (959100) was that.
+              #   · 17 webmail messages that mention PHP (953100), which
+              #     9000118 lets through on the request side.
+              #   · 2 saves of a .php file in the file manager (953120),
+              #     whose content 9000104 lets through.
+              # They did not refuse the request: the stub's 200 has gone out
+              # by the time the outbound score is added, and the plugin acts
+              # on that status (replayed locally against this image). They
+              # did land in WAF Events as "critical" for the user's own IP,
+              # which is what the auto-ban counts.
+              # Turning it off removes no protection, since no real
+              # response was ever inspected. Inspecting real responses
+              # would need the plugin to send them, which it does not.
+              value: "off"
             - name: MODSEC_AUDIT_LOG
               # Send the JSON audit record to a file instead of stdout.
               #
