@@ -91,7 +91,11 @@ describe('buildK3sUpgradePlans — Plan shape', () => {
       expect(p.spec.concurrency).toBe(1);
       expect(p.spec.version).toBe('v1.32.0+k3s1');
       expect(p.spec.upgrade.image).toBe('rancher/k3s-upgrade');
+      // Every taint: the controller adds only the cordon's toleration, so a node that
+      // keeps new tenants off (server-only NoSchedule) would never get its upgrade pod.
+      expect(p.spec.tolerations).toEqual([{ operator: 'Exists' }]);
     }
+    expect(server.spec.tolerations).not.toBe(agent.spec.tolerations);
   });
   it('server targets control-plane and does NOT drain; agent drains + waits for the server', () => {
     expect(server.spec.nodeSelector.matchExpressions[0]).toMatchObject({ key: 'node-role.kubernetes.io/control-plane', operator: 'In' });

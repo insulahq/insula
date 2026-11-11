@@ -14,6 +14,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **An upgrade's Kubernetes step now upgrades a node that keeps new tenants off.** Such a node
+  carries the server-only taint, and the k3s upgrade plans tolerated nothing but the cordon, so
+  the node's upgrade pod was never scheduled. Its job ran out of the upgrade controller's
+  15 minutes, and the run went on showing the node as waiting for its turn until the step's
+  budget ran out (20 minutes a node, at least an hour). `insula cluster upgrade` built the same
+  plans.
+  - Both plans now tolerate every taint, as the node-update plan already did. The
+    `platform-api-plan-scope` admission policy requires exactly that on the k3s plans.
+  - A node whose upgrade job ran out of its time, or failed for good, now stops the step and
+    says so, once no other node is mid-upgrade; the events in `system-upgrade` say why. A failed
+    node no longer ends the step while another node restarts k3s or drains.
+  - A cluster where 2026.11.8's step failed this way runs Kubernetes on two patch versions,
+    which is supported. The next upgrade that offers the step upgrades the nodes still behind.
+
 - **Files the file manager creates belong to `www-data:www-data`.** Uploads and archive extraction
   left root-owned files in a tenant's storage, which a PHP site running as `www-data` could not
   write to.

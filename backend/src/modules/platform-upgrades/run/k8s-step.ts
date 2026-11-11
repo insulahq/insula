@@ -98,12 +98,25 @@ export function assessKubernetesNode(
   });
   if (atTarget && node.ready && finished) return out('ready', `Kubernetes ${kubelet}.`);
   const active = job?.active ?? 0;
+  const cordoned = node.unschedulable ? ' It stays cordoned until you uncordon it.' : '';
   // Failed only once nothing is in flight: the controller retries a failed pod, and
   // ending the step (deleting its Plans) under a running k3s restart could leave the
   // node cordoned mid-upgrade. The controller leaves a failed node cordoned.
   if ((job?.failed ?? 0) >= JOB_FAILURE_THRESHOLD && active === 0) {
-    const cordoned = node.unschedulable ? ' It stays cordoned until you uncordon it.' : '';
     return out('failed', `The Kubernetes upgrade failed ${job?.failed} times — see the job log in namespace system-upgrade.${cordoned}`);
+  }
+  // A job the Job controller ended as failed is over: the upgrade controller starts no
+  // other for the node and never records it finished. An upgrade pod that cannot be
+  // scheduled fails this way — one attempt, then the deadline — and would otherwise
+  // read as waiting for its turn until the step's budget ran out.
+  if (job?.endedFailed && active === 0 && (job.succeeded ?? 0) === 0) {
+    if (job.endedFailed !== 'DeadlineExceeded') {
+      return out('failed', `The Kubernetes upgrade job failed (${job.endedFailed}) — see the job log in namespace system-upgrade.${cordoned}`);
+    }
+    const why = atTarget
+      ? `It runs Kubernetes ${kubelet}, but its job did not finish; the events in namespace system-upgrade say why`
+      : 'The events in namespace system-upgrade say why, such as an upgrade pod that could not be scheduled on the node';
+    return out('failed', `The Kubernetes upgrade job ran out of the upgrade controller's time limit. ${why}.${cordoned}`);
   }
   if (active > 0 || (job?.succeeded ?? 0) > 0) {
     if (!node.ready) return out('updating', 'Restarting k3s…');

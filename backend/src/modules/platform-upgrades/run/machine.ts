@@ -252,7 +252,10 @@ export async function advanceRun(run: PlatformUpgradeRunRow, deps: RunMachineDep
       }
       return run.step;
     }
-    if (failed.length > 0) {
+    // A failed node stops the step, but not while another node is mid-upgrade:
+    // deleting the Plans under its k3s restart or drain would leave it cordoned. A
+    // worker whose job only waits for the servers is queued, not updating.
+    if (failed.length > 0 && !included.some((n) => n.state === 'updating')) {
       await deps.deleteKubernetesPlans();
       await fail(deps, `The services and host changes run ${target}. The Kubernetes upgrade to ${k8sTarget} stopped on `
         + `${names(failed)} — ${failed[0]?.detail ?? 'failed'}`);
