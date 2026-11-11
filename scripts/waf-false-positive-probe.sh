@@ -249,9 +249,14 @@ waf_blocks() { # json → 0 when the WAF blocks it
 if [ -n "${WAF_PROBE_SKIP_ROUNDTRIP:-}" ]; then
   echo "  skipped         WAF_PROBE_SKIP_ROUNDTRIP is set"
 else
-  # 930100 path traversal — reliably blocked, and the control case above
-  # already proves it. Scoped to this host only, for the length of this test.
+  # The rule that blocks this request ON THIS ROUTE, and the only one: 932160
+  # (Unix shell code, `etc/passwd` in the argument; score 5). It used to be
+  # 930100, but 9000111 stopped the traversal rules reading file-manager
+  # arguments (safePath() refuses traversal there), so an exclusion of 930100
+  # could never unblock it and this test failed on every run — measured on
+  # DEV and against the pinned image. Scoped to this host, for this test only.
   ROUNDTRIP_SCOPE="${WAF_PROBE_ROUNDTRIP_SCOPE:-args}"
+  ROUNDTRIP_RULE="${WAF_PROBE_ROUNDTRIP_RULE:-932160}"
   TRAVERSAL='{"oldPath":"/x/../../../../etc/passwd","newPath":"/x/a"}'
   API_HOST="$(printf '%s' "$API" | sed -E 's#^https?://##; s#/.*##')"
   HOST_RX="^$(printf '%s' "$API_HOST" | sed 's/\./\\./g')$"
@@ -264,8 +269,8 @@ else
     # Build with json.dumps — HOST_RX contains regex backslashes (\.) and a
     # hand-interpolated "\." is an INVALID JSON escape, which Fastify rejects
     # as FST_ERR_CTP_INVALID_JSON_BODY before the request is ever evaluated.
-    CREATE_BODY=$(HOST_RX="$HOST_RX" SCOPE="$ROUNDTRIP_SCOPE" python3 -c \
-      'import json,os;print(json.dumps({"ruleId":"930100","hostnameRegex":os.environ["HOST_RX"],"scope":os.environ["SCOPE"],"reason":"waf-probe round-trip; auto-deleted"}))')
+    CREATE_BODY=$(HOST_RX="$HOST_RX" SCOPE="$ROUNDTRIP_SCOPE" RULE="$ROUNDTRIP_RULE" python3 -c \
+      'import json,os;print(json.dumps({"ruleId":os.environ["RULE"],"hostnameRegex":os.environ["HOST_RX"],"scope":os.environ["SCOPE"],"reason":"waf-probe round-trip; auto-deleted"}))')
     curl -sk -o "$CREATE_OUT" -m 30 -X POST "$API/api/v1/admin/security/waf-rule-exclusions" \
       -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
       -d "$CREATE_BODY"
@@ -294,7 +299,7 @@ else
         sleep 2
       done
       if [ "$unblocked" -eq 0 ]; then
-        printf '  UNBLOCKED       exclusion 930100 scope=%s took effect\n' "$ROUNDTRIP_SCOPE"; pass=$((pass+1))
+        printf '  UNBLOCKED       exclusion %s scope=%s took effect\n' "$ROUNDTRIP_RULE" "$ROUNDTRIP_SCOPE"; pass=$((pass+1))
       else
         printf '  STILL BLOCKED   exclusion saved but never took effect  ← the 2026-08-31 bug\n'; fail=$((fail+1))
       fi
@@ -329,7 +334,9 @@ ctl() { # label json  → expects a WAF block
   fi
   rm -f "$out"
 }
-ctl "path traversal (930100/930110)" '{"oldPath":"/x/../../../../etc/passwd","newPath":"/x/a"}'
+# On the file-manager routes the traversal rules do not read arguments
+# (9000111; safePath() refuses traversal); /etc/passwd is still caught (932160).
+ctl "/etc/passwd in a file path (932160)" '{"oldPath":"/x/../../../../etc/passwd","newPath":"/x/a"}'
 ctl "shell code on a NON-exempt path" '{"oldPath":"/a","newPath":"/bin/sh -c exec sh"}'
 
 # The 932xxx carve-out is scoped to the command-carrying endpoints. Injection
