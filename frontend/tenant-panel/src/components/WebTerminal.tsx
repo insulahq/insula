@@ -14,7 +14,7 @@ interface WebTerminalProps {
 export default function WebTerminal({ deploymentId, defaultComponent }: WebTerminalProps) {
   const { components } = useDeploymentComponents(deploymentId);
   const [selectedComponent, setSelectedComponent] = useState(defaultComponent ?? '');
-  const [shell, setShell] = useState('/bin/sh');
+  const [shell, setShell] = useState('auto');
 
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
@@ -37,9 +37,13 @@ export default function WebTerminal({ deploymentId, defaultComponent }: WebTermi
       xtermRef.current.writeln('\x1b[33mConnecting...\x1b[0m');
     }
     disconnect();
+    // The shell starts at this size. It travels with the connect, not as a
+    // message after it: the backend only listens once the exec is up, and a
+    // message sent on open arrives before that and is lost.
+    const term = xtermRef.current;
     connect((data) => {
       xtermRef.current?.write(data);
-    });
+    }, term ? { cols: term.cols, rows: term.rows } : undefined);
   }, [connect, disconnect]);
 
   const handleDisconnect = useCallback(() => {
@@ -188,10 +192,13 @@ export default function WebTerminal({ deploymentId, defaultComponent }: WebTermi
           value={shell}
           onChange={(e) => setShell(e.target.value)}
           disabled={connected}
+          data-testid="terminal-shell-selector"
+          title="Auto starts bash, or ash, if the image has one: /bin/sh is often dash, which has no command history or Tab completion"
         >
-          <option value="/bin/sh">/bin/sh</option>
+          <option value="auto">Auto (bash if available)</option>
           <option value="/bin/bash">/bin/bash</option>
           <option value="/bin/ash">/bin/ash</option>
+          <option value="/bin/sh">/bin/sh</option>
         </select>
 
         {connected ? (

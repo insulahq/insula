@@ -11,6 +11,7 @@ import {
   type JwtPayload,
 } from '../../middleware/auth.js';
 import * as deploymentService from '../deployments/service.js';
+import { initialTerminalSize, parseTerminalShell, parseTerminalSize, terminalCommand } from './terminal-shell.js';
 import {
   fetchPods,
   listDeploymentComponents,
@@ -27,9 +28,10 @@ interface ConsoleQuery {
   component?: string;
   tailLines?: string;
   shell?: string;
+  /** The panel terminal's size when it connects. */
+  cols?: string;
+  rows?: string;
 }
-
-const ALLOWED_SHELLS = new Set(['/bin/sh', '/bin/bash', '/bin/ash']);
 
 function getK8s(app: FastifyInstance) {
   try {
@@ -360,8 +362,8 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
 
     const query = request.query as ConsoleQuery;
     const componentName = query.component;
-    const requestedShell = query.shell ?? '/bin/sh';
-    const shell = ALLOWED_SHELLS.has(requestedShell) ? requestedShell : '/bin/sh';
+    const shell = parseTerminalShell(query.shell);
+    const size = initialTerminalSize(query.cols, query.rows);
     let closed = false;
 
     const cleanup = () => { closed = true; };
@@ -402,7 +404,10 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
         const kc = getKubeConfig(app);
         const exec = new k8s.Exec(kc);
 
-        const stdout = new PassThrough();
+        // `columns`/`rows` make stdout "resizable" to the k8s client, which
+        // then sends the size on the exec's resize channel at start and on
+        // every 'resize' event (TerminalSizeQueue).
+        const stdout = Object.assign(new PassThrough(), { columns: size.columns, rows: size.rows });
         const stderr = new PassThrough();
         const stdin = new PassThrough();
 
@@ -410,7 +415,7 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
           namespace,
           target.podName,
           target.containerName,
-          [shell],
+          terminalCommand(shell),
           stdout,
           stderr,
           stdin,
@@ -433,17 +438,32 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
 
         socket.on('message', (raw: Buffer | string) => {
           if (closed) return;
+          const text = typeof raw === 'string' ? raw : raw.toString();
+          // Only a frame that is not JSON at all is raw typing. Anything that
+          // goes wrong after the parse must not fall through to here, or the
+          // frame itself ({"type":"resize",…}) is typed into the shell.
+          let msg: { type?: unknown; data?: unknown; cols?: unknown; rows?: unknown } | null;
           try {
-            const msg = JSON.parse(typeof raw === 'string' ? raw : raw.toString());
-            if (msg.type === 'stdin' && typeof msg.data === 'string') {
-              stdin.write(msg.data);
-            } else if (msg.type === 'resize' && typeof msg.cols === 'number') {
-              // K8s exec resize is handled via the WebSocket status channel
-              // which @kubernetes/client-node manages internally for tty
-            }
+            msg = JSON.parse(text) as typeof msg;
           } catch {
-            // Raw text input as fallback
-            stdin.write(typeof raw === 'string' ? raw : raw.toString());
+            stdin.write(text);
+            return;
+          }
+          if (!msg || typeof msg !== 'object') return;
+          if (msg.type === 'stdin' && typeof msg.data === 'string') {
+            stdin.write(msg.data);
+          } else if (msg.type === 'resize') {
+            // This used to be dropped, on the belief that the client library
+            // resized by itself; it does, but only from the stream's size.
+            const next = parseTerminalSize(msg.cols, msg.rows);
+            if (!next || (next.columns === stdout.columns && next.rows === stdout.rows)) return;
+            stdout.columns = next.columns;
+            stdout.rows = next.rows;
+            try {
+              stdout.emit('resize');
+            } catch (err) {
+              request.log.warn({ err }, 'terminal resize failed');
+            }
           }
         });
 

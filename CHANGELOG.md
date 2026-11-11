@@ -69,6 +69,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Arrow-up and Tab work in a deployment's terminal.** The terminal started `/bin/sh`, which on
+  Debian and Ubuntu based images is dash: no command history and no completion, so arrow-up printed
+  `^[[A` and Tab inserted a tab. The new default shell, **Auto**, starts bash if the image has it,
+  then ash, then sh; the explicit choices stay. The shell now starts with `TERM=xterm-256color`, and
+  the terminal's size reaches it: the backend dropped every resize, so the shell kept 80 columns
+  and a recalled command longer than that redrew garbled.
 - **The file manager's menus stay on screen.** A right-click menu opened near the right or bottom
   edge ran off the screen; it now opens left or up where it would not fit. The row's Actions menu
   sat at the middle of the right edge whatever row it was for; it now opens next to its button.
