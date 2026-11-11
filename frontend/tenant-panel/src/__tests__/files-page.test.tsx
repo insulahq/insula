@@ -412,6 +412,72 @@ describe('Files Page', () => {
         expect(screen.getByText('View Image')).toBeInTheDocument();
       });
     });
+
+    // jsdom lays nothing out: give the menu a real size, and the screen jsdom's
+    // 1024x768 (or less), so the placement has something to work with.
+    describe('stays on screen', () => {
+      const sizes: Array<{ restore: () => void }> = [];
+      const stub = (prop: 'offsetWidth' | 'scrollHeight', value: number) => {
+        const spy = vi.spyOn(HTMLElement.prototype, prop, 'get').mockReturnValue(value);
+        sizes.push({ restore: () => spy.mockRestore() });
+      };
+      const setScreenHeight = (h: number) => {
+        Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: h });
+      };
+
+      beforeEach(() => {
+        stub('offsetWidth', 200);
+        stub('scrollHeight', 400);
+        setScreenHeight(768);
+      });
+      afterEach(() => {
+        sizes.splice(0).forEach((s) => s.restore());
+        setScreenHeight(768);
+      });
+
+      it('flips a right-click menu opened near the bottom-right corner back onto the screen', () => {
+        renderFiles();
+        fireEvent.contextMenu(screen.getByText('index.html').closest('tr')!, { clientX: 1000, clientY: 700 });
+
+        const menu = screen.getByTestId('file-context-menu');
+        expect(menu.style.left).toBe('800px');
+        expect(menu.style.top).toBe('300px');
+        expect(menu.style.visibility).toBe('');
+      });
+
+      it('opens the Actions menu next to its button, above it at the bottom of the screen', () => {
+        renderFiles();
+        const button = within(screen.getByText('index.html').closest('tr')!).getByTitle('Actions');
+        vi.spyOn(button, 'getBoundingClientRect').mockReturnValue(
+          { top: 700, bottom: 724, left: 960, right: 990, width: 30, height: 24, x: 960, y: 700, toJSON: () => ({}) },
+        );
+        fireEvent.click(button);
+
+        const menu = screen.getByTestId('file-context-menu');
+        expect(menu.style.left).toBe('790px');
+        expect(menu.style.top).toBe('296px');
+      });
+
+      it('closes when the page scrolls, not when the menu itself does', () => {
+        renderFiles();
+        fireEvent.contextMenu(screen.getByText('index.html').closest('tr')!, { clientX: 100, clientY: 100 });
+        fireEvent.scroll(screen.getByTestId('file-context-menu'));
+        expect(screen.getByTestId('file-context-menu')).toBeInTheDocument();
+        fireEvent.scroll(window);
+        expect(screen.queryByTestId('file-context-menu')).toBeNull();
+      });
+
+      it('scrolls a menu taller than a short screen', () => {
+        setScreenHeight(300);
+        renderFiles();
+        fireEvent.contextMenu(screen.getByText('docs').closest('tr')!, { clientX: 100, clientY: 150 });
+
+        const menu = screen.getByTestId('file-context-menu');
+        expect(menu.style.top).toBe('8px');
+        expect(menu.style.maxHeight).toBe('284px');
+        expect(menu.style.overflowY).toBe('auto');
+      });
+    });
   });
 
   describe('Git Clone dialog', () => {
@@ -468,6 +534,32 @@ describe('Files Page', () => {
         expect(screen.getByText('docs/')).toBeInTheDocument();
         expect(screen.getByText('images/')).toBeInTheDocument();
       });
+    });
+
+    // A folder with many sub-folders pushed the dialog past both screen edges
+    // with no scrollbar. Layout is the browser's; this pins the classes that do it.
+    it('keeps the dialog on screen and scrolls a long folder list', async () => {
+      const many = Array.from({ length: 60 }, (_, i) => (
+        { name: `site-${i}`, type: 'directory' as const, size: 0, modifiedAt: '2026-01-01T00:00:00Z', permissions: '755' }
+      ));
+      mockDirListing.mockReturnValue({
+        data: { path: '/', entries: [...many, ...dirEntries] },
+        isLoading: false, error: null, refetch: vi.fn(),
+      });
+      renderFiles();
+      fireEvent.contextMenu(screen.getByText('backup.tar.gz').closest('tr')!);
+      fireEvent.click(await screen.findByText('Extract'));
+
+      const dialog = await screen.findByTestId('extract-dialog');
+      expect(dialog.className).toMatch(/\bmax-h-full\b/);
+      expect(dialog.className).toMatch(/\bflex-col\b/);
+      const list = screen.getByTestId('extract-folder-list');
+      expect(list.className).toMatch(/\boverflow-y-auto\b/);
+      expect(list.className).toMatch(/\bmax-h-64\b/);
+      expect(list.className).toMatch(/\bmin-h-0\b/);
+      expect(within(list).getByText('site-59/')).toBeInTheDocument();
+      // The current folder stays outside the scrolling list, always in view.
+      expect(within(list).queryByText(/Current folder/)).toBeNull();
     });
   });
 

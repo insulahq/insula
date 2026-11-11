@@ -69,6 +69,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **The file manager's menus stay on screen.** A right-click menu opened near the right or bottom
+  edge ran off the screen; it now opens left or up where it would not fit. The row's Actions menu
+  sat at the middle of the right edge whatever row it was for; it now opens next to its button.
+  A menu taller than the window scrolls.
+- **The Extract dialog scrolls a long folder list.** In a folder with many sub-folders the dialog
+  grew past the top and bottom of the window with no way to scroll. The list now has a limited
+  height and its own scrollbar, the current folder stays above it, and the dialog never grows
+  taller than the window.
 - **The SQL Manager says how many rows a write affected.** After an `UPDATE`, `INSERT` or `DELETE`
   it said "0 rows affected" whatever the statement did, because it counted the rows the statement
   returned. It now shows the count the database reports: for MariaDB and MySQL the rows whose value
