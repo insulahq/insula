@@ -273,6 +273,13 @@ export async function recreateDriftItemEmpty(
         baseUrl,
         currentDbSelector: null,
         expectAutoPair: true, // drift repair always just created the principal
+        keepKey: async (selector, privateKeyPem) => {
+          const { keepDkimPrivateKey } = await import('../email-dkim/key-store.js');
+          return keepDkimPrivateKey(db, {
+            emailDomainId: edRow.id, selector, privateKeyPem,
+            encryptionKey: process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64),
+          }, log);
+        },
       });
       await db
         .update(emailDomains)

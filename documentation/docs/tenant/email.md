@@ -208,6 +208,30 @@ more).
 The **DKIM keys** card lets you view the cryptographic keys that prove your mail
 is genuine (these are part of the DNS records above).
 
+#### Signing from another mail server with the same key
+
+If another server also sends mail as your domain (an office mail server, an
+appliance), it can sign with the **same** DKIM key, so the record that is
+already published verifies its mail too. On the key marked **Signing**, click
+**Show private key** (tenant administrators only). You are asked to confirm it
+is you with your password or passkey first; that stays valid for 30 minutes.
+
+The card then shows the key with what the other server needs: the domain
+(`d=`), the selector (`s=`, for example `dkim-1`) and the key itself, with a
+**Copy key** button. The public key is already published, so no DNS change is
+needed. Every time the key is shown it is written to the audit log.
+
+!!! warning "Anyone with the key can sign mail as your domain"
+    Put it only on servers you control, and never paste it into a ticket or a
+    repository.
+
+After you **Rotate key** here, copy the new key to the other server too: the
+old key keeps verifying only until the following rotation replaces it.
+
+The platform keeps a copy of the keys it creates from now on. A key created
+before that cannot be shown; **Rotate key** creates a new one that can be (the
+current key keeps signing alongside it for a while).
+
 A newly enabled domain's DMARC record is `p=quarantine`: mail that claims to
 come from your domain but fails its checks goes to the recipient's spam folder.
 If you also send through another service (a newsletter tool, a web form, an

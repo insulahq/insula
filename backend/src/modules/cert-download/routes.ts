@@ -19,6 +19,11 @@
  *   - set `Cache-Control: private, no-store` (never let an intermediary hold it)
  *   - write an audit row carrying `private_key_downloaded`
  *   - refuse to say anything about domains the caller cannot already see
+ *
+ * The session route, and minting a token, also need a fresh step-up
+ * (`assertFreshStepUp`, purpose `cert_download`): a stolen panel session must
+ * not be enough to walk off with the key. The token route has no session to
+ * step up — the token itself is the credential, minted behind that gate.
  */
 
 import crypto from 'crypto';
@@ -39,6 +44,7 @@ import {
   type DomainRef,
 } from './bundle.js';
 import * as tokens from './token-service.js';
+import { assertFreshStepUp, STEP_UP_SESSION_ONLY, type StepUpCaller } from '../auth/step-up-service.js';
 
 function getK8s() {
   try {
@@ -272,10 +278,14 @@ export async function certDownloadRoutes(app: FastifyInstance): Promise<void> {
     // tenant_user.
     scoped.get('/tenants/:tenantId/domains/:domainId/ssl-cert/download', {
       onRequest: [requireRole('super_admin', 'admin', 'tenant_admin')],
+      config: { apiTokenForbidden: STEP_UP_SESSION_ONLY },
       schema: { tags: ['TLS Certificates'], summary: 'Download a domain certificate bundle', security: [{ bearerAuth: [] }] },
     }, async (request, reply) => {
       const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
       const ref = await domainOr404(tenantId, domainId);
+      // After the ownership check, so a step-up answer never confirms that
+      // another tenant's domain exists.
+      await assertFreshStepUp(scoped.db, request.user as StepUpCaller, 'cert_download');
       const bundle = await buildCertBundle(scoped.db, getK8s(), ref, encryptionKey);
       if (!bundle) {
         throw new ApiError('CERT_NOT_FOUND', `No certificate has been issued for '${ref.domainName}' yet`, 404);
@@ -307,9 +317,14 @@ export async function certDownloadRoutes(app: FastifyInstance): Promise<void> {
 
     scoped.post('/tenants/:tenantId/domains/:domainId/cert-tokens', {
       onRequest: [requireRole('super_admin', 'admin', 'tenant_admin')],
+      config: { apiTokenForbidden: STEP_UP_SESSION_ONLY },
       schema: { tags: ['TLS Certificates'], summary: 'Create a certificate download token', security: [{ bearerAuth: [] }] },
     }, async (request, reply) => {
       const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
+      // A token fetches the same certificate and key, unattended and for up
+      // to a year. Gating only the button would leave this as the way round.
+      await domainOr404(tenantId, domainId);
+      await assertFreshStepUp(scoped.db, request.user as StepUpCaller, 'cert_download');
       const parsed = createCertTokenInputSchema.safeParse(request.body);
       if (!parsed.success) {
         const first = parsed.error.issues[0];

@@ -23,9 +23,15 @@ export type StepUpMethod = z.infer<typeof stepUpMethodSchema>;
 
 // Purposes are tagged so we can extend the freshness policy per-action
 // later (e.g. shorter window for tenant deletes) without a breaking
-// change. Today only 'node_terminal' uses it.
+// change. All of them share the one freshness clock today.
+//   node_terminal     root shell on a cluster node (admin panel)
+//   dkim_private_key  showing an email domain's DKIM signing key
+//   cert_download     a domain's certificate + private key, and minting a
+//                     token that can fetch them unattended
 export const stepUpPurposeSchema = z.union([
   z.literal('node_terminal'),
+  z.literal('dkim_private_key'),
+  z.literal('cert_download'),
 ]);
 export type StepUpPurpose = z.infer<typeof stepUpPurposeSchema>;
 

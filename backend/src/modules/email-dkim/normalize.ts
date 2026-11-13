@@ -165,6 +165,11 @@ export async function normalizeDomainDkim(params: {
    * the top of this file), so we poll for it before planning the sweep.
    */
   expectAutoPair?: boolean;
+  /**
+   * Called with the key this run creates, if it creates one — the caller keeps
+   * the encrypted copy (key-store.ts keepDkimPrivateKey). Must not throw.
+   */
+  keepKey?: (selector: string, privateKeyPem: string) => Promise<unknown>;
 }): Promise<NormalizeResult> {
   const { accountId, stalwartDomainId, baseUrl } = params;
 
@@ -196,6 +201,7 @@ export async function normalizeDomainDkim(params: {
       baseUrl,
     });
     createdPublicKey = publicKey;
+    await params.keepKey?.(plan.createSelector, privateKey);
   }
 
   let destroyed: readonly string[] = [];

@@ -2022,6 +2022,20 @@ export const emailDomains = pgTable('email_domains', {
   index('email_domains_stalwart_domain_idx').on(table.stalwartDomainId).where(isNotNull(table.stalwartDomainId)),
 ]);
 
+// Migration 0178: the platform's encrypted copy of each DKIM key it creates
+// (Stalwart masks secrets on read). Read only by the tenant's "Show private
+// key", after a fresh step-up. See email-dkim/key-store.ts.
+export const emailDkimPrivateKeys = pgTable('email_dkim_private_keys', {
+  emailDomainId: varchar('email_domain_id', { length: 36 })
+    .notNull()
+    .references(() => emailDomains.id, { onDelete: 'cascade' }),
+  selector: varchar('selector', { length: 63 }).notNull(),
+  privateKeyEncrypted: text('private_key_encrypted').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.emailDomainId, table.selector] }),
+]);
+
 export const mailboxes = pgTable('mailboxes', {
   id: varchar('id', { length: 36 }).primaryKey(),
   // Migration 0020 — CASCADE from email_domains and tenant so

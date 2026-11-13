@@ -12,6 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **Downloading a domain's certificate asks you to confirm it is you.** The file holds the private
+  key, so the SSL/TLS tab's **Download certificate** (tenant and admin panel) and creating a
+  download token (which fetches the same key unattended) now need a fresh step-up: the password or
+  passkey, valid for 30 minutes. The server refuses without it (403 `STEP_UP_REQUIRED`), so the
+  check does not depend on the panel.
+  - An account with neither a password nor a passkey (single sign-on only) is told to register a
+    passkey and turn on passkey sign-in first (409 `STEP_UP_UNAVAILABLE`).
+  - Not while impersonating: an operator using "Login as tenant" gets 403
+    `IMPERSONATION_FORBIDDEN`. The step-up checks the signed-in account, and the operator does not
+    hold the tenant's credential. The admin panel's own download still works, behind the same
+    step-up.
+  - The two routes no longer accept an API token or an agent, which cannot step up. Unattended
+    fetches keep using a certificate download token (`/api/v1/certs/<domain>/download`), which
+    is unchanged.
+
 ### Added
 
 - **The DMARC source lists say what each sending server is.** On the tenant
@@ -28,6 +45,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     like someone forging the domain. A Microsoft 365 recipient's inline scanner
     shows up in Microsoft's reports a second time for each message, failing
     wherever it added a banner.
+- **Show the DKIM private key, to sign with it on another mail server.** On the tenant panel's
+  Email → Settings & DNS tab, the DKIM keys card has **Show private key** on the key that signs.
+  It shows the key with the domain (`d=`) and selector (`s=`) another server needs, and whether
+  the public key is published. It is for tenant administrators and staff, not `support`. It asks
+  for the same step-up, is sent `no-store`, and every hand-out is audited (`dkim_private_key`).
+  - Stalwart masks every secret on read, so the platform now keeps its own copy, encrypted with
+    `PLATFORM_ENCRYPTION_KEY` like an uploaded TLS key, of each DKIM key it creates: enable,
+    rotation, drift repair, DR recreate (migration 0178, `email_dkim_private_keys`).
+  - A copy is shown only when its public key matches the one Stalwart signs with.
+  - Keys created before this release have no copy: the card says so, and **Rotate key** creates
+    one that can be shown.
 
 ### Fixed
 

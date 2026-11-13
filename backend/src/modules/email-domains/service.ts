@@ -31,6 +31,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { removeAllDkimSignaturesForDomain } from '../email-dkim/cleanup.js';
 import { purgeSpamTrainingSamplesForPrincipal } from '../mail-admin/spam-sample-cleanup.js';
 import { normalizeDomainDkim } from '../email-dkim/normalize.js';
+import { forgetDkimPrivateKeys, keepDkimPrivateKey } from '../email-dkim/key-store.js';
 import { upsertDkimTxtRecord } from '../email-dkim/dns-publish.js';
 import { redactPemBlocks } from '../email-dkim/signatures.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
@@ -282,6 +283,8 @@ export async function enableEmailForDomain(
             baseUrl: process.env.STALWART_MGMT_URL,
             currentDbSelector: existing?.dkimActiveSelector ?? null,
             expectAutoPair: createdPrincipal,
+            keepKey: (selector, privateKeyPem) =>
+              keepDkimPrivateKey(db, { emailDomainId: id, selector, privateKeyPem, encryptionKey }, log),
           });
           await db
             .update(emailDomains)
@@ -478,6 +481,9 @@ export async function destroyStalwartArtifactsForEmailDomain(
       stalwartDomainId: emailDomain.stalwartDomainId,
       baseUrl: process.env.STALWART_MGMT_URL,
     });
+    // The kept key copies go with the keys (the row's FK cascade would also
+    // take them, but not every caller deletes the row).
+    await forgetDkimPrivateKeys(db, emailDomain.id);
   } catch (err) {
     failures.push(`dkim: ${err instanceof Error ? err.message : String(err)}`);
     log.warn(

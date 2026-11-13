@@ -244,9 +244,11 @@ shows issuer, type, and expiry once a cert is in place.
 
 The **Certificate files** card lets you download a tenant's certificate when
 you are diagnosing a TLS problem on a server they run themselves. The file
-contains the customer's **private key**, so treat it accordingly — every
-download is written to the audit log with the domain, who did it, and where
-from.
+contains the customer's **private key**, so treat it accordingly — you are
+asked to confirm it is you (password or passkey; valid for 30 minutes) before
+the download starts, and every download is written to the audit log with the
+domain, who did it, and where from. It is not available while you are signed
+in to the tenant panel as the customer (**Login as tenant**).
 
 It also lists the download tokens the customer has issued, with when each was
 last used, and lets you **revoke** one. That is the support path for "I think

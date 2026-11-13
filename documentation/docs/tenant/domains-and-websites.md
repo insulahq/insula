@@ -517,6 +517,12 @@ file containing, in order: the private key, the certificate, and the full
 chain. That is the layout nginx, Apache and HAProxy expect, so it drops
 straight into an existing configuration.
 
+Because the file holds the private key, you are asked to confirm it is you
+(your password or passkey) before the download starts, and again before you
+create a token below. The confirmation stays valid for 30 minutes. An account
+that signs in only through single sign-on has neither: register a passkey and
+turn on passkey sign-in under **User settings** first.
+
 #### Fetching it automatically (API access)
 
 Certificates issued by the platform renew roughly every 60 days. If another

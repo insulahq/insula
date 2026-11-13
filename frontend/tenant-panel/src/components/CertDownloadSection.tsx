@@ -12,6 +12,7 @@ import {
   type CreateCertTokenResponse,
 } from '@/hooks/use-cert-download';
 import { useCanManageCerts } from '@/hooks/use-can-manage-certs';
+import { useStepUpGate } from '@/hooks/use-step-up-gate';
 
 /**
  * Certificate download + API access for one domain.
@@ -52,6 +53,9 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
   const tokensQuery = useCertTokens(tenantId, domainId);
   const createToken = useCreateCertToken(tenantId, domainId);
   const revokeToken = useRevokeCertToken(tenantId, domainId);
+  // Downloading and minting a token both hand out the private key; the server
+  // asks for a fresh step-up before either.
+  const gate = useStepUpGate(`the certificate and private key of ${domainName}`);
 
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState('');
@@ -70,7 +74,7 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
     setDownloading(true);
     setDownloadError(null);
     try {
-      await downloadCertBundle(tenantId, domainId, domainName);
+      await gate.run(() => downloadCertBundle(tenantId, domainId, domainName));
     } catch (err) {
       setDownloadError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -80,7 +84,18 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    const res = await createToken.mutateAsync({ name: name.trim(), expiry });
+    let res: Awaited<ReturnType<typeof createToken.mutateAsync>> | undefined;
+    try {
+      res = await gate.run(() => createToken.mutateAsync({ name: name.trim(), expiry }));
+    } catch {
+      return; // rendered from createToken.error
+    }
+    if (!res) {
+      // Step-up cancelled: drop the refusal that opened the dialog, so the
+      // form is left as it was rather than showing a 403.
+      createToken.reset();
+      return;
+    }
     setMinted(res.data);
     setName('');
     setExpiry('90d');
@@ -395,6 +410,7 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
           </p>
         </details>
       </div>
+      {gate.dialog}
     </div>
   );
 }

@@ -142,6 +142,7 @@ async function reconcileMailStep(
   if (domainsRows.length === 0) return;
 
   const { normalizeDomainDkim } = await import('../email-dkim/normalize.js');
+  const { keepDkimPrivateKey } = await import('../email-dkim/key-store.js');
   for (const d of domainsRows) {
     // The mailboxes restore back-fills stalwartDomainId with THIS cluster's id.
     // If it's still absent (mailboxes not recovered / mail stack down) we can't
@@ -157,6 +158,10 @@ async function reconcileMailStep(
         baseUrl: process.env.STALWART_MGMT_URL,
         currentDbSelector: d.dkimActiveSelector,
         expectAutoPair: false,
+        keepKey: (selector, privateKeyPem) => keepDkimPrivateKey(app.db, {
+          emailDomainId: d.id, selector, privateKeyPem,
+          encryptionKey: process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64),
+        }, app.log),
       });
       if (res.activeSelector && res.activeSelector !== d.dkimActiveSelector) {
         await app.db.update(emailDomains)

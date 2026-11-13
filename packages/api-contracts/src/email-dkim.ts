@@ -48,3 +48,28 @@ export const dkimRotateResultSchema = z.object({
 });
 
 export type DkimRotateResult = z.infer<typeof dkimRotateResultSchema>;
+
+/**
+ * The private key of the selector that signs the domain's mail, for signing
+ * from another mail server with the same key (so the published record keeps
+ * verifying both).
+ *
+ * GET /api/v1/tenants/:tenantId/email-domains/:emailDomainId/dkim/private-key
+ *
+ * tenant_admin and staff only, behind a fresh step-up (purpose
+ * `dkim_private_key`); every answer is audited and sent `no-store`.
+ */
+export const dkimPrivateKeySchema = z.object({
+  /** The `d=` tag a signature made with this key must carry. */
+  domain: z.string(),
+  /** The `s=` tag; its public key is published at `txtRecordName`. */
+  selector: z.string(),
+  algorithm: dkimKeyAlgorithmEnum,
+  txtRecordName: z.string(),
+  /** Whether the platform holds a TXT record for the selector. */
+  published: z.boolean(),
+  /** PKCS#8 PEM, as the mail server holds it. */
+  privateKeyPem: z.string(),
+});
+
+export type DkimPrivateKey = z.infer<typeof dkimPrivateKeySchema>;

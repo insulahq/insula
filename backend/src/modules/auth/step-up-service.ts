@@ -3,7 +3,7 @@ import type { Database } from '../../db/index.js';
 import { users } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { verifyPassword } from './service.js';
-import type { StepUpMethod } from '@insula/api-contracts';
+import type { StepUpMethod, StepUpPurpose } from '@insula/api-contracts';
 
 // Default freshness window for any step-up-gated operation. 30 minutes
 // matches typical session-step-up windows in IAM products and gives
@@ -75,6 +75,75 @@ export async function getStepUpStatus(
   const ageMs = Date.now() - last.getTime();
   const required = ageMs > maxAgeMs;
   return { required, methods, lastCredentialCheckAt: last, maxAgeMs };
+}
+
+/**
+ * `config.apiTokenForbidden` reason for step-up-gated routes. An API token or
+ * an agent cannot step up (the step-up endpoints take a session), so without
+ * this a token would pass whenever its user had stepped up in the panel
+ * within the window — a gate that depends on unrelated timing.
+ */
+export const STEP_UP_SESSION_ONLY =
+  'hands out key material after a fresh sign-in check, which only a person signed in to the panel can give';
+
+/** The token claims the gate reads. */
+export interface StepUpCaller {
+  readonly sub: string;
+  readonly impersonatedBy?: string;
+}
+
+/**
+ * The server-side gate for an action that hands out key material: throws
+ * unless the caller stepped up within the freshness window.
+ *
+ *   403 STEP_UP_REQUIRED     a method exists; `details.methods` lists them so
+ *                            the panel can ask, then retry the request
+ *   409 STEP_UP_UNAVAILABLE  the account has no password and no passkey
+ *                            (OIDC-only), so there is nothing to step up with
+ *   403 IMPERSONATION_FORBIDDEN  "Login as tenant": the step-up endpoints
+ *                            check the TOKEN's user — the tenant — whose
+ *                            credential the operator does not hold, and a
+ *                            key released to the operator must not be
+ *                            recorded as the tenant's own action
+ *
+ * The check runs on the server for every request; the panel's dialog only
+ * saves a round trip.
+ */
+export async function assertFreshStepUp(
+  db: Database,
+  caller: StepUpCaller,
+  purpose: StepUpPurpose,
+): Promise<void> {
+  if (caller.impersonatedBy) {
+    throw new ApiError(
+      'IMPERSONATION_FORBIDDEN',
+      'Key material is released only to the signed-in account owner, not while impersonating.',
+      403,
+      { purpose },
+    );
+  }
+  const status = await getStepUpStatus(db, caller.sub, DEFAULT_STEP_UP_MAX_AGE_MS);
+  if (!status.required) return;
+  if (status.methods.length === 0) {
+    throw new ApiError(
+      'STEP_UP_UNAVAILABLE',
+      'Confirming it is you needs a password or a passkey on your account, and yours has neither. Register a passkey and turn on passkey sign-in under User settings, then try again.',
+      409,
+      { reason: 'NO_STEP_UP_METHOD_AVAILABLE', purpose },
+    );
+  }
+  throw new ApiError(
+    'STEP_UP_REQUIRED',
+    'Confirm it is you before this is shown.',
+    403,
+    {
+      purpose,
+      methods: status.methods,
+      lastCredentialCheckAt: status.lastCredentialCheckAt?.toISOString() ?? null,
+      maxAgeSeconds: Math.floor(status.maxAgeMs / 1000),
+    },
+    'POST /api/v1/me/step-up/{password|passkey/verify} with your active credential, then retry.',
+  );
 }
 
 /**

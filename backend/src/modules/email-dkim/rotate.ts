@@ -66,6 +66,7 @@ import {
   redactPemBlocks,
 } from './signatures.js';
 import { mailLogger } from '../../shared/mail-logger.js';
+import { keepDkimPrivateKey } from './key-store.js';
 
 const log = mailLogger().child({ module: 'email-dkim-rotate' });
 
@@ -245,6 +246,9 @@ export async function rotateDkimKey(
         : redactPemBlocks(err instanceof Error ? err.message : String(err)).slice(0, 500);
     throw new DkimRotationError(safe, 'STALWART_API_ERROR');
   }
+  // The only moment the platform holds the key: keep the encrypted copy the
+  // tenant's "Show private key" reads (key-store.ts). Never fails the rotation.
+  await keepDkimPrivateKey(db, { emailDomainId, selector: plan.target, privateKeyPem: privateKey, encryptionKey }, log);
 
   // 5. Upsert the target selector's TXT record (in-DB + DNS provider).
   // See dns-publish.ts for the replace-not-duplicate semantics and the
