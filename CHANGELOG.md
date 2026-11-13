@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.9-rc.2] - 2026-11-13
+
 ### Changed
 
 - **rclone 1.75.2 → 1.76.0** in the backup shim, the etcd snapshot CronJob, the backup speed test
