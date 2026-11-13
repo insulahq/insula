@@ -23,7 +23,7 @@ import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
 import type { RestoreItem } from '../../../db/schema.js';
 import { withinApplicationLimitForCart } from './application-limit-guard.js';
 import { readAndAuthorizeConfigDump, upsertRow } from './_shared.js';
-import { redactRowForTenant, type TenantRestorePolicy } from '../tenant-restore-policy.js';
+import { isTableAllowedForTenant, redactRowForTenant, type TenantRestorePolicy } from '../tenant-restore-policy.js';
 
 /**
  * Tables this executor is allowed to write to. MUST be a superset of
@@ -37,6 +37,7 @@ export const ALLOWED_TABLE_TO_SQL: Record<string, string> = {
   users: 'users',
   domains: 'domains',
   emailDomains: 'email_domains',
+  emailDkimPrivateKeys: 'email_dkim_private_keys',
   mailboxes: 'mailboxes',
   emailAliases: 'email_aliases',
   mailboxAliases: 'mailbox_aliases',
@@ -97,6 +98,15 @@ export async function execConfigTablesItem(args: {
     }
     if (!Array.isArray(dump.tables[t])) {
       throw new Error(`config-tables: table '${t}' missing from the bundle dump`);
+    }
+  }
+  // The execute-layer half of the tenant gate: a forged item payload must not
+  // restore a table the policy denies, under either of its names.
+  if (tenantPolicy) {
+    const denied = pickedCamel.filter((t) => !isTableAllowedForTenant(ALLOWED_TABLE_TO_SQL[t]!, tenantPolicy)
+      || !isTableAllowedForTenant(t, tenantPolicy));
+    if (denied.length > 0) {
+      throw new Error(`config-tables: tables denied for a tenant restore: ${denied.join(', ')}`);
     }
   }
 

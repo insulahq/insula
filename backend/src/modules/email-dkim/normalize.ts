@@ -27,6 +27,13 @@
  * signature. Callers treat failures as non-fatal (log + continue) —
  * a domain that keeps its auto pair signs and delivers fine; the
  * first rotation converges it onto the A/B pair.
+ *
+ * Restore before mint: an A/B selector missing from Stalwart whose kept
+ * copy (key-store.ts) is still the key DNS publishes for it is put back
+ * with THAT key (restore.ts decides which), so the published record keeps
+ * verifying. A new key is minted only when no A/B selector exists and none
+ * could be restored — the domain's first enable, or a copy that is gone,
+ * undecryptable or no longer published.
  */
 
 import {
@@ -38,14 +45,17 @@ import {
 import { generateDkimKeyPair } from '../email-domains/dkim.js';
 import {
   DKIM_SELECTOR_A,
+  DKIM_SELECTOR_B,
   isAbSelector,
   type DkimAbSelector,
 } from './selectors.js';
 import {
   createRsaDkimSignature,
+  redactPemBlocks,
   RSA_SIGNATURE_TYPE,
   ED25519_SIGNATURE_TYPE,
 } from './signatures.js';
+import type { RestorableDkimKey } from './restore.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 
 const log = mailLogger().child({ module: 'email-dkim-normalize' });
@@ -130,6 +140,17 @@ export function planDkimNormalization(
   return { createSelector: null, destroyIds, activeSelector };
 }
 
+/**
+ * The active selector among those present: the persisted one when it is
+ * there, else the only one, else dkim-1. Pure — exported for unit tests.
+ */
+export function pickActiveSelector(present: readonly string[], currentDbSelector: string | null): DkimAbSelector {
+  const ab = present.filter(isAbSelector);
+  if (isAbSelector(currentDbSelector) && ab.includes(currentDbSelector)) return currentDbSelector;
+  if (ab.length === 1) return ab[0];
+  return DKIM_SELECTOR_A;
+}
+
 export interface NormalizeResult {
   readonly activeSelector: DkimAbSelector;
   /** Server-assigned id of the created signature; null when none was created. */
@@ -144,6 +165,10 @@ export interface NormalizeResult {
   readonly destroyed: readonly string[];
   /** Ids we asked Stalwart to destroy but it refused — inert leftovers. */
   readonly failed: readonly string[];
+  /** Selectors put back with their kept key; DNS already publishes them. */
+  readonly restored: readonly RestorableDkimKey[];
+  /** Whether the key this run minted was kept (null when none was minted). */
+  readonly keptCopy: boolean | null;
 }
 
 /**
@@ -167,9 +192,15 @@ export async function normalizeDomainDkim(params: {
   expectAutoPair?: boolean;
   /**
    * Called with the key this run creates, if it creates one — the caller keeps
-   * the encrypted copy (key-store.ts keepDkimPrivateKey). Must not throw.
+   * the encrypted copy (key-store.ts keepDkimPrivateKey), resolving whether it
+   * did. A throw is caught here: keeping a copy never fails signing.
    */
-  keepKey?: (selector: string, privateKeyPem: string) => Promise<unknown>;
+  keepKey?: (selector: string, privateKeyPem: string) => Promise<boolean>;
+  /**
+   * The kept keys of these missing A/B selectors that may go back into
+   * Stalwart (restore.ts restorableDkimKeys). Omitted: nothing is restored.
+   */
+  restorable?: (selectors: readonly DkimAbSelector[]) => Promise<readonly RestorableDkimKey[]>;
 }): Promise<NormalizeResult> {
   const { accountId, stalwartDomainId, baseUrl } = params;
 
@@ -189,9 +220,47 @@ export async function normalizeDomainDkim(params: {
   }
   const plan = planDkimNormalization(rows, stalwartDomainId, params.currentDbSelector ?? null);
 
+  // Restore before mint: put back every missing A/B selector whose kept key
+  // DNS still publishes. Each create is soft — a refused one just leaves that
+  // selector to the paths below.
+  const present = rows
+    .filter((r) => r.domainId === stalwartDomainId && isAbSelector(r.selector) && r['@type'] === RSA_SIGNATURE_TYPE)
+    .map((r) => r.selector);
+  const pair: readonly DkimAbSelector[] = [DKIM_SELECTOR_A, DKIM_SELECTOR_B];
+  const missing = pair.filter((s) => !present.includes(s));
+  const restored: RestorableDkimKey[] = [];
+  if (params.restorable && missing.length > 0) {
+    let candidates: readonly RestorableDkimKey[] = [];
+    try {
+      candidates = await params.restorable(missing);
+    } catch (err) {
+      log.warn({ stalwartDomainId, err: err instanceof Error ? err.name : 'unknown' },
+        'DKIM normalize: kept keys could not be checked for restore');
+    }
+    for (const key of candidates) {
+      if (!missing.includes(key.selector as DkimAbSelector)) continue;
+      try {
+        await createRsaDkimSignature({
+          accountId, stalwartDomainId, selector: key.selector, privateKeyPem: key.privateKeyPem, baseUrl,
+        });
+        restored.push(key);
+      } catch (err) {
+        log.warn(
+          { stalwartDomainId, selector: key.selector, err: redactPemBlocks(err instanceof Error ? err.message : String(err)).slice(0, 300) },
+          'DKIM normalize: Stalwart refused the kept key back; the selector is left to the mint path',
+        );
+      }
+    }
+    if (restored.length > 0) {
+      log.info({ stalwartDomainId, selectors: restored.map((k) => k.selector) },
+        'DKIM normalize: restored the kept keys — the published records keep verifying, no DNS change');
+    }
+  }
+
   let createdSignatureId: string | null = null;
   let createdPublicKey: string | null = null;
-  if (plan.createSelector) {
+  let keptCopy: boolean | null = null;
+  if (plan.createSelector && restored.length === 0) {
     const { privateKey, publicKey } = generateDkimKeyPair();
     createdSignatureId = await createRsaDkimSignature({
       accountId,
@@ -201,8 +270,19 @@ export async function normalizeDomainDkim(params: {
       baseUrl,
     });
     createdPublicKey = publicKey;
-    await params.keepKey?.(plan.createSelector, privateKey);
+    if (params.keepKey) {
+      try {
+        keptCopy = await params.keepKey(plan.createSelector, privateKey);
+      } catch (err) {
+        keptCopy = false;
+        log.warn({ stalwartDomainId, err: err instanceof Error ? err.name : 'unknown' },
+          'DKIM normalize: keeping a copy of the new key failed; it signs as normal');
+      }
+    }
   }
+  const activeSelector = restored.length > 0
+    ? pickActiveSelector([...present, ...restored.map((k) => k.selector)], params.currentDbSelector ?? null)
+    : plan.activeSelector;
 
   let destroyed: readonly string[] = [];
   let failed: readonly string[] = [];
@@ -220,8 +300,8 @@ export async function normalizeDomainDkim(params: {
   }
 
   log.info(
-    { stalwartDomainId, activeSelector: plan.activeSelector, createdSignatureId, destroyed },
+    { stalwartDomainId, activeSelector, createdSignatureId, restored: restored.map((k) => k.selector), destroyed },
     'DKIM signatures normalized onto the A/B selector pair',
   );
-  return { activeSelector: plan.activeSelector, createdSignatureId, createdPublicKey, destroyed, failed };
+  return { activeSelector, createdSignatureId, createdPublicKey, destroyed, failed, restored, keptCopy };
 }

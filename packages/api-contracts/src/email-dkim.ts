@@ -45,6 +45,12 @@ export const dkimRotateResultSchema = z.object({
   txtRecordValue: z.string(),
   stalwartDkimSignatureId: z.string(),
   destroyedSelectors: z.array(z.string()),
+  /**
+   * Whether the platform kept its encrypted copy of the new key (for "Show
+   * private key" and for putting it back if the mail server loses it). False:
+   * the key signs as normal, but neither works until the next rotation.
+   */
+  keptCopy: z.boolean(),
 });
 
 export type DkimRotateResult = z.infer<typeof dkimRotateResultSchema>;

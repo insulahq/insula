@@ -2037,9 +2037,12 @@ export const emailDomains = pgTable('email_domains', {
 ]);
 
 // Migration 0178: the platform's encrypted copy of each DKIM key it creates
-// (Stalwart masks secrets on read). Read only by the tenant's "Show private
-// key", after a fresh step-up. See email-dkim/key-store.ts.
+// (Stalwart masks secrets on read). Read by the tenant's "Show private key",
+// after a fresh step-up, and by restore.ts to put a key Stalwart lost back.
+// 0180: `id`, derived from (email_domain_id, selector) — key-store.ts
+// dkimKeyRowId — so a tenant bundle restores it by id. See email-dkim/key-store.ts.
 export const emailDkimPrivateKeys = pgTable('email_dkim_private_keys', {
+  id: varchar('id', { length: 36 }).primaryKey(),
   emailDomainId: varchar('email_domain_id', { length: 36 })
     .notNull()
     .references(() => emailDomains.id, { onDelete: 'cascade' }),
@@ -2047,7 +2050,7 @@ export const emailDkimPrivateKeys = pgTable('email_dkim_private_keys', {
   privateKeyEncrypted: text('private_key_encrypted').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
-  primaryKey({ columns: [table.emailDomainId, table.selector] }),
+  uniqueIndex('email_dkim_private_keys_domain_selector_key').on(table.emailDomainId, table.selector),
 ]);
 
 export const mailboxes = pgTable('mailboxes', {

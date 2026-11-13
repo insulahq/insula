@@ -6,6 +6,8 @@ vi.mock('../k8s-provisioner/k8s-client.js', () => ({ createK8sClients: vi.fn() }
 vi.mock('../domains/k8s-ingress.js', () => ({ reconcileIngress: vi.fn() }));
 vi.mock('../stalwart-jmap/client.js', () => ({ getJmapSession: vi.fn() }));
 vi.mock('../email-dkim/normalize.js', () => ({ normalizeDomainDkim: vi.fn() }));
+vi.mock('../email-dkim/restore.js', () => ({ restorableDkimKeys: vi.fn(), republishRestoredDkim: vi.fn() }));
+vi.mock('../email-dkim/dns-publish.js', () => ({ upsertDkimTxtRecord: vi.fn() }));
 vi.mock('../deployments/service.js', () => ({ redeployWithCurrentConfig: vi.fn() }));
 vi.mock('../custom-deployments/service.js', () => ({ redeployCustomDeploymentRow: vi.fn() }));
 
@@ -13,6 +15,8 @@ import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { reconcileIngress } from '../domains/k8s-ingress.js';
 import { getJmapSession } from '../stalwart-jmap/client.js';
 import { normalizeDomainDkim } from '../email-dkim/normalize.js';
+import { restorableDkimKeys, republishRestoredDkim } from '../email-dkim/restore.js';
+import { upsertDkimTxtRecord } from '../email-dkim/dns-publish.js';
 import { redeployWithCurrentConfig } from '../deployments/service.js';
 import { redeployCustomDeploymentRow } from '../custom-deployments/service.js';
 import { tenants, emailDomains, deployments } from '../../db/schema.js';
@@ -25,7 +29,10 @@ const dkimMock = normalizeDomainDkim as unknown as ReturnType<typeof vi.fn>;
 const catalogRedeployMock = redeployWithCurrentConfig as unknown as ReturnType<typeof vi.fn>;
 const customRedeployMock = redeployCustomDeploymentRow as unknown as ReturnType<typeof vi.fn>;
 
-interface DomainRow { id: string; stalwartDomainId: string | null; dkimActiveSelector: string | null }
+interface DomainRow {
+  id: string; stalwartDomainId: string | null; dkimActiveSelector: string | null;
+  domainId?: string; domainName?: string;
+}
 interface DepRow { id: string; source: 'catalog' | 'custom'; status: string }
 
 function makeApp(opts: { namespace?: string | null; domains?: DomainRow[]; deps?: DepRow[] } = {}) {
@@ -33,14 +40,18 @@ function makeApp(opts: { namespace?: string | null; domains?: DomainRow[]; deps?
   const updates: Array<{ patch: Record<string, unknown> }> = [];
   const db = {
     select: () => ({
-      from: (table: unknown) => ({
-        where: () => {
+      from: (table: unknown) => {
+        const rowsOf = () => {
           if (table === tenants) return Promise.resolve([{ namespace }]);
-          if (table === emailDomains) return Promise.resolve(domains);
+          if (table === emailDomains) {
+            return Promise.resolve(domains.map((d) => ({ domainId: `dom-${d.id}`, domainName: `${d.id}.example.test`, ...d })));
+          }
           if (table === deployments) return Promise.resolve(deps);
           return Promise.resolve([]);
-        },
-      }),
+        };
+        // email_domains is read joined to domains (for the name the DKIM record lives under).
+        return { where: rowsOf, innerJoin: () => ({ where: rowsOf }) };
+      },
     }),
     update: () => ({ set: (patch: Record<string, unknown>) => ({ where: () => { updates.push({ patch }); return Promise.resolve(); } }) }),
   };
@@ -58,7 +69,7 @@ describe('reconcileRecoveredTenant', () => {
     k8sMock.mockReturnValue({ core: {}, apps: {}, custom: {} });
     ingressMock.mockResolvedValue(undefined);
     sessionMock.mockResolvedValue({ primaryAccounts: { 'urn:ietf:params:jmap:principals': 'acct-1' } });
-    dkimMock.mockResolvedValue({ activeSelector: 'dkim-1', createdPublicKey: null, destroyed: [], failed: [] });
+    dkimMock.mockResolvedValue({ activeSelector: 'dkim-1', createdPublicKey: null, destroyed: [], failed: [], restored: [], keptCopy: null });
     catalogRedeployMock.mockResolvedValue(undefined);
     customRedeployMock.mockResolvedValue(undefined);
   });
@@ -164,10 +175,49 @@ describe('reconcileRecoveredTenant', () => {
   });
 
   it('persists a changed DKIM selector back to the email_domains row', async () => {
-    dkimMock.mockResolvedValue({ activeSelector: 'dkim-2', createdPublicKey: 'PEM', destroyed: [], failed: [] });
+    dkimMock.mockResolvedValue({ activeSelector: 'dkim-2', createdPublicKey: 'PEM', destroyed: [], failed: [], restored: [], keptCopy: true });
     const app = makeApp({ domains: [{ id: 'd1', stalwartDomainId: 'sw-a', dkimActiveSelector: 'dkim-1' }] });
     await reconcileRecoveredTenant(app, 't-1');
     expect((app as unknown as { _updates: Array<{ patch: Record<string, unknown> }> })._updates)
       .toEqual([{ patch: { dkimActiveSelector: 'dkim-2' } }]);
+  });
+
+  // The bundle carries the kept copies: the domain's own keys come back, so
+  // its published records keep verifying.
+  it('offers the kept keys for restore, scoped to the domain', async () => {
+    const restorable = restorableDkimKeys as unknown as ReturnType<typeof vi.fn>;
+    restorable.mockResolvedValue([]);
+    dkimMock.mockImplementation(async (p: { restorable?: (s: readonly string[]) => Promise<unknown> }) => {
+      await p.restorable?.(['dkim-1', 'dkim-2']);
+      return { activeSelector: 'dkim-1', createdPublicKey: null, destroyed: [], failed: [], restored: [], keptCopy: null };
+    });
+    const app = makeApp({ domains: [{ id: 'd1', stalwartDomainId: 'sw-a', dkimActiveSelector: 'dkim-2' }] });
+    await reconcileRecoveredTenant(app, 't-1');
+    expect(restorable).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      emailDomainId: 'd1', domainId: 'dom-d1', domainName: 'd1.example.test', selectors: ['dkim-1', 'dkim-2'],
+    }));
+    expect(dkimMock.mock.calls[0][0]).toMatchObject({ currentDbSelector: 'dkim-2' });
+  });
+
+  // It used to mint the key and leave the zone with the old record.
+  it('publishes the record of a NEW key, and leaves a restored one alone', async () => {
+    const upsert = upsertDkimTxtRecord as unknown as ReturnType<typeof vi.fn>;
+    const republish = republishRestoredDkim as unknown as ReturnType<typeof vi.fn>;
+    dkimMock.mockResolvedValueOnce({ activeSelector: 'dkim-1', createdPublicKey: 'NEWPEM', destroyed: [], failed: [], restored: [], keptCopy: true });
+    const restored = [{ selector: 'dkim-2', privateKeyPem: 'x', publicKeySpki: 'y', matchedBy: 'dns' }];
+    dkimMock.mockResolvedValueOnce({ activeSelector: 'dkim-2', createdPublicKey: null, destroyed: [], failed: [], restored, keptCopy: null });
+    const app = makeApp({
+      domains: [
+        { id: 'd1', stalwartDomainId: 'sw-a', dkimActiveSelector: null },
+        { id: 'd2', stalwartDomainId: 'sw-b', dkimActiveSelector: 'dkim-2' },
+      ],
+    });
+    const { report } = await reconcileRecoveredTenant(app, 't-1');
+    expect(report.mail).toEqual({ domainsTotal: 2, dkimRegenerated: 2, failed: 0 });
+    expect(upsert).toHaveBeenCalledTimes(1);
+    expect(upsert).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      domainId: 'dom-d1', domainName: 'd1.example.test', selector: 'dkim-1', publicKey: 'NEWPEM',
+    }));
+    expect(republish).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ domainId: 'dom-d2', restored }));
   });
 });

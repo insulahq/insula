@@ -13,10 +13,13 @@
  * "Show private key" hands the signing key to the tenant admin, for signing
  * with the same key on another mail server. The server asks for a fresh
  * step-up first (useStepUpGate); the key is kept in this component's state
- * only, never in the query cache, and goes when the card is hidden.
+ * only, never in the query cache, and goes when the card is hidden, when a
+ * rotation replaces it, or after KEY_SHOWN_MS.
  */
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { AlertCircle, Check, Copy, EyeOff, Key, KeyRound, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 import {
   fetchDkimPrivateKey,
   useDkimKeys,
@@ -37,6 +40,9 @@ interface DkimKeysCardProps {
 
 type DnsOwner = 'tenant' | 'platform' | 'unknown';
 
+/** How long a shown private key stays on screen before it hides itself. */
+export const KEY_SHOWN_MS = 5 * 60_000;
+
 const ALGORITHM_LABEL: Record<DkimKey['algorithm'], string> = {
   rsa: 'RSA',
   ed25519: 'Ed25519',
@@ -53,6 +59,9 @@ export default function DkimKeysCard({ tenantId, domain }: DkimKeysCardProps) {
   const canSeeKey = useCanManageCerts();
   const [confirming, setConfirming] = useState(false);
   const [lastRotation, setLastRotation] = useState<DkimRotateResult | null>(null);
+  // Bumped on every rotation: remounts "Show private key", so a key shown
+  // before the rotation goes at once, not when the key list next refetches.
+  const [rotations, setRotations] = useState(0);
   const result = keysRes?.data;
   // Unknown until the record list has loaded — then the card claims nothing
   // about who publishes the record.
@@ -64,6 +73,7 @@ export default function DkimKeysCard({ tenantId, domain }: DkimKeysCardProps) {
     try {
       const res = await rotate.mutateAsync();
       setLastRotation(res.data);
+      setRotations((n) => n + 1);
     } catch {
       // shown below
     }
@@ -131,21 +141,11 @@ export default function DkimKeysCard({ tenantId, domain }: DkimKeysCardProps) {
 
       {lastRotation && <RotationResult rotation={lastRotation} dnsOwner={dnsOwner} />}
 
-      {rotate.error && (
-        <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="dkim-rotate-error">
-          <AlertCircle size={14} />
-          {rotate.error instanceof Error ? rotate.error.message : 'Rotation failed'}
-        </div>
-      )}
+      {rotate.error && <ErrorPanel error={extractOperatorError(rotate.error)} compact testId="dkim-rotate-error" />}
 
       {isLoading && <div className="py-3 text-center"><Loader2 size={16} className="inline animate-spin text-brand-500" /></div>}
 
-      {error && (
-        <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="dkim-keys-error">
-          <AlertCircle size={14} />
-          {error instanceof Error ? error.message : 'Could not load the signing keys'}
-        </div>
-      )}
+      {error && <ErrorPanel error={extractOperatorError(error)} compact testId="dkim-keys-error" />}
 
       {result && !result.provisioned && (
         <p className="text-xs text-gray-500 dark:text-gray-400 italic" data-testid="dkim-not-provisioned">
@@ -166,7 +166,7 @@ export default function DkimKeysCard({ tenantId, domain }: DkimKeysCardProps) {
           key={k.selector}
           dkimKey={k}
           action={k.current && k.stage === 'active' && canSeeKey
-            ? <ShowPrivateKey tenantId={tenantId} domain={domain} />
+            ? <ShowPrivateKey key={`${k.selector}-${rotations}`} tenantId={tenantId} domain={domain} />
             : null}
         />
       ))}
@@ -182,8 +182,15 @@ export default function DkimKeysCard({ tenantId, domain }: DkimKeysCardProps) {
 function ShowPrivateKey({ tenantId, domain }: { readonly tenantId: string; readonly domain: EmailDomain }) {
   const gate = useStepUpGate(`the DKIM private key of ${domain.domainName}`);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [revealed, setRevealed] = useState<DkimPrivateKey | null>(null);
+
+  // A shown key does not stay on screen indefinitely.
+  useEffect(() => {
+    if (!revealed) return undefined;
+    const t = setTimeout(() => setRevealed(null), KEY_SHOWN_MS);
+    return () => clearTimeout(t);
+  }, [revealed]);
 
   async function show() {
     setLoading(true);
@@ -192,7 +199,7 @@ function ShowPrivateKey({ tenantId, domain }: { readonly tenantId: string; reado
       const key = await gate.run(() => fetchDkimPrivateKey(tenantId, domain.id));
       if (key) setRevealed(key);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load the private key');
+      setError(err ?? new Error('Could not load the private key'));
     } finally {
       setLoading(false);
     }
@@ -212,12 +219,7 @@ function ShowPrivateKey({ tenantId, domain }: { readonly tenantId: string; reado
           Show private key
         </button>
       )}
-      {error && (
-        <div className="flex items-start gap-1.5 text-red-600 dark:text-red-400" data-testid="dkim-private-key-error">
-          <AlertCircle size={12} className="mt-0.5 shrink-0" />
-          <span>{error}</span>
-        </div>
-      )}
+      {error !== null && <ErrorPanel error={extractOperatorError(error)} compact testId="dkim-private-key-error" />}
       {revealed && <PrivateKeyPanel dkimKey={revealed} onHide={() => setRevealed(null)} />}
       {gate.dialog}
     </div>
@@ -225,15 +227,22 @@ function ShowPrivateKey({ tenantId, domain }: { readonly tenantId: string; reado
 }
 
 function PrivateKeyPanel({ dkimKey, onHide }: { readonly dkimKey: DkimPrivateKey; readonly onHide: () => void }) {
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const copied = copyState === 'copied';
+
+  useEffect(() => {
+    if (copyState !== 'copied') return undefined;
+    const t = setTimeout(() => setCopyState('idle'), 2000);
+    return () => clearTimeout(t);
+  }, [copyState]);
 
   async function copy() {
     try {
       await navigator.clipboard.writeText(dkimKey.privateKeyPem);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setCopyState('copied');
     } catch {
-      // Clipboard can be blocked; the key is on screen and selectable.
+      // The browser can block the clipboard; the key is on screen to select.
+      setCopyState('failed');
     }
   }
 
@@ -287,6 +296,13 @@ function PrivateKeyPanel({ dkimKey, onHide }: { readonly dkimKey: DkimPrivateKey
           Hide
         </button>
       </div>
+      {copyState === 'failed' && (
+        <p className="flex items-center gap-1 text-amber-700 dark:text-amber-400" data-testid="dkim-private-key-copy-failed">
+          <AlertCircle size={12} />
+          The browser blocked copying. Click into the key above (it selects it all) and copy it with Ctrl+C or ⌘C.
+        </p>
+      )}
+      <p className="text-gray-500 dark:text-gray-400">The key hides itself after {KEY_SHOWN_MS / 60_000} minutes.</p>
     </div>
   );
 }
@@ -314,6 +330,13 @@ function RotationResult({ rotation, dnsOwner }: { readonly rotation: DkimRotateR
           The previous key (<code>{rotation.previousSelector}</code>) keeps signing and its record stays
           published, so mail already in transit keeps verifying
           {dnsOwner !== 'platform' && ' — and so does new mail until the record above is published'}.
+        </p>
+      )}
+      {rotation.keptCopy === false && (
+        <p className="mt-2 flex items-start gap-1 text-amber-700 dark:text-amber-400" data-testid="dkim-rotate-not-kept">
+          <AlertCircle size={12} className="mt-0.5 shrink-0" />
+          The new key signs as normal, but the platform could not keep its copy: Show private key cannot
+          show it, and it cannot be put back if the mail server loses it. The next rotation tries again.
         </p>
       )}
     </div>

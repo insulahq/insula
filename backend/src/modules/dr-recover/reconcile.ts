@@ -27,7 +27,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import type { DrRecoverReconcile } from '@insula/api-contracts';
-import { tenants, emailDomains, deployments } from '../../db/schema.js';
+import { tenants, domains, emailDomains, deployments } from '../../db/schema.js';
 
 /** Deployment statuses that were intentionally NOT running pre-loss — leave them down. */
 const REDEPLOY_SKIP_STATUSES: ReadonlySet<string> = new Set(['stopped', 'deleting', 'deleted']);
@@ -133,16 +133,24 @@ async function reconcileMailStep(
   const domainsRows = await app.db
     .select({
       id: emailDomains.id,
+      domainId: emailDomains.domainId,
+      domainName: domains.domainName,
       stalwartDomainId: emailDomains.stalwartDomainId,
       dkimActiveSelector: emailDomains.dkimActiveSelector,
     })
     .from(emailDomains)
+    .innerJoin(domains, eq(domains.id, emailDomains.domainId))
     .where(eq(emailDomains.tenantId, tenantId));
   report.mail.domainsTotal = domainsRows.length;
   if (domainsRows.length === 0) return;
 
   const { normalizeDomainDkim } = await import('../email-dkim/normalize.js');
   const { keepDkimPrivateKey } = await import('../email-dkim/key-store.js');
+  const { restorableDkimKeys, republishRestoredDkim } = await import('../email-dkim/restore.js');
+  const { upsertDkimTxtRecord } = await import('../email-dkim/dns-publish.js');
+  // Production and staging refuse to boot without the key (config/index.ts
+  // assertEncryptionKeyUsable); the zero key is the dev/test fallback only.
+  const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
   for (const d of domainsRows) {
     // The mailboxes restore back-fills stalwartDomainId with THIS cluster's id.
     // If it's still absent (mailboxes not recovered / mail stack down) we can't
@@ -159,14 +167,31 @@ async function reconcileMailStep(
         currentDbSelector: d.dkimActiveSelector,
         expectAutoPair: false,
         keepKey: (selector, privateKeyPem) => keepDkimPrivateKey(app.db, {
-          emailDomainId: d.id, selector, privateKeyPem,
-          encryptionKey: process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64),
+          emailDomainId: d.id, selector, privateKeyPem, encryptionKey,
         }, app.log),
+        // The bundle carries the kept copies (still encrypted): on the same
+        // cluster the domain gets its own keys back and DNS keeps verifying.
+        restorable: (selectors) => restorableDkimKeys(app.db, {
+          emailDomainId: d.id, domainId: d.domainId, domainName: d.domainName, selectors, encryptionKey,
+        }),
       });
       if (res.activeSelector && res.activeSelector !== d.dkimActiveSelector) {
         await app.db.update(emailDomains)
           .set({ dkimActiveSelector: res.activeSelector })
           .where(eq(emailDomains.id, d.id));
+      }
+      await republishRestoredDkim(app.db, {
+        domainId: d.domainId, domainName: d.domainName, restored: res.restored, encryptionKey,
+      });
+      // A NEW key (nothing restorable): publish its record now, as enable and
+      // drift repair do. This step used to mint the key and leave the zone
+      // with the old record, so every message failed DKIM until someone
+      // republished it by hand.
+      if (res.createdPublicKey) {
+        await upsertDkimTxtRecord(app.db, {
+          domainId: d.domainId, domainName: d.domainName,
+          selector: res.activeSelector, publicKey: res.createdPublicKey, encryptionKey,
+        });
       }
       report.mail.dkimRegenerated += 1;
     } catch (err) {

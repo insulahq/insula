@@ -116,6 +116,12 @@ function makeFixtureDb(): Database {
       domain     VARCHAR(255) NOT NULL,
       tenant_id  VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
+    CREATE TABLE email_dkim_private_keys (
+      id                    VARCHAR(36) PRIMARY KEY,
+      email_domain_id       VARCHAR(36) NOT NULL REFERENCES email_domains(id) ON DELETE CASCADE,
+      selector              VARCHAR(63) NOT NULL,
+      private_key_encrypted TEXT NOT NULL
+    );
     CREATE TABLE mailboxes (
       id              VARCHAR(36) PRIMARY KEY,
       address         VARCHAR(255) NOT NULL,
@@ -238,6 +244,10 @@ function makeFixtureDb(): Database {
     INSERT INTO email_domains(id, domain, tenant_id) VALUES
       ('ed-fix',   'mail.fixture.test', '${FIXTURE_CLIENT_ID}'),
       ('ed-other', 'mail.other.test',   '${FIXTURE_OTHER_CLIENT_ID}');
+
+    INSERT INTO email_dkim_private_keys(id, email_domain_id, selector, private_key_encrypted) VALUES
+      ('dk-fix',   'ed-fix',   'dkim-1', 'cipher-fix'),
+      ('dk-other', 'ed-other', 'dkim-1', 'cipher-other');
 
     INSERT INTO mailboxes(id, address, email_domain_id, tenant_id) VALUES
       ('mb-fix',   'a@mail.fixture.test', 'ed-fix',   '${FIXTURE_CLIENT_ID}'),

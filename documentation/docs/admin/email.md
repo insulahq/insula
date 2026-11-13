@@ -348,10 +348,39 @@ active.
 
 !!! warning "Recreating empty loses messages"
     "Recreate empty" rebuilds the missing Stalwart entry with no data — a
-    mailbox comes back empty, and a domain comes back without its original
-    DKIM keys. To preserve messages and DKIM, restore Stalwart from a
+    mailbox comes back empty. A domain gets its DKIM keys back when the
+    platform kept a copy of them and DNS still publishes them (see *DKIM keys
+    after a restore* below); otherwise it gets new ones, and the item says
+    which records to republish. To preserve messages, restore Stalwart from a
     snapshot instead (the page links the procedure). Treat this page as a
     surface for *pre-existing* drift, not a routine tool.
+
+### DKIM keys after a restore
+
+The platform keeps an encrypted copy (`PLATFORM_ENCRYPTION_KEY`) of every
+DKIM key it creates, one per selector (`dkim-1`, `dkim-2`). When Stalwart has
+lost a domain's signatures, the paths that would make new keys put the kept
+key back under the same selector instead: drift repair's "Recreate empty",
+disaster recovery of a tenant, and an email enable that finishes one that
+stopped before the domain reached Stalwart. So the published DKIM records
+keep verifying and nobody has to change DNS.
+
+A copy goes back only when the selector's TXT record still carries its public
+key. Public DNS decides when it answers; the platform's own record only when
+public DNS has none. Otherwise a new key is made, as before, and its record
+published where the platform hosts the zone.
+
+| What was restored | DKIM afterwards |
+|---|---|
+| Stalwart lost the domain (drift repair) | The kept keys come back; DNS unchanged. |
+| Tenant recovered from its bundle, same cluster | The bundle carries the copies (still encrypted); the keys come back. |
+| Tenant recovered onto another cluster | The copies cannot be decrypted there (different `PLATFORM_ENCRYPTION_KEY`): new keys, records to republish. |
+| Platform database restored to an older point | The copies are those of that point. A copy that no longer matches what Stalwart signs with is never shown or restored; the card offers **Rotate key**. |
+| Stalwart restored to an older point | Stalwart signs with the keys of that point. Both selectors' records stay published, so mail verifies, unless a selector was rotated after that point: its record then carries the newer key, and one **Rotate key** fixes it. Nothing detects a single lost signature while the domain itself is there; the DKIM card shows the selector missing, and the other selector keeps signing. |
+
+Keys created before the platform kept copies have none and get new keys in
+these cases, as before. They are not rotated in bulk; a tenant who wants a
+copy rotates once.
 
 ## Per-tenant email
 

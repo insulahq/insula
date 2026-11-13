@@ -33,6 +33,7 @@ import { purgeSpamTrainingSamplesForPrincipal } from '../mail-admin/spam-sample-
 import { normalizeDomainDkim } from '../email-dkim/normalize.js';
 import { forgetDkimPrivateKeys, keepDkimPrivateKey } from '../email-dkim/key-store.js';
 import { upsertDkimTxtRecord } from '../email-dkim/dns-publish.js';
+import { republishRestoredDkim, restorableDkimKeys } from '../email-dkim/restore.js';
 import { redactPemBlocks } from '../email-dkim/signatures.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 
@@ -277,7 +278,7 @@ export async function enableEmailForDomain(
         // auto pair still signs and delivers; the first rotation
         // converges it onto the A/B pair.
         try {
-          const { activeSelector, createdPublicKey } = await normalizeDomainDkim({
+          const { activeSelector, createdPublicKey, restored } = await normalizeDomainDkim({
             accountId: domainAccountId,
             stalwartDomainId,
             baseUrl: process.env.STALWART_MGMT_URL,
@@ -285,11 +286,17 @@ export async function enableEmailForDomain(
             expectAutoPair: createdPrincipal,
             keepKey: (selector, privateKeyPem) =>
               keepDkimPrivateKey(db, { emailDomainId: id, selector, privateKeyPem, encryptionKey }, log),
+            // A re-enable after Stalwart lost the domain gets its kept keys back
+            // (restore.ts) instead of new ones its published records do not match.
+            restorable: (selectors) => restorableDkimKeys(db, {
+              emailDomainId: id, domainId, domainName: domain.domainName, selectors, encryptionKey,
+            }),
           });
           await db
             .update(emailDomains)
             .set({ dkimActiveSelector: activeSelector })
             .where(eq(emailDomains.id, id));
+          await republishRestoredDkim(db, { domainId, domainName: domain.domainName, restored, encryptionKey });
           // Publish the dkim-1 TXT inline so mail sent in the first
           // minutes after enable verifies — the dns-sync reconciler
           // (5-min cycle) would otherwise be the first to publish it.

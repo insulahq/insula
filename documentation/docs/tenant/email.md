@@ -231,8 +231,19 @@ After you **Rotate key** here, copy the new key to the other server too: the
 old key keeps verifying only until the following rotation replaces it.
 
 The platform keeps a copy of the keys it creates from now on. A key created
-before that cannot be shown; **Rotate key** creates a new one that can be (the
-current key keeps signing alongside it for a while).
+before that cannot be shown, and the platform does not replace existing keys
+for you: if you want to see it, click **Rotate key** once. That creates a new
+key that can be shown, and the current key keeps signing alongside it for a
+while. If a rotation could not keep its copy, the card says so; the new key
+signs as normal, and the next rotation tries again.
+
+The shown key hides itself after five minutes, and as soon as you rotate.
+
+The same copy keeps your mail verifying if the mail server ever loses your
+domain's keys (a restore or a repair): the platform puts the same key back
+under the same selector, so the records already published in DNS keep
+matching and you do not have to change anything. It does this only when the
+published record still carries that key.
 
 A newly enabled domain's DMARC record is `p=quarantine`: mail that claims to
 come from your domain but fails its checks goes to the recipient's spam folder.

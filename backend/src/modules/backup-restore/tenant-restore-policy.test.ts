@@ -72,6 +72,13 @@ describe('isTableAllowedForTenant', () => {
   it('allows mailboxes table', () => {
     expect(isTableAllowedForTenant('mailboxes', DEFAULT_TENANT_RESTORE_POLICY)).toBe(true);
   });
+
+  // A cart names tables by their bundle key (camelCase); the deny list holds SQL names.
+  it('denies the kept DKIM key copies under either name', () => {
+    expect(isTableAllowedForTenant('email_dkim_private_keys', DEFAULT_TENANT_RESTORE_POLICY)).toBe(false);
+    expect(isTableAllowedForTenant('emailDkimPrivateKeys', DEFAULT_TENANT_RESTORE_POLICY)).toBe(false);
+    expect(isTableAllowedForTenant('emailDomains', DEFAULT_TENANT_RESTORE_POLICY)).toBe(true);
+  });
 });
 
 describe('redactRowForTenant', () => {

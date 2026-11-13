@@ -8,7 +8,7 @@
  * the real hooks against a mocked fetch, so a wrong URL or a hidden error
  * fails here instead of in production.
  */
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { EmailDomain } from '@/hooks/use-email';
@@ -16,7 +16,7 @@ import type { EmailDomain } from '@/hooks/use-email';
 const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock('@/lib/api-client', async (orig) => ({ ...(await orig<typeof import('@/lib/api-client')>()), apiFetch }));
 
-const { default: DkimKeysCard } = await import('./DkimKeysCard');
+const { default: DkimKeysCard, KEY_SHOWN_MS } = await import('./DkimKeysCard');
 const { ApiError } = await import('@/lib/api-client');
 const { useAuth } = await import('@/hooks/use-auth');
 
@@ -45,12 +45,14 @@ const KEY = {
 const ROTATION = {
   newSelector: 'dkim-2', previousSelector: 'dkim-1', newPublicKey: 'BBB',
   txtRecordName: 'dkim-2._domainkey.example.test', txtRecordValue: 'v=DKIM1; k=rsa; p=BBB',
-  stalwartDkimSignatureId: 's2', destroyedSelectors: [],
+  stalwartDkimSignatureId: 's2', destroyedSelectors: [], keptCopy: true,
 };
 
-function renderCard(opts: { keys?: unknown; keysFail?: Error; manualDns?: boolean; dnsFail?: boolean } = {}) {
+function renderCard(opts: { keys?: unknown; keysFail?: Error; manualDns?: boolean; dnsFail?: boolean; keptCopy?: boolean } = {}) {
   apiFetch.mockImplementation((url: string, init?: { method?: string }) => {
-    if (url.endsWith('/dkim/rotate') && init?.method === 'POST') return Promise.resolve({ data: ROTATION });
+    if (url.endsWith('/dkim/rotate') && init?.method === 'POST') {
+      return Promise.resolve({ data: { ...ROTATION, keptCopy: opts.keptCopy ?? true } });
+    }
     if (url.endsWith('/dkim/keys')) {
       return opts.keysFail
         ? Promise.reject(opts.keysFail)
@@ -137,6 +139,21 @@ describe('DkimKeysCard', () => {
     expect(result.textContent).not.toMatch(/published automatically/);
   });
 
+  it('says so when the platform could not keep a copy of the new key', async () => {
+    renderCard({ keptCopy: false });
+    fireEvent.click(await screen.findByTestId('dkim-rotate-button'));
+    fireEvent.click(screen.getByTestId('dkim-rotate-confirm-button'));
+    expect((await screen.findByTestId('dkim-rotate-not-kept')).textContent).toMatch(/could not keep its copy/);
+  });
+
+  it('says nothing about the copy when it was kept', async () => {
+    renderCard();
+    fireEvent.click(await screen.findByTestId('dkim-rotate-button'));
+    fireEvent.click(screen.getByTestId('dkim-rotate-confirm-button'));
+    await screen.findByTestId('dkim-rotate-result');
+    expect(screen.queryByTestId('dkim-rotate-not-kept')).toBeNull();
+  });
+
   it('claims nothing about who published the record when the DNS mode is unknown', async () => {
     renderCard({ dnsFail: true });
     await screen.findByTestId('dkim-key-dkim-1');
@@ -169,6 +186,7 @@ describe('DkimKeysCard — Show private key', () => {
         stepped = true;
         return Promise.resolve({ data: { ok: true } });
       }
+      if (url.endsWith('/dkim/rotate') && init?.method === 'POST') return Promise.resolve({ data: ROTATION });
       if (url === keyUrl) {
         if (opts.keyError) return Promise.reject(opts.keyError);
         return stepped
@@ -259,5 +277,61 @@ describe('DkimKeysCard — Show private key', () => {
     renderGated({ keyError: new ApiError(409, 'STEP_UP_UNAVAILABLE', 'Confirming it is you needs a password or a passkey on your account, and yours has neither.') });
     fireEvent.click(await screen.findByTestId('dkim-show-private-key'));
     expect((await screen.findByTestId('dkim-private-key-error')).textContent).toMatch(/password or a passkey/);
+  });
+
+  /** Show the key through the step-up, as a tenant admin does. */
+  async function showKey() {
+    fireEvent.click(await screen.findByTestId('dkim-show-private-key'));
+    fireEvent.change(await screen.findByTestId('step-up-password'), { target: { value: 'right' } });
+    fireEvent.click(screen.getByTestId('step-up-password-submit'));
+    return screen.findByTestId('dkim-private-key');
+  }
+
+  it('says how to copy by hand when the browser blocks the clipboard', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('NotAllowedError'));
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    renderGated();
+    await showKey();
+    fireEvent.click(screen.getByTestId('dkim-private-key-copy'));
+    expect((await screen.findByTestId('dkim-private-key-copy-failed')).textContent).toMatch(/blocked copying/);
+    expect(writeText).toHaveBeenCalledWith(PRIVATE.privateKeyPem);
+  });
+
+  it('confirms a copy that worked', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    renderGated();
+    await showKey();
+    fireEvent.click(screen.getByTestId('dkim-private-key-copy'));
+    await waitFor(() => expect(screen.getByTestId('dkim-private-key-copy').textContent).toMatch(/Copied/));
+    expect(screen.queryByTestId('dkim-private-key-copy-failed')).toBeNull();
+  });
+
+  it('hides the key by itself after a few minutes', async () => {
+    // Installed before the key is shown, so its hide timer runs on them; the
+    // clock still advances by itself for the step-up round trip.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderGated();
+      await showKey();
+      // Halfway, with room for the real time a loaded test run spends: still there.
+      await act(async () => { vi.advanceTimersByTime(KEY_SHOWN_MS / 2); });
+      expect(screen.queryByTestId('dkim-private-key')).toBeTruthy();
+      await act(async () => { vi.advanceTimersByTime(KEY_SHOWN_MS / 2); });
+      expect(screen.queryByTestId('dkim-private-key')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The rotation replaces the key that was shown; it must not stay on screen
+  // until the key list happens to refetch.
+  it('drops a shown key as soon as a rotation succeeds', async () => {
+    renderGated();
+    await showKey();
+    fireEvent.click(screen.getByTestId('dkim-rotate-button'));
+    fireEvent.click(screen.getByTestId('dkim-rotate-confirm-button'));
+    await screen.findByTestId('dkim-rotate-result');
+    expect(screen.queryByTestId('dkim-private-key')).toBeNull();
   });
 });

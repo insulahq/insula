@@ -79,9 +79,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     rotation, drift repair, DR recreate (migration 0178, `email_dkim_private_keys`).
   - A copy is shown only when its public key matches the one Stalwart signs with.
   - Keys created before this release have no copy: the card says so, and **Rotate key** creates
-    one that can be shown.
+    one that can be shown. Existing keys are not rotated in bulk.
+  - One copy per selector, so `dkim-1` and `dkim-2` both have one while both records stay
+    published. A destroyed selector's copy goes with it. A rotation that could not keep its copy
+    says so on the card.
+  - The shown key hides itself after five minutes, and as soon as a rotation succeeds. A copy
+    the browser refuses says how to copy by hand.
+- **A domain's DKIM keys survive the mail server losing them.** Drift repair's "Recreate
+  empty", disaster recovery and a resumed email enable used to give such a domain NEW keys.
+  Its published DKIM records then failed every message until DNS changed, by hand at the
+  registrar for a zone hosted elsewhere. They now put the kept key back under the same
+  selector, so the records keep verifying and DNS stays as it is.
+  - A copy goes back only when the selector's TXT record still carries its public key: public
+    DNS when it answers, else the platform's own record. Anything else gets a new key as before.
+  - Tenant bundles now carry the copies, still encrypted (migration 0180 gives the table an
+    `id` derived from domain and selector, so a restore replaces the live row of the same
+    selector). A recovery onto a cluster with another `PLATFORM_ENCRYPTION_KEY` cannot decrypt
+    them and falls back to new keys.
+  - Admin → Email → *DKIM keys after a restore* lists each case.
 
 ### Fixed
+
+- **Disaster recovery publishes the DKIM record of a key it makes.** The recover regenerated a
+  domain's DKIM key when it had no copy, but left the zone with the old record, so every
+  message failed DKIM until someone republished it. It now publishes it, as enable and drift
+  repair do.
 
 - **The DMARC policy switch is always shown.** It offered only "apply the
   recommended step" or "step back". A domain at `p=none` whose reports did not

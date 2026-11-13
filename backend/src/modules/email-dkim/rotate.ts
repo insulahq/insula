@@ -66,7 +66,7 @@ import {
   redactPemBlocks,
 } from './signatures.js';
 import { mailLogger } from '../../shared/mail-logger.js';
-import { keepDkimPrivateKey } from './key-store.js';
+import { forgetDkimPrivateKeysFor, keepDkimPrivateKey } from './key-store.js';
 
 const log = mailLogger().child({ module: 'email-dkim-rotate' });
 
@@ -85,6 +85,12 @@ export interface RotateDkimResult {
   readonly stalwartDkimSignatureId: string;
   /** Selectors whose stale signatures were destroyed (target reuse + straggler sweep). */
   readonly destroyedSelectors: readonly string[];
+  /**
+   * Whether the platform kept its encrypted copy of the new key. False: the
+   * key signs as normal, but cannot be shown or restored until the next
+   * rotation.
+   */
+  readonly keptCopy: boolean;
 }
 
 export class DkimRotationError extends Error {
@@ -225,6 +231,18 @@ export async function rotateDkimKey(
         'DKIM rotation: straggler signatures were not destroyed — they keep dual-signing until the next rotation',
       );
     }
+    // A destroyed straggler's kept copy goes with it: it can never be shown
+    // (no signature reports its key) and must never be restored. The target's
+    // copy is replaced below, with the new key.
+    const destroyedStragglers = plan.stragglerRows
+      .filter((r) => destroyedSet.has(r.id) && r.selector !== plan.target)
+      .map((r) => r.selector);
+    try {
+      await forgetDkimPrivateKeysFor(db, emailDomainId, destroyedStragglers);
+    } catch (err) {
+      log.warn({ emailDomainId, err: err instanceof Error ? err.name : 'unknown' },
+        'DKIM rotation: could not drop the copies of destroyed selectors; they are never served (no signature matches them)');
+    }
   }
 
   // 3+4. Mint the new key under the target selector. The previous
@@ -248,7 +266,7 @@ export async function rotateDkimKey(
   }
   // The only moment the platform holds the key: keep the encrypted copy the
   // tenant's "Show private key" reads (key-store.ts). Never fails the rotation.
-  await keepDkimPrivateKey(db, { emailDomainId, selector: plan.target, privateKeyPem: privateKey, encryptionKey }, log);
+  const keptCopy = await keepDkimPrivateKey(db, { emailDomainId, selector: plan.target, privateKeyPem: privateKey, encryptionKey }, log);
 
   // 5. Upsert the target selector's TXT record (in-DB + DNS provider).
   // See dns-publish.ts for the replace-not-duplicate semantics and the
@@ -279,5 +297,6 @@ export async function rotateDkimKey(
     txtRecordValue,
     stalwartDkimSignatureId: signatureId,
     destroyedSelectors: [...new Set(destroyRows.map((r) => r.selector))],
+    keptCopy,
   };
 }

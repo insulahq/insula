@@ -68,6 +68,12 @@ export const DEFAULT_TENANT_RESTORE_POLICY: TenantRestorePolicy = {
     'cluster_pending_peers',
     'platform_regions',
     'cluster_trusted_proxies',
+    // ── Key material the platform holds ─────────────────
+    // Kept DKIM key copies carry no tenant_id (they hang off email_domains),
+    // and their row id is derived from the email domain, so a tampered bundle
+    // in a tenant-owned backup target could overwrite another domain's copy.
+    // Operator and DR restores still bring them back (restore.ts).
+    'email_dkim_private_keys',
     // ── Auth / users / sessions (platform-wide) ─────────
     'users',
     'auth_consumed_tokens',
@@ -166,7 +172,11 @@ export function isTableAllowedForTenant(
   table: string,
   policy: TenantRestorePolicy = DEFAULT_TENANT_RESTORE_POLICY,
 ): boolean {
-  return !policy.deniedTables.has(table);
+  // A cart names a config table by its bundle key (camelCase, `emailDomains`),
+  // the deny list by its SQL name (`email_domains`); check both spellings, or
+  // a denied table is let through under its other name.
+  const sqlName = table.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+  return !policy.deniedTables.has(table) && !policy.deniedTables.has(sqlName);
 }
 
 /**
