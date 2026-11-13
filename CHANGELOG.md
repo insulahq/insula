@@ -12,6 +12,35 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **rclone 1.75.2 → 1.76.0** in the backup shim, the etcd snapshot CronJob, the backup speed test
+  and the Jobs that stream a storage snapshot to an SFTP or SMB target, and for the host binary
+  new installs get. It is built with Go 1.27.3
+  for that toolchain's CVEs, and refuses an HTTPS-to-HTTP redirect from an S3 target. The
+  upstream advisories in the `local` backend (planted symlinks), the remote-control server and
+  `serve sftp` concern code paths the platform does not run.
+  - The shim's S3 server now lists an empty directory on an SFTP, SMB or local target as a
+    `name/` key, as S3 directory markers are listed. restic, barman-cloud and rclone were run
+    against it with such directories in place: backups, pruning, `restic check --read-data`,
+    restores and WAL archiving and restore behave as on 1.75.2.
+  - On an existing cluster, host migration 2026.11.9/0002 moves the etcd snapshot CronJob to the
+    new image (nothing else may change it). A host's rclone, installed when the distro had none,
+    stays as it is; it only pulls snapshots from the shim for a restore.
+- **oauth2-proxy v7.15.5 → v7.15.6** for the admin-UI sign-in gate, the panels' sign-in proxies
+  and route sign-in. It is built with Go 1.26.10 for that toolchain's CVEs. A sign-in whose ID
+  token has the wrong audience, or an unverified email, now ends on a 403 page instead of a 500,
+  and a redirect back after sign-in keeps its query string. platform-api moves the panel and
+  route proxies to the new image on its next reconcile.
+- **Traefik chart 42.3.0 → 42.3.1.** Traefik stays v3.7.17. The chart adds support for Traefik
+  v3.8 and Hub, which this platform does not run, and its values schema refuses unknown
+  `service` keys. Host migration 2026.11.9/0001 upgrades existing clusters the way
+  2026.11.6/0001 did: the release's own values and trusted-proxy arguments, `--atomic`, and a
+  roll back if a pod reports its plugins disabled. Traefik restarts node by node, so ingress on
+  each node blips for the seconds its pod takes.
+- **versitygw v1.10.0 → v1.11.0**, the S3 endpoint of the DEV cluster and the VM lab (not
+  deployed to real clusters).
+
 ### Fixed
 
 - **An upgrade's Kubernetes step now upgrades a node that keeps new tenants off.** Such a node

@@ -115,7 +115,7 @@ function fakeBatch(
         : { priorityClassName: 'platform-maintenance' };
       if (opts.prefixEnv !== undefined) {
         podSpec.containers = [
-          { name: 'rclone', image: opts.rcloneImage ?? 'rclone/rclone:1.75.2', env: [{ name: 'SHIM_PREFIX', value: opts.prefixEnv }] },
+          { name: 'rclone', image: opts.rcloneImage ?? 'rclone/rclone:1.76.0', env: [{ name: 'SHIM_PREFIX', value: opts.prefixEnv }] },
         ];
       }
       if (Object.keys(podSpec).length > 0) {

@@ -527,7 +527,7 @@ LONGHORN_VERSION="v1.13.0"               # V1 engine only (no V2/SPDK). 1.13 add
 # Existing clusters: host-migration 2026.11.3/0002.
 FLUX_VERSION="2.10.0"
 # Existing clusters: host-migration 2026.11.6/0001.
-TRAEFIK_CHART_VERSION="42.3.0"           # app v3.7.17; verify: helm search repo traefik/traefik
+TRAEFIK_CHART_VERSION="42.3.1"           # app v3.7.17; verify: helm search repo traefik/traefik
 
 # ─── Remote installer script integrity ──────────
 # k3s, Helm and Flux are installed by piping an upstream shell script into a
@@ -2716,14 +2716,14 @@ install_rclone_if_missing() {
     *) error "install_rclone_if_missing: unsupported arch '$(uname -m)'" ;;
   esac
   # Pinned to the same line the backup-rclone-shim DaemonSet runs
-  # (rclone/rclone:1.75.2) so host-side restore and pod-side upload speak an
+  # (rclone/rclone:1.76.0) so host-side restore and pod-side upload speak an
   # identical rclone. Bump both together, with the checksums from the
   # release's SHA256SUMS.
-  local rclone_ver="v1.75.2"
+  local rclone_ver="v1.76.0"
   local rclone_sha
   case "$arch" in
-    amd64) rclone_sha="349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702" ;;
-    arm64) rclone_sha="7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10" ;;
+    amd64) rclone_sha="b00f00b3266c3764413afe599d3ec316f6f43b3e0ea8a0bc1d186d2133e46df7" ;;
+    arm64) rclone_sha="ee169016675e23a69d77240565133ff7dbc9b33d16fa8f7053d4af39f1eaeb78" ;;
   esac
   local base="rclone-${rclone_ver}-linux-${arch}"
   local url="https://github.com/rclone/rclone/releases/download/${rclone_ver}/${base}.zip"

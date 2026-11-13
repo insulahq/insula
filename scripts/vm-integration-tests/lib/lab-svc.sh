@@ -17,8 +17,8 @@
 # Pinned to the latest stable releases at the time of writing.
 LAB_PDNS_IMAGE="${LAB_PDNS_IMAGE:-powerdns/pdns-auth-51:5.1.4}"
 LAB_STEPCA_IMAGE="${LAB_STEPCA_IMAGE:-smallstep/step-ca:0.30.2}"
-LAB_S3_IMAGE="${LAB_S3_IMAGE:-versity/versitygw:v1.10.0}"
-LAB_RCLONE_IMAGE="${LAB_RCLONE_IMAGE:-rclone/rclone:1.75.2}"
+LAB_S3_IMAGE="${LAB_S3_IMAGE:-versity/versitygw:v1.11.0}"
+LAB_RCLONE_IMAGE="${LAB_RCLONE_IMAGE:-rclone/rclone:1.76.0}"
 # atmoz keeps rebuilding `debian`; its `latest` is an old Debian build.
 LAB_SFTP_IMAGE="${LAB_SFTP_IMAGE:-atmoz/sftp:debian}"
 LAB_SMB_IMAGE="${LAB_SMB_IMAGE:-dperson/samba:latest}"
