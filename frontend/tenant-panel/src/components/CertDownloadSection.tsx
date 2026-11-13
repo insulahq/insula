@@ -15,27 +15,21 @@ import { useCanManageCerts } from '@/hooks/use-can-manage-certs';
 import { useStepUpGate } from '@/hooks/use-step-up-gate';
 
 /**
- * Certificate download + API access for one domain.
+ * Certificate download + temporary download links for one domain.
  *
- * Two audiences on purpose:
- *
- *   the button   a one-off copy. The original TLS design was API-only, on the
- *                grounds that a browser button invites casual exposure of key
- *                material — but minting a token to fetch a file once is
- *                disproportionate, so the button exists (operator decision
- * ) with the warning kept.
- *   the tokens   the real use case. Let's Encrypt renews every 90 days, so an
- *                external web server or deploy pipeline needs to pick the
- *                renewed certificate up unattended. Tokens keep working when
- *                the platform is configured for OIDC-only sign-in, because the
- *                download route verifies them itself.
+ *   the button   a copy for the person at the keyboard, with the warning kept.
+ *   the links    a one-off hand-over to another server: temporary (15 minutes
+ *                to 24 hours, operator decision), refused once expired and
+ *                reaped by the server. They work when the platform is
+ *                configured for OIDC-only sign-in, because the download route
+ *                verifies them itself. Long-lived links are gone: unattended
+ *                pickup of every renewal goes through an API token.
  */
 
 const EXPIRY_OPTIONS: ReadonlyArray<{ value: CertTokenExpiry; label: string }> = [
-  { value: '30d', label: '30 days' },
-  { value: '90d', label: '90 days' },
-  { value: '1y', label: '1 year' },
-  { value: 'never', label: 'Never' },
+  { value: '15m', label: '15 minutes' },
+  { value: '1h', label: '1 hour' },
+  { value: '24h', label: '24 hours' },
 ];
 
 interface Props {
@@ -59,7 +53,7 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
 
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState('');
-  const [expiry, setExpiry] = useState<CertTokenExpiry>('90d');
+  const [expiry, setExpiry] = useState<CertTokenExpiry>('1h');
   const [minted, setMinted] = useState<CreateCertTokenResponse | null>(null);
   const [copied, setCopied] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -98,7 +92,7 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
     }
     setMinted(res.data);
     setName('');
-    setExpiry('90d');
+    setExpiry('1h');
     setShowCreate(false);
   }
 
@@ -134,8 +128,8 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
           Certificate files
         </h3>
         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          Download the certificate and private key for this domain, or create a token so a
-          server can fetch the renewed certificate on its own.
+          Download the certificate and private key for this domain, or create a temporary link
+          another server can fetch them with.
         </p>
       </div>
 
@@ -199,11 +193,11 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
           data-testid="minted-token"
         >
           <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
-            Token created — copy it now
+            Link created — copy its token now
           </p>
           <p className="mt-0.5 text-xs text-amber-800 dark:text-amber-300">
-            This is the only time it is shown. It cannot be retrieved later; if you lose it,
-            revoke it and create another.
+            This is the only time it is shown, and it stops working{' '}
+            {new Date(minted.expiresAt).toLocaleString()}. If you lose it, create another.
           </p>
           <div className="mt-2 flex items-center gap-2">
             <code
@@ -236,9 +230,11 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
       <div className="px-5 py-4">
         <div className="flex items-center justify-between">
           <div>
-            <h4 className="text-sm font-medium text-gray-900 dark:text-gray-100">API access</h4>
-            <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-              For servers and deploy pipelines that fetch the certificate automatically.
+            <h4 className="text-sm font-medium text-gray-900 dark:text-gray-100">Download links</h4>
+            <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400" data-testid="cert-links-temporary">
+              For handing the certificate to another server once. A link lasts 15 minutes to
+              24 hours and is then deleted; a server that must pick up every renewal on its own
+              needs an API token, which your provider can set up.
             </p>
           </div>
           {canManage && (
@@ -249,7 +245,7 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
               data-testid="new-cert-token-button"
             >
               <Plus size={14} />
-              New token
+              New link
             </button>
           )}
         </div>
@@ -271,12 +267,12 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
                 data-testid="cert-token-name-input"
               />
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                So you can tell your tokens apart later — one per server is a good habit.
+                So you can tell your links apart — one per server is a good habit.
               </p>
             </div>
             <div>
               <label htmlFor="cert-token-expiry" className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
-                Expires
+                Expires after
               </label>
               <select
                 id="cert-token-expiry"
@@ -292,7 +288,7 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
             </div>
             {createToken.error && (
               <p className="text-xs text-red-600 dark:text-red-400" data-testid="create-token-error">
-                {createToken.error instanceof Error ? createToken.error.message : 'Could not create the token.'}
+                {createToken.error instanceof Error ? createToken.error.message : 'Could not create the link.'}
               </p>
             )}
             <div className="flex gap-2">
@@ -303,7 +299,7 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
                 data-testid="submit-cert-token"
               >
                 {createToken.isPending && <Loader2 size={14} className="animate-spin" />}
-                Create token
+                Create link
               </button>
               <button
                 type="button"
@@ -318,17 +314,17 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
 
         {tokensQuery.isLoading ? (
           <div className="mt-3 flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
-            <Loader2 size={14} className="animate-spin" /> Loading tokens…
+            <Loader2 size={14} className="animate-spin" /> Loading links…
           </div>
         ) : tokensQuery.error ? (
-          // An error must never render as "no tokens" — that reads as
+          // An error must never render as "no links" — that reads as
           // "nothing to revoke" on a screen about credentials.
           <p className="mt-3 text-sm text-red-600 dark:text-red-400" data-testid="cert-tokens-error">
-            Could not load tokens.
+            Could not load the links.
           </p>
         ) : tokens.length === 0 ? (
           <p className="mt-3 text-sm text-gray-500 dark:text-gray-400" data-testid="no-cert-tokens">
-            No tokens yet.
+            No active links.
           </p>
         ) : (
           <ul className="mt-3 divide-y divide-gray-100 dark:divide-gray-700" data-testid="cert-token-list">
@@ -344,7 +340,7 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
                     )}
                   </p>
                   <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                    {t.expiresAt ? `Expires ${new Date(t.expiresAt).toLocaleDateString()}` : 'Never expires'}
+                    {`${t.expired ? 'Expired' : 'Expires'} ${new Date(t.expiresAt).toLocaleString()}`}
                     {' · '}
                     {t.lastUsedAt
                       ? `last used ${new Date(t.lastUsedAt).toLocaleDateString()}`
@@ -390,13 +386,13 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
 
         {revokeError && (
           <p className="mt-3 text-xs text-red-600 dark:text-red-400" data-testid="revoke-error">
-            Could not revoke the token: {revokeError}
+            Could not revoke the link: {revokeError}
           </p>
         )}
 
         <details className="mt-4 text-xs text-gray-500 dark:text-gray-400">
           <summary className="cursor-pointer select-none font-medium text-gray-700 dark:text-gray-300">
-            How to use a token
+            How to use a link
           </summary>
           <pre className="mt-2 overflow-x-auto rounded-lg bg-gray-50 p-3 font-mono text-xs text-gray-800 dark:bg-gray-900 dark:text-gray-200">
 {`curl -H "Authorization: Bearer <token>" \\
@@ -405,8 +401,8 @@ export default function CertDownloadSection({ tenantId, domainId, domainName }: 
           </pre>
           <p className="mt-2">
             The file contains the private key, the certificate and the full chain, in that
-            order. Re-run it after each renewal — certificates issued by the platform are
-            renewed automatically about every 60 days.
+            order. The link stops working when it expires; certificates issued by the platform
+            are renewed about every 60 days, so fetch the new one with a new link then.
           </p>
         </details>
       </div>

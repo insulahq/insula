@@ -11,19 +11,25 @@
  *   - bound to one tenant      → cannot cross a tenant boundary
  *   - read-only, one route     → cannot mutate anything or reach the panel
  *   - revocable instantly      → deleting the row kills it, unlike a JWT
- *   - optional expiry          → the panel defaults to 90d, matching LE renewal
+ *   - temporary                → 15 minutes to 24 hours (default 1 hour),
+ *                                checked on every use against the row's own
+ *                                creation time, and reaped once expired
+ *                                (reapExpiredTokens). Unattended pickup of a
+ *                                renewed certificate uses an API token on the
+ *                                panel's download route instead.
  */
 
 import crypto from 'crypto';
-import { and, count, desc, eq } from 'drizzle-orm';
+import { and, count, desc, eq, isNull, lte, or, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { certDownloadTokens, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import type {
-  CertToken,
-  CertTokenExpiry,
-  CreateCertTokenInput,
-  CreateCertTokenResponse,
+import {
+  CERT_TOKEN_MAX_LIFETIME_MS,
+  type CertToken,
+  type CertTokenExpiry,
+  type CreateCertTokenInput,
+  type CreateCertTokenResponse,
 } from '@insula/api-contracts';
 
 /**
@@ -45,20 +51,36 @@ function mintToken(): string {
   return TOKEN_PREFIX + crypto.randomBytes(TOKEN_BYTES).toString('base64url');
 }
 
-function expiryToDate(expiry: CertTokenExpiry, now: Date): Date | null {
-  const days = expiry === '30d' ? 30 : expiry === '90d' ? 90 : expiry === '1y' ? 365 : null;
-  return days === null ? null : new Date(now.getTime() + days * 24 * 3600 * 1000);
+const LIFETIME_MS: Record<CertTokenExpiry, number> = {
+  '15m': 15 * 60 * 1000,
+  '1h': 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000,
+};
+
+function expiryToDate(expiry: CertTokenExpiry, now: Date): Date {
+  return new Date(now.getTime() + Math.min(LIFETIME_MS[expiry], CERT_TOKEN_MAX_LIFETIME_MS));
 }
 
-function toDto(row: typeof certDownloadTokens.$inferSelect, now: Date): CertToken {
+/**
+ * Whether a row is a link the current rules allow at all: it expires, and no
+ * later than 24 hours after it was made. A row minted under the old rules (no
+ * expiry, or a year) by a pod still running the old code during the rollout
+ * is refused, and the reaper deletes it.
+ */
+function withinRules(row: typeof certDownloadTokens.$inferSelect): row is typeof certDownloadTokens.$inferSelect & { expiresAt: Date } {
+  return row.expiresAt !== null
+    && row.expiresAt.getTime() - row.createdAt.getTime() <= CERT_TOKEN_MAX_LIFETIME_MS;
+}
+
+function toDto(row: typeof certDownloadTokens.$inferSelect & { expiresAt: Date }, now: Date): CertToken {
   return {
     id: row.id,
     domainId: row.domainId,
     name: row.name,
-    expiresAt: row.expiresAt?.toISOString() ?? null,
+    expiresAt: row.expiresAt.toISOString(),
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
-    expired: row.expiresAt !== null && row.expiresAt.getTime() <= now.getTime(),
+    expired: row.expiresAt.getTime() <= now.getTime(),
   };
 }
 
@@ -76,7 +98,7 @@ export async function listTokens(
       eq(certDownloadTokens.domainId, domainId),
     ))
     .orderBy(desc(certDownloadTokens.createdAt));
-  return rows.map((r) => toDto(r, now));
+  return rows.filter(withinRules).map((r) => toDto(r, now));
 }
 
 export async function createToken(
@@ -136,7 +158,26 @@ export async function createToken(
   });
 
   // The only time the plaintext leaves this function. Nothing persists it.
+  if (!withinRules(row)) throw new Error('cert token row written outside the lifetime rules');
   return { ...toDto(row, now), token };
+}
+
+/**
+ * Delete every link that is expired, or outside the lifetime rules (no expiry,
+ * or more than 24 hours — minted by old code during a rollout). Run by the
+ * leased reaper (token-reaper.ts) on one replica. The audit entry written at
+ * minting is the durable record that the link existed.
+ */
+export async function reapExpiredTokens(db: Database, now: Date = new Date()): Promise<number> {
+  const deleted = await db
+    .delete(certDownloadTokens)
+    .where(or(
+      isNull(certDownloadTokens.expiresAt),
+      lte(certDownloadTokens.expiresAt, now),
+      sql`${certDownloadTokens.expiresAt} - ${certDownloadTokens.createdAt} > ${`${CERT_TOKEN_MAX_LIFETIME_MS / 1000} seconds`}::interval`,
+    ))
+    .returning({ id: certDownloadTokens.id });
+  return deleted.length;
 }
 
 /**
@@ -201,7 +242,9 @@ export async function verifyToken(
   if (!row) return null;
   // No revoked check: revocation hard-deletes the row, so a revoked token
   // simply has no match above. (The table has no revoked_at column.)
-  if (row.expiresAt !== null && row.expiresAt.getTime() <= now.getTime()) return null;
+  // Expired, or outside the lifetime rules, is refused even before the reaper
+  // gets to it.
+  if (!withinRules(row) || row.expiresAt.getTime() <= now.getTime()) return null;
 
   return {
     tokenId: row.id,

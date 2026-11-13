@@ -727,6 +727,8 @@ export async function authRoutes(app: FastifyInstance) {
       panel: (user.panel ?? 'admin') as 'admin' | 'tenant',
       tenantId: user.tenantId,
       impersonatedBy,
+      // The same session as before the refresh, so its step-up still counts.
+      sessionId: validation.familyId,
     });
 
     setSessionCookies(reply, accessToken, issued.token);

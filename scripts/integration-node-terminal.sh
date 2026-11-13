@@ -32,7 +32,7 @@
 #     D4. Unknown node → 404
 #     D5. WS without ?token=<sessionToken> → 4401 close
 #     D6. WS with replayed wsToken → 4401 close
-#     D7. Stale step-up (UPDATE users SET last_step_up_at=NULL
+#     D7. Stale step-up (age auth_step_ups past the window
 #         for me) → 403 STEP_UP_REQUIRED + methods array
 #     D8. Reject invalid node names ("../../etc/passwd") → 400
 #
@@ -480,10 +480,11 @@ if [[ $NEG_ONLY -eq 0 && -n "${SESSION_ID:-}" ]]; then
   fi
   curl_status DELETE "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions/$SESSION_ID_D6" >/dev/null 2>&1 || true
 
-  # D7 — stale step-up. Null out lastCredentialCheckAt for the admin
-  # and assert createSession returns 403 STEP_UP_REQUIRED. Best-effort:
-  # restore the timestamp afterward so subsequent runs are clean.
-  # D7 needs a way to mutate users.last_step_up_at directly.
+  # D7 — stale step-up. Age the admin's step-ups (auth_step_ups, one row
+  # per session, migration 0179) past the 30-minute window and assert
+  # createSession returns 403 STEP_UP_REQUIRED. Best-effort: age them back
+  # afterward so subsequent runs are clean.
+  # D7 needs a way to mutate auth_step_ups directly.
   # KUBECTL must be set to a command that reaches the cluster — for
   # DinD that's `docker exec hosting-platform-k3s-server-1 kubectl`;
   # for staging it's just `kubectl` with the right context.
@@ -495,8 +496,7 @@ if [[ $NEG_ONLY -eq 0 && -n "${SESSION_ID:-}" ]]; then
   EMAIL="${ADMIN_EMAIL_OVERRIDE:-${ADMIN_EMAIL:-admin@k8s-platform.test}}"
   # Inline-test that the kubectl bridge actually reaches our database.
   if $KUBECTL_CMD --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -U postgres -d platform -t -A -c "SELECT 1" >/dev/null 2>&1; then
-    SAVED_AT="$($KUBECTL_CMD --namespace=$NAMESPACE exec system-db-1 -c postgres -- psql -U postgres -d platform -t -A -c "SELECT to_char(last_step_up_at,'YYYY-MM-DD HH24:MI:SS.US') FROM users WHERE email='$EMAIL'" 2>/dev/null | head -1)"
-    $KUBECTL_CMD --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -U postgres -d platform -t -A -c "UPDATE users SET last_step_up_at=NULL WHERE email='$EMAIL'" >/dev/null 2>&1
+    $KUBECTL_CMD --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -U postgres -d platform -t -A -c "UPDATE auth_step_ups SET stepped_up_at = stepped_up_at - interval '2 hours' WHERE user_id = (SELECT id FROM users WHERE email='$EMAIL')" >/dev/null 2>&1
     D7_BODY="$(curl_body POST "/api/v1/admin/nodes/$NODE_NAME/terminal/sessions" "" "{}")"
     D7_CODE="$(echo "$D7_BODY" | jq -r '.error.code // "none"')"
     D7_METHODS="$(echo "$D7_BODY" | jq -r '.error.details.methods | join(",") // ""' 2>/dev/null)"
@@ -507,9 +507,7 @@ if [[ $NEG_ONLY -eq 0 && -n "${SESSION_ID:-}" ]]; then
     fi
     # Restore so subsequent assertions pass and a future re-run of
     # the harness doesn't immediately demand a step-up.
-    if [[ -n "$SAVED_AT" ]]; then
-      $KUBECTL_CMD --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -U postgres -d platform -t -A -c "UPDATE users SET last_step_up_at='$SAVED_AT' WHERE email='$EMAIL'" >/dev/null 2>&1
-    fi
+    $KUBECTL_CMD --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -U postgres -d platform -t -A -c "UPDATE auth_step_ups SET stepped_up_at = stepped_up_at + interval '2 hours' WHERE user_id = (SELECT id FROM users WHERE email='$EMAIL')" >/dev/null 2>&1
   else
     warn "D7 skipped — set KUBECTL='docker exec <dind-container> kubectl' (DinD) or ensure kubectl is on PATH"
   fi

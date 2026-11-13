@@ -5,8 +5,11 @@ import { auditLogs } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
   getStepUpStatus,
+  recordStepUp,
+  stepUpCredentialHolder,
+  stepUpMaxAgeMs,
   verifyStepUpPassword,
-  DEFAULT_STEP_UP_MAX_AGE_MS,
+  type StepUpCaller,
 } from './step-up-service.js';
 import {
   beginAuthentication,
@@ -20,35 +23,55 @@ import {
   stepUpPasswordRequestSchema,
   stepUpPasskeyVerifyRequestSchema,
   type StepUpMethod,
-  type StepUpPurpose,
 } from '@insula/api-contracts';
 
 // Required bearer-auth (no cookie fallback). Step-up always operates
 // inside an existing session; if the caller can't present a bearer
 // token, the platform-session cookie alone is not enough — same CSRF
 // posture as the rest of passkey-routes.
-async function assertBearerAuth(request: FastifyRequest): Promise<void> {
+async function assertBearerAuth(request: FastifyRequest): Promise<StepUpCaller & { panel: 'admin' | 'tenant' }> {
   const auth = request.headers.authorization;
   if (typeof auth !== 'string' || !auth.toLowerCase().startsWith('bearer ')) {
     throw invalidToken();
   }
   await request.jwtVerify();
-  const payload = request.user as { step?: string };
+  const payload = request.user as StepUpCaller & { step?: string; panel: 'admin' | 'tenant' };
   // Reject pre-auth tokens (they carry step:'passkey_2fa').
   if (payload.step) {
     throw invalidToken();
   }
+  // An API token cannot step up (and needs not: the gated routes let it
+  // through on its scopes). A step-up recorded for it would bind nothing.
+  if (payload.apiToken) {
+    throw new ApiError('API_TOKEN_NOT_ALLOWED', 'Step-up is for a person signed in to the panel, not an API token.', 403);
+  }
+  return payload;
+}
+
+/**
+ * The panel the credential holder signs in to — what passkey verification
+ * binds to. Under "Login as tenant" that is the staff member's (admin), not
+ * the tenant panel the request comes from; the RP ID is shared by both panels,
+ * so their passkey works on this origin.
+ */
+async function credentialPanel(db: Database, caller: StepUpCaller & { panel: 'admin' | 'tenant' }): Promise<'admin' | 'tenant'> {
+  const holder = stepUpCredentialHolder(caller);
+  if (holder === caller.sub) return caller.panel;
+  const [row] = await db.select({ panel: users.panel }).from(users).where(eq(users.id, holder)).limit(1);
+  return (row?.panel ?? 'admin') as 'admin' | 'tenant';
 }
 
 async function recordStepUpAudit(
   db: Database,
-  actorId: string,
+  caller: StepUpCaller,
   actionType: 'step_up.password.success' | 'step_up.password.failed' |
-              'step_up.passkey.success' | 'step_up.passkey.failed' |
-              'step_up.status',
+              'step_up.passkey.success' | 'step_up.passkey.failed',
   request: FastifyRequest,
   changes?: Record<string, unknown>,
 ): Promise<void> {
+  // The actor is whoever's credential was checked; under impersonation the
+  // row also names the tenant user being acted as.
+  const actorId = stepUpCredentialHolder(caller);
   try {
     await db.insert(auditLogs).values({
       id: randomUUID(),
@@ -61,7 +84,10 @@ async function recordStepUpAudit(
       httpMethod: request.method,
       httpPath: request.url.slice(0, 500),
       httpStatus: actionType.endsWith('.failed') ? 401 : 200,
-      changes: changes ?? null,
+      changes: {
+        ...(changes ?? {}),
+        ...(caller.impersonatedBy ? { impersonatedBy: caller.impersonatedBy, actingAs: caller.sub } : {}),
+      },
       ipAddress: request.ip,
     });
   } catch (err) {
@@ -74,15 +100,14 @@ export async function stepUpRoutes(app: FastifyInstance): Promise<void> {
 
   /**
    * GET /me/step-up/status?purpose=node_terminal
-   * Returns freshness state + enabled methods for the calling user.
-   * Used by the frontend to decide whether to prompt for re-auth
+   * Freshness of THIS session for the purpose's window, plus the methods the
+   * credential holder has. Used by the panels to decide whether to prompt
    * before opening a privileged surface.
    */
   app.get('/me/step-up/status', {
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
   }, async (request, reply) => {
-    await assertBearerAuth(request);
-    const payload = request.user as { sub: string };
+    const caller = await assertBearerAuth(request);
     const parsed = stepUpStatusQuerySchema.safeParse(request.query);
     if (!parsed.success) {
       throw new ApiError(
@@ -91,32 +116,30 @@ export async function stepUpRoutes(app: FastifyInstance): Promise<void> {
         400,
       );
     }
-    // Purpose-specific freshness can be tuned per-action later. Today
-    // every purpose uses the default 30-min window.
-    void (parsed.data.purpose satisfies StepUpPurpose);
-    const status = await getStepUpStatus(app.db, payload.sub, DEFAULT_STEP_UP_MAX_AGE_MS);
+    const status = await getStepUpStatus(app.db, caller, stepUpMaxAgeMs(parsed.data.purpose));
     return reply.send({
       data: {
         required: status.required,
         methods: status.methods,
         lastCredentialCheckAt: status.lastCredentialCheckAt?.toISOString() ?? null,
         maxAgeSeconds: Math.floor(status.maxAgeMs / 1000),
+        impersonation: status.impersonation,
+        credentialEmail: status.credentialEmail,
       },
     });
   });
 
   /**
    * POST /me/step-up/password
-   * Verifies the caller's password. On success, bumps
-   * users.last_credential_check_at and returns the new timestamp.
+   * Verifies the credential holder's password (the staff member's own under
+   * "Login as tenant") and records the step-up for this session.
    * Rate-limited tighter than /auth/login because the user is already
    * authenticated — repeated step-up failures are bot-style probing.
    */
   app.post('/me/step-up/password', {
     config: { rateLimit: { max: 10, timeWindow: '5 minutes' } },
   }, async (request, reply) => {
-    await assertBearerAuth(request);
-    const payload = request.user as { sub: string };
+    const caller = await assertBearerAuth(request);
     const parsed = stepUpPasswordRequestSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError(
@@ -126,8 +149,9 @@ export async function stepUpRoutes(app: FastifyInstance): Promise<void> {
       );
     }
     try {
-      const at = await verifyStepUpPassword(app.db, payload.sub, parsed.data.password);
-      await recordStepUpAudit(app.db, payload.sub, 'step_up.password.success', request);
+      await verifyStepUpPassword(app.db, stepUpCredentialHolder(caller), parsed.data.password);
+      const at = await recordStepUp(app.db, caller, 'password');
+      await recordStepUpAudit(app.db, caller, 'step_up.password.success', request);
       const method: StepUpMethod = 'password';
       return reply.send({
         data: {
@@ -139,7 +163,7 @@ export async function stepUpRoutes(app: FastifyInstance): Promise<void> {
     } catch (err) {
       // Best-effort audit on failure — the user is real (bearer-auth
       // already verified the JWT) so we know who attempted.
-      await recordStepUpAudit(app.db, payload.sub, 'step_up.password.failed', request, {
+      await recordStepUpAudit(app.db, caller, 'step_up.password.failed', request, {
         reason: err instanceof ApiError ? err.code : 'unknown',
       });
       throw err;
@@ -148,31 +172,29 @@ export async function stepUpRoutes(app: FastifyInstance): Promise<void> {
 
   /**
    * POST /me/step-up/passkey/options
-   * Begin a passkey step-up challenge scoped to the authenticated user
-   * (NOT userless — the user is already known). On success the client
-   * receives a WebAuthn PublicKeyCredentialRequestOptionsJSON.
+   * Begin a passkey step-up challenge scoped to the credential holder (NOT
+   * userless — the user is already known). On success the client receives a
+   * WebAuthn PublicKeyCredentialRequestOptionsJSON.
    */
   app.post('/me/step-up/passkey/options', {
     config: { rateLimit: { max: 30, timeWindow: '15 minutes' } },
   }, async (request, reply) => {
-    await assertBearerAuth(request);
-    const payload = request.user as { sub: string; panel: 'admin' | 'tenant' };
-    const options = await beginAuthentication(app.db, passkeyConfig, payload.panel, payload.sub);
+    const caller = await assertBearerAuth(request);
+    const holder = stepUpCredentialHolder(caller);
+    const options = await beginAuthentication(app.db, passkeyConfig, await credentialPanel(app.db, caller), holder);
     return reply.send({ data: options });
   });
 
   /**
    * POST /me/step-up/passkey/verify
-   * Complete the passkey step-up. completeAuthentication() already
-   * bumps users.last_credential_check_at on success (see
-   * passkey-service.ts). We re-fetch the freshness timestamp here so
-   * the response shape matches /me/step-up/password.
+   * Complete the passkey step-up for the credential holder and record it for
+   * this session.
    */
   app.post('/me/step-up/passkey/verify', {
     config: { rateLimit: { max: 30, timeWindow: '15 minutes' } },
   }, async (request, reply) => {
-    await assertBearerAuth(request);
-    const payload = request.user as { sub: string; panel: 'admin' | 'tenant' };
+    const caller = await assertBearerAuth(request);
+    const holder = stepUpCredentialHolder(caller);
     const parsed = stepUpPasskeyVerifyRequestSchema.safeParse(request.body);
     if (!parsed.success) {
       throw new ApiError(
@@ -183,39 +205,21 @@ export async function stepUpRoutes(app: FastifyInstance): Promise<void> {
     }
     try {
       const result = await completeAuthentication(app.db, passkeyConfig, {
-        panel: payload.panel,
+        panel: await credentialPanel(app.db, caller),
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         response: parsed.data.response as any,
-        expectedUserId: payload.sub,
+        expectedUserId: holder,
       });
       // Reject cross-user passkey reuse — completeAuthentication
       // already enforces this via expectedUserId, but be belt-and-braces.
-      if (result.user.id !== payload.sub) {
+      if (result.user.id !== holder) {
         throw new ApiError('STEP_UP_FAILED', 'Step-up authentication failed', 401);
       }
-      // completeAuthentication bumped lastCredentialCheckAt; we additionally
-      // bump lastStepUpAt here because this code path IS an explicit
-      // step-up (the privileged-action gate reads lastStepUpAt). Without
-      // this, passkey step-up succeeds without satisfying the gate.
-      await app.db
-        .update(users)
-        .set({ lastStepUpAt: new Date() })
-        .where(eq(users.id, payload.sub));
-      await recordStepUpAudit(app.db, payload.sub, 'step_up.passkey.success', request, {
+      const at = await recordStepUp(app.db, caller, 'passkey');
+      await recordStepUpAudit(app.db, caller, 'step_up.passkey.success', request, {
         passkeyId: result.passkeyId,
       });
       const method: StepUpMethod = 'passkey';
-      // Security finding M3: read back the DB-committed
-      // lastStepUpAt value rather than minting a wall-clock timestamp
-      // here. If the row write failed mid-transaction, the re-read
-      // surfaces the truth and the client sees the right freshness
-      // boundary.
-      const [row] = await app.db
-        .select({ at: users.lastStepUpAt })
-        .from(users)
-        .where(eq(users.id, payload.sub))
-        .limit(1);
-      const at = row?.at ?? new Date();
       return reply.send({
         data: {
           ok: true as const,
@@ -224,7 +228,7 @@ export async function stepUpRoutes(app: FastifyInstance): Promise<void> {
         },
       });
     } catch (err) {
-      await recordStepUpAudit(app.db, payload.sub, 'step_up.passkey.failed', request, {
+      await recordStepUpAudit(app.db, caller, 'step_up.passkey.failed', request, {
         reason: err instanceof ApiError ? err.code : 'unknown',
       });
       throw err;

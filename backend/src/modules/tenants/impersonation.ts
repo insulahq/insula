@@ -48,6 +48,7 @@ export function signImpersonationToken(
   },
 ): string {
   const now = Math.floor(Date.now() / 1000);
+  const jti = crypto.randomUUID();
   return app.jwt.sign({
     sub: input.target.id,
     role: 'tenant_admin',
@@ -57,6 +58,9 @@ export function signImpersonationToken(
     ...(input.apiToken ? { apiToken: input.apiToken } : {}),
     exp: now + input.ttlSeconds,
     iat: now,
-    jti: crypto.randomUUID(),
+    jti,
+    // The impersonation session is this one token (it has no refresh token):
+    // a step-up the staff member makes under it covers it and nothing else.
+    sid: `imp:${jti}`,
   });
 }

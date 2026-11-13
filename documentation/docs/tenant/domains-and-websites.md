@@ -518,25 +518,25 @@ chain. That is the layout nginx, Apache and HAProxy expect, so it drops
 straight into an existing configuration.
 
 Because the file holds the private key, you are asked to confirm it is you
-(your password or passkey) before the download starts, and again before you
-create a token below. The confirmation stays valid for 30 minutes. An account
-that signs in only through single sign-on has neither: register a passkey and
-turn on passkey sign-in under **User settings** first.
+(your password or passkey) right before the download starts, and before you
+create a download link below. The confirmation counts for 5 minutes, and only
+in the browser session where you gave it: another browser, or someone holding
+a copy of your session, is asked again. Signing in does not count as
+confirming. An account that signs in only through single sign-on has neither
+a password nor a passkey: register a passkey and turn on passkey sign-in under
+**User settings** first.
 
-#### Fetching it automatically (API access)
+#### Handing it to another server (download links)
 
-Certificates issued by the platform renew roughly every 60 days. If another
-server uses the certificate, it needs the new one each time — clicking a button
-every two months is not a plan. Create a token instead:
+To fetch the certificate on another server once, create a temporary link:
 
-1. **SSL/TLS** tab → **Certificate files** → **API access** → **New token**.
+1. **SSL/TLS** tab → **Certificate files** → **Download links** → **New link**.
 2. Give it a name you'll recognise later — one per server is a good habit.
-3. Choose an expiry. 90 days matches the renewal cycle; **Never** is available
-   if rotating the token is more disruption than it's worth.
-4. **Copy the token now.** It is shown once and cannot be retrieved again. If
-   you lose it, revoke it and create another.
+3. Choose how long it lives: **15 minutes**, **1 hour** (the default) or
+   **24 hours**. Nothing longer is possible.
+4. **Copy its token now.** It is shown once and cannot be retrieved again.
 
-Then fetch the certificate from anywhere:
+Then fetch the certificate on that server before the link expires:
 
 ```bash
 curl -H "Authorization: Bearer <token>" \
@@ -544,24 +544,16 @@ curl -H "Authorization: Bearer <token>" \
      -o example.com.pem
 ```
 
-A renewal hook on your own server might look like:
-
-```bash
-#!/bin/bash
-set -euo pipefail
-curl -sfS -H "Authorization: Bearer ${CERT_TOKEN}" \
-     https://admin.example.test/api/v1/certs/example.com/download \
-     -o /etc/nginx/certs/example.com.pem
-nginx -s reload
-```
-
-**What a token can and cannot do.** It is bound to one domain and can only
+**What a link can and cannot do.** It is bound to one domain and can only
 download that domain's certificate. It gives no access to your panel, no access
-to any other domain, and cannot change anything. Revoke it at any time from the
-same panel — revocation takes effect immediately.
+to any other domain, and cannot change anything. It stops working when it
+expires and is then deleted; you can also revoke it earlier from the same
+panel, with immediate effect. A link works when your platform uses single
+sign-on, because it is checked independently of the normal login.
 
-Tokens keep working when your platform uses single sign-on, because they are
-checked independently of the normal login. That is the reason they exist: with
-SSO there is no password for a script to log in with.
+Certificates issued by the platform renew roughly every 60 days, so a server
+that uses the certificate needs the new one each time. A link does not last
+that long. For unattended pickup of every renewal, ask your provider: it can be
+done with an API token, which the platform's staff manage.
 
-Every download — button or token — is recorded in the platform's audit log.
+Every download — button or link — is recorded in the platform's audit log.

@@ -89,14 +89,15 @@ describe('CertDownloadSection', () => {
   it('shows a newly created token once, with a copy control and a keep-it warning', async () => {
     const created = {
       data: {
-        id: 'tok-1', domainId: 'd-1', name: 'deploy', expiresAt: null,
+        id: 'tok-1', domainId: 'd-1', name: 'deploy', expiresAt: '2026-09-03T01:00:00Z',
         lastUsedAt: null, createdAt: '2026-09-03T00:00:00Z', expired: false,
         token: 'insula_cert_SECRETVALUE',
       },
     };
-    mockApiFetch.mockImplementation((path: string, opts?: { method?: string }) => {
+    const bodies: unknown[] = [];
+    mockApiFetch.mockImplementation((path: string, opts?: { method?: string; body?: string }) => {
       if (path.includes('download-availability')) return Promise.resolve(AVAILABLE);
-      if (path.includes('cert-tokens') && opts?.method === 'POST') return Promise.resolve(created);
+      if (path.includes('cert-tokens') && opts?.method === 'POST') { bodies.push(JSON.parse(opts.body ?? '{}')); return Promise.resolve(created); }
       if (path.includes('cert-tokens')) return Promise.resolve({ data: [] });
       return Promise.resolve({ data: [] });
     });
@@ -110,6 +111,21 @@ describe('CertDownloadSection', () => {
     expect(screen.getByTestId('minted-token-value').textContent).toBe('insula_cert_SECRETVALUE');
     expect(screen.getByTestId('copy-token-button')).toBeTruthy();
     expect(minted.textContent).toMatch(/only time it is shown/i);
+    expect(minted.textContent).toMatch(/stops working/i);
+    // Default lifetime: one hour.
+    expect(bodies).toEqual([{ name: 'deploy', expiry: '1h' }]);
+  });
+
+  // Links are temporary: the only lifetimes offered are 15 minutes to 24
+  // hours, and the panel says what to do instead for unattended pickup.
+  it('offers only temporary lifetimes, defaulting to one hour', async () => {
+    route({});
+    renderSection();
+    fireEvent.click(await screen.findByTestId('new-cert-token-button'));
+    const select = screen.getByTestId('cert-token-expiry-select') as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual(['15m', '1h', '24h']);
+    expect(select.value).toBe('1h');
+    expect(screen.getByTestId('cert-links-temporary').textContent).toMatch(/15 minutes to\s+24 hours/);
   });
 
   it('lists existing tokens with last-used and offers revoke', async () => {
@@ -130,7 +146,7 @@ describe('CertDownloadSection', () => {
 
   it('requires confirmation before revoking', async () => {
     route({
-      tokens: { data: [{ id: 'tok-9', domainId: 'd-1', name: 'x', expiresAt: null, lastUsedAt: null, createdAt: '2026-08-01T00:00:00Z', expired: false }] },
+      tokens: { data: [{ id: 'tok-9', domainId: 'd-1', name: 'x', expiresAt: '2026-08-01T01:00:00Z', lastUsedAt: null, createdAt: '2026-08-01T00:00:00Z', expired: false }] },
     });
     renderSection();
     fireEvent.click(await screen.findByTestId('revoke-tok-9'));
@@ -157,7 +173,7 @@ describe('CertDownloadSection', () => {
       if (path.includes('download-availability')) return Promise.resolve(AVAILABLE);
       if (path.includes('cert-tokens') && opts?.method === 'DELETE') return Promise.reject(new Error('token is gone'));
       if (path.includes('cert-tokens')) {
-        return Promise.resolve({ data: [{ id: 'tok-9', domainId: 'd-1', name: 'x', expiresAt: null, lastUsedAt: null, createdAt: '2026-08-01T00:00:00Z', expired: false }] });
+        return Promise.resolve({ data: [{ id: 'tok-9', domainId: 'd-1', name: 'x', expiresAt: '2026-08-01T01:00:00Z', lastUsedAt: null, createdAt: '2026-08-01T00:00:00Z', expired: false }] });
       }
       return Promise.resolve({ data: [] });
     });
@@ -196,7 +212,7 @@ describe('CertDownloadSection', () => {
   it('shows the curl example against the token endpoint', async () => {
     route({});
     renderSection();
-    expect(await screen.findByText(/how to use a token/i)).toBeTruthy();
+    expect(await screen.findByText(/how to use a link/i)).toBeTruthy();
     expect(screen.getByText(/\/api\/v1\/certs\/example\.test\/download/)).toBeTruthy();
   });
 
@@ -258,7 +274,7 @@ describe('CertDownloadSection', () => {
       if (path.includes('download-availability')) return Promise.resolve(AVAILABLE);
       if (path.includes('cert-tokens') && opts?.method === 'POST') {
         return stepped
-          ? Promise.resolve({ data: { id: 'tok-1', domainId: 'd-1', name: 'deploy', expiresAt: null, lastUsedAt: null, createdAt: '2026-09-03T00:00:00Z', expired: false, token: 'insula_cert_SECRETVALUE' } })
+          ? Promise.resolve({ data: { id: 'tok-1', domainId: 'd-1', name: 'deploy', expiresAt: '2026-09-03T01:00:00Z', lastUsedAt: null, createdAt: '2026-09-03T00:00:00Z', expired: false, token: 'insula_cert_SECRETVALUE' } })
           : Promise.reject(new ApiError(403, 'STEP_UP_REQUIRED', 'Confirm it is you', { methods: ['password'] }));
       }
       return Promise.resolve({ data: [] });

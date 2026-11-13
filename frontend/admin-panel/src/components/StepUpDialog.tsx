@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Fingerprint, KeyRound, Loader2, X } from 'lucide-react';
 import { ApiError } from '@/lib/api-client';
-import { verifyStepUpPasskey, verifyStepUpPassword, type StepUpMethod } from '@/lib/step-up';
+import { verifyStepUpPasskey, verifyStepUpPassword, type StepUpMethod, type StepUpRefusal } from '@/lib/step-up';
 
 /**
  * "Confirm it is you" — the step-up a gated action asks for.
@@ -14,9 +14,17 @@ import { verifyStepUpPasskey, verifyStepUpPassword, type StepUpMethod } from '@/
 interface StepUpDialogProps {
   /** What is being unlocked, e.g. "the DKIM private key of example.test". */
   readonly what: string;
-  readonly methods: readonly StepUpMethod[];
+  /** The server's STEP_UP_REQUIRED refusal: methods, window, whose credential. */
+  readonly refusal: StepUpRefusal;
   readonly onVerified: () => void;
   readonly onCancel: () => void;
+}
+
+/** "5 minutes", "30 minutes", "1 minute"; null when the server named no window. */
+function windowText(seconds: number | null): string | null {
+  if (seconds === null) return null;
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
 }
 
 const INPUT_CLASS =
@@ -28,7 +36,9 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : 'Could not confirm it is you.';
 }
 
-export default function StepUpDialog({ what, methods, onVerified, onCancel }: StepUpDialogProps) {
+export default function StepUpDialog({ what, refusal, onVerified, onCancel }: StepUpDialogProps) {
+  const { methods, impersonation, credentialEmail } = refusal;
+  const lasts = windowText(refusal.maxAgeSeconds);
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState<StepUpMethod | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -89,14 +99,26 @@ export default function StepUpDialog({ what, methods, onVerified, onCancel }: St
         </div>
 
         <div className="space-y-4 px-5 py-4">
-          <p className="text-sm text-gray-600 dark:text-gray-400">
-            You are about to see {what}. Sign in again to continue; it then stays unlocked for 30 minutes.
+          <p className="text-sm text-gray-600 dark:text-gray-400" data-testid="step-up-explainer">
+            You are about to see {what}. Confirm it is you to continue
+            {lasts ? `; it then stays unlocked for ${lasts}, in this browser session only.` : '.'}
           </p>
+
+          {impersonation && (
+            <p
+              className="rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-800 dark:bg-blue-900/20 dark:text-blue-200"
+              data-testid="step-up-impersonation"
+            >
+              You are signed in as this tenant from your staff account
+              {credentialEmail ? <> (<span className="font-medium">{credentialEmail}</span>)</> : null}.
+              Confirm with <strong>your own</strong> staff password or passkey, not the tenant&apos;s.
+            </p>
+          )}
 
           {canPassword && (
             <form onSubmit={submitPassword} className="space-y-2">
               <label htmlFor="step-up-password" className="block text-xs font-medium text-gray-700 dark:text-gray-300">
-                Password
+                {impersonation ? 'Your staff password' : 'Password'}
               </label>
               <input
                 id="step-up-password"
@@ -131,15 +153,16 @@ export default function StepUpDialog({ what, methods, onVerified, onCancel }: St
                 data-testid="step-up-passkey"
               >
                 {busy === 'passkey' ? <Loader2 size={14} className="animate-spin" /> : <Fingerprint size={14} />}
-                Confirm with passkey
+                {impersonation ? 'Confirm with your staff passkey' : 'Confirm with passkey'}
               </button>
             </div>
           )}
 
           {!canPassword && !canPasskey && (
             <p className="rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-sm text-amber-800 dark:text-amber-200" data-testid="step-up-no-method">
-              Your account has no password or passkey to confirm with. Register a passkey and turn on passkey
-              sign-in under User settings, then try again.
+              {impersonation
+                ? 'Your staff account has no password or passkey to confirm with. Register a passkey and turn on passkey sign-in under User settings in the admin panel, then try again.'
+                : 'Your account has no password or passkey to confirm with. Register a passkey and turn on passkey sign-in under User settings, then try again.'}
             </p>
           )}
 

@@ -4,7 +4,7 @@ import { randomUUID, randomBytes } from 'node:crypto';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import { getNode } from '../nodes/service.js';
-import { getStepUpStatus } from '../auth/step-up-service.js';
+import { getStepUpStatus, type StepUpCaller } from '../auth/step-up-service.js';
 import {
   buildTerminalPodSpec,
   buildNsenterArgv,
@@ -95,7 +95,9 @@ export async function createSession(
 ): Promise<CreatedSession> {
   // 1) Freshness gate — step-up required unless within window.
   if (!opts.skipStepUpForTest) {
-    const status = await getStepUpStatus(ctx.db, actor.userId);
+    // Session-bound: the step-up must have been made in the session asking.
+    const caller = (request as { user?: StepUpCaller }).user;
+    const status = await getStepUpStatus(ctx.db, caller ?? { sub: actor.userId });
     if (status.required) {
       // Security finding H1: an OIDC-only super_admin has NO local
       // credential to step up with. We surface STEP_UP_UNAVAILABLE so

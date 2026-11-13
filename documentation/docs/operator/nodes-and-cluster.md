@@ -602,8 +602,10 @@ How it works for you:
 
 1. Sign in as `super_admin` and open **Cluster → Nodes**.
 2. Click **Terminal** on a Ready node.
-3. If your last credential check was 30 minutes ago or more, you are prompted
-   to re-authenticate (password and/or passkey). This is a **step-up** gate.
+3. Unless you confirmed it is you in this browser session within the last 30
+   minutes, you are prompted to re-authenticate (password and/or passkey).
+   This is a **step-up** gate; signing in does not count, and a confirmation
+   given in another browser does not either.
 4. You land as `root` in the node's host namespaces — `hostname` returns the
    node's name, and you see the node's real filesystem.
 5. Close the modal (×, Escape, or close the tab) and the privileged pod is

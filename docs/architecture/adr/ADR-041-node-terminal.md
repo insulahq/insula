@@ -76,11 +76,15 @@ The shell runs in the **host's** namespaces. Inside the shell:
    requirePanel('admin') + requireRole('super_admin')` on every route.
    The WS handler re-checks role + panel after the JWT verify in case
    a future hook reorder skips the gate.
-2. **Step-up freshness:** `users.last_credential_check_at` must be
-   within the last 30 minutes. Every successful credential challenge
-   (password login, passkey verify, OIDC login, step-up endpoints)
-   bumps the timestamp. OIDC-only users with no local credential get
-   `STEP_UP_UNAVAILABLE 409`.
+2. **Step-up freshness:** the SESSION asking must have stepped up within
+   the last 30 minutes — a row in `auth_step_ups` (migration 0179) keyed
+   by the access token's `sid` (its refresh-token family), written only by
+   the explicit `/me/step-up/*` endpoints. Signing in does not count, and a
+   step-up in another session of the same user does not either (superseded:
+   the per-user `users.last_step_up_at` clock, which let a second session or a
+   stolen token ride on the owner's step-up). OIDC-only users with no local
+   credential get `STEP_UP_UNAVAILABLE 409`. The same mechanism gates key
+   material (DKIM private key, certificate download) with a 5-minute window.
 3. **WS token:** every session ships with a 256-bit
    ([`randomBytes(32)`](../../backend/src/modules/node-terminal/service.ts))
    single-use token bound to the sessionId. 60s TTL — burned on first
@@ -145,8 +149,9 @@ doesn't have the in-memory session, returning 4404).
   audit trail.
 - No SSH key rotation on every join — the only auth boundary is the
   k8s API server + kubelet.
-- 30-min freshness window means a fresh login → immediate terminal
-  with no extra prompt; a 2h-old session → step-up prompt.
+- 30-min freshness window, per session: the first terminal of a session
+  asks for a step-up (sign-in alone does not count); further terminals in
+  that session within 30 minutes do not.
 - All cleanup paths converge: modal close, server idle, k8s
   activeDeadlineSeconds, orphan sweeper.
 

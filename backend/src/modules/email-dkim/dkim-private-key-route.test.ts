@@ -150,6 +150,43 @@ describe('DKIM private-key route', () => {
     expect(res.body).not.toContain('stalwart-mgmt');
   });
 
+  // Operator decision: an API token needs no step-up; it is held to the
+  // strictest scope instead, and a tenant agent cannot carry the key off.
+  it('lets an API token with the delete scope have the key, and names it in the audit row', async () => {
+    const iat = Math.floor(Date.now() / 1000);
+    const pat = (scopes: string[], audience?: 'tenant') => app.jwt.sign({
+      sub: 'a1', role: 'super_admin', panel: 'admin', iat,
+      apiToken: { tokenId: 'pat-1', kind: 'pat', name: 'mail-move', scopes, via: 'api', ...(audience ? { audience } : {}) },
+    });
+    const readOnly = await get(pat(['read']));
+    expect(readOnly.statusCode).toBe(403);
+    expect(readOnly.json().error.code).toBe('INSUFFICIENT_SCOPE');
+
+    const ok = await get(pat(['read', 'write', 'delete']));
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().data.privateKeyPem).toBe(PEM);
+    expect(audits.at(-1)).toMatchObject({ changes: expect.objectContaining({ apiTokenId: 'pat-1', via: 'api' }) });
+
+    const agent = app.jwt.sign({
+      sub: 'u1', role: 'tenant_admin', panel: 'tenant', tenantId: TENANT, iat,
+      apiToken: { tokenId: 'oauth-1', kind: 'oauth', name: 'agent', scopes: ['read', 'write', 'delete'], via: 'mcp', audience: 'tenant' },
+    });
+    const refused = await get(agent);
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json().error.code).toBe('AGENT_CREDENTIAL_NOT_ALLOWED');
+  });
+
+  it('works under "Login as tenant" once the staff member stepped up, and says who it was', async () => {
+    const imp = app.jwt.sign({
+      sub: 'u1', role: 'tenant_admin', panel: 'tenant', tenantId: TENANT, impersonatedBy: 'staff-1',
+      sid: 'imp:abc', iat: Math.floor(Date.now() / 1000),
+    });
+    const res = await get(imp);
+    expect(res.statusCode).toBe(200);
+    expect(assertFreshStepUp).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ impersonatedBy: 'staff-1' }), 'dkim_private_key');
+    expect(audits.at(-1)).toMatchObject({ actorId: 'u1', changes: expect.objectContaining({ impersonatedBy: 'staff-1' }) });
+  });
+
   it('gives nothing when the audit row cannot be written', async () => {
     const insert = fakeDb.insert;
     fakeDb.insert = () => ({ values: async () => { throw new Error('db down'); } });

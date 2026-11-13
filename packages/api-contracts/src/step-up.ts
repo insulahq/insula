@@ -4,8 +4,15 @@ import { z } from 'zod';
 //
 // A "step-up" is a fresh credential challenge required when the user
 // hasn't proven a credential recently enough for a privileged action
-// (e.g. opening a root shell on a cluster node). Freshness is tracked
-// by users.last_credential_check_at; default window is 30 minutes.
+// (e.g. opening a root shell on a cluster node). Freshness belongs to the
+// SESSION that stepped up (auth_step_ups, keyed by the access token's `sid`):
+// another session of the same user is asked again. Windows: 30 minutes for
+// the node terminal, 5 minutes for key material (dkim_private_key,
+// cert_download). Signing in does not count as a step-up.
+//
+// Under "Login as tenant" the staff member confirms with THEIR OWN password
+// or passkey; the refusal says so (`impersonation`, `credentialEmail`).
+// API tokens need no step-up: their scopes bind instead.
 //
 // Methods are derived from the user's auth config:
 //   • 'password'  — user has a passwordHash set
@@ -21,9 +28,8 @@ export const stepUpMethodSchema = z.union([
 ]);
 export type StepUpMethod = z.infer<typeof stepUpMethodSchema>;
 
-// Purposes are tagged so we can extend the freshness policy per-action
-// later (e.g. shorter window for tenant deletes) without a breaking
-// change. All of them share the one freshness clock today.
+// Purposes pick the freshness window (one per-session clock, read against
+// the purpose's window: 30 minutes for node_terminal, 5 for the others).
 //   node_terminal     root shell on a cluster node (admin panel)
 //   dkim_private_key  showing an email domain's DKIM signing key
 //   cert_download     a domain's certificate + private key, and minting a
@@ -48,9 +54,27 @@ export const stepUpStatusResponseSchema = z.object({
     methods: z.array(stepUpMethodSchema),
     lastCredentialCheckAt: z.string().datetime().nullable(),
     maxAgeSeconds: z.number().int().positive(),
+    /** True under "Login as tenant": the credential asked for is the staff member's own. */
+    impersonation: z.boolean().optional(),
+    /** Whose credential is asked for, when it is not the signed-in account's (impersonation). */
+    credentialEmail: z.string().nullable().optional(),
   }),
 });
 export type StepUpStatusResponse = z.infer<typeof stepUpStatusResponseSchema>;
+
+/**
+ * `details` of a 403 STEP_UP_REQUIRED refusal. The panel asks for one of
+ * `methods`, posts it to /me/step-up/*, and repeats the refused request.
+ */
+export const stepUpRequiredDetailsSchema = z.object({
+  purpose: stepUpPurposeSchema.optional(),
+  methods: z.array(stepUpMethodSchema),
+  lastCredentialCheckAt: z.string().nullable().optional(),
+  maxAgeSeconds: z.number().int().positive().optional(),
+  impersonation: z.boolean().optional(),
+  credentialEmail: z.string().nullable().optional(),
+});
+export type StepUpRequiredDetails = z.infer<typeof stepUpRequiredDetailsSchema>;
 
 // ─── Password step-up (POST /me/step-up/password) ──────────────────
 

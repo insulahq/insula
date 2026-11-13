@@ -1,10 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { stepUpMethodsOf, type StepUpMethod } from '@/lib/step-up';
+import { stepUpRefusalOf, type StepUpRefusal } from '@/lib/step-up';
 
 const StepUpDialog = lazy(() => import('@/components/StepUpDialog'));
 
 interface Pending {
-  readonly methods: readonly StepUpMethod[];
+  readonly refusal: StepUpRefusal;
   readonly settle: (stepped: boolean) => void;
 }
 
@@ -33,11 +33,11 @@ export function useStepUpGate(what: string) {
     try {
       return await action();
     } catch (err) {
-      const methods = stepUpMethodsOf(err);
-      if (methods === null || busy.current) throw err;
+      const refusal = stepUpRefusalOf(err);
+      if (refusal === null || busy.current) throw err;
       busy.current = true;
       const stepped = await new Promise<boolean>((settle) => {
-        open.current = { methods, settle };
+        open.current = { refusal, settle };
         setPending(open.current);
       });
       open.current = null;
@@ -52,7 +52,7 @@ export function useStepUpGate(what: string) {
     <Suspense fallback={null}>
       <StepUpDialog
         what={what}
-        methods={pending.methods}
+        refusal={pending.refusal}
         onVerified={() => pending.settle(true)}
         onCancel={() => pending.settle(false)}
       />

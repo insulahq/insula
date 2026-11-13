@@ -1,61 +1,120 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, lt, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
-import { users } from '../../db/schema.js';
+import { authStepUps, users } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { verifyPassword } from './service.js';
 import type { StepUpMethod, StepUpPurpose } from '@insula/api-contracts';
 
-// Default freshness window for any step-up-gated operation. 30 minutes
-// matches typical session-step-up windows in IAM products and gives
-// the operator a friction-free workflow while still expiring a stale
-// session before a privileged action.
+// Freshness window of the node terminal. 30 minutes matches typical
+// session-step-up windows in IAM products and gives the operator a
+// friction-free workflow while still expiring a stale session before a
+// privileged action.
 export const DEFAULT_STEP_UP_MAX_AGE_MS = 30 * 60 * 1000;
+
+/**
+ * Freshness window for handing out key material (a DKIM private key, a
+ * certificate bundle, a link that fetches one). Short: the step-up is asked
+ * for right before the key leaves, not as a session-long unlock.
+ */
+export const KEY_MATERIAL_STEP_UP_MAX_AGE_MS = 5 * 60 * 1000;
+
+/** The window each purpose is judged against. */
+export function stepUpMaxAgeMs(purpose: StepUpPurpose): number {
+  return purpose === 'node_terminal' ? DEFAULT_STEP_UP_MAX_AGE_MS : KEY_MATERIAL_STEP_UP_MAX_AGE_MS;
+}
+
+/** A step-up row older than this is dead: every window is shorter. */
+const STEP_UP_ROW_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** The token claims the step-up reads. */
+export interface StepUpCaller {
+  readonly sub: string;
+  /** The session the token belongs to: its refresh-token family, or the impersonation token. */
+  readonly sid?: string;
+  readonly jti?: string;
+  readonly impersonatedBy?: string;
+  /** Present on a request made with an API token. */
+  readonly apiToken?: unknown;
+}
+
+/**
+ * The session a step-up is recorded against and checked for. A token minted
+ * before `sid` existed falls back to its own `jti`: a step-up then covers that
+ * one token, and its refreshed successor asks again.
+ */
+export function stepUpSessionId(caller: StepUpCaller): string | null {
+  return caller.sid ?? caller.jti ?? null;
+}
+
+/**
+ * Whose credential a step-up checks. Under "Login as tenant" the token's user
+ * is the tenant's, whose password the staff member does not hold: the staff
+ * member confirms with their own.
+ */
+export function stepUpCredentialHolder(caller: StepUpCaller): string {
+  return caller.impersonatedBy ?? caller.sub;
+}
+
+/**
+ * Who really acted, for the audit row of a key hand-out: the staff member
+ * behind "Login as tenant", or the API token a script or agent used. Empty
+ * for a plain session.
+ */
+export function attributionOf(user: unknown): Record<string, unknown> {
+  const u = (user ?? {}) as { impersonatedBy?: string; apiToken?: { tokenId?: string; name?: string; via?: string } };
+  return {
+    ...(u.impersonatedBy ? { impersonatedBy: u.impersonatedBy } : {}),
+    ...(u.apiToken ? { via: u.apiToken.via, apiTokenId: u.apiToken.tokenId, apiTokenName: u.apiToken.name } : {}),
+  };
+}
 
 export interface StepUpStatus {
   readonly required: boolean;
   readonly methods: readonly StepUpMethod[];
   readonly lastCredentialCheckAt: Date | null;
   readonly maxAgeMs: number;
+  /** True when the credential asked for is not the token user's own (impersonation). */
+  readonly impersonation: boolean;
+  /** The credential holder's email, under impersonation (the dialog names it). */
+  readonly credentialEmail: string | null;
 }
 
 /**
- * Returns whether the user must re-authenticate to perform a privileged
- * action, plus the methods they have available. NEVER throws — a
- * non-existent or inactive user simply returns `required:true` with an
- * empty methods array, which the caller surfaces as STEP_UP_REQUIRED.
+ * Whether this SESSION must step up before a privileged action, and with what.
+ * NEVER throws — a non-existent or inactive credential holder returns
+ * `required:true` with no methods, which the caller surfaces as
+ * STEP_UP_UNAVAILABLE.
  *
- * Freshness clock:
- *   • `lastCredentialCheckAt IS NULL`  → required = true
- *   • `now - lastCredentialCheckAt > maxAgeMs` → required = true
- *   • otherwise required = false
+ * Freshness: the session's row in auth_step_ups, written ONLY by the explicit
+ * step-up endpoints (never by sign-in), for the same credential holder, no
+ * older than `maxAgeMs`. Another session of the same user has no row and is
+ * asked again — a stolen token gains nothing from its owner's step-up.
  *
- * Method enumeration:
- *   • passwordHash present  → 'password' available
- *   • passkeyMode IN ('alternative','second_factor') → 'passkey' available
- *
- * Users with NO method available (passwordHash NULL AND passkeyMode NULL —
- * happens with OIDC-only accounts) return `required:true, methods:[]` —
- * the caller MUST 409 the operation as STEP_UP_UNAVAILABLE since there
- * is no way to step up.
+ * Methods: the credential holder's password (passwordHash set) and passkey
+ * (passkeyMode 'alternative' or 'second_factor'). An OIDC-only account has
+ * neither and gets `methods: []`.
  */
 export async function getStepUpStatus(
   db: Database,
-  userId: string,
+  caller: StepUpCaller,
   maxAgeMs: number = DEFAULT_STEP_UP_MAX_AGE_MS,
 ): Promise<StepUpStatus> {
+  const holder = stepUpCredentialHolder(caller);
+  const impersonation = holder !== caller.sub;
   const [user] = await db
     .select({
+      email: users.email,
       passwordHash: users.passwordHash,
       passkeyMode: users.passkeyMode,
       status: users.status,
-      lastStepUpAt: users.lastStepUpAt,
     })
     .from(users)
-    .where(eq(users.id, userId))
+    .where(eq(users.id, holder))
     .limit(1);
 
+  const credentialEmail = impersonation ? user?.email ?? null : null;
   if (!user || user.status !== 'active') {
-    return { required: true, methods: [], lastCredentialCheckAt: null, maxAgeMs };
+    return { required: true, methods: [], lastCredentialCheckAt: null, maxAgeMs, impersonation, credentialEmail };
   }
 
   const methods: StepUpMethod[] = [];
@@ -64,48 +123,65 @@ export async function getStepUpStatus(
     methods.push('passkey');
   }
 
-  // Gate on lastStepUpAt — bumped ONLY by explicit step-up endpoints,
-  // NOT by login/passkey-verify/OIDC. The first privileged action
-  // after login therefore always requires step-up; subsequent actions
-  // within the freshness window skip the prompt.
-  const last = user.lastStepUpAt;
-  if (!last) {
-    return { required: true, methods, lastCredentialCheckAt: null, maxAgeMs };
-  }
-  const ageMs = Date.now() - last.getTime();
-  const required = ageMs > maxAgeMs;
-  return { required, methods, lastCredentialCheckAt: last, maxAgeMs };
+  const sessionId = stepUpSessionId(caller);
+  const [row] = sessionId
+    ? await db
+      .select({ at: authStepUps.steppedUpAt })
+      .from(authStepUps)
+      .where(and(eq(authStepUps.sessionId, sessionId), eq(authStepUps.userId, holder)))
+      .limit(1)
+    : [];
+  const last = row?.at ?? null;
+  const required = !last || Date.now() - last.getTime() > maxAgeMs;
+  return { required, methods, lastCredentialCheckAt: last, maxAgeMs, impersonation, credentialEmail };
 }
 
 /**
- * `config.apiTokenForbidden` reason for step-up-gated routes. An API token or
- * an agent cannot step up (the step-up endpoints take a session), so without
- * this a token would pass whenever its user had stepped up in the panel
- * within the window — a gate that depends on unrelated timing.
+ * Record a successful step-up for the caller's session. Also prunes dead
+ * rows (cheap: indexed) and keeps users.last_step_up_at as "when did this
+ * person last step up anywhere", for display only — no gate reads it.
  */
-export const STEP_UP_SESSION_ONLY =
-  'hands out key material after a fresh sign-in check, which only a person signed in to the panel can give';
-
-/** The token claims the gate reads. */
-export interface StepUpCaller {
-  readonly sub: string;
-  readonly impersonatedBy?: string;
+export async function recordStepUp(
+  db: Database,
+  caller: StepUpCaller,
+  method: StepUpMethod,
+): Promise<Date> {
+  const sessionId = stepUpSessionId(caller);
+  if (!sessionId) {
+    // Every session token carries a sid or a jti; a token without either is
+    // not one, and a step-up it made could never be found again.
+    throw new ApiError('STEP_UP_NO_SESSION', 'This token has no session to step up for. Sign in again.', 400);
+  }
+  const holder = stepUpCredentialHolder(caller);
+  const now = new Date();
+  await db
+    .insert(authStepUps)
+    .values({ sessionId, userId: holder, method, steppedUpAt: now })
+    .onConflictDoUpdate({
+      target: authStepUps.sessionId,
+      set: { userId: holder, method, steppedUpAt: now },
+    });
+  await db.update(users).set({ lastStepUpAt: now }).where(eq(users.id, holder));
+  await db
+    .delete(authStepUps)
+    .where(lt(authStepUps.steppedUpAt, sql`now() - ${`${STEP_UP_ROW_TTL_MS / 1000} seconds`}::interval`));
+  return now;
 }
 
 /**
  * The server-side gate for an action that hands out key material: throws
- * unless the caller stepped up within the freshness window.
+ * unless this session stepped up within the purpose's window.
  *
- *   403 STEP_UP_REQUIRED     a method exists; `details.methods` lists them so
- *                            the panel can ask, then retry the request
- *   409 STEP_UP_UNAVAILABLE  the account has no password and no passkey
- *                            (OIDC-only), so there is nothing to step up with
- *   403 IMPERSONATION_FORBIDDEN  "Login as tenant": the step-up endpoints
- *                            check the TOKEN's user — the tenant — whose
- *                            credential the operator does not hold, and a
- *                            key released to the operator must not be
- *                            recorded as the tenant's own action
+ *   403 STEP_UP_REQUIRED     a method exists; `details` (stepUpRequiredDetails
+ *                            in the contracts) lists the methods and says
+ *                            whose credential is asked for, so the panel can
+ *                            ask, then retry the request
+ *   409 STEP_UP_UNAVAILABLE  the credential holder has no password and no
+ *                            passkey (OIDC-only), so there is nothing to step
+ *                            up with
  *
+ * An API token passes: it cannot step up, and its scopes bind it instead
+ * (operator decision; the routes give it the strictest scope that fits).
  * The check runs on the server for every request; the panel's dialog only
  * saves a round trip.
  */
@@ -114,42 +190,41 @@ export async function assertFreshStepUp(
   caller: StepUpCaller,
   purpose: StepUpPurpose,
 ): Promise<void> {
-  if (caller.impersonatedBy) {
-    throw new ApiError(
-      'IMPERSONATION_FORBIDDEN',
-      'Key material is released only to the signed-in account owner, not while impersonating.',
-      403,
-      { purpose },
-    );
-  }
-  const status = await getStepUpStatus(db, caller.sub, DEFAULT_STEP_UP_MAX_AGE_MS);
+  if (caller.apiToken) return;
+  const status = await getStepUpStatus(db, caller, stepUpMaxAgeMs(purpose));
   if (!status.required) return;
   if (status.methods.length === 0) {
     throw new ApiError(
       'STEP_UP_UNAVAILABLE',
-      'Confirming it is you needs a password or a passkey on your account, and yours has neither. Register a passkey and turn on passkey sign-in under User settings, then try again.',
+      status.impersonation
+        ? 'Confirming it is you needs a password or a passkey on your own staff account, and it has neither. Register a passkey and turn on passkey sign-in under User settings in the admin panel, then try again.'
+        : 'Confirming it is you needs a password or a passkey on your account, and yours has neither. Register a passkey and turn on passkey sign-in under User settings, then try again.',
       409,
-      { reason: 'NO_STEP_UP_METHOD_AVAILABLE', purpose },
+      { reason: 'NO_STEP_UP_METHOD_AVAILABLE', purpose, impersonation: status.impersonation },
     );
   }
   throw new ApiError(
     'STEP_UP_REQUIRED',
-    'Confirm it is you before this is shown.',
+    status.impersonation
+      ? 'Confirm it is you, with your own staff password or passkey, before this is shown.'
+      : 'Confirm it is you before this is shown.',
     403,
     {
       purpose,
       methods: status.methods,
       lastCredentialCheckAt: status.lastCredentialCheckAt?.toISOString() ?? null,
       maxAgeSeconds: Math.floor(status.maxAgeMs / 1000),
+      impersonation: status.impersonation,
+      credentialEmail: status.credentialEmail,
     },
     'POST /api/v1/me/step-up/{password|passkey/verify} with your active credential, then retry.',
   );
 }
 
 /**
- * Verify a password as a step-up challenge. Does NOT issue session
- * tokens; only proves the credential and bumps the freshness clock so
- * subsequent privileged operations succeed.
+ * Verify a password as a step-up challenge for `userId` — the credential
+ * holder (stepUpCredentialHolder). Does NOT issue session tokens and does not
+ * record the step-up itself: the route records it for the calling session.
  *
  * Throws ApiError on bad credentials. Mirror of `verifyPassword` in
  * auth/service.ts but scoped to step-up so we can keep the rate-limit
@@ -159,7 +234,7 @@ export async function verifyStepUpPassword(
   db: Database,
   userId: string,
   password: string,
-): Promise<Date> {
+): Promise<void> {
   if (!password) {
     throw new ApiError('VALIDATION_ERROR', 'Password is required', 400);
   }
@@ -184,14 +259,5 @@ export async function verifyStepUpPassword(
   if (!ok) {
     throw new ApiError('STEP_UP_FAILED', 'Step-up authentication failed', 401);
   }
-
-  const now = new Date();
-  // Bump BOTH timestamps — lastCredentialCheckAt for any general
-  // "was the user active recently" check, and lastStepUpAt for the
-  // explicit step-up freshness clock the privileged-action gate uses.
-  await db
-    .update(users)
-    .set({ lastCredentialCheckAt: now, lastStepUpAt: now })
-    .where(eq(users.id, userId));
-  return now;
+  await db.update(users).set({ lastCredentialCheckAt: new Date() }).where(eq(users.id, userId));
 }

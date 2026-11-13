@@ -245,14 +245,21 @@ shows issuer, type, and expiry once a cert is in place.
 The **Certificate files** card lets you download a tenant's certificate when
 you are diagnosing a TLS problem on a server they run themselves. The file
 contains the customer's **private key**, so treat it accordingly — you are
-asked to confirm it is you (password or passkey; valid for 30 minutes) before
-the download starts, and every download is written to the audit log with the
-domain, who did it, and where from. It is not available while you are signed
-in to the tenant panel as the customer (**Login as tenant**).
+asked to confirm it is you (password or passkey) right before the download
+starts. The confirmation counts for 5 minutes, in that browser session only.
+Every download is written to the audit log with the domain, who did it, and
+where from.
 
-It also lists the download tokens the customer has issued, with when each was
-last used, and lets you **revoke** one. That is the support path for "I think
-my token leaked" — revocation is immediate.
+Under **Login as tenant** the customer's panel asks for **your own** staff
+password or passkey, not the customer's, and the audit entry names you
+(`impersonatedBy`). An API token needs no confirmation: it is held to its
+scopes instead (`read` for the download, `write` for creating a link). This is
+how a server you run for a customer picks up every renewal unattended.
+
+It also lists the download links the customer has created, with when each was
+last used, and lets you **revoke** one. Links are temporary (15 minutes to 24
+hours) and are deleted automatically a few minutes after they expire. Links
+created before this rule existed were all revoked when it was introduced.
 
 You cannot create a token from the admin panel. The secret is displayed exactly
 once, and it belongs to the customer; minting it into your browser would put a

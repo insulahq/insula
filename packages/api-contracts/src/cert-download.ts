@@ -14,17 +14,24 @@ import { z } from 'zod';
  *   * It is bound to ONE domain, so a leak exposes that domain's certificate
  *     and nothing else — no panel access, no other domain, no other tenant.
  *
- * Let's Encrypt renews every 90 days, so unattended pickup is the primary use
- * case; the panel download button is the convenience path for a one-off.
+ * A link is a one-off hand-over (24 hours at most). Unattended pickup of a
+ * renewed certificate (Let's Encrypt renews every 90 days) calls the download
+ * route with an API token, which needs no step-up.
  */
 
-/** Token expiry choices offered in the panel. `never` stores NULL. */
-export const certTokenExpirySchema = z.enum(['never', '30d', '90d', '1y']);
+/**
+ * How long a download link lives. Links are temporary: a one-off hand-over to
+ * another server, 24 hours at most, reaped once expired. Unattended pickup of
+ * a renewed certificate uses an API token on the download route instead.
+ */
+export const certTokenExpirySchema = z.enum(['15m', '1h', '24h']);
 export type CertTokenExpiry = z.infer<typeof certTokenExpirySchema>;
+/** The longest a link may live, enforced by the server whatever it was minted with. */
+export const CERT_TOKEN_MAX_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
 export const createCertTokenInputSchema = z.object({
   name: z.string().trim().min(1).max(100),
-  expiry: certTokenExpirySchema.default('90d'),
+  expiry: certTokenExpirySchema.default('1h'),
 }).strict();
 export type CreateCertTokenInput = z.infer<typeof createCertTokenInputSchema>;
 
@@ -33,11 +40,14 @@ export const certTokenSchema = z.object({
   id: z.string(),
   domainId: z.string(),
   name: z.string(),
-  /** ISO date, or null when the token never expires. */
-  expiresAt: z.string().nullable(),
+  /** ISO date; every link expires. */
+  expiresAt: z.string(),
   lastUsedAt: z.string().nullable(),
   createdAt: z.string(),
-  /** True once expiresAt has passed — the row is kept for the audit trail. */
+  /**
+   * True once expiresAt has passed. The reaper deletes an expired link within
+   * minutes; the record that it existed is its audit entry.
+   */
   expired: z.boolean(),
 });
 export type CertToken = z.infer<typeof certTokenSchema>;

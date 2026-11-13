@@ -15,6 +15,8 @@ export interface JwtPayload {
   readonly panel: 'admin' | 'tenant';
   readonly tenantId?: string;
   readonly impersonatedBy?: string;
+  /** The session (refresh-token family, or `imp:<jti>` for "Login as tenant"); step-ups bind to it. */
+  readonly sid?: string;
   readonly exp: number;
   readonly iat: number;
   readonly jti?: string;

@@ -76,18 +76,20 @@ export async function issueSession(
   user: SessionUser,
 ): Promise<SessionResponseData> {
   const panel = (user.panel ?? 'admin') as 'admin' | 'tenant';
-  const accessToken = signAccessToken(app, {
-    userId: user.id,
-    role: user.role,
-    panel,
-    tenantId: user.tenantId,
-  });
+  // Refresh token first: its family is the session the access token names.
   const issued = await issueRefreshToken(app.db, {
     userId: user.id,
     panel,
     tenantId: user.tenantId ?? null,
     userAgent: pickUserAgent(request),
     ipAddress: request.ip,
+  });
+  const accessToken = signAccessToken(app, {
+    userId: user.id,
+    role: user.role,
+    panel,
+    tenantId: user.tenantId,
+    sessionId: issued.familyId,
   });
   setSessionCookies(reply, accessToken, issued.token);
   return {

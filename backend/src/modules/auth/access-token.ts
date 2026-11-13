@@ -20,6 +20,12 @@ export interface AccessTokenInput {
   readonly panel: 'admin' | 'tenant';
   readonly tenantId?: string | null;
   readonly impersonatedBy?: string;
+  /**
+   * The session the token belongs to — its refresh-token family. A step-up
+   * is recorded against it (auth/step-up-service.ts), so it covers this
+   * session and survives the token's refresh, but no other session.
+   */
+  readonly sessionId?: string;
 }
 
 export interface AccessTokenOptions {
@@ -51,6 +57,7 @@ export function signAccessToken(
   };
   if (input.tenantId) payload.tenantId = input.tenantId;
   if (input.impersonatedBy) payload.impersonatedBy = input.impersonatedBy;
+  if (input.sessionId) payload.sid = input.sessionId;
   if (options.via) payload.via = options.via;
   if (options.apiToken) payload.apiToken = options.apiToken;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

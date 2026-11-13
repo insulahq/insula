@@ -22,7 +22,7 @@ import { ApiError } from '../../shared/errors.js';
 import { auditLogs, emailDomains, domains } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { dkimSignatureGet, type StalwartDkimSignatureRow } from '../stalwart-jmap/client.js';
-import { assertFreshStepUp, STEP_UP_SESSION_ONLY, type StepUpCaller } from '../auth/step-up-service.js';
+import { assertFreshStepUp, attributionOf, type StepUpCaller } from '../auth/step-up-service.js';
 import { resolveDkimAccountId, redactPemBlocks } from './signatures.js';
 import { buildDkimKeyList, dkimTxtName, readPublishedDkimRecords } from './keys.js';
 import { resolveSigningKey, type SigningKeyResult } from './private-key.js';
@@ -133,10 +133,15 @@ export async function emailDkimKeysRoutes(app: FastifyInstance): Promise<void> {
   // The key that signs the domain's mail, so its owner can sign with it on
   // another server. Order: ownership (404 for someone else's domain, before
   // anything else can answer), then step-up, then the mail server.
+  //
+  // An API token needs no step-up (operator decision) and is held instead to
+  // the strictest scope, `delete`: the key lets its holder sign mail as the
+  // domain. `issuesCredential` keeps a TENANT agent from carrying it off —
+  // it would keep working after the agent is disconnected.
   app.get(
     '/tenants/:tenantId/email-domains/:domainId/dkim/private-key',
     {
-      config: { apiTokenForbidden: STEP_UP_SESSION_ONLY },
+      config: { apiScope: 'delete', issuesCredential: true },
       onRequest: [
         authenticate,
         requireRole('super_admin', 'admin', 'tenant_admin'),
@@ -189,7 +194,10 @@ export async function emailDkimKeysRoutes(app: FastifyInstance): Promise<void> {
         httpMethod: 'GET',
         httpPath: request.url.slice(0, 500),
         httpStatus: 200,
-        changes: { private_key_revealed: true, selector: pick.selector, domain: row.domainName },
+        changes: {
+          private_key_revealed: true, selector: pick.selector, domain: row.domainName,
+          ...attributionOf(request.user),
+        },
         ipAddress: request.ip,
       });
 

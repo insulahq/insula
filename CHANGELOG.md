@@ -16,18 +16,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 - **Downloading a domain's certificate asks you to confirm it is you.** The file holds the private
   key, so the SSL/TLS tab's **Download certificate** (tenant and admin panel) and creating a
-  download token (which fetches the same key unattended) now need a fresh step-up: the password or
-  passkey, valid for 30 minutes. The server refuses without it (403 `STEP_UP_REQUIRED`), so the
-  check does not depend on the panel.
+  download link (which fetches the same key unattended) now need a step-up right before: the
+  password or passkey. The server refuses without it (403 `STEP_UP_REQUIRED`), so the check does
+  not depend on the panel.
   - An account with neither a password nor a passkey (single sign-on only) is told to register a
     passkey and turn on passkey sign-in first (409 `STEP_UP_UNAVAILABLE`).
-  - Not while impersonating: an operator using "Login as tenant" gets 403
-    `IMPERSONATION_FORBIDDEN`. The step-up checks the signed-in account, and the operator does not
-    hold the tenant's credential. The admin panel's own download still works, behind the same
-    step-up.
-  - The two routes no longer accept an API token or an agent, which cannot step up. Unattended
-    fetches keep using a certificate download token (`/api/v1/certs/<domain>/download`), which
-    is unchanged.
+  - Under "Login as tenant" the staff member confirms with **their own** password or passkey; the
+    tenant panel's dialog says so and names the staff account. The audit entry names the staff
+    member (`impersonatedBy`).
+  - An API token needs no step-up: the download and link routes work with it as before (scopes
+    `read` and `write`), and it is how a server picks up every renewal unattended. The audit entry
+    names the token.
+- **A step-up belongs to the session that gave it.** It used to be one clock per user, so a second
+  browser, or a stolen session token, passed every step-up gate for 30 minutes after the owner
+  confirmed anywhere. Each access token now names its session (`sid`, its refresh-token family; a
+  "Login as tenant" session is its single token), and a step-up is recorded for that session only
+  (`auth_step_ups`, migration 0179). Signing in still does not count as one. Windows: 5 minutes for
+  key material (DKIM private key, certificate download, creating a link), 30 minutes for the node
+  terminal, as before. Sessions signed in before this release are asked once more after their next
+  token refresh.
+- **Certificate download links are temporary.** A link now lives 15 minutes, 1 hour (the default)
+  or 24 hours, never longer, checked on every use, and a leased reaper deletes expired links every
+  5 minutes. **Operator note:** every existing link was revoked by migration 0179, including links
+  with no expiry or a year. A customer server that used one to pick up renewals needs an API token
+  on `GET /api/v1/tenants/<tenant>/domains/<domain>/ssl-cert/download` instead; tenants cannot
+  create API tokens themselves, so staff set that up.
 
 ### Added
 
@@ -59,6 +72,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   It shows the key with the domain (`d=`) and selector (`s=`) another server needs, and whether
   the public key is published. It is for tenant administrators and staff, not `support`. It asks
   for the same step-up, is sent `no-store`, and every hand-out is audited (`dkim_private_key`).
+  An API token gets it without a step-up but needs the `delete` scope, the strictest; a tenant's
+  AI agent is refused (it would keep the key after being disconnected).
   - Stalwart masks every secret on read, so the platform now keeps its own copy, encrypted with
     `PLATFORM_ENCRYPTION_KEY` like an uploaded TLS key, of each DKIM key it creates: enable,
     rotation, drift repair, DR recreate (migration 0178, `email_dkim_private_keys`).

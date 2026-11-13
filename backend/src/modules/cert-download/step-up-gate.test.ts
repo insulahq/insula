@@ -39,7 +39,10 @@ vi.mock('../auth/step-up-service.js', async (orig) => ({
 
 const { certDownloadRoutes } = await import('./routes.js');
 
-const fakeDb = { insert: () => ({ values: () => ({ catch: () => undefined }) }) };
+const audits: Record<string, unknown>[] = [];
+const fakeDb = {
+  insert: () => ({ values: (v: Record<string, unknown>) => { audits.push(v); return { catch: () => undefined }; } }),
+};
 const base = `/api/v1/tenants/${REF.tenantId}/domains/${REF.domainId}`;
 
 describe('certificate download step-up', () => {
@@ -86,13 +89,13 @@ describe('certificate download step-up', () => {
 
   it('refuses to mint a download token without one — it fetches the same key', async () => {
     assertFreshStepUp.mockRejectedValue(stepUpRequired());
-    const res = await app.inject({ method: 'POST', url: `${base}/cert-tokens`, headers: auth(), payload: { name: 'ci', expiry: '90d' } });
+    const res = await app.inject({ method: 'POST', url: `${base}/cert-tokens`, headers: auth(), payload: { name: 'ci', expiry: '1h' } });
     expect(res.statusCode).toBe(403);
     expect(createToken).not.toHaveBeenCalled();
   });
 
   it('mints a token after a fresh step-up', async () => {
-    const res = await app.inject({ method: 'POST', url: `${base}/cert-tokens`, headers: auth(), payload: { name: 'ci', expiry: '90d' } });
+    const res = await app.inject({ method: 'POST', url: `${base}/cert-tokens`, headers: auth(), payload: { name: 'ci', expiry: '1h' } });
     expect(res.statusCode).toBe(201);
     expect(assertFreshStepUp).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'cert_download');
   });
@@ -106,6 +109,41 @@ describe('certificate download step-up', () => {
     });
     expect(res.statusCode).toBe(404);
     expect(assertFreshStepUp).not.toHaveBeenCalled();
+  });
+
+  // Operator decision: an API token needs no step-up here, and works as it
+  // did before the gate (the gate itself lets it through — step-up-gate.test).
+  it('lets an API token download and mint, like before the gate', async () => {
+    const pat = app.jwt.sign({
+      sub: 'a1', role: 'super_admin', panel: 'admin', iat: Math.floor(Date.now() / 1000),
+      apiToken: { tokenId: 'pat-1', kind: 'pat', name: 'renewals', scopes: ['read', 'write'], via: 'api' },
+    });
+    audits.length = 0;
+    const dl = await app.inject({ method: 'GET', url: `${base}/ssl-cert/download`, headers: { authorization: `Bearer ${pat}` } });
+    expect(dl.statusCode).toBe(200);
+    expect(audits[0]).toMatchObject({ changes: expect.objectContaining({ apiTokenId: 'pat-1', via: 'api' }) });
+    const mint = await app.inject({
+      method: 'POST', url: `${base}/cert-tokens`, headers: { authorization: `Bearer ${pat}` }, payload: { name: 'ci', expiry: '15m' },
+    });
+    expect(mint.statusCode).toBe(201);
+  });
+
+  it('works under "Login as tenant", and the audit row names the staff member', async () => {
+    const imp = app.jwt.sign({
+      sub: 'u1', role: 'tenant_admin', panel: 'tenant', tenantId: REF.tenantId, impersonatedBy: 'staff-1',
+      sid: 'imp:abc', iat: Math.floor(Date.now() / 1000),
+    });
+    audits.length = 0;
+    const res = await app.inject({ method: 'GET', url: `${base}/ssl-cert/download`, headers: { authorization: `Bearer ${imp}` } });
+    expect(res.statusCode).toBe(200);
+    expect(assertFreshStepUp).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ impersonatedBy: 'staff-1' }), 'cert_download');
+    expect(audits[0]).toMatchObject({ changes: expect.objectContaining({ impersonatedBy: 'staff-1' }) });
+  });
+
+  it('refuses a link lifetime past 24 hours', async () => {
+    const res = await app.inject({ method: 'POST', url: `${base}/cert-tokens`, headers: auth(), payload: { name: 'ci', expiry: '90d' } });
+    expect(res.statusCode).toBe(400);
+    expect(createToken).not.toHaveBeenCalled();
   });
 
   it('leaves the token route alone: the token is the credential', async () => {

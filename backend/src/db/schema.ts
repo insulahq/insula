@@ -1218,6 +1218,20 @@ export const auditLogs = pgTable('audit_logs', {
 // Reason values: 'logout' | 'rotated' | 'reuse_detected' | 'password_change' | 'admin_revoke'
 // Stored as varchar (not enum) so we can add new reasons without a migration.
 
+// Step-ups, per session (migration 0179). `sessionId` is the access token's
+// `sid` (its refresh-token family) or, without one, its `jti`; `userId` is
+// whose credential was checked — the staff member under "Login as tenant".
+export const authStepUps = pgTable('auth_step_ups', {
+  sessionId: varchar('session_id', { length: 64 }).primaryKey(),
+  userId: varchar('user_id', { length: 36 })
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  method: varchar('method', { length: 16 }).notNull(),
+  steppedUpAt: timestamp('stepped_up_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('auth_step_ups_at_idx').on(table.steppedUpAt),
+]);
+
 export const refreshTokens = pgTable('refresh_tokens', {
   id: varchar('id', { length: 36 }).primaryKey(),
   userId: varchar('user_id', { length: 36 })
@@ -2689,7 +2703,10 @@ export const certDownloadTokens = pgTable('cert_download_tokens', {
   name: varchar('name', { length: 100 }).notNull(),
   /** sha256 of the plaintext token. The plaintext is never stored. */
   tokenHash: varchar('token_hash', { length: 64 }).notNull(),
-  /** NULL = never expires (an explicit customer choice in the UI). */
+  /**
+   * Links are temporary (15 minutes to 24 hours, migration 0179). NULL only on
+   * a row minted by old code mid-rollout: refused, and reaped.
+   */
   expiresAt: timestamp('expires_at', { withTimezone: true }),
   /** Bumped on every successful download so a stale token is identifiable. */
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
@@ -2703,6 +2720,8 @@ export const certDownloadTokens = pgTable('cert_download_tokens', {
   uniqueIndex('cert_download_tokens_hash_unique').on(table.tokenHash),
   index('cert_download_tokens_domain_idx').on(table.domainId),
   index('cert_download_tokens_tenant_idx').on(table.tenantId),
+  // The reaper's lookup (migration 0179).
+  index('cert_download_tokens_expires_idx').on(table.expiresAt),
 ]);
 
 export type CertDownloadToken = typeof certDownloadTokens.$inferSelect;

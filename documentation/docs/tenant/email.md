@@ -214,7 +214,9 @@ If another server also sends mail as your domain (an office mail server, an
 appliance), it can sign with the **same** DKIM key, so the record that is
 already published verifies its mail too. On the key marked **Signing**, click
 **Show private key** (tenant administrators only). You are asked to confirm it
-is you with your password or passkey first; that stays valid for 30 minutes.
+is you with your password or passkey first; that counts for 5 minutes, in this
+browser session only. (Under **Login as tenant**, staff confirm with their own
+password or passkey.)
 
 The card then shows the key with what the other server needs: the domain
 (`d=`), the selector (`s=`, for example `dkim-1`) and the key itself, with a
