@@ -102,7 +102,7 @@ components:
     name: Traefik (ingress / TLS termination / WAF plugin host)
     tier: "0"
     kind: chart
-    pinned: "42.3.0"
+    pinned: "42.3.1"
     app_version: "v3.7.17"
     pin_source: scripts/bootstrap.sh
     pin_check: true
@@ -193,7 +193,7 @@ components:
     name: oauth2-proxy (admin-UI auth gate)
     tier: "0"
     kind: image
-    pinned: "v7.15.5"
+    pinned: "v7.15.6"
     pin_source: k8s/base/oauth2-proxy/deployment.yaml
     pin_check: true
     repos: [oauth2-proxy/oauth2-proxy]
@@ -479,13 +479,13 @@ components:
     watch: { type: first_party }
     scan: trivy
     owner: platform
-    notes: First-party (alpine@digest + rclone 1.75.2 SHA-verified). Data egress to backup targets; holds target creds.
+    notes: First-party (alpine@digest + rclone 1.76.0 SHA-verified). Data egress to backup targets; holds target creds.
 
   - id: rclone
     name: rclone (upstream binary/image)
     tier: "1"
     kind: image
-    pinned: "1.75.2"
+    pinned: "1.76.0"
     pin_source: k8s/base/backup/etcd-snap-via-shim-cronjob.yaml
     pin_check: true
     repos: [rclone/rclone]
@@ -498,7 +498,7 @@ components:
     name: rclone (host binary installed by bootstrap.sh)
     tier: "1"
     kind: binary
-    pinned: "v1.75.2"
+    pinned: "v1.76.0"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     repos: [rclone/rclone]
@@ -1067,7 +1067,7 @@ components:
     name: versitygw (dev and lab S3 fixture)
     tier: "3"
     kind: image
-    pinned: "v1.10.0"
+    pinned: "v1.11.0"
     pin_source: k8s/dev/s3/s3.yaml
     pin_check: true
     repos: [versity/versitygw]

@@ -30,6 +30,12 @@ jobs:
       - name: Run server unit + security tests
         working-directory: images/file-manager
         run: node --test
+      # Ownership needs root (only root can give a file to www-data); as the
+      # runner user the file skips, so run it again under sudo. REQUIRED turns
+      # a skip into a failure, so this step can never pass without running.
+      - name: Run ownership tests as root
+        working-directory: images/file-manager
+        run: sudo env "PATH=$PATH" FM_OWNERSHIP_REQUIRED=1 node --test ownership.test.mjs
 
   build:
     name: Build + Scan + Push

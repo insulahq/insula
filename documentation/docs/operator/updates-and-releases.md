@@ -189,13 +189,20 @@ Each release pins a k3s (Kubernetes) version for fresh installs. When that versi
 is newer than your nodes run, the review offers **Also upgrade Kubernetes x → y**.
 It is off by default. Ticked, the run gets a fourth step after the host changes:
 servers one at a time, then each worker drained (its tenant sites move while it
-is drained) and upgraded. Its node rows show each node's Kubernetes version. A
+is drained) and upgraded. A node set to keep new tenants off is upgraded like the
+others. Its node rows show each node's Kubernetes version. A
 node counts as done once the upgrade controller has finished with it and lifted
 its cordon, not as soon as its new version reports. The
 step is offered only for a safe hop: a newer patch, or the next minor version.
 A cluster further behind is told to use `insula cluster upgrade`, which steps
 one minor version at a time. If the step fails, the services and host changes
 are already done; the run says on which node the Kubernetes upgrade stopped.
+A node's upgrade job gets 15 minutes from the upgrade controller. One that runs
+out of that time stops the step as soon as no other node is mid-upgrade; the
+events in the `system-upgrade` namespace say why, for example that the upgrade pod
+could not be scheduled on the node. If the row says the node stays cordoned,
+uncordon it (`kubectl uncordon <node>`). The nodes still behind are upgraded by the
+next run that offers the step, or by `insula cluster upgrade`.
 
 ### Upgrading from 2026.10.6
 

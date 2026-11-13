@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { assessKubernetesNode, buildRunK3sPlans, kubernetesOffer, lowestKubelet } from './k8s-step.js';
 
 const T = 'v1.36.5+k3s1';
-type P = { metadata: { name: string; labels: Record<string, string> }; spec: { nodeSelector: { matchExpressions: Array<Record<string, unknown>> }; drain?: unknown; prepare?: unknown; version: string } };
+type P = { metadata: { name: string; labels: Record<string, string> }; spec: { nodeSelector: { matchExpressions: Array<Record<string, unknown>> }; drain?: unknown; prepare?: unknown; tolerations?: unknown; version: string } };
 
 describe('lowestKubelet', () => {
   it('the lowest parseable version — what a hop starts from', () => {
@@ -51,6 +51,8 @@ describe('buildRunK3sPlans', () => {
     expect(agent?.spec.prepare).toEqual({ image: 'rancher/k3s-upgrade', args: ['prepare', 'k3s-server-upgrade'] });
     for (const p of [server, agent]) {
       expect(p?.spec.nodeSelector.matchExpressions).toContainEqual({ key: 'kubernetes.io/hostname', operator: 'NotIn', values: ['w1'] });
+      // A node that keeps new tenants off (server-only taint) still takes its upgrade.
+      expect(p?.spec.tolerations).toEqual([{ operator: 'Exists' }]);
     }
   });
   it('refuses what the CLI refuses (skip-a-minor, downgrade) and a bad node name', () => {
@@ -102,5 +104,32 @@ describe('assessKubernetesNode', () => {
     expect(assessKubernetesNode(up('v1.36.2+k3s1'), { active: 0, failed: 3, succeeded: 0 }, T, [], HASH).detail).not.toMatch(/cordoned/);
     expect(assessKubernetesNode(up('v1.36.2+k3s1'), undefined, T, [], HASH).state).toBe('queued');
     expect(assessKubernetesNode(up('v1.36.2+k3s1'), undefined, T, ['sv1'], HASH).state).toBe('excluded');
+  });
+
+  it('a job the Job controller ended as failed fails the node at once — one attempt is all it gets', () => {
+    // An upgrade pod that never scheduled: one failed pod, then the job deadline.
+    const deadline = assessKubernetesNode(up('v1.36.2+k3s1'), { active: 0, failed: 1, succeeded: 0, endedFailed: 'DeadlineExceeded' }, T, [], HASH);
+    expect(deadline.state).toBe('failed');
+    expect(deadline.detail).toMatch(/ran out of the upgrade controller's time limit\. The events in namespace system-upgrade say why, such as an upgrade pod that could not be scheduled/);
+    expect(deadline.detail).not.toMatch(/cordoned/);
+    const other = assessKubernetesNode({ ...up('v1.36.2+k3s1'), unschedulable: true }, { active: 0, failed: 2, succeeded: 0, endedFailed: 'BackoffLimitExceeded' }, T, [], HASH);
+    expect(other.state).toBe('failed');
+    expect(other.detail).toMatch(/failed \(BackoffLimitExceeded\) — see the job log.*stays cordoned until you uncordon it/);
+  });
+
+  it('an ended job does not fail a node that another job is still upgrading, nor one a later job upgraded', () => {
+    const busy = assessKubernetesNode({ ...up('v1.36.2+k3s1'), unschedulable: true }, { active: 1, failed: 1, succeeded: 0, endedFailed: 'DeadlineExceeded' }, T, [], HASH);
+    expect(busy.state).toBe('updating');
+    expect(assessKubernetesNode(up(T, finished), { active: 0, failed: 1, succeeded: 1, endedFailed: 'DeadlineExceeded' }, T, [], HASH).state).toBe('ready');
+    // A later job succeeded and the controller has not recorded it yet: still its turn to finish, not failed.
+    const later = assessKubernetesNode({ ...up(T), unschedulable: true }, { active: 0, failed: 1, succeeded: 1, endedFailed: 'DeadlineExceeded' }, T, [], HASH);
+    expect(later.state).toBe('updating');
+  });
+
+  it('a job that ran out of time on a node already at the target says so, not that its pod could not be scheduled', () => {
+    const n = assessKubernetesNode({ ...up(T), unschedulable: true }, { active: 0, failed: 1, succeeded: 0, endedFailed: 'DeadlineExceeded' }, T, [], HASH);
+    expect(n.state).toBe('failed');
+    expect(n.detail).toMatch(/It runs Kubernetes v1\.36\.5\+k3s1, but its job did not finish; the events in namespace system-upgrade say why\. It stays cordoned/);
+    expect(n.detail).not.toMatch(/could not be scheduled/);
   });
 });

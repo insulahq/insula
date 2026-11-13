@@ -4,6 +4,7 @@
 # allow-paths: none — operates solely on the cluster via kubectl + the node's admin kubeconfig.
 # blocks-on-failure: no    # ADR-056: the snapshot Job keeps working on its old rclone; nothing later depends on this script.
 # phase: before-services    # ADR-064: a one-field patch of a CronJob that both releases run; works with the release still running.
+# superseded-images: rclone/rclone:1.75.2 (2026.11.9/0002 moves the CronJob to rclone/rclone:1.76.0; a node replaying this script runs that one after it)
 set -euo pipefail
 # Why a host migration: the CronJob is seed-then-disown (Flux applies it once,
 # then platform-api owns its suspend/prefix/retention fields and Flux skips it),

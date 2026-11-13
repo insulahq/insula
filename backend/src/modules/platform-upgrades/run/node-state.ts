@@ -34,6 +34,12 @@ export interface NodeJobFacts {
   readonly active: number;
   readonly failed: number;
   readonly succeeded: number;
+  /**
+   * Why the Job controller ended one of the node's jobs as failed — its `Failed`
+   * condition's reason (DeadlineExceeded, BackoffLimitExceeded). Such a job is over:
+   * the upgrade controller starts no other one for the node while its Plan stays the same.
+   */
+  readonly endedFailed?: string;
 }
 
 const base = (v: string): string | null => {

@@ -82,7 +82,7 @@ function suffixName(relPath, n) {
   return dir === '.' ? next : `${dir}/${next}`;
 }
 
-export function createTrash({ BASE, safePath, confineRealpath, execFileAsync, defaultUid, defaultGid, log }) {
+export function createTrash({ BASE, safePath, confineRealpath, execFileAsync, defaultUid, defaultGid, mkdirOwned, log }) {
   const TRASH_ROOT = join(BASE, TRASH_DIRNAME);
   const FILES_ROOT = join(TRASH_ROOT, 'files');
   const INFO_ROOT = join(TRASH_ROOT, 'info');
@@ -341,12 +341,17 @@ export function createTrash({ BASE, safePath, confineRealpath, execFileAsync, de
 
     // Recreate any parent directories the delete left behind. New dirs get the
     // www-data ownership the rest of the sidecar uses, or a restored PHP app
-    // cannot write into its own folder. The payload itself keeps its original
-    // uid/gid for free — rename() does not touch them.
+    // cannot write into its own folder: every folder recreated, not only the
+    // last one. The payload itself keeps its original uid/gid for free —
+    // rename() does not touch them.
     const parent = dirname(target);
     try {
-      await mkdir(parent, { recursive: true });
-      await fsChown(parent, defaultUid, defaultGid).catch(() => {});
+      if (mkdirOwned) {
+        await mkdirOwned(parent);
+      } else {
+        await mkdir(parent, { recursive: true });
+        await fsChown(parent, defaultUid, defaultGid).catch(() => {});
+      }
     } catch (err) {
       return { status: 500, error: `Could not recreate parent directory: ${err.message}` };
     }

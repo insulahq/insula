@@ -113,7 +113,7 @@ const PRIORITY_CLASS_POINTER = '/spec/jobTemplate/spec/template/spec/priorityCla
 // change a system workload's image (by design — a stolen API token must not swap
 // one), and a JSON patch is atomic, so an image op here would 403 every other op
 // with it. A release that moves this CronJob's image ships a host migration that
-// sets it with the node's admin kubeconfig (2026.10.23/0001 for rclone 1.75.2).
+// sets it with the node's admin kubeconfig (2026.11.9/0002 for rclone 1.76.0).
 
 /**
  * The priority class to write, or null when the live object already carries it.

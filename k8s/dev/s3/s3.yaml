@@ -57,7 +57,7 @@ spec:
         fsGroup: 65532
       containers:
         - name: versitygw
-          image: versity/versitygw:v1.10.0
+          image: versity/versitygw:v1.11.0
           imagePullPolicy: IfNotPresent
           args: ["posix", "/data"]
           env:
@@ -129,7 +129,7 @@ spec:
         runAsUser: 65532
       containers:
         - name: rclone
-          image: rclone/rclone:1.75.2
+          image: rclone/rclone:1.76.0
           command:
             - sh
             - -c
