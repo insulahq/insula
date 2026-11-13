@@ -95,9 +95,9 @@ describe('CertDownloadSection', () => {
       },
     };
     const bodies: unknown[] = [];
-    mockApiFetch.mockImplementation((path: string, opts?: { method?: string; body?: string }) => {
+    mockApiFetch.mockImplementation((path: string, opts?: RequestInit) => {
       if (path.includes('download-availability')) return Promise.resolve(AVAILABLE);
-      if (path.includes('cert-tokens') && opts?.method === 'POST') { bodies.push(JSON.parse(opts.body ?? '{}')); return Promise.resolve(created); }
+      if (path.includes('cert-tokens') && opts?.method === 'POST') { bodies.push(JSON.parse(String(opts.body ?? '{}'))); return Promise.resolve(created); }
       if (path.includes('cert-tokens')) return Promise.resolve({ data: [] });
       return Promise.resolve({ data: [] });
     });
