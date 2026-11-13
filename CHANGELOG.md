@@ -74,6 +74,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     the files it already held alone. Copying a folder into itself, or a named pipe or device, is
     refused.
   - Files that already exist keep their owner; **Ownership** still changes it.
+  - Right after the upgrade, a tenant's first file-manager action can fail once with a server
+    error while that tenant's file manager restarts on the new image. Trying again works.
 
 ## [2026.11.8] - 2026-11-11
 
