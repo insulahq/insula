@@ -6000,17 +6000,12 @@ install_traefik() {
   helm_cmd repo add --force-update traefik https://traefik.github.io/charts 2>/dev/null || true
   helm_cmd repo update
 
-  # Traefik's Service is the one platform Service that must be dual-stack: the
-  # ingress-external-ips reconciler patches the node ExternalIPs onto it, and
-  # the apiserver rejects an IPv6 externalIP on a SingleStack IPv4 Service.
-  # The panels/API Services need no change — Traefik routes to pod endpoints
-  # directly, so their ClusterIP family never enters the client path.
-  # Empty string on a single-stack install ⇒ the helm command line is byte-for-
-  # byte what it was before this flag existed.
-  local dual_stack_svc_args=""
-  if [[ "$DUAL_STACK" == true ]]; then
-    dual_stack_svc_args="--set service.ipFamilyPolicy=PreferDualStack"
-  fi
+  # Traefik's Service stays single-stack on a dual-stack install too. The
+  # ingress-external-ips reconciler patches every node ExternalIP onto it, IPv6
+  # ones included, and the apiserver accepts those on a SingleStack IPv4
+  # Service. Clients reach Traefik on the nodes' hostPorts in both families.
+  # (This used to pass service.ipFamilyPolicy, which no chart here renders and
+  # chart 42.3.1's schema refuses; only service.spec reaches the Service.)
 
   # DaemonSet + hostPort: one pod per eligible node binds directly on
   # host ports 80 and 443. hostPort without hostNetwork means Traefik's
@@ -6403,7 +6398,6 @@ TRAEFIKVALUES
     --set 'ports.web.hostPort=80' \
     --set 'ports.websecure.hostPort=443' \
     --set service.spec.type=ClusterIP \
-    ${dual_stack_svc_args} \
     --set providers.kubernetesCRD.enabled=true \
     --set providers.kubernetesCRD.allowCrossNamespace=true \
     --set providers.kubernetesCRD.allowExternalNameServices=true \
