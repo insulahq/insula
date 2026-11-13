@@ -70,7 +70,7 @@ export function DmarcReverseDns({ source }: { readonly source: PtrFacts }) {
   }
   return (
     <div className="mt-0.5 text-xs italic text-gray-400 dark:text-gray-500" data-testid={testId}>
-      {source.reverseDnsStatus === 'none' ? 'no reverse DNS' : 'reverse DNS did not answer'}
+      {source.reverseDnsStatus === 'none' ? 'no reverse DNS' : 'reverse DNS unknown'}
     </div>
   );
 }
