@@ -33,7 +33,7 @@
 #   - Works on amd64 + arm64 (multi-arch GitHub Actions build)
 #
 # RCLONE VERSION:
-#   1.75.2 — pinned. SHA256 verified against the official release
+#   1.76.0 — pinned. SHA256 verified against the official release
 #   manifest. A bump reads the changelog for `serve s3` and the S3
 #   client, then runs a tenant backup + restore through the shim on DEV
 #   while watching the shim's memory. (scripts/rclone-shim-eval/ measures
@@ -45,14 +45,14 @@
 FROM --platform=$BUILDPLATFORM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS rclone-fetch
 
 ARG TARGETARCH
-ARG RCLONE_RELEASE=1.75.2
+ARG RCLONE_RELEASE=1.76.0
 
-# Real checksums from https://downloads.rclone.org/v1.75.2/SHA256SUMS
+# Real checksums from https://downloads.rclone.org/v1.76.0/SHA256SUMS
 # DO NOT EDIT without re-pinning to the actual SHA from the upstream
 # SHA256SUMS file. ENFORCED at build time; an unexpected binary aborts
 # the build.
-ARG RCLONE_SHA256_AMD64=349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
-ARG RCLONE_SHA256_ARM64=7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10
+ARG RCLONE_SHA256_AMD64=b00f00b3266c3764413afe599d3ec316f6f43b3e0ea8a0bc1d186d2133e46df7
+ARG RCLONE_SHA256_ARM64=ee169016675e23a69d77240565133ff7dbc9b33d16fa8f7053d4af39f1eaeb78
 
 RUN apk add --no-cache curl unzip ca-certificates
 
@@ -145,4 +145,4 @@ LABEL org.opencontainers.image.source="https://github.com/insulahq/insula"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.vendor="Insula"
 LABEL insula.host/role="backup-rclone-shim"
-LABEL insula.host/rclone-version="1.75.2"
+LABEL insula.host/rclone-version="1.76.0"

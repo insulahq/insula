@@ -49,6 +49,23 @@ and an actions toolbar.
     rest still go through. Partial results are always reported rather than
     hidden behind a single error, so you never have to guess what moved.
 
+!!! info "Who owns the files the file manager creates"
+
+    Everything the file manager creates belongs to **`www-data:www-data`**
+    (uid and gid 33), the user PHP and most web server images run as, so your
+    site can write to it. That covers uploads, including every folder an
+    uploaded folder needs, new files and folders, extracted archives, copies,
+    new archives, and the **Import** shortcuts below.
+
+    - **Archives.** An extracted archive's files are `www-data`'s whatever
+      owner the archive recorded. They keep the permissions it recorded.
+    - **Existing folders.** A folder that already existed keeps its owner and
+      permissions when an archive or a copy adds files to it.
+    - **Replaced files.** A file that an archive or a copy replaces becomes
+      `www-data`'s.
+    - **Your own app user.** If your app runs as a different user, use
+      **Ownership** to change it.
+
 The **Import** menu offers three handy shortcuts:
 
 - **From URL** — download a file straight from a web address into the current

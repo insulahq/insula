@@ -88,6 +88,12 @@ fi
 # (7) a --upgrade-image override is validated (no arbitrary image into privileged Jobs)
 grep -q 'imageRefValid' "$GEN_TS" || fail "k3s-plan.ts must validate a --upgrade-image override (imageRefValid)"
 
+# (7b) the k3s Plans tolerate every taint — a node that keeps new tenants off
+# carries the server-only NoSchedule taint, and an upgrade pod that cannot
+# schedule there only runs out of its job deadline
+grep -qF "[{ operator: 'Exists' }]" "$GEN_TS" && [[ "$(grep -cF 'tolerations: tolerateAll(),' "$GEN_TS")" -eq 2 ]] \
+  || fail "k3s-plan.ts: both k3s Plans must tolerate every taint ([{ operator: 'Exists' }])"
+
 # (8) ADR-064 node Plans written by platform-api
 NODE_PLAN_TS="$REPO_ROOT/backend/src/modules/platform-upgrades/run/node-plan.ts"
 PLAN_VAP="$REPO_ROOT/k8s/base/platform-api-guardrails/plan-scope.yaml"
@@ -111,6 +117,9 @@ if [[ -f "$PLAN_VAP" ]]; then
       "object.spec.version.matches(variables.k3sVersionRe)" "object.spec.drain.skipWaitForDeleteTimeout == 60" "!has(object.spec.drain.disableEviction)" "!has(object.spec.drain.deleteEmptydirData)"; do
     grep -qF -- "$token" "$PLAN_VAP" || fail "plan-scope.yaml must pin '$token'"
   done
+  # Both rules, the node Plans' and the k3s Plans', pin the same toleration.
+  [[ "$(grep -cF "has(object.spec.tolerations) && object.spec.tolerations == [{'operator': 'Exists'}]" "$PLAN_VAP")" -eq 2 ]] \
+    || fail "plan-scope.yaml must pin tolerations == [{'operator': 'Exists'}] for the node Plans AND the k3s Plans"
   grep -q 'plan-scope.yaml' "$REPO_ROOT/k8s/base/platform-api-guardrails/kustomization.yaml" \
     || fail "plan-scope.yaml not wired into platform-api-guardrails/kustomization.yaml"
 else

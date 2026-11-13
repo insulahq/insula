@@ -26,6 +26,39 @@ describe('listPlanJobs', () => {
     expect(m.get('sv2')).toEqual({ active: 0, failed: 0, succeeded: 1 });
     expect(m.size).toBe(2);
   });
+
+  it('carries the reason the Job controller ended a job as failed — only a Failed condition that is True', async () => {
+    const at = '2026-10-09T10:01:00Z';
+    const items = [
+      // A job that ran out of its deadline, as the Job controller writes it.
+      { ...job('sv1', at, { failed: 1 }), status: { failed: 1, conditions: [
+        { type: 'FailureTarget', status: 'True', reason: 'DeadlineExceeded' },
+        { type: 'Failed', status: 'True', reason: 'DeadlineExceeded' },
+      ] } },
+      { ...job('sv2', at, { active: 1 }), status: { active: 1, conditions: [{ type: 'Failed', status: 'False', reason: 'DeadlineExceeded' }] } },
+      { ...job('sv3', at, { succeeded: 1 }), status: { succeeded: 1, conditions: [{ type: 'Complete', status: 'True' }] } },
+      { ...job('sv4', at, { failed: 1 }), status: { failed: 1, conditions: [{ type: 'Failed', status: 'True' }] } },
+    ];
+    const k8s = { batch: { listNamespacedJob: async () => ({ items }) } } as unknown as K8sClients;
+    const m = await listPlanJobs(k8s, 'update', Date.parse('2026-10-09T10:00:00Z'));
+    expect(m.get('sv1')).toEqual({ active: 0, failed: 1, succeeded: 0, endedFailed: 'DeadlineExceeded' });
+    expect(m.get('sv2')?.endedFailed).toBeUndefined();
+    expect(m.get('sv3')?.endedFailed).toBeUndefined();
+    expect(m.get('sv4')?.endedFailed).toBe('Failed');
+  });
+
+  it('an ended job stays on the node\'s facts next to a newer job of the same node; a previous run\'s does not count', async () => {
+    const ended = (node: string, created: string) => ({ ...job(node, created, { failed: 1 }),
+      status: { failed: 1, conditions: [{ type: 'Failed', status: 'True', reason: 'DeadlineExceeded' }] } });
+    const k8s = { batch: { listNamespacedJob: async () => ({ items: [
+      ended('sv1', '2026-10-09T10:01:00Z'),
+      job('sv1', '2026-10-09T10:20:00Z', { active: 1 }),
+      ended('sv2', '2026-10-09T09:00:00Z'), // a previous run's
+    ] }) } } as unknown as K8sClients;
+    const m = await listPlanJobs(k8s, 'update', Date.parse('2026-10-09T10:00:00Z'));
+    expect(m.get('sv1')).toEqual({ active: 1, failed: 1, succeeded: 0, endedFailed: 'DeadlineExceeded' });
+    expect(m.has('sv2')).toBe(false);
+  });
 });
 
 describe('listNodeFacts', () => {

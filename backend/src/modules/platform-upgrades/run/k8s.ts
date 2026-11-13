@@ -56,7 +56,18 @@ export async function deletePlanNamed(k8s: K8sClients, name: string): Promise<vo
 
 interface RawJob {
   metadata?: { labels?: Record<string, string>; creationTimestamp?: string | Date };
-  status?: { active?: number; failed?: number; succeeded?: number };
+  status?: {
+    active?: number;
+    failed?: number;
+    succeeded?: number;
+    conditions?: Array<{ type?: string; status?: string; reason?: string }>;
+  };
+}
+
+/** The reason the Job controller ended this job as failed, if it did. */
+function endedFailedReason(j: RawJob): string | undefined {
+  const c = (j.status?.conditions ?? []).find((x) => x.type === 'Failed' && x.status === 'True');
+  return c ? (c.reason || 'Failed') : undefined;
 }
 
 /**
@@ -82,10 +93,12 @@ export async function listJobsForPlans(k8s: K8sClients, planNames: readonly stri
     const created = j.metadata?.creationTimestamp ? new Date(j.metadata.creationTimestamp).getTime() : NaN;
     if (Number.isFinite(created) && created < sinceMs - 60_000) continue;
     const prev = out.get(node) ?? { active: 0, failed: 0, succeeded: 0 };
+    const endedFailed = prev.endedFailed ?? endedFailedReason(j);
     out.set(node, {
       active: prev.active + (j.status?.active ?? 0),
       failed: prev.failed + (j.status?.failed ?? 0),
       succeeded: prev.succeeded + (j.status?.succeeded ?? 0),
+      ...(endedFailed ? { endedFailed } : {}),
     });
   }
   return out;

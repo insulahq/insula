@@ -154,6 +154,11 @@ export function buildK3sUpgradePlans(target: string, current: string, opts: Buil
   const image = opts.upgradeImage ?? UPGRADE_IMAGE;
   const version = t.raw.startsWith('v') ? t.raw : `v${t.raw}`;
   const labels = { 'app.kubernetes.io/part-of': 'hosting-platform', 'insula.host/managed-by': 'platform-ops' };
+  // Every selected node must take its upgrade: a server or worker that keeps new
+  // tenants off carries the server-only NoSchedule taint, and the controller adds
+  // only the cordon's toleration to its jobs, so without this the node's upgrade
+  // pod never schedules and its job runs out of its deadline.
+  const tolerateAll = (): Array<Record<string, string>> => [{ operator: 'Exists' }];
 
   const server: Record<string, unknown> = {
     apiVersion: 'upgrade.cattle.io/v1',
@@ -165,6 +170,7 @@ export function buildK3sUpgradePlans(target: string, current: string, opts: Buil
       nodeSelector: {
         matchExpressions: [{ key: 'node-role.kubernetes.io/control-plane', operator: 'In', values: ['true'] }],
       },
+      tolerations: tolerateAll(),
       serviceAccountName: 'system-upgrade',
       upgrade: { image },
       version,
@@ -185,6 +191,7 @@ export function buildK3sUpgradePlans(target: string, current: string, opts: Buil
       },
       // Wait for ALL servers to finish before any agent starts (k3s requirement).
       prepare: { image, args: ['prepare', 'k3s-server-upgrade'] },
+      tolerations: tolerateAll(),
       serviceAccountName: 'system-upgrade',
       upgrade: { image },
       version,

@@ -24,7 +24,9 @@
 # The k3s Plans (k3s-server-upgrade / k3s-agent-upgrade) are written by platform-api
 # only for a run's opt-in Kubernetes step (§8), in exactly the shape the CLI's
 # builder produces: the rancher/k3s-upgrade image at a k3s version, its own
-# command, cordoned; agents drained after the servers. `insula cluster upgrade`
+# command, cordoned, tolerating every taint (a node that keeps new tenants off
+# carries the server-only taint and must still take its upgrade); agents drained
+# after the servers. `insula cluster upgrade`
 # writes the same Plans with the node's admin kubeconfig and is not affected.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -101,7 +103,7 @@ spec:
           has(object.spec.version) && object.spec.version.matches(variables.k3sVersionRe) &&
           !has(object.spec.upgrade.command) && !has(object.spec.upgrade.args) &&
           has(object.spec.cordon) && object.spec.cordon &&
-          !has(object.spec.tolerations) &&
+          has(object.spec.tolerations) && object.spec.tolerations == [{'operator': 'Exists'}] &&
           has(object.spec.nodeSelector) && !has(object.spec.nodeSelector.matchLabels) &&
           has(object.spec.nodeSelector.matchExpressions) &&
           (request.name == 'k3s-server-upgrade'
@@ -125,7 +127,7 @@ spec:
                object.spec.nodeSelector.matchExpressions.all(e,
                  (e.key == 'node-role.kubernetes.io/control-plane' && e.operator == 'DoesNotExist') ||
                  (e.key == 'kubernetes.io/hostname' && e.operator == 'NotIn')))))
-      message: "a k3s Plan runs rancher/k3s-upgrade at a k3s version with its own command, cordoned; servers by control-plane role without drain/prepare, agents drained exactly as the builder drains them (force, 60 s) after the servers (ValidatingAdmissionPolicy platform-api-plan-scope)"
+      message: "a k3s Plan runs rancher/k3s-upgrade at a k3s version with its own command, cordoned and tolerating every taint; servers by control-plane role without drain/prepare, agents drained exactly as the builder drains them (force, 60 s) after the servers (ValidatingAdmissionPolicy platform-api-plan-scope)"
       reason: Forbidden
     # ── every Plan ──
     - expression: >-

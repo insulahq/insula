@@ -132,8 +132,8 @@ runcmd:
   #     API with the rclone the platform itself uses (retry: the gateway takes a
   #     moment to listen). ---
   - mkdir -p /var/lib/s3
-  - "docker run -d --name s3 --restart=always --network host -v /var/lib/s3:/data -e ROOT_ACCESS_KEY_ID=${MINIO_USER} -e ROOT_SECRET_ACCESS_KEY=${MINIO_PW} versity/versitygw:v1.10.0 --port :9000 posix /data"
-  - "for i in \$(seq 1 30); do docker run --rm --network host rclone/rclone:1.75.2 mkdir :s3:${MINIO_BUCKET} --s3-provider Other --s3-endpoint http://127.0.0.1:9000 --s3-access-key-id ${MINIO_USER} --s3-secret-access-key ${MINIO_PW} && break || sleep 2; done"
+  - "docker run -d --name s3 --restart=always --network host -v /var/lib/s3:/data -e ROOT_ACCESS_KEY_ID=${MINIO_USER} -e ROOT_SECRET_ACCESS_KEY=${MINIO_PW} versity/versitygw:v1.11.0 --port :9000 posix /data"
+  - "for i in \$(seq 1 30); do docker run --rm --network host rclone/rclone:1.76.0 mkdir :s3:${MINIO_BUCKET} --s3-provider Other --s3-endpoint http://127.0.0.1:9000 --s3-access-key-id ${MINIO_USER} --s3-secret-access-key ${MINIO_PW} && break || sleep 2; done"
   # SFTP (atmoz/sftp) — user ${SFTP_USER}, share /upload. Bridge-mapped to :2222 so it does
   # NOT clash with the VM's own sshd on :22. Password auth (backup-config ssh_password).
   # Bounded nofile: under containerd's ~1e9 default the chrooted internal-sftp closes

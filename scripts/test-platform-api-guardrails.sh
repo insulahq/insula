@@ -287,6 +287,7 @@ spec:
   serviceAccountName: system-upgrade
   version: ${PLAN_K3S_VERSION:-v1.36.5+k3s1}
   nodeSelector: ${PLAN_K3S_SELECTOR:-$sel}
+${PLAN_K3S_TOLERATIONS-  tolerations: $DEFAULT_TOLERATIONS}
   upgrade: $upgrade
 ${2:-}
 YAML
@@ -310,6 +311,11 @@ YAML
   expect denied  "k3s agent Plan with another drain timeout" k3s_plan k3s-agent-upgrade "  drain: { force: true, skipWaitForDeleteTimeout: 0 }$K3S_PREP"
   expect denied  "k3s server Plan selecting one node by name" \
     k3s_plan_with PLAN_K3S_SELECTOR="{ matchLabels: { kubernetes.io/hostname: $NODE } }" k3s-server-upgrade
+  # Every taint, or the upgrade pod of a node that keeps new tenants off never schedules.
+  expect denied  "k3s server Plan without tolerations" k3s_plan_with PLAN_K3S_TOLERATIONS= k3s-server-upgrade
+  expect denied  "k3s server Plan with narrowed tolerations" \
+    k3s_plan_with PLAN_K3S_TOLERATIONS="  tolerations: [{ key: insula.host/server-only, operator: Exists }]" k3s-server-upgrade
+  expect denied  "k3s agent Plan without tolerations" k3s_plan_with PLAN_K3S_TOLERATIONS= k3s-agent-upgrade "$AGENT_EXTRA"
 fi
 
 total=$((pass + failed))

@@ -21,8 +21,10 @@ RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o sftp-serve ./cmd/sftp-serve
 FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 # Package fixes published after the base image was built (an image is only
 # rebuilt when its sources change): take them at build time.
+# setpriv runs unzip/tar/zip/cp/git as www-data so what they create is
+# www-data's (server.mjs, "Ownership of what the file manager creates").
 RUN apk upgrade --no-cache \
- && apk add --no-cache git tar zip unzip sqlite openssh-sftp-server openssh-client rsync
+ && apk add --no-cache git tar zip unzip sqlite openssh-sftp-server openssh-client rsync setpriv
 COPY --from=chroot-builder /build/sftp-serve /usr/local/bin/sftp-serve
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/sftp-serve

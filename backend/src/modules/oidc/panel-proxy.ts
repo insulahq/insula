@@ -37,7 +37,7 @@ const REPLICAS = 2;
  * Same release as k8s/base/oauth2-proxy/deployment.yaml (a test keeps the two
  * in step). `OAUTH2_PROXY_IMAGE` overrides it, e.g. for an air-gapped mirror.
  */
-export const DEFAULT_OAUTH2_PROXY_IMAGE = 'quay.io/oauth2-proxy/oauth2-proxy:v7.15.5';
+export const DEFAULT_OAUTH2_PROXY_IMAGE = 'quay.io/oauth2-proxy/oauth2-proxy:v7.15.6';
 
 export interface PanelProxyConfig {
   readonly panel: ProxyPanel;

@@ -304,16 +304,42 @@ else
         printf '  STILL BLOCKED   exclusion saved but never took effect  ← the 2026-08-31 bug\n'; fail=$((fail+1))
       fi
 
+      # The delete reaches the modsec-crs pods one at a time: the reconciler
+      # stamps the pod template and the Deployment rolls, each new pod loading
+      # the CRS before the next old one goes (on lab staging the second of two
+      # pods took about 3 minutes). One blocked request proves only the pod that
+      # answered, and Traefik's keep-alive connection can keep answering from
+      # the same pod, so a run of blocks proves little more. The controls below
+      # then met a pod still holding the exclusion and read "NOT BLOCKED".
+      # Where kubectl can see the Deployment, wait for the stamp (a new
+      # generation) and then for the rollout; a rollout check made before the
+      # stamp lands reports the previous rollout as done.
+      gen0=""
+      if command -v kubectl >/dev/null 2>&1; then
+        gen0=$(kubectl -n traefik get deploy modsec-crs -o jsonpath='{.metadata.generation}' 2>/dev/null)
+      fi
       cleanup_exclusion
-      reblocked=1
-      for _ in $(seq 1 30); do
-        if waf_blocks "$TRAVERSAL"; then reblocked=0; break; fi
-        sleep 2
+      if [ -n "$gen0" ]; then
+        for _ in $(seq 1 60); do
+          [ "$(kubectl -n traefik get deploy modsec-crs -o jsonpath='{.metadata.generation}' 2>/dev/null)" != "$gen0" ] && break
+          sleep 2
+        done
+        kubectl -n traefik rollout status deploy/modsec-crs --timeout=600s >/dev/null 2>&1 \
+          || echo "  (modsec-crs rollout did not finish in 10 min; the checks below may meet a stale pod)"
+      fi
+      REBLOCK_STREAK="${WAF_PROBE_REBLOCK_STREAK:-10}"
+      streak=0
+      for _ in $(seq 1 240); do
+        if waf_blocks "$TRAVERSAL"; then
+          streak=$((streak+1)); [ "$streak" -ge "$REBLOCK_STREAK" ] && break
+        else
+          streak=0; sleep 2
+        fi
       done
-      if [ "$reblocked" -eq 0 ]; then
-        printf '  re-blocked      protection restored after delete\n'; pass=$((pass+1))
+      if [ "$streak" -ge "$REBLOCK_STREAK" ]; then
+        printf '  re-blocked      protection restored after delete (%s blocks in a row)\n' "$REBLOCK_STREAK"; pass=$((pass+1))
       else
-        printf '  NOT RE-BLOCKED  deleting the exclusion did not restore the rule  ← worse than the bug\n'; fail=$((fail+1))
+        printf '  NOT RE-BLOCKED  deleting the exclusion did not restore the rule on every pod  ← worse than the bug\n'; fail=$((fail+1))
       fi
     fi
   fi

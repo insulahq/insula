@@ -322,6 +322,29 @@ describe('advanceRun — the opt-in Kubernetes step (ADR-064 §8)', () => {
     expect(idle.calls.finalized[0]?.[1]).toMatch(/did not reach v1\.36\.5\+k3s1 within 60 minutes on sv2/);
   });
 
+  it('a job that ran out of its deadline stops the run at once, Plans deleted — not "waiting for its turn" until the budget runs out', async () => {
+    const h = harness({ nodes: kNodes(K, 'v1.36.2+k3s1'), dbStep: 'upgrade-kubernetes',
+      k8sJobs: { sv2: { active: 0, failed: 1, succeeded: 0, endedFailed: 'DeadlineExceeded' } } });
+    await advanceRun(run({ step: 'upgrade-kubernetes', kubernetesVersion: K }), h.deps);
+    expect(h.calls.k8sDeleted).toBe(1);
+    expect(h.calls.finalized[0]?.[1]).toMatch(/Kubernetes upgrade to v1\.36\.5\+k3s1 stopped on sv2 — The Kubernetes upgrade job ran out of the upgrade controller's time limit/);
+  });
+
+  it('a failed node waits for another node that is mid-upgrade before the Plans are deleted, then stops the run', async () => {
+    const ended = { active: 0, failed: 1, succeeded: 0, endedFailed: 'DeadlineExceeded' };
+    const restarting = [{ name: 'sv1', ready: false, kubeletVersion: 'v1.36.2+k3s1', unschedulable: true }, kNode('sv2', 'v1.36.2+k3s1')];
+    const held = harness({ nodes: restarting, dbStep: 'upgrade-kubernetes', k8sJobs: { sv1: { active: 1, failed: 0, succeeded: 0 }, sv2: ended } });
+    expect(await advanceRun(run({ step: 'upgrade-kubernetes', kubernetesVersion: K }), held.deps)).toBe('upgrade-kubernetes');
+    expect(held.calls.k8sDeleted).toBe(0);
+    expect(held.calls.finalized).toEqual([]);
+    // A worker whose job only waits for the servers (not cordoned) is queued: it does not hold the stop.
+    const waitingWorker = [kNode('sv1', 'v1.36.2+k3s1'), kNode('sv2', 'v1.36.2+k3s1')];
+    const stops = harness({ nodes: waitingWorker, dbStep: 'upgrade-kubernetes', k8sJobs: { sv1: { active: 1, failed: 0, succeeded: 0 }, sv2: ended } });
+    await advanceRun(run({ step: 'upgrade-kubernetes', kubernetesVersion: K }), stops.deps);
+    expect(stops.calls.k8sDeleted).toBe(1);
+    expect(stops.calls.finalized[0]?.[1]).toMatch(/stopped on sv2/);
+  });
+
   it('a node still retrying after failures is updating, not failed — the Plans are not deleted under it', async () => {
     const retrying = [kNode('sv1', K), { ...kNode('sv2', 'v1.36.2+k3s1'), unschedulable: true }];
     const h = harness({ nodes: retrying, dbStep: 'upgrade-kubernetes', k8sJobs: { sv2: { active: 1, failed: 4, succeeded: 0 } } });
