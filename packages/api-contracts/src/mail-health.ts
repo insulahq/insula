@@ -562,13 +562,17 @@ export const dmarcDomainSummarySchema = z.object({
 export type DmarcDomainSummary = z.infer<typeof dmarcDomainSummarySchema>;
 
 /**
- * Change the published policy of a managed `_dmarc` record. Tightening is only
- * accepted as the step the recommendation currently allows; loosening (the way
- * back when legitimate mail is being quarantined) is always accepted.
+ * Change the published policy of a managed `_dmarc` record. Loosening (the way
+ * back when legitimate mail is being quarantined) is always accepted. A
+ * tightening the recommendation does not back right now — a jump past the
+ * next step, or a step while sources still fail — needs
+ * `acknowledgeNotRecommended: true`: the domain owner may decide, but only
+ * after being told what the reports say.
  */
 export const applyDmarcPolicySchema = z.object({
   domain: z.string().min(1).max(253),
   policy: dmarcPolicySchema,
+  acknowledgeNotRecommended: z.boolean().optional(),
 }).strict();
 export type ApplyDmarcPolicyInput = z.infer<typeof applyDmarcPolicySchema>;
 
@@ -592,6 +596,33 @@ export const dmarcSourceSummarySchema = z.object({
   passCount: z.number().int().nonnegative(),
   failCount: z.number().int().nonnegative(),
   lastSeenAt: z.string().nullable(),
+  /** PTR name of the address, looked up through public DNS. */
+  reverseDns: z.string().nullable(),
+  /** `unknown` when the lookup failed or ran out of time — not "has none". */
+  reverseDnsStatus: z.enum(['found', 'none', 'unknown']),
+  /** One of this cluster's node addresses. Null when the node list could not be read. */
+  isCluster: z.boolean().nullable(),
+  /**
+   * The domain's CURRENT SPF record allows this address (check_host() pass).
+   * Null when it could not be evaluated: a DNS failure, a permerror, or a
+   * macro / `ptr` term this check does not expand.
+   */
+  inSpf: z.boolean().nullable(),
+  /**
+   * Messages from this address that carried the domain's DKIM signature from
+   * the platform's own selectors, whatever the verdict. Null when the stored
+   * reports could not be read in time.
+   */
+  relayedCount: z.number().int().nonnegative().nullable(),
+  /**
+   * Not one of ours, yet passing on mail we signed: a forwarder, or a
+   * recipient's filter that re-delivers what it scanned. Takes evidence, not
+   * just a signature header (which anyone can paste on): our signature
+   * verified from this address, or the same report holds our own copy of the
+   * same messages. Its SPF failing is expected; its DKIM fails when it changed
+   * the message. False whenever that cannot be established.
+   */
+  isRelay: z.boolean(),
 });
 export type DmarcSourceSummary = z.infer<typeof dmarcSourceSummarySchema>;
 

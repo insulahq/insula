@@ -8,7 +8,7 @@
  *   - a pass rate with no denominator must render as "no data", never as 0%
  *     (catastrophe) or 100% (all clear).
  */
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -47,9 +47,13 @@ const domain = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-function renderWith(overview: Record<string, unknown>) {
-  apiFetch.mockImplementation((url?: string) => {
-    if (typeof url === 'string' && url.includes('/dmarc/sources')) return Promise.resolve({ data: [] });
+function renderWith(overview: Record<string, unknown>, sources: readonly Record<string, unknown>[] = []) {
+  apiFetch.mockImplementation((url?: string, init?: { method?: string; body?: string }) => {
+    if (init?.method === 'POST') {
+      const body = JSON.parse(init.body ?? '{}') as { domain: string; policy: string };
+      return Promise.resolve({ data: { domain: body.domain, policy: body.policy, recordName: `_dmarc.${body.domain}`, recordValue: `v=DMARC1; p=${body.policy}`, published: true } });
+    }
+    if (typeof url === 'string' && url.includes('/dmarc/sources')) return Promise.resolve({ data: sources });
     return Promise.resolve({ data: overview });
   });
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -116,5 +120,33 @@ describe('DmarcSection', () => {
     renderWith({ windowDays: 30, domains: [domain({ failingSources: 3 })], intakeLocalPart: 'dmarc' });
     await screen.findByTestId('dmarc-domains');
     expect(screen.getByText('3')).toBeTruthy();
+  });
+
+  it('shows the policy switch in the expanded row even when nothing is recommended, and badges the sources', async () => {
+    renderWith({
+      windowDays: 30,
+      domains: [domain({
+        managedPolicy: 'none', managedRecordCount: 1, failingSources: 2,
+        recommendation: {
+          policyDomain: 'example.test', currentPolicy: 'none', recommendedPolicy: null,
+          passRate: 0.931, reason: '93.1% of messages pass DMARC.', ready: false,
+        },
+      })],
+      intakeLocalPart: 'dmarc',
+    }, [
+      { sourceIp: '198.51.100.7', policyDomain: 'example.test', messageCount: 32, passCount: 8, failCount: 24, lastSeenAt: '2026-09-15T00:00:00Z',
+        reverseDns: 'scanner.example.net', reverseDnsStatus: 'found', isCluster: false, inSpf: false, relayedCount: 32, isRelay: true },
+    ]);
+    fireEvent.click(await screen.findByText('example.test'));
+    fireEvent.click(await screen.findByTestId('dmarc-policy-option-example.test-quarantine'));
+    expect(screen.getByTestId('dmarc-not-backed-example.test')).toHaveTextContent('93.1%');
+    fireEvent.click(screen.getByTestId('dmarc-confirm-example.test'));
+    await waitFor(() => {
+      const post = apiFetch.mock.calls.find(([, init]) => (init as { method?: string } | undefined)?.method === 'POST');
+      expect(post?.[0]).toBe('/api/v1/admin/mail/dmarc/policy');
+      expect(JSON.parse((post?.[1] as { body: string }).body)).toEqual({ domain: 'example.test', policy: 'quarantine', acknowledgeNotRecommended: true });
+    });
+    expect((await screen.findByTestId('dmarc-badge-relay-198.51.100.7')).getAttribute('title')).toMatch(/recipient/);
+    expect(screen.getByTestId('dmarc-ptr-198.51.100.7')).toHaveTextContent('scanner.example.net');
   });
 });

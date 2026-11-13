@@ -249,16 +249,31 @@ top of the page:
 - **Failing senders** — how many distinct servers sent mail as your domain that
   failed the check.
 - **Current policy** — what your published record tells receivers to do with
-  mail that fails: monitor only, quarantine, or reject. This record is
-  maintained for you; contact support if you want it changed. It also protects
+  mail that fails: monitor only, quarantine, or reject. It also protects
   your own mailboxes: forged mail that claims to come from your domain — a
   "your mailbox is full" message that seems to come from your own mail admin,
   say — goes to Junk under quarantine and is refused under reject. Under
-  monitor only, it can still reach the inbox.
+  monitor only, it can still reach the inbox. Change it with the **NONE /
+  QUARANTINE / REJECT** switch (hover an option for what it does). A check
+  mark shows the step the reports back. Moving to a stricter policy the
+  reports do not back yet is possible, but the confirmation first tells you
+  why they don't. Going back to a looser policy is always possible. If your
+  domain's DNS is hosted elsewhere, the switch shows the record to publish
+  there.
 - **Who sent as &lt;your domain&gt;** — every sending server the receivers saw,
-  worst first. A server with failures is either one of yours that needs its SPF
-  or DKIM fixed (a newsletter tool or CRM sending on your behalf is the usual
-  culprit), or one that should not be sending as you at all.
+  worst first, with its reverse DNS name under the address. A server with
+  failures is one of yours that needs its SPF or DKIM fixed (a newsletter tool
+  or CRM sending on your behalf is the usual culprit), one that should not be
+  sending as you at all, or a relay. Badges say which (hover one for what it
+  means):
+    - **CLUSTER** — the platform's own mail server.
+    - **SPF** — your domain's current SPF record allows this server to send.
+    - **RELAY** — not a sender: a forwarder, or a recipient's spam or security
+      filter, passing on mail the platform sent and signed for you. Its SPF
+      check always fails, because it is not your server. DKIM passes unless it
+      changed the message (a filter that adds an "external sender" banner, for
+      example). Nothing on your side makes it pass. Under a stricter policy,
+      that recipient's own mail admin decides whether such mail is trusted.
 
 !!! info "An empty tab is not an all-clear"
 

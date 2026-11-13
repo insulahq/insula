@@ -207,14 +207,14 @@ describe('DmarcTab (tenant)', () => {
   });
 });
 
-describe('DmarcTab (tenant) — acting on the recommendation', () => {
-  function renderWith(over: Record<string, unknown>) {
+describe('DmarcTab (tenant) — the policy switch', () => {
+  function renderWith(over: Record<string, unknown>, sources: readonly Record<string, unknown>[] = []) {
     apiFetch.mockImplementation((url?: string, init?: { method?: string; body?: string }) => {
       if (init?.method === 'POST') {
         const body = JSON.parse(init.body ?? '{}') as { domain: string; policy: string };
-        return Promise.resolve({ data: { ...body, recordName: `_dmarc.${body.domain}`, recordValue: `v=DMARC1; p=${body.policy}`, published: true } });
+        return Promise.resolve({ data: { domain: body.domain, policy: body.policy, recordName: `_dmarc.${body.domain}`, recordValue: `v=DMARC1; p=${body.policy}`, published: true } });
       }
-      if (typeof url === 'string' && url.includes('/dmarc/sources')) return Promise.resolve({ data: { sources: [] } });
+      if (typeof url === 'string' && url.includes('/dmarc/sources')) return Promise.resolve({ data: { sources } });
       return Promise.resolve({ data: { windowDays: 30, domains: [summary(over)], intakeLocalPart: 'postmaster' } });
     });
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -224,42 +224,87 @@ describe('DmarcTab (tenant) — acting on the recommendation', () => {
       </QueryClientProvider>,
     );
   }
+  const posted = () => {
+    const post = apiFetch.mock.calls.find(([, init]) => (init as { method?: string } | undefined)?.method === 'POST');
+    return post ? { url: post[0], body: JSON.parse((post[1] as { body: string }).body) as Record<string, unknown> } : null;
+  };
+  const notReady = {
+    policyDomain: 'alpha.test', currentPolicy: 'none', recommendedPolicy: null, passRate: 0.931,
+    reason: '93.1% of messages pass DMARC — below the 99.0% needed for p=quarantine.', ready: false,
+  };
 
-  it('offers the recommended step and publishes it after confirmation', async () => {
-    renderWith({ managedPolicy: 'quarantine' });
-    fireEvent.click(await screen.findByTestId('dmarc-apply-alpha.test'));
+  it('shows NONE, QUARANTINE and REJECT, with the published one selected', async () => {
+    renderWith({ managedPolicy: 'quarantine', managedRecordCount: 1 });
+    const sw = await screen.findByTestId('dmarc-policy-switch-alpha.test');
+    expect(sw).toHaveTextContent('NONE');
+    expect(sw).toHaveTextContent('QUARANTINE');
+    expect(sw).toHaveTextContent('REJECT');
+    expect(screen.getByTestId('dmarc-policy-option-alpha.test-quarantine')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('dmarc-policy-option-alpha.test-none')).toHaveAttribute('aria-checked', 'false');
+    for (const p of ['none', 'quarantine', 'reject']) {
+      expect(screen.getByTestId(`dmarc-policy-option-alpha.test-${p}`).getAttribute('title')).toMatch(/^p=/);
+    }
+  });
+
+  // The reported bug: p=none with reports that do not back a tightening had
+  // neither "apply" nor "step back", so nothing rendered at all.
+  it('is there at p=none while the recommendation is not ready', async () => {
+    renderWith({ managedPolicy: 'none', managedRecordCount: 1, currentPolicy: 'none', passRate: 0.931, failingSources: 2, recommendation: notReady });
+    const opt = await screen.findByTestId('dmarc-policy-option-alpha.test-quarantine');
+    expect(opt).toBeEnabled();
+    expect(screen.getByTestId('dmarc-policy-option-alpha.test-reject')).toBeEnabled();
+  });
+
+  it('a tightening the reports do not back shows their reason and is sent acknowledged', async () => {
+    renderWith({ managedPolicy: 'none', managedRecordCount: 1, currentPolicy: 'none', recommendation: notReady });
+    fireEvent.click(await screen.findByTestId('dmarc-policy-option-alpha.test-reject'));
+    expect(screen.getByTestId('dmarc-not-backed-alpha.test')).toHaveTextContent('93.1%');
+    expect(screen.getByTestId('dmarc-confirm-alpha.test')).toHaveTextContent('Publish p=reject anyway');
     fireEvent.click(screen.getByTestId('dmarc-confirm-alpha.test'));
-    await waitFor(() => {
-      const post = apiFetch.mock.calls.find(([, init]) => (init as { method?: string } | undefined)?.method === 'POST');
-      expect(post?.[0]).toBe('/api/v1/tenants/t-1/mail/dmarc/policy');
-      expect(JSON.parse((post?.[1] as { body: string }).body)).toEqual({ domain: 'alpha.test', policy: 'reject' });
-    });
+    await waitFor(() => expect(posted()?.body).toEqual({ domain: 'alpha.test', policy: 'reject', acknowledgeNotRecommended: true }));
+    expect(posted()?.url).toBe('/api/v1/tenants/t-1/mail/dmarc/policy');
     expect(await screen.findByTestId('dmarc-applied-alpha.test')).toHaveTextContent('p=reject is published');
   });
 
-  it('does not offer a step that is already published while the reports catch up', async () => {
+  it('marks the recommended step, and sends it without an acknowledgement', async () => {
+    renderWith({ managedPolicy: 'quarantine', managedRecordCount: 1 });
+    expect(await screen.findByTestId('dmarc-recommended-alpha.test')).toHaveTextContent('REJECT');
+    fireEvent.click(screen.getByTestId('dmarc-policy-option-alpha.test-reject'));
+    expect(screen.queryByTestId('dmarc-not-backed-alpha.test')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('dmarc-confirm-alpha.test'));
+    await waitFor(() => expect(posted()?.body).toEqual({ domain: 'alpha.test', policy: 'reject' }));
+  });
+
+  it('loosens without an acknowledgement', async () => {
+    renderWith({ managedPolicy: 'quarantine', managedRecordCount: 1 });
+    fireEvent.click(await screen.findByTestId('dmarc-policy-option-alpha.test-none'));
+    expect(screen.queryByTestId('dmarc-not-backed-alpha.test')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('dmarc-confirm-alpha.test'));
+    await waitFor(() => expect(posted()?.body).toEqual({ domain: 'alpha.test', policy: 'none' }));
+  });
+
+  it('does not re-offer a step that is published while the reports catch up', async () => {
     renderWith({
       managedPolicy: 'quarantine',
       currentPolicy: 'none',
       recommendation: { policyDomain: 'alpha.test', currentPolicy: 'none', recommendedPolicy: 'quarantine', passRate: 1, reason: 'safe', ready: true },
     });
     expect(await screen.findByTestId('dmarc-lagging-alpha.test')).toBeInTheDocument();
-    expect(screen.queryByTestId('dmarc-apply-alpha.test')).not.toBeInTheDocument();
-    // The way back is always there.
-    expect(screen.getByTestId('dmarc-step-back-alpha.test')).toHaveTextContent('p=none');
+    expect(screen.getByTestId('dmarc-policy-option-alpha.test-quarantine')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.queryByTestId('dmarc-recommended-alpha.test')).not.toBeInTheDocument();
   });
 
-  it('names a duplicate _dmarc record instead of calling it unmanaged', async () => {
+  it('is shown but disabled for a duplicate _dmarc record, which it names', async () => {
     renderWith({ managedPolicy: null, managedRecordCount: 2 });
-    expect(await screen.findByTestId('dmarc-duplicate-alpha.test')).toHaveTextContent('2');
+    expect(await screen.findByTestId('dmarc-duplicate-alpha.test')).toHaveTextContent('Re-create mail records');
     expect(screen.queryByTestId('dmarc-unmanaged-alpha.test')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('dmarc-apply-alpha.test')).not.toBeInTheDocument();
+    expect(screen.getByTestId('dmarc-policy-option-alpha.test-reject')).toBeDisabled();
   });
 
-  it('says so when the platform does not manage the record', async () => {
+  it('is shown but disabled when the platform does not manage the record', async () => {
     renderWith({ managedPolicy: null });
     expect(await screen.findByTestId('dmarc-unmanaged-alpha.test')).toBeInTheDocument();
-    expect(screen.queryByTestId('dmarc-apply-alpha.test')).not.toBeInTheDocument();
+    expect(screen.getByTestId('dmarc-policy-option-alpha.test-none')).toBeDisabled();
   });
 
   // A new domain starts at p=quarantine; its first report arrives a day or two
@@ -276,18 +321,35 @@ describe('DmarcTab (tenant) — acting on the recommendation', () => {
     expect(screen.queryByTestId('dmarc-tenant-pass-rate')).not.toBeInTheDocument();
     // Said once, in the box above, not again under the policy.
     expect(screen.queryByTestId('dmarc-tenant-recommendation')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('dmarc-apply-alpha.test')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId('dmarc-step-back-alpha.test'));
+    fireEvent.click(screen.getByTestId('dmarc-policy-option-alpha.test-none'));
     fireEvent.click(screen.getByTestId('dmarc-confirm-alpha.test'));
-    await waitFor(() => {
-      const post = apiFetch.mock.calls.find(([, init]) => (init as { method?: string } | undefined)?.method === 'POST');
-      expect(JSON.parse((post?.[1] as { body: string }).body)).toEqual({ domain: 'alpha.test', policy: 'none' });
-    });
+    await waitFor(() => expect(posted()?.body).toEqual({ domain: 'alpha.test', policy: 'none' }));
   });
 
-  it('points a duplicate _dmarc record at Re-create mail records', async () => {
-    renderWith({ managedPolicy: null, managedRecordCount: 2 });
-    expect(await screen.findByTestId('dmarc-duplicate-alpha.test')).toHaveTextContent('Re-create mail records');
+  it('badges each source and gives every badge a tooltip; shows reverse DNS under the address', async () => {
+    renderWith({ managedPolicy: 'none', managedRecordCount: 1 }, [
+      { sourceIp: '192.0.2.10', policyDomain: 'alpha.test', messageCount: 346, passCount: 346, failCount: 0, lastSeenAt: '2026-09-15T00:00:00Z',
+        reverseDns: 'mail.example.test', reverseDnsStatus: 'found', isCluster: true, inSpf: true, relayedCount: 346, isRelay: false },
+      { sourceIp: '198.51.100.7', policyDomain: 'alpha.test', messageCount: 32, passCount: 8, failCount: 24, lastSeenAt: '2026-09-15T00:00:00Z',
+        reverseDns: 'scanner.example.net', reverseDnsStatus: 'found', isCluster: false, inSpf: false, relayedCount: 32, isRelay: true },
+      { sourceIp: '203.0.113.9', policyDomain: 'alpha.test', messageCount: 5, passCount: 0, failCount: 5, lastSeenAt: '2026-09-15T00:00:00Z',
+        reverseDns: null, reverseDnsStatus: 'none', isCluster: null, inSpf: null, relayedCount: 0, isRelay: false },
+    ]);
+    const ours = await screen.findByTestId('dmarc-badge-cluster-192.0.2.10');
+    expect(ours.getAttribute('title')).toMatch(/platform's servers/);
+    expect(screen.getByTestId('dmarc-badge-spf-192.0.2.10').getAttribute('title')).toMatch(/SPF record/);
+    expect(screen.queryByTestId('dmarc-badge-relay-192.0.2.10')).not.toBeInTheDocument();
+    expect(screen.getByTestId('dmarc-ptr-192.0.2.10')).toHaveTextContent('mail.example.test');
+
+    expect(screen.getByTestId('dmarc-badge-relay-198.51.100.7').getAttribute('title')).toMatch(/forwarder or the recipient/);
+    expect(screen.queryByTestId('dmarc-badge-cluster-198.51.100.7')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dmarc-badge-spf-198.51.100.7')).not.toBeInTheDocument();
+
+    // Unknown is shown as nothing, never as "no".
+    for (const b of ['cluster', 'spf', 'relay']) {
+      expect(screen.queryByTestId(`dmarc-badge-${b}-203.0.113.9`)).not.toBeInTheDocument();
+    }
+    expect(screen.getByTestId('dmarc-ptr-203.0.113.9')).toHaveTextContent('no reverse DNS');
   });
 });

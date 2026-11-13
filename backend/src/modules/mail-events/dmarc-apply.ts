@@ -7,10 +7,16 @@
  * of that managed record through the ordinary DNS-record path, which publishes
  * to the domain's DNS servers and restores the old value if they refuse.
  *
- * Still never automatic, and still fail-closed:
- *  - TIGHTENING is accepted only as the exact step the recommendation allows
- *    right now (re-computed here, never trusted from the client), so `none →
- *    reject` in one jump, or a tightening while any source fails, is refused;
+ * Still never automatic:
+ *  - TIGHTENING is accepted as the exact step the recommendation allows right
+ *    now (re-computed here, never trusted from the client). Any other
+ *    tightening — `none → reject` in one jump, or a step while sources still
+ *    fail — is refused unless the caller sends `acknowledgeNotRecommended`.
+ *    The domain owner decides: a source the reports count as failing can be a
+ *    recipient's filter re-delivering mail we signed (RELAY in the source
+ *    list), which no change on our side makes pass, and a domain whose
+ *    recipients use one would otherwise be held at p=none for good. The panels
+ *    only send it after showing the recommendation's reason.
  *  - LOOSENING is always accepted — it is the way back when legitimate mail
  *    starts landing in spam, and must never wait for reports.
  */
@@ -25,7 +31,7 @@ import { DMARC_POLICY_ORDER as ORDER, isTightening, managedDmarcRecords, policyO
 
 export async function applyDmarcPolicy(
   db: Database,
-  input: { domain: string; policy: DmarcPolicy; tenantId?: string },
+  input: { domain: string; policy: DmarcPolicy; acknowledgeNotRecommended?: boolean; tenantId?: string },
 ): Promise<ApplyDmarcPolicyResponse> {
   const domainName = input.domain.trim().toLowerCase().replace(/\.$/, '');
   const records = (await managedDmarcRecords(db, [domainName])).get(domainName) ?? [];
@@ -50,7 +56,7 @@ export async function applyDmarcPolicy(
     };
   }
 
-  if (isTightening(current, input.policy)) {
+  if (isTightening(current, input.policy) && input.acknowledgeNotRecommended !== true) {
     const summary = (await dmarcDomainSummaries(db, { windowDays: DMARC_WINDOW_DAYS, tenantId: record.tenantId }))
       .find((d) => d.policyDomain.toLowerCase() === domainName);
     const rec = summary?.recommendation;

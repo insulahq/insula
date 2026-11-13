@@ -20,6 +20,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { ShieldCheck, ShieldAlert, Info, Loader2, ExternalLink, AlertCircle } from 'lucide-react';
 import DmarcPolicyActions from '@/components/dmarc/DmarcPolicyActions';
+import { DmarcReverseDns, DmarcSourceBadges } from '@/components/dmarc/DmarcSourceBadges';
 import { apiFetch } from '@/lib/api-client';
 import type { DmarcOverview, DmarcDomainSummary, DmarcSourceSummary } from '@insula/api-contracts';
 
@@ -149,7 +150,13 @@ function SourceTable({ tenantId, domain }: { readonly tenantId: string; readonly
               className="border-b border-gray-100 dark:border-gray-700/50"
               data-testid={`dmarc-source-${r.sourceIp}`}
             >
-              <td className={`${TD} font-mono text-xs`}>{r.sourceIp}</td>
+              <td className={TD}>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="font-mono text-xs">{r.sourceIp}</span>
+                  <DmarcSourceBadges source={r} />
+                </div>
+                <DmarcReverseDns source={r} />
+              </td>
               <td className={TD}>{r.messageCount.toLocaleString()}</td>
               <td className={`${TD} text-emerald-600 dark:text-emerald-400`}>
                 {r.passCount.toLocaleString()}
@@ -336,8 +343,10 @@ export default function DmarcTab({ tenantId, domainName }: DmarcTabProps) {
         </div>
         <p className="text-sm text-gray-600 dark:text-gray-400">
           Every server that receivers saw sending as this domain, worst first. A server with
-          failures is either one of yours that needs its SPF or DKIM fixed, or one that should not
-          be sending as you at all.
+          failures is one of yours that needs its SPF or DKIM fixed, one that should not be sending
+          as you at all — or a <strong className="font-medium">relay</strong>: a forwarder or a
+          recipient&apos;s mail filter passing on mail this platform sent and signed. Hover a badge
+          for what it means.
         </p>
         <div className="rounded-lg border border-gray-200 dark:border-gray-700">
           <SourceTable tenantId={tenantId} domain={domainName} />

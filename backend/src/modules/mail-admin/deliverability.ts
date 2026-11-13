@@ -1181,7 +1181,8 @@ export function resolverFor(servers: readonly string[]): Resolver {
   return r;
 }
 
-function externalResolver(): Resolver {
+/** The receiver's view of DNS (see externalDnsServers) — also used by the DMARC source list. */
+export function externalResolver(): Resolver {
   return resolverFor(externalDnsServers());
 }
 

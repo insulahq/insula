@@ -216,7 +216,8 @@ async function unreportedEmailDomains(db: Database, tenantId: string, reported: 
     }));
 }
 
-export interface DmarcSourceSummary {
+/** A source's counts; dmarc-source-facts.ts adds the badges and reverse DNS. */
+export interface DmarcSourceCounts {
   readonly sourceIp: string;
   readonly policyDomain: string | null;
   readonly messageCount: number;
@@ -243,7 +244,7 @@ export async function dmarcSourcesForDomain(
    * tenant-reachable caller must pass it.
    */
   opts: { windowDays?: number; limit?: number; now?: Date; tenantId?: string } = {},
-): Promise<DmarcSourceSummary[]> {
+): Promise<DmarcSourceCounts[]> {
   const windowDays = opts.windowDays ?? DMARC_WINDOW_DAYS;
   const now = opts.now ?? new Date();
   const since = new Date(now.getTime() - windowDays * 86_400_000);

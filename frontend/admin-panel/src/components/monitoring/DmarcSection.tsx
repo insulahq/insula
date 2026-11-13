@@ -25,6 +25,7 @@ import { useTableView } from '@/hooks/use-table-view';
 import type { SortAccessors } from '@/hooks/use-sortable';
 import type { DmarcOverview, DmarcDomainSummary, DmarcSourceSummary } from '@insula/api-contracts';
 import DmarcPolicyActions from '@/components/dmarc/DmarcPolicyActions';
+import { DmarcReverseDns, DmarcSourceBadges } from '@/components/dmarc/DmarcSourceBadges';
 
 /** The most the sources endpoint returns; the table searches and pages them in the browser. */
 const SOURCES_FETCHED = 500;
@@ -59,7 +60,7 @@ const DOMAIN_SORT: SortAccessors<DmarcDomainSummary> = {
   // "move to p=…" before "keep observing" when ascending.
   recommendation: (d) => (d.recommendation.ready ? 0 : 1),
 };
-const sourceText = (s: DmarcSourceSummary): string => s.sourceIp;
+const sourceText = (s: DmarcSourceSummary): string => `${s.sourceIp} ${s.reverseDns ?? ''}`;
 const NO_SOURCE_ACCESSORS: SortAccessors<DmarcSourceSummary> = {};
 
 /**
@@ -118,12 +119,12 @@ function SourceRows({ domain, rows }: { readonly domain: string; readonly rows: 
   return (
     <>
       <div className="px-3 pt-3">
-        <TableSearch value={view.search} onChange={view.setSearch} placeholder="Search source IP…" testId={`dmarc-sources-search-${domain}`} />
+        <TableSearch value={view.search} onChange={view.setSearch} placeholder="Search source IP or name…" testId={`dmarc-sources-search-${domain}`} />
       </div>
       <table className="w-full" data-testid={`dmarc-sources-${domain}`}>
         <thead>
           <tr className="border-b border-gray-200 dark:border-gray-700">
-            {header('Source IP', 'sourceIp')}
+            {header('Source', 'sourceIp')}
             {header('Messages', 'messageCount')}
             {header('Passing', 'passCount')}
             {header('Failing', 'failCount')}
@@ -133,7 +134,13 @@ function SourceRows({ domain, rows }: { readonly domain: string; readonly rows: 
         <tbody>
           {view.rows.map((r) => (
             <tr key={r.sourceIp} className="border-b border-gray-100 dark:border-gray-700/50">
-              <td className={`${TD} font-mono text-xs`}>{r.sourceIp}</td>
+              <td className={TD}>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="font-mono text-xs">{r.sourceIp}</span>
+                  <DmarcSourceBadges source={r} />
+                </div>
+                <DmarcReverseDns source={r} />
+              </td>
               <td className={TD}>{r.messageCount.toLocaleString()}</td>
               <td className={`${TD} text-emerald-600 dark:text-emerald-400`}>{r.passCount.toLocaleString()}</td>
               <td className={`${TD} ${r.failCount > 0 ? 'text-red-600 dark:text-red-400' : ''}`}>{r.failCount.toLocaleString()}</td>

@@ -12,6 +12,34 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **The DMARC source lists say what each sending server is.** On the tenant
+  **Authentication** tab and the admin DMARC reports, every source shows its
+  reverse DNS name and badges, each with a tooltip:
+  - **CLUSTER**: one of the platform's own servers.
+  - **SPF**: the domain's current SPF record allows it. This is checked
+    against live DNS, because a forwarder rewrites the envelope sender the
+    report shows.
+  - **RELAY**: not ours, yet passing on messages that carried the domain's
+    DKIM signature from the platform's selectors. These are forwarders and
+    recipients' mail filters, not other senders. On a production domain, every
+    server outside the cluster was one of these, and the list made them look
+    like someone forging the domain. A Microsoft 365 recipient's inline scanner
+    shows up in Microsoft's reports a second time for each message, failing
+    wherever it added a banner.
+
+### Fixed
+
+- **The DMARC policy switch is always shown.** It offered only "apply the
+  recommended step" or "step back". A domain at `p=none` whose reports did not
+  back a tightening, which includes any domain with a RELAY that fails, showed
+  no control at all. It is now a NONE / QUARANTINE / REJECT switch in both
+  panels. It is disabled, with the reason, only when the platform does not hold
+  exactly one `_dmarc` record for the domain. A tightening the reports do not
+  back shows their reason and is published only when acknowledged. The API
+  refuses it without `acknowledgeNotRecommended: true`, as before.
+
 ## [2026.11.9] - 2026-11-13
 
 ### Changed
