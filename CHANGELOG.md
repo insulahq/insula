@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.11.9-rc.1] - 2026-11-13
-
 ### Changed
 
 - **rclone 1.75.2 → 1.76.0** in the backup shim, the etcd snapshot CronJob, the backup speed test
@@ -40,6 +38,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   2026.11.6/0001 did: the release's own values and trusted-proxy arguments, `--atomic`, and a
   roll back if a pod reports its plugins disabled. Traefik restarts node by node, so ingress on
   each node blips for the seconds its pod takes.
+  - A dual-stack install's Traefik values carry `service.ipFamilyPolicy`, which no chart the
+    platform has installed renders, and which 42.3.1 refuses. The migration drops it and checks
+    the values against the new chart with a dry run before anything restarts. New dual-stack
+    installs no longer set it. Traefik's Service stays as it was, single-stack, with the nodes'
+    IPv6 addresses among its external IPs.
 - **versitygw v1.10.0 → v1.11.0**, the S3 endpoint of the DEV cluster and the VM lab (not
   deployed to real clusters).
 

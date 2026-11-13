@@ -16,10 +16,14 @@ set -euo pipefail
 # platform's v3.7.17 never meets, and the Gateway provider stays disabled.
 # providers.kubernetesCRD.safeNaming now defaults to unset instead of false;
 # neither passes a flag when the release does not set it, which it does not.
-# The values schema now refuses unknown `service` keys; the release sets only
-# service.spec.type and, dual-stack, service.ipFamilyPolicy. Helm never
-# upgrades a chart's crds/. The chart label on the pod template changes, so
-# the DaemonSet rolls.
+# The values schema now refuses unknown `service` keys. A dual-stack install
+# carries service.ipFamilyPolicy (and may carry service.ipFamilies), which no
+# chart this platform has installed renders — only service.spec reaches the
+# Service, so its Service has always been single-stack, and the node IPv6
+# ExternalIPs the ingress-external-ips reconciler adds are accepted on it.
+# Those two dead keys are dropped from the values; the Service does not change.
+# Helm never upgrades a chart's crds/. The chart label on the pod template
+# changes, so the DaemonSet rolls.
 #
 # HOW: the release's own user values, handed back whole with `-f` against the
 # new chart, whose defaults then apply. NOT `--reuse-values`: that keeps the
@@ -27,7 +31,15 @@ set -euo pipefail
 # forwardedHeaders.trustedIPs args that platform-api's cluster-trusted-proxies
 # reconciler patches onto the LIVE DaemonSet are carried, or this roll would
 # cut trust back to loopback until the reconciler's next tick rolls Traefik a
-# second time.
+# second time. The values are checked against the new chart with a dry run
+# first: one it refuses fails the script without counting an attempt, since
+# nothing rolled.
+#
+# This body replaces the one 2026.11.9-rc.1 shipped, which handed the dead
+# keys to helm: helm refused them before changing anything, so no node
+# recorded that body as applied, and on a single-stack install the two do the
+# same. That body counted its refusals as attempts; this one counts under its
+# own token (ATTEMPT_TOKEN), so those do not use up its three.
 # Blast radius (by design): the DaemonSet rolls (maxUnavailable=1, no surge —
 # hostPorts); ingress on each node blips for the seconds its pod restarts. A
 # Traefik that cannot load its plugins drops every router that uses one (both
@@ -35,10 +47,13 @@ set -euo pipefail
 # upgrade rolls the release back, marks the chart rejected and fails the script.
 #
 # Every failure path must fit the runner's 10-minute budget and must not loop:
-#   * helm waits at most 240s, and --atomic's own rollback at most as long;
+#   * the dry run of the values takes at most 30s; helm then waits at most
+#     240s, and --atomic's own rollback at most as long;
 #     the plugin check then waits 90s, and its rollback 200s (worst ~9 min);
 #   * an upgrade attempt is counted on the namespace before it starts — after
 #     three, the script stops trying (each attempt rolls ingress on every node);
+#     values the dry run refuses are not an attempt: nothing rolls, and each
+#     converge reports them again until they are fixed;
 #   * success is recorded as insula.host/traefik-chart-verified, so a run cut
 #     short after the upgrade re-checks the plugins next time instead of
 #     reading "already at 42.3.1" as done;
@@ -50,6 +65,7 @@ TARGET_APP="v3.7.17"
 REJECTED_ANNOTATION="insula.host/traefik-chart-rejected"
 VERIFIED_ANNOTATION="insula.host/traefik-chart-verified"
 ATTEMPTS_ANNOTATION="insula.host/traefik-chart-attempts"
+ATTEMPT_TOKEN="${TARGET_CHART}+values"
 MAX_ATTEMPTS=3
 # Overridable for the clean-room test only; the runner's env carries neither.
 KUBECONFIG_PATH="${HM_KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
@@ -162,7 +178,7 @@ if [ "$need_upgrade" -eq 1 ]; then
   fi
   attempts="$(ns_annotation "$ATTEMPTS_ANNOTATION")"
   n=0
-  case "$attempts" in "${TARGET_CHART}:"*) n="${attempts##*:}" ;; esac
+  case "$attempts" in "${ATTEMPT_TOKEN}:"*) n="${attempts##*:}" ;; esac
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
   if [ "$n" -ge "$MAX_ATTEMPTS" ]; then
     echo "${MIG}: ${n} upgrade attempts to chart ${TARGET_CHART} failed — not retrying (to retry: kubectl annotate namespace traefik ${ATTEMPTS_ANNOTATION}-)." >&2
@@ -198,10 +214,25 @@ if [ "$need_upgrade" -eq 1 ]; then
       else . + [$a] end' <<<"$args")"
   done
 
-  VALUES_FILE="$HELM_HOME_DIR/traefik-values.json"
-  jq --argjson args "$args" '.additionalArguments = $args' <<<"$values" > "$VALUES_FILE"
+  # The dead dual-stack keys (see WHAT CHANGES) go; the chart's schema refuses them.
+  dead="$(jq -r '[(if (.service | type) == "object" then .service else {} end) | keys[] | select(. == "ipFamilyPolicy" or . == "ipFamilies")] | join(", ")' <<<"$values")"
+  if [ -n "$dead" ]; then
+    echo "${MIG}: dropping service ${dead} from the release's values — no chart renders them (the Service keeps its families); chart ${TARGET_CHART} refuses them."
+  fi
 
-  kubectl annotate namespace traefik --overwrite "${ATTEMPTS_ANNOTATION}=${TARGET_CHART}:$((n + 1))" >/dev/null
+  VALUES_FILE="$HELM_HOME_DIR/traefik-values.json"
+  jq --argjson args "$args" '.additionalArguments = $args
+    | if (.service | type) == "object" then .service |= del(.ipFamilyPolicy, .ipFamilies) else . end' <<<"$values" > "$VALUES_FILE"
+
+  # Values the new chart refuses fail here, before anything rolls, and do not
+  # count as an attempt.
+  if ! timeout 30 "$HELM" upgrade traefik traefik/traefik \
+       --namespace traefik --version "$TARGET_CHART" -f "$VALUES_FILE" --dry-run >/dev/null 2>"$HELM_ERR"; then
+    echo "${MIG}: chart ${TARGET_CHART} refuses the release's values — nothing changed; the next converge retries: $(tail -n 5 "$HELM_ERR" | tr '\n' ' ')" >&2
+    exit 1
+  fi
+
+  kubectl annotate namespace traefik --overwrite "${ATTEMPTS_ANNOTATION}=${ATTEMPT_TOKEN}:$((n + 1))" >/dev/null
   echo "${MIG}: upgrading traefik chart ${deployed_ver} -> ${TARGET_CHART} (Traefik ${TARGET_APP}), attempt $((n + 1)) of ${MAX_ATTEMPTS} …"
   # --atomic: an upgrade that does not become ready is rolled back by helm
   # itself. Without it a timeout leaves the release `failed` and, with
