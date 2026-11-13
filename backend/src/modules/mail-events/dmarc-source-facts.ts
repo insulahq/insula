@@ -200,7 +200,6 @@ export async function relayEvidence(
   const out = new Map<string, Map<string, RelayCounts>>();
   const wanted = [...new Set(policyDomains.map((d) => d.toLowerCase()))];
   if (wanted.length === 0) return out;
-  const doms = sql.join(wanted.map((d) => sql`${d}`), sql`, `);
   // A record's DKIM results whose domain and selector are ours. dkimResults is
   // an object keyed "0", "1", … like records, or an array.
   const ourDkim = sql`
@@ -210,13 +209,13 @@ export async function relayEvidence(
     SELECT value FROM jsonb_array_elements(CASE WHEN jsonb_typeof(recs.rec->'dkimResults') = 'array'
                                                 THEN recs.rec->'dkimResults' ELSE '[]'::jsonb END)`;
   const isOurs = sql`lower(y.d->>'domain') IN (recs.dom, lower(recs.rec->>'headerFrom'))
-                     AND (lower(y.d->>'selector') IN (${DKIM_SELECTOR_A}, ${DKIM_SELECTOR_B})
+                     AND (lower(y.d->>'selector') IN (${sql.join([sql`${DKIM_SELECTOR_A}`, sql`${DKIM_SELECTOR_B}`], sql`, `)})
                           OR lower(y.d->>'selector') IN (SELECT a.sel FROM active a WHERE a.dom = recs.dom))`;
   const res = await db.execute<{ dom: string; ip: string; signed: number; evidenced: number; evidenced_fail: number }>(sql`
     WITH active AS (
       SELECT lower(d.domain_name) AS dom, lower(ed.dkim_active_selector) AS sel
         FROM email_domains ed JOIN domains d ON d.id = ed.domain_id
-       WHERE lower(d.domain_name) IN (${doms}) AND ed.dkim_active_selector IS NOT NULL
+       WHERE lower(d.domain_name) IN (${sql.join(wanted.map((d) => sql`${d}`), sql`, `)}) AND ed.dkim_active_selector IS NOT NULL
     ), recs AS (
       SELECT r.id AS report_id, r.policy_domain AS dom, x.rec,
              left(x.rec->>'sourceIp', 64) AS ip,
@@ -233,7 +232,7 @@ export async function relayEvidence(
           SELECT value FROM jsonb_array_elements(CASE WHEN jsonb_typeof(r.raw->'report'->'records') = 'array'
                                                       THEN r.raw->'report'->'records' ELSE '[]'::jsonb END)
         ) x
-       WHERE r.policy_domain IN (${doms})
+       WHERE r.policy_domain IN (${sql.join(wanted.map((d) => sql`${d}`), sql`, `)})
          AND r.received_at >= ${opts.since.toISOString()}::timestamptz
          ${opts.tenantId ? sql`AND r.tenant_id = ${opts.tenantId}` : sql``}
     ), signed AS (
