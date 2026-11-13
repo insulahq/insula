@@ -268,6 +268,13 @@ export default function DmarcTab({ tenantId, domainName }: DmarcTabProps) {
                 ) : (
                   <span className="text-gray-500 dark:text-gray-400">none</span>
                 )}
+                {summary.relayCopies.sources > 0 && (
+                  <span className="mt-0.5 block text-xs text-gray-500 dark:text-gray-400" data-testid="dmarc-tenant-relays">
+                    {summary.relayCopies.sources} of the servers {summary.relayCopies.sources === 1 ? 'is a relay' : 'are relays'} —
+                    their {summary.relayCopies.messages.toLocaleString()} {summary.relayCopies.messages === 1 ? 'copy is' : 'copies are'} not
+                    counted for the policy recommendation.
+                  </span>
+                )}
               </dd>
             </div>
             <div>

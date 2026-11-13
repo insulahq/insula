@@ -15,7 +15,7 @@
  * messages is one quiet week, not evidence.
  */
 
-import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, isNotNull, sql } from 'drizzle-orm';
 import { domains as domainsTable, emailDmarcReports, emailDmarcSources, emailDomains } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import {
@@ -54,7 +54,14 @@ export interface DmarcDomainSummary {
   /** `p=` of the platform-managed `_dmarc` record (null when none or ambiguous). */
   readonly managedPolicy: DmarcPolicy | null;
   readonly managedRecordCount: number;
+  /** Proven relay copies the recommendation leaves out (dmarc-source-facts.ts). */
+  readonly relayCopies: { readonly messages: number; readonly sources: number };
 }
+
+/** Looks up proven relay copies per domain; null when unknown. See provenRelayCopies. */
+export type RelayCopyLookup = (policyDomains: readonly string[], since: Date, tenantId?: string) =>
+  Promise<ReadonlyMap<string, { readonly messages: number; readonly passMessages: number;
+    readonly failByIp: ReadonlyMap<string, number>; readonly sources: number }> | null>;
 
 function asPolicy(v: string | null): DmarcPolicy | null {
   return v === 'none' || v === 'quarantine' || v === 'reject' ? v : null;
@@ -87,6 +94,15 @@ export async function dmarcDomainSummaries(
      * two days for the first report.
      */
     includeUnreported?: boolean;
+    /**
+     * Leave proven relay copies out of the recommendation: a recipient's
+     * filter or a forwarder re-delivering mail we signed is not a sender of
+     * the domain, and its failures (a banner breaking our signature) are
+     * nothing a policy change or a fix on our side touches. Counted, they
+     * held every domain whose recipients use such a filter at p=none.
+     * Without it everything counts.
+     */
+    relayCopies?: RelayCopyLookup;
   } = {},
 ): Promise<DmarcDomainSummary[]> {
   const windowDays = opts.windowDays ?? DMARC_WINDOW_DAYS;
@@ -120,25 +136,33 @@ export async function dmarcDomainSummaries(
     .where(scope)
     .groupBy(emailDmarcReports.policyDomain);
 
+  // Per source address, so a relay's failures can be told apart below.
   const failing = await db
     .select({
       policyDomain: emailDmarcSources.policyDomain,
-      failingSources: sql<number>`COUNT(DISTINCT ${emailDmarcSources.sourceIp})::int`,
+      sourceIp: emailDmarcSources.sourceIp,
+      failMessages: sql<number>`COALESCE(SUM(${emailDmarcSources.messageCount}), 0)::int`,
     })
     .from(emailDmarcSources)
     .where(and(
       gte(emailDmarcSources.receivedAt, since),
+      ...(opts.tenantId ? [eq(emailDmarcSources.tenantId, opts.tenantId)] : []),
+      // A record without an address names no source (COUNT(DISTINCT) skipped it too).
+      isNotNull(emailDmarcSources.sourceIp),
       // "Failed" means DMARC failed: neither mechanism passed. A row where DKIM
       // failed but SPF passed is a PASS and must not be counted here, or every
       // domain using one mechanism would look permanently broken.
       sql`${emailDmarcSources.evaluatedDkim} IS DISTINCT FROM 'pass'`,
       sql`${emailDmarcSources.evaluatedSpf} IS DISTINCT FROM 'pass'`,
     ))
-    .groupBy(emailDmarcSources.policyDomain);
+    .groupBy(emailDmarcSources.policyDomain, emailDmarcSources.sourceIp);
 
-  const failingByDomain = new Map<string, number>();
+  const failingByDomain = new Map<string, Map<string, number>>();
   for (const f of failing) {
-    if (f.policyDomain) failingByDomain.set(f.policyDomain, f.failingSources);
+    if (!f.policyDomain) continue;
+    const byIp = failingByDomain.get(f.policyDomain) ?? new Map<string, number>();
+    if (f.sourceIp && f.failMessages > 0) byIp.set(f.sourceIp, f.failMessages);
+    failingByDomain.set(f.policyDomain, byIp);
   }
 
   const withReports = rows.filter((r): r is typeof r & { policyDomain: string } => typeof r.policyDomain === 'string');
@@ -146,6 +170,9 @@ export async function dmarcDomainSummaries(
     ? [...withReports, ...(await unreportedEmailDomains(db, opts.tenantId, withReports.map((r) => r.policyDomain)))]
     : withReports;
   const managed = await managedDmarcRecords(db, reported.map((r) => r.policyDomain));
+  const relays = opts.relayCopies && withReports.length > 0
+    ? await opts.relayCopies(withReports.map((r) => r.policyDomain), since, opts.tenantId)
+    : null;
 
   return reported
     .map((r) => {
@@ -155,7 +182,16 @@ export async function dmarcDomainSummaries(
       const last = r.lastReportAt ? new Date(r.lastReportAt) : null;
       const windowSpan = spanDays(first, last);
       const currentPolicy = asPolicy(r.latestPolicy);
-      const failingSources = failingByDomain.get(r.policyDomain) ?? 0;
+      const failingByIp = failingByDomain.get(r.policyDomain) ?? new Map<string, number>();
+      const failingSources = failingByIp.size;
+      const relay = relays?.get(r.policyDomain) ?? null;
+      // A source drops out of the failing count only when every failure it has
+      // is a proven relay copy; one more failure and it stays.
+      const failingNonRelay = relay
+        ? [...failingByIp].filter(([ip, n]) => n > (relay.failByIp.get(ip) ?? 0)).length
+        : failingSources;
+      const judgedTotal = Math.max(0, r.totalMessages - (relay?.messages ?? 0));
+      const judgedPass = Math.max(0, Math.min(judgedTotal, r.passMessages - (relay?.passMessages ?? 0)));
       return {
         policyDomain: r.policyDomain,
         tenantId: r.tenantId ?? null,
@@ -177,13 +213,15 @@ export async function dmarcDomainSummaries(
           policyDomain: r.policyDomain,
           currentPolicy,
           reportCount: r.reportCount,
-          totalMessages: r.totalMessages,
-          passMessages: r.passMessages,
+          totalMessages: judgedTotal,
+          passMessages: judgedPass,
           windowDays: windowSpan,
-          failingSources,
+          failingSources: failingNonRelay,
+          ignoredRelayCopies: relay ? { messages: relay.messages, sources: relay.sources } : undefined,
         }),
         managedPolicy,
         managedRecordCount: records.length,
+        relayCopies: { messages: relay?.messages ?? 0, sources: relay?.sources ?? 0 },
       };
     })
     .sort((a, b) => b.totalMessages - a.totalMessages);

@@ -45,6 +45,7 @@ const summary = (over: Record<string, unknown> = {}) => ({
     reason: '100.0% of 4200 message(s) passed over 29 days with no failing sources.',
     ready: true,
   },
+  relayCopies: { messages: 0, sources: 0 },
   ...over,
 });
 
@@ -153,6 +154,25 @@ describe('DmarcTab (tenant)', () => {
     });
     await screen.findByTestId('dmarc-tenant-pass-rate');
     expect(screen.queryByTestId('dmarc-tenant-empty')).toBeNull();
+  });
+
+  it('says which failing servers are relays the recommendation does not count', async () => {
+    renderTab({
+      overview: {
+        windowDays: 30,
+        domains: [summary({ failingSources: 2, relayCopies: { messages: 32, sources: 1 } })],
+        intakeLocalPart: 'postmaster',
+      },
+    });
+    const note = await screen.findByTestId('dmarc-tenant-relays');
+    expect(note).toHaveTextContent('1 of the servers is a relay');
+    expect(note).toHaveTextContent('32 copies are not counted');
+  });
+
+  it('says nothing about relays when there are none', async () => {
+    renderTab();
+    await screen.findByTestId('dmarc-tenant-failing');
+    expect(screen.queryByTestId('dmarc-tenant-relays')).toBeNull();
   });
 
   it('describes the published policy in words, not just as p=quarantine', async () => {

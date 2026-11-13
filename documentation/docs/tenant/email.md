@@ -298,6 +298,8 @@ top of the page:
       changed the message (a filter that adds an "external sender" banner, for
       example). Nothing on your side makes it pass. Under a stricter policy,
       that recipient's own mail admin decides whether such mail is trusted.
+      The recommendation for your policy does not count relayed copies, and
+      **Failing senders** says how many of the servers are relays.
 
 !!! info "An empty tab is not an all-clear"
 

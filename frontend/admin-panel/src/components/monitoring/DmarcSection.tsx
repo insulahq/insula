@@ -250,6 +250,15 @@ function DomainsTable({ domains }: { readonly domains: readonly DmarcDomainSumma
                     {d.failingSources > 0
                       ? <span className="text-red-600 dark:text-red-400">{d.failingSources}</span>
                       : <span className="text-gray-400 dark:text-gray-500">none</span>}
+                    {d.relayCopies.sources > 0 && (
+                      <span
+                        className="ml-1 text-xs text-gray-500 dark:text-gray-400"
+                        title={`${d.relayCopies.messages} relayed copies from ${d.relayCopies.sources} relay(s) are not counted for the recommendation.`}
+                        data-testid={`dmarc-relays-${d.policyDomain}`}
+                      >
+                        ({d.relayCopies.sources} {d.relayCopies.sources === 1 ? 'relay' : 'relays'})
+                      </span>
+                    )}
                   </td>
                   <td className={TD}>{d.reportCount}</td>
                   <td className={TD}>

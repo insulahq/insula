@@ -9,8 +9,10 @@ import crypto from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } from '../../test-helpers/db.js';
 import { seedRegion, seedPlan, seedTenant, seedDomain } from '../../test-helpers/fixtures.js';
-import { emailDmarcReports, emailDomains } from '../../db/schema.js';
-import { signedMessagesBySource } from './dmarc-source-facts.js';
+import { dnsRecords, emailDmarcReports, emailDmarcSources, emailDomains } from '../../db/schema.js';
+import { provenRelayCopies, resetDmarcSourceFactCaches, signedMessagesBySource } from './dmarc-source-facts.js';
+import { dmarcDomainSummaries } from './dmarc-summary.js';
+import { applyDmarcPolicy } from './dmarc-apply.js';
 
 const dbAvailable = await isDbAvailable();
 const DOMAIN = 'shop.example.com';
@@ -99,7 +101,7 @@ describe.skipIf(!dbAvailable)('DMARC relay counts (integration)', () => {
     } as typeof emailDomains.$inferInsert);
     await report({ 0: rec('198.51.100.9', 7, [{ domain: DOMAIN, selector: 'stalwart-20260101', result: 'pass' }]) });
     const counts = await signedMessagesBySource(db(), DOMAIN, { since: since(), tenantId });
-    expect(counts.get('198.51.100.9')).toEqual({ signed: 7, evidenced: 7 });
+    expect(counts.get('198.51.100.9')).toEqual({ signed: 7, evidenced: 7, evidencedFail: 0 });
   });
 
   it('keeps to the tenant and the window, and survives odd records', async () => {
@@ -119,5 +121,94 @@ describe.skipIf(!dbAvailable)('DMARC relay counts (integration)', () => {
     // The admin view, unscoped, sees both tenants' reports in the window.
     expect(flat(await signedMessagesBySource(db(), DOMAIN, { since: since() })))
       .toEqual({ '198.51.100.7': [6, 1] });
+  });
+
+  // The recommendation must not hold a domain at p=none for failures that are
+  // a recipient's scanner re-delivering our own mail — the production case.
+  describe('the recommendation leaves proven relay copies out', () => {
+    type Rec = ReturnType<typeof rec>;
+    /** A report and its source rows, consistent with each other as ingest writes them. */
+    async function fullReport(records: Rec[], daysAgo: number) {
+      const id = crypto.randomUUID();
+      const receivedAt = new Date(Date.now() - daysAgo * 86_400_000);
+      const passed = (r: Rec) => r.evaluatedDkim === 'pass' || r.evaluatedSpf === 'pass';
+      const total = records.reduce((n, r) => n + r.count, 0);
+      const pass = records.filter(passed).reduce((n, r) => n + r.count, 0);
+      await db().insert(emailDmarcReports).values({
+        id, stalwartReportId: crypto.randomUUID(), tenantId, policyDomain: DOMAIN, policyDisposition: 'none',
+        totalMessages: total, passMessages: pass, failMessages: total - pass, receivedAt,
+        raw: { id: 'x', report: { policyDomain: DOMAIN, records: Object.fromEntries(records.map((r, i) => [String(i), r])) } },
+      } as typeof emailDmarcReports.$inferInsert);
+      for (const r of records) {
+        await db().insert(emailDmarcSources).values({
+          id: crypto.randomUUID(), reportId: id, tenantId, policyDomain: DOMAIN, sourceIp: r.sourceIp,
+          messageCount: r.count, evaluatedDkim: r.evaluatedDkim, evaluatedSpf: r.evaluatedSpf, disposition: 'none',
+          headerFrom: DOMAIN, receivedAt,
+        } as typeof emailDmarcSources.$inferInsert);
+      }
+    }
+    const ours = rec('192.0.2.10', 20, [OURS], { envelopeTo: 'customer.example.org', spf: 'pass' });
+    const scanner = rec('198.51.100.7', 20, [BROKEN], { envelopeTo: 'customer.example.org' });
+    const deps = { clusterAddresses: async () => ['192.0.2.10'] };
+    const lookup = () => (doms: readonly string[], since: Date, tenant?: string) => provenRelayCopies(db(), doms, { since, tenantId: tenant }, deps);
+
+    beforeEach(async () => {
+      resetDmarcSourceFactCaches();
+      const domain = await seedDomain(db(), tenantId, { domainName: DOMAIN });
+      await db().insert(dnsRecords).values({
+        id: crypto.randomUUID(), domainId: domain.id, recordType: 'TXT', recordName: `_dmarc.${DOMAIN}`,
+        recordValue: `v=DMARC1; p=none; rua=mailto:dmarc@${DOMAIN}`, ttl: 3600, priority: null,
+      });
+      for (let i = 0; i < 6; i++) await fullReport([ours, scanner], 20 - i * 4);
+    });
+
+    it('without it the scanner holds the domain at p=none; with it the domain is ready', async () => {
+      const [raw] = await dmarcDomainSummaries(db(), { tenantId });
+      expect(raw).toMatchObject({ totalMessages: 240, passMessages: 120, failingSources: 1, relayCopies: { messages: 0, sources: 0 } });
+      expect(raw.recommendation.ready).toBe(false);
+
+      const [judged] = await dmarcDomainSummaries(db(), { tenantId, relayCopies: lookup() });
+      // The raw figures stay what the reports say…
+      expect(judged).toMatchObject({ totalMessages: 240, passMessages: 120, failingSources: 1, relayCopies: { messages: 120, sources: 1 } });
+      // …the recommendation judges the rest, and says what it left out.
+      expect(judged.recommendation).toMatchObject({ ready: true, recommendedPolicy: 'quarantine' });
+      expect(judged.recommendation.reason).toMatch(/100\.0% of 120 message\(s\)/);
+      expect(judged.recommendation.reason).toMatch(/Not counted: 120 copies passed on by 1 relay/);
+
+      // The server-side check judges the same way, so the step needs no acknowledgement.
+      await expect(applyDmarcPolicy(db(), { domain: DOMAIN, policy: 'quarantine', tenantId }))
+        .rejects.toMatchObject({ code: 'DMARC_TIGHTENING_NOT_READY' });
+      await expect(applyDmarcPolicy(db(), { domain: DOMAIN, policy: 'quarantine', tenantId }, { relayCopies: lookup() }))
+        .resolves.toMatchObject({ policy: 'quarantine' });
+    });
+
+    it('a failure without evidence still counts — a pasted signature header is not a relay', async () => {
+      await fullReport([rec('203.0.113.66', 1, [BROKEN], { envelopeTo: 'partner.example.org' })], 1);
+      const [judged] = await dmarcDomainSummaries(db(), { tenantId, relayCopies: lookup() });
+      expect(judged.recommendation.ready).toBe(false);
+      expect(judged.recommendation.reason).toMatch(/1 source\(s\) are still failing/);
+    });
+
+    it('a relay that also fails one message of its own stays a failing source', async () => {
+      await fullReport([rec('198.51.100.7', 1, [], { envelopeTo: 'elsewhere.example.org' })], 1);
+      const [judged] = await dmarcDomainSummaries(db(), { tenantId, relayCopies: lookup() });
+      expect(judged.recommendation.ready).toBe(false);
+    });
+
+    it('our own server is never a relay, and an unreadable node list means nothing is left out', async () => {
+      const both = (doms: readonly string[], since: Date) =>
+        provenRelayCopies(db(), doms, { since, tenantId }, { clusterAddresses: async () => ['192.0.2.10', '198.51.100.7'] });
+      expect((await dmarcDomainSummaries(db(), { tenantId, relayCopies: both }))[0].relayCopies).toEqual({ messages: 0, sources: 0 });
+      resetDmarcSourceFactCaches();
+      const broken = (doms: readonly string[], since: Date) =>
+        provenRelayCopies(db(), doms, { since, tenantId }, { clusterAddresses: async () => { throw new Error('forbidden'); } });
+      const [r] = await dmarcDomainSummaries(db(), { tenantId, relayCopies: broken });
+      expect(r.relayCopies).toEqual({ messages: 0, sources: 0 });
+      expect(r.recommendation.ready).toBe(false);
+    });
+
+    it('another tenant\'s reports for the same domain are neither counted nor left out', async () => {
+      expect(await provenRelayCopies(db(), [DOMAIN], { since: since(), tenantId: otherTenantId }, deps)).toEqual(new Map());
+    });
   });
 });

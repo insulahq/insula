@@ -10,7 +10,7 @@ import type { DmarcSourceCounts } from './dmarc-summary.js';
 
 const nx = () => Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' });
 
-/** select()…where() resolves to no rows (no active-selector override); execute() returns [signed, evidenced] per address. */
+/** execute() returns [signed, evidenced] per address, for shop.example.test. */
 function stubDb(signed: Record<string, readonly [number, number]>, opts: { fail?: boolean } = {}) {
   const chain: Record<string, unknown> = {
     from: () => chain, innerJoin: () => chain, where: () => chain,
@@ -20,7 +20,7 @@ function stubDb(signed: Record<string, readonly [number, number]>, opts: { fail?
     select: () => chain,
     execute: () => (opts.fail
       ? Promise.reject(new Error('statement timeout'))
-      : Promise.resolve({ rows: Object.entries(signed).map(([ip, [n, e]]) => ({ ip, signed: n, evidenced: e })) })),
+      : Promise.resolve({ rows: Object.entries(signed).map(([ip, [n, e]]) => ({ dom: 'shop.example.test', ip, signed: n, evidenced: e, evidenced_fail: 0 })) })),
   } as never;
 }
 

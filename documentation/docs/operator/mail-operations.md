@@ -325,6 +325,24 @@ one matters most — one small but legitimate sender can fail every message it
 sends while your overall percentage still looks healthy, and it is that sender
 whose mail stops when you tighten.
 
+Proven RELAY copies are left out of that judgement: the messages a recipient's
+filter or a forwarder re-delivered, as the badge above defines them. They are
+not senders of the domain. A scanner that breaks our signature with a banner
+does so under any policy, and counting it would hold every domain whose
+recipients use one at `p=none` for good. A relay drops out of the failing count
+only if every failure it has is a proven copy. The domain's pass rate and
+failing-source count still show the reports' raw figures, marked "(N relays)",
+and the recommendation names what it left out. If the cluster's node list
+cannot be read, nothing is left out.
+
+!!! note "Reports are not authenticated"
+    DMARC aggregate reports are plain mail to the domain's `rua=` address, and
+    nothing in the standard proves who sent one. A forged report can make any
+    figure on this page look better than it is, including a source's relay
+    evidence, just as it could always inflate the pass rate. The recommendation
+    is advice, never applied on its own. Before tightening, look at the failing
+    sources it names, and at the reverse DNS names of the relays it left out.
+
 Nothing changes on its own. The policy is a **NONE / QUARANTINE / REJECT**
 switch in the domain's row in **Monitoring → Mail → DMARC**, and on the
 domain owner's **Authentication** tab in the tenant panel. A check mark shows

@@ -25,13 +25,15 @@ import type { Database } from '../../db/index.js';
 import { ApiError } from '../../shared/errors.js';
 import { updateDnsRecord } from '../dns-records/service.js';
 import { isZoneWritable } from '../email-domains/dns-provisioning.js';
-import { dmarcDomainSummaries, DMARC_WINDOW_DAYS } from './dmarc-summary.js';
+import { dmarcDomainSummaries, DMARC_WINDOW_DAYS, type RelayCopyLookup } from './dmarc-summary.js';
 import type { DmarcPolicy } from './dmarc-policy.js';
 import { DMARC_POLICY_ORDER as ORDER, isTightening, managedDmarcRecords, policyOf, withPolicy } from './dmarc-record.js';
 
 export async function applyDmarcPolicy(
   db: Database,
   input: { domain: string; policy: DmarcPolicy; acknowledgeNotRecommended?: boolean; tenantId?: string },
+  /** The panels' recommendation leaves proven relay copies out; this check must judge the same way. */
+  opts: { relayCopies?: RelayCopyLookup } = {},
 ): Promise<ApplyDmarcPolicyResponse> {
   const domainName = input.domain.trim().toLowerCase().replace(/\.$/, '');
   const records = (await managedDmarcRecords(db, [domainName])).get(domainName) ?? [];
@@ -57,7 +59,9 @@ export async function applyDmarcPolicy(
   }
 
   if (isTightening(current, input.policy) && input.acknowledgeNotRecommended !== true) {
-    const summary = (await dmarcDomainSummaries(db, { windowDays: DMARC_WINDOW_DAYS, tenantId: record.tenantId }))
+    const summary = (await dmarcDomainSummaries(db, {
+      windowDays: DMARC_WINDOW_DAYS, tenantId: record.tenantId, relayCopies: opts.relayCopies,
+    }))
       .find((d) => d.policyDomain.toLowerCase() === domainName);
     const rec = summary?.recommendation;
     // The recommendation steps from what reporters SAW; a tightening already

@@ -558,6 +558,16 @@ export const dmarcDomainSummarySchema = z.object({
    * `managedPolicy` is null — distinct from "not managed here" (0).
    */
   managedRecordCount: z.number().int().nonnegative(),
+  /**
+   * Proven relay copies (RELAY sources: recipients' filters and forwarders
+   * re-delivering mail the platform signed) that the recommendation leaves
+   * out. The pass rate and failing-source count above are the reports' raw
+   * figures and still include them.
+   */
+  relayCopies: z.object({
+    messages: z.number().int().nonnegative(),
+    sources: z.number().int().nonnegative(),
+  }),
 });
 export type DmarcDomainSummary = z.infer<typeof dmarcDomainSummarySchema>;
 

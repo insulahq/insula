@@ -45,6 +45,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     like someone forging the domain. A Microsoft 365 recipient's inline scanner
     shows up in Microsoft's reports a second time for each message, failing
     wherever it added a banner.
+- **The DMARC policy recommendation leaves proven relay copies out.** They
+  are not the domain's senders, and no policy or fix on our side makes a
+  scanner's banner keep our signature intact. Counting them held every domain
+  whose recipients use such a scanner at `p=none`. A relay is dropped from the
+  failing sources only when all of its failures are proven copies. The pass
+  rate and failing count still show the reports' raw figures, with
+  "(N relays)", and the recommendation names what it left out. The server-side
+  check on applying a policy judges the same way. The failing-source count
+  behind the recommendation is now also kept to the tenant asking.
 - **Show the DKIM private key, to sign with it on another mail server.** On the tenant panel's
   Email → Settings & DNS tab, the DKIM keys card has **Show private key** on the key that signs.
   It shows the key with the domain (`d=`) and selector (`s=`) another server needs, and whether

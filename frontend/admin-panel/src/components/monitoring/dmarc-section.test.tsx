@@ -44,6 +44,7 @@ const domain = (over: Record<string, unknown> = {}) => ({
     reason: '100.0% of 5000 message(s) passed over 30 days with no failing sources — safe to move to p=quarantine.',
     ready: true,
   },
+  relayCopies: { messages: 0, sources: 0 },
   ...over,
 });
 
@@ -114,6 +115,13 @@ describe('DmarcSection', () => {
     await screen.findByTestId('dmarc-domains');
     expect(screen.getByText(/keep observing/)).toBeTruthy();
     expect(screen.queryByText(/move to p=/)).toBeNull();
+  });
+
+  it('marks how many failing sources are relays the recommendation leaves out', async () => {
+    renderWith({ windowDays: 30, domains: [domain({ failingSources: 3, relayCopies: { messages: 35, sources: 2 } })], intakeLocalPart: 'dmarc' });
+    const note = await screen.findByTestId('dmarc-relays-example.test');
+    expect(note).toHaveTextContent('(2 relays)');
+    expect(note.getAttribute('title')).toMatch(/35 relayed copies/);
   });
 
   it('surfaces failing sources as a count an operator can act on', async () => {
