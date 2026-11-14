@@ -14,7 +14,7 @@ vi.mock('./signatures.js', async (importOriginal) => ({
 import { dkimSignatureGet, dkimSignatureSet, type StalwartDkimSignatureRow } from '../stalwart-jmap/client.js';
 import { createRsaDkimSignature, RSA_SIGNATURE_TYPE, ED25519_SIGNATURE_TYPE } from './signatures.js';
 import { normalizeDomainDkim } from './normalize.js';
-import type { RestorableDkimKey } from './restore.js';
+import type { RestorableDkimKey, RestoreCheck } from './restore.js';
 
 const get = dkimSignatureGet as unknown as ReturnType<typeof vi.fn>;
 const set = dkimSignatureSet as unknown as ReturnType<typeof vi.fn>;
@@ -25,6 +25,7 @@ const row = (id: string, selector: string, type = RSA_SIGNATURE_TYPE): StalwartD
 const key = (selector: string): RestorableDkimKey =>
   ({ selector, privateKeyPem: `PEM-${selector}`, publicKeySpki: `SPKI-${selector}`, matchedBy: 'dns' });
 const base = { accountId: 'acct' as never, stalwartDomainId: 'sw-1' };
+const ok = (restorable: RestorableDkimKey[]): RestoreCheck => ({ restorable, undecidable: [] });
 
 describe('normalizeDomainDkim — restore before mint', () => {
   beforeEach(() => {
@@ -37,7 +38,7 @@ describe('normalizeDomainDkim — restore before mint', () => {
   it('puts both kept keys back and mints nothing; the persisted selector stays active', async () => {
     get.mockResolvedValue([row('auto-rsa', 'v1-rsa-x'), row('auto-ed', 'v1-ed25519-x', ED25519_SIGNATURE_TYPE)]);
     const keepKey = vi.fn(async () => true);
-    const restorable = vi.fn(async () => [key('dkim-1'), key('dkim-2')]);
+    const restorable = vi.fn(async () => ok([key('dkim-1'), key('dkim-2')]));
     const res = await normalizeDomainDkim({ ...base, currentDbSelector: 'dkim-2', keepKey, restorable });
 
     expect(restorable).toHaveBeenCalledWith(['dkim-1', 'dkim-2']);
@@ -53,7 +54,7 @@ describe('normalizeDomainDkim — restore before mint', () => {
 
   it('restores only the selector Stalwart lost, next to the one it kept', async () => {
     get.mockResolvedValue([row('s1', 'dkim-1')]);
-    const restorable = vi.fn(async () => [key('dkim-2')]);
+    const restorable = vi.fn(async () => ok([key('dkim-2')]));
     const res = await normalizeDomainDkim({ ...base, currentDbSelector: 'dkim-2', restorable });
     expect(restorable).toHaveBeenCalledWith(['dkim-2']);
     expect(create).toHaveBeenCalledTimes(1);
@@ -63,14 +64,14 @@ describe('normalizeDomainDkim — restore before mint', () => {
 
   it('ignores a candidate for a selector it did not ask about', async () => {
     get.mockResolvedValue([row('s1', 'dkim-1')]);
-    await normalizeDomainDkim({ ...base, restorable: async () => [key('dkim-1')] });
+    await normalizeDomainDkim({ ...base, restorable: async () => ok([key('dkim-1')]) });
     expect(create).not.toHaveBeenCalled();
   });
 
   it('mints as before when nothing is restorable, and keeps exactly the key Stalwart got', async () => {
     get.mockResolvedValue([row('auto-rsa', 'v1-rsa-x')]);
     const keepKey = vi.fn(async () => true);
-    const res = await normalizeDomainDkim({ ...base, keepKey, restorable: async () => [] });
+    const res = await normalizeDomainDkim({ ...base, keepKey, restorable: async () => ok([]) });
     expect(create).toHaveBeenCalledTimes(1);
     const sent = create.mock.calls[0][0] as { selector: string; privateKeyPem: string };
     expect(sent.selector).toBe('dkim-1');
@@ -83,16 +84,37 @@ describe('normalizeDomainDkim — restore before mint', () => {
   it('falls back to minting when Stalwart refuses the kept key', async () => {
     get.mockResolvedValue([row('auto-rsa', 'v1-rsa-x')]);
     create.mockRejectedValueOnce(new Error('refused -----BEGIN PRIVATE KEY-----\nAAA\n-----END PRIVATE KEY-----'));
-    const res = await normalizeDomainDkim({ ...base, restorable: async () => [key('dkim-1')] });
+    const res = await normalizeDomainDkim({ ...base, restorable: async () => ok([key('dkim-1')]) });
     expect(create).toHaveBeenCalledTimes(2); // the refused restore, then the mint
     expect(res.restored).toEqual([]);
     expect(res.createdPublicKey).toMatch(/BEGIN PUBLIC KEY/);
   });
 
-  it('a restore check that throws is no restore, not a failed normalize', async () => {
+  // DNS gave no answer: a new key would replace one DNS may well still
+  // publish. Nothing is restored, minted or swept — the auto pair keeps signing.
+  it('an undecidable check restores nothing, mints nothing and sweeps nothing', async () => {
+    get.mockResolvedValue([row('auto-rsa', 'v1-rsa-x')]);
+    const keepKey = vi.fn(async () => true);
+    const res = await normalizeDomainDkim({
+      ...base, keepKey, restorable: async () => ({ restorable: [key('dkim-1')], undecidable: ['dkim-2'] }),
+    });
+    expect(res).toMatchObject({ undecidable: true, createdPublicKey: null, restored: [], destroyed: [] });
+    expect(create).not.toHaveBeenCalled();
+    expect(set).not.toHaveBeenCalled();
+    expect(keepKey).not.toHaveBeenCalled();
+  });
+
+  it('a restore check that throws is undecidable too, never a mint', async () => {
     get.mockResolvedValue([row('auto-rsa', 'v1-rsa-x')]);
     const res = await normalizeDomainDkim({ ...base, restorable: async () => { throw new Error('db down'); } });
-    expect(res.createdPublicKey).toMatch(/BEGIN PUBLIC KEY/);
+    expect(res.undecidable).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('a decided check reports undecidable: false', async () => {
+    get.mockResolvedValue([row('auto-rsa', 'v1-rsa-x')]);
+    const res = await normalizeDomainDkim({ ...base, restorable: async () => ok([]) });
+    expect(res.undecidable).toBe(false);
   });
 
   // Keeping a copy never fails signing.

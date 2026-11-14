@@ -27,9 +27,10 @@ import { resolveDkimAccountId, redactPemBlocks } from './signatures.js';
 import { buildDkimKeyList, dkimTxtName, readPublishedDkimRecords } from './keys.js';
 import { resolveSigningKey, type SigningKeyResult } from './private-key.js';
 import { readKeptDkimPrivateKey } from './key-store.js';
+import { platformEncryptionKey } from '../../shared/platform-encryption-key.js';
 
-/** Same source as rotation (rotate-routes.ts); the zero key is the dev fallback. */
-const encryptionKey = (): string => process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
+/** Same source as rotation (rotate-routes.ts). */
+const encryptionKey = (): string => platformEncryptionKey();
 
 const UNAVAILABLE_MESSAGE: Record<Extract<SigningKeyResult, { ok: false }>['reason'], string> = {
   no_signing_key: 'The mail server holds no active signing key for this domain. Rotate key creates one.',

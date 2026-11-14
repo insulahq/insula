@@ -63,8 +63,10 @@ export async function keepDkimPrivateKey(
         selector: input.selector,
         privateKeyEncrypted,
       })
+      // On the pair, not the id: a row an older pod wrote during a rolling
+      // deploy (its id filled in by 0182's trigger) is replaced, not collided with.
       .onConflictDoUpdate({
-        target: emailDkimPrivateKeys.id,
+        target: [emailDkimPrivateKeys.emailDomainId, emailDkimPrivateKeys.selector],
         set: { privateKeyEncrypted, createdAt: new Date() },
       });
     return true;
@@ -74,6 +76,16 @@ export async function keepDkimPrivateKey(
       { emailDomainId: input.emailDomainId, selector: input.selector, err: err instanceof Error ? err.name : 'unknown' },
       'DKIM: could not keep a copy of the new key; it signs as normal, but cannot be shown until the next rotation',
     );
+    // The selector's OLD copy must not outlive its key: left in place, it could
+    // later match a record still carrying the old key and be restored over the
+    // new one. Best effort — if this fails too, the public-half checks of both
+    // readers still refuse it.
+    try {
+      await forgetDkimPrivateKeysFor(db, input.emailDomainId, [input.selector]);
+    } catch {
+      log?.warn({ emailDomainId: input.emailDomainId, selector: input.selector },
+        'DKIM: could not drop the previous copy of this selector either');
+    }
     return false;
   }
 }

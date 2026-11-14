@@ -232,11 +232,14 @@ export async function rotateDkimKey(
       );
     }
     // A destroyed straggler's kept copy goes with it: it can never be shown
-    // (no signature reports its key) and must never be restored. The target's
-    // copy is replaced below, with the new key.
-    const destroyedStragglers = plan.stragglerRows
-      .filter((r) => destroyedSet.has(r.id) && r.selector !== plan.target)
-      .map((r) => r.selector);
+    // (no signature reports its key) and must never be restored. Only once
+    // EVERY row of that selector is gone — a selector with a surviving row
+    // still signs with some key. The target's copy is replaced below, with
+    // the new key.
+    const domainRows = rows.filter((r) => r.domainId === stalwartDomainId);
+    const destroyedStragglers = [...new Set(plan.stragglerRows.map((r) => r.selector))]
+      .filter((sel) => sel !== plan.target
+        && domainRows.filter((r) => r.selector === sel).every((r) => destroyedSet.has(r.id)));
     try {
       await forgetDkimPrivateKeysFor(db, emailDomainId, destroyedStragglers);
     } catch (err) {

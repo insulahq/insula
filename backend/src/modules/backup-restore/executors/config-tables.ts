@@ -18,12 +18,53 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
-import type { RestoreItem } from '../../../db/schema.js';
+import { restoreJobs, type RestoreItem } from '../../../db/schema.js';
 import { withinApplicationLimitForCart } from './application-limit-guard.js';
 import { readAndAuthorizeConfigDump, upsertRow } from './_shared.js';
 import { isTableAllowedForTenant, redactRowForTenant, type TenantRestorePolicy } from '../tenant-restore-policy.js';
+import { dkimKeyRowId } from '../../email-dkim/key-store.js';
+
+type SqlTx = { execute: (q: ReturnType<typeof sql>) => Promise<unknown> };
+
+function rowsOf(res: unknown): Array<Record<string, unknown>> {
+  return (Array.isArray(res) ? res : (res as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>;
+}
+
+/**
+ * A bundle's kept DKIM key row is not trusted to belong where it says: the
+ * table carries no tenant_id, and its id is derivable from the email domain
+ * id. It is restored only when
+ *   - its email domain belongs to the tenant the cart restores into,
+ *   - its id is the one key-store.ts derives from (email domain, selector) —
+ *     a row under any other id would sit beside the real one, and
+ *   - no live copy of that selector is NEWER: an older bundle must not
+ *     replace the key a rotation since put in place.
+ * Exported for tests.
+ */
+export async function dkimKeyRowRestorable(
+  tx: SqlTx,
+  row: Record<string, unknown>,
+  jobTenantId: string | null,
+): Promise<boolean> {
+  const emailDomainId = row.email_domain_id;
+  const selector = row.selector;
+  if (typeof emailDomainId !== 'string' || typeof selector !== 'string' || !jobTenantId) return false;
+  if (row.id !== dkimKeyRowId(emailDomainId, selector)) return false;
+  const owner = rowsOf(await tx.execute(sql`
+    SELECT 1 FROM email_domains WHERE id = ${emailDomainId} AND tenant_id = ${jobTenantId} LIMIT 1
+  `));
+  if (owner.length === 0) return false;
+  const live = rowsOf(await tx.execute(sql`
+    SELECT created_at FROM email_dkim_private_keys WHERE email_domain_id = ${emailDomainId} AND selector = ${selector} LIMIT 1
+  `));
+  if (live.length === 0) return true;
+  const liveAt = new Date(String(live[0].created_at)).getTime();
+  const bundledAt = new Date(String(row.created_at)).getTime();
+  // An unreadable bundle timestamp is not "newer".
+  return Number.isFinite(bundledAt) && !(liveAt > bundledAt);
+}
 
 /**
  * Tables this executor is allowed to write to. MUST be a superset of
@@ -110,6 +151,15 @@ export async function execConfigTablesItem(args: {
     }
   }
 
+  // The tenant the cart restores into — what a kept DKIM key row must belong to.
+  // Read only when the cart restores that table.
+  let jobTenantId: string | null = null;
+  if (pickedCamel.includes('emailDkimPrivateKeys')) {
+    const [job] = await app.db.select({ tenantId: restoreJobs.tenantId }).from(restoreJobs)
+      .where(eq(restoreJobs.id, item.restoreJobId)).limit(1);
+    jobTenantId = job?.tenantId ?? null;
+  }
+
   let totalUpserts = 0;
   let totalSkipped = 0;
   // Applications coming back through a TENANT cart count against its limit.
@@ -141,6 +191,11 @@ export async function execConfigTablesItem(args: {
               : sqlTable === 'mailboxes'
                 ? { ...(safeRow as Record<string, unknown>), stalwart_principal_id: null }
                 : safeRow;
+          if (sqlTable === 'email_dkim_private_keys'
+            && !(await dkimKeyRowRestorable(tx, withoutStalwartIds as Record<string, unknown>, jobTenantId))) {
+            totalSkipped++;
+            continue;
+          }
           if (await upsertRow(tx, sqlTable, withoutStalwartIds)) totalUpserts++;
           else totalSkipped++;
         }

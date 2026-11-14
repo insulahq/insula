@@ -55,7 +55,7 @@ import {
   RSA_SIGNATURE_TYPE,
   ED25519_SIGNATURE_TYPE,
 } from './signatures.js';
-import type { RestorableDkimKey } from './restore.js';
+import type { RestorableDkimKey, RestoreCheck } from './restore.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 
 const log = mailLogger().child({ module: 'email-dkim-normalize' });
@@ -169,6 +169,12 @@ export interface NormalizeResult {
   readonly restored: readonly RestorableDkimKey[];
   /** Whether the key this run minted was kept (null when none was minted). */
   readonly keptCopy: boolean | null;
+  /**
+   * The published records could not be checked (DNS gave no answer): nothing
+   * was restored, minted or swept, and `activeSelector` is not to be persisted.
+   * Retry later (POST …/dkim/restore).
+   */
+  readonly undecidable: boolean;
 }
 
 /**
@@ -198,9 +204,10 @@ export async function normalizeDomainDkim(params: {
   keepKey?: (selector: string, privateKeyPem: string) => Promise<boolean>;
   /**
    * The kept keys of these missing A/B selectors that may go back into
-   * Stalwart (restore.ts restorableDkimKeys). Omitted: nothing is restored.
+   * Stalwart, and the selectors that could not be checked (restore.ts
+   * restorableDkimKeys). Omitted: nothing is restored.
    */
-  restorable?: (selectors: readonly DkimAbSelector[]) => Promise<readonly RestorableDkimKey[]>;
+  restorable?: (selectors: readonly DkimAbSelector[]) => Promise<RestoreCheck>;
 }): Promise<NormalizeResult> {
   const { accountId, stalwartDomainId, baseUrl } = params;
 
@@ -230,14 +237,26 @@ export async function normalizeDomainDkim(params: {
   const missing = pair.filter((s) => !present.includes(s));
   const restored: RestorableDkimKey[] = [];
   if (params.restorable && missing.length > 0) {
-    let candidates: readonly RestorableDkimKey[] = [];
+    let check: RestoreCheck;
     try {
-      candidates = await params.restorable(missing);
+      check = await params.restorable(missing);
     } catch (err) {
       log.warn({ stalwartDomainId, err: err instanceof Error ? err.name : 'unknown' },
         'DKIM normalize: kept keys could not be checked for restore');
+      check = { restorable: [], undecidable: missing };
     }
-    for (const key of candidates) {
+    if (check.undecidable.length > 0) {
+      // A new key would replace one DNS may well still publish, and a partial
+      // restore would leave the rest to a mint: do nothing, keep what signs
+      // (the auto pair, if any), and let the caller report it for a retry.
+      log.warn({ stalwartDomainId, selectors: check.undecidable },
+        'DKIM normalize: the published records could not be checked; nothing restored, minted or swept — retry');
+      return {
+        activeSelector: plan.activeSelector, createdSignatureId: null, createdPublicKey: null,
+        destroyed: [], failed: [], restored: [], keptCopy: null, undecidable: true,
+      };
+    }
+    for (const key of check.restorable) {
       if (!missing.includes(key.selector as DkimAbSelector)) continue;
       try {
         await createRsaDkimSignature({
@@ -303,5 +322,5 @@ export async function normalizeDomainDkim(params: {
     { stalwartDomainId, activeSelector, createdSignatureId, restored: restored.map((k) => k.selector), destroyed },
     'DKIM signatures normalized onto the A/B selector pair',
   );
-  return { activeSelector, createdSignatureId, createdPublicKey, destroyed, failed, restored, keptCopy };
+  return { activeSelector, createdSignatureId, createdPublicKey, destroyed, failed, restored, keptCopy, undecidable: false };
 }

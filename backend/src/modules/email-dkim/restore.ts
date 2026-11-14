@@ -14,15 +14,19 @@
  * is still the key DNS publishes for the selector, putting it back restores
  * signing exactly as it was: no DNS change, no wait.
  *
- * "Still the key DNS publishes" is checked, never assumed. The copy's public
- * half must equal a `p=` the selector's TXT record carries:
- *   - in public DNS when it answers (what receivers see), else
- *   - in the platform's own record of what it published (dns_records), for a
- *     lookup that found nothing or failed — e.g. a zone hosted here that is
- *     being rebuilt, or a lab cluster with no public DNS.
- * A copy that matches neither is never restored: the caller mints a new key
- * as before. A copy encrypted under another cluster's key cannot be decrypted
- * and is skipped the same way.
+ * "Still the key DNS publishes" is checked, never assumed, per selector:
+ *   - public DNS answers with the record   → the copy must equal a `p=` in it.
+ *     An empty `p=` is a REVOKED key (RFC 6376 §3.6.1): never restored.
+ *   - public DNS says the name has no TXT  → (NXDOMAIN / NODATA) only for a zone a
+ *     platform provider group hosts, the platform's own record of what it
+ *     published decides, and that record is put back on the provider. For a
+ *     zone hosted elsewhere nothing vouches for the copy.
+ *   - public DNS gives no answer           → (SERVFAIL, timeout, refused) the
+ *     check is UNDECIDABLE. Nothing is restored and nothing is minted — a
+ *     new key would replace one DNS may well still publish — and the caller
+ *     reports it, to be retried (POST …/dkim/restore).
+ * A copy that is gone, undecryptable (another cluster's key) or does not
+ * parse is simply not restorable, and the caller mints as before.
  */
 
 import { and, eq } from 'drizzle-orm';
@@ -30,8 +34,9 @@ import type { Database } from '../../db/index.js';
 import { dnsRecords } from '../../db/schema.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { txtText } from '../dns-servers/wire-format.js';
+import { isZoneWritable, syncRecordToProviders } from '../email-domains/dns-provisioning.js';
+import { formatDkimDnsValue } from '../email-domains/dkim.js';
 import { readKeptDkimPrivateKeys, spkiOf, type KeptKey } from './key-store.js';
-import { upsertDkimTxtRecord } from './dns-publish.js';
 
 const log = mailLogger().child({ module: 'email-dkim-restore' });
 
@@ -41,36 +46,55 @@ export interface RestorableDkimKey {
   /** The key's public half, as `p=` carries it. */
   readonly publicKeySpki: string;
   /**
-   * Where the matching record was found. `platform`: public DNS did not show
-   * it, so the caller republishes the same value for a zone it hosts.
+   * Where the matching record was found. `platform`: public DNS has no such
+   * record, so the caller puts the platform's record back on the provider.
    */
   readonly matchedBy: 'dns' | 'platform';
+}
+
+export interface RestoreCheck {
+  readonly restorable: readonly RestorableDkimKey[];
+  /** Selectors whose published record could not be checked: restore and mint nothing, retry. */
+  readonly undecidable: readonly string[];
 }
 
 export interface RestoreDeps {
   /** TXT strings at a name; rejects with ENOTFOUND/ENODATA when there are none. */
   readonly resolveTxt?: (name: string) => Promise<string[][]>;
+  /** Whether a platform provider group hosts the zone (dns-provisioning.ts isZoneWritable). */
+  readonly zoneHostedHere?: (db: Database, domainId: string) => Promise<boolean>;
 }
 
-/** The `p=` of a DKIM TXT value, whitespace removed; null when it has none. */
+/** The `p=` of a DKIM TXT value, whitespace removed: '' for a revoked key, null when it has none. */
 export function dkimPublicKeyOf(txtValue: string): string | null {
   const m = /(?:^|;)\s*p\s*=\s*([^;]*)/i.exec(txtText(txtValue));
-  const p = m?.[1]?.replace(/[\s"]/g, '');
-  return p ? p : null;
+  if (!m) return null;
+  return m[1].replace(/[\s"]/g, '');
 }
 
-async function publicDnsKeys(name: string, resolveTxt: (n: string) => Promise<string[][]>): Promise<string[] | null> {
+type PublicAnswer =
+  | { readonly kind: 'keys'; readonly keys: readonly string[] }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'no_answer' };
+
+/** NXDOMAIN / NODATA: an answer that the name has no record, unlike a failure to get one. */
+function isNoRecord(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
+  return code === 'ENOTFOUND' || code === 'ENODATA';
+}
+
+async function publicDnsAnswer(name: string, resolveTxt: (n: string) => Promise<string[][]>): Promise<PublicAnswer> {
+  let records: string[];
   try {
-    const records = (await resolveTxt(name)).map((parts) => parts.join(''));
-    const keys = records
-      .filter((r) => /^\s*v\s*=\s*DKIM1/i.test(r) || /(?:^|;)\s*p\s*=/i.test(r))
-      .map(dkimPublicKeyOf)
-      .filter((k): k is string => k !== null);
-    return keys.length > 0 ? keys : null;
-  } catch {
-    // NXDOMAIN, no TXT, or no answer: public DNS cannot vouch for the copy.
-    return null;
+    records = (await resolveTxt(name)).map((parts) => parts.join(''));
+  } catch (err) {
+    return isNoRecord(err) ? { kind: 'none' } : { kind: 'no_answer' };
   }
+  const keys = records
+    .filter((r) => /^\s*v\s*=\s*DKIM1/i.test(r) || /(?:^|;)\s*p\s*=/i.test(r))
+    .map(dkimPublicKeyOf)
+    .filter((k): k is string => k !== null);
+  return keys.length > 0 ? { kind: 'keys', keys } : { kind: 'none' };
 }
 
 async function platformRecordKeys(db: Database, domainId: string, name: string): Promise<string[]> {
@@ -89,8 +113,9 @@ async function defaultResolveTxt(name: string): Promise<string[][]> {
 }
 
 /**
- * The kept keys of `selectors` that may go back into the mail server.
- * Never throws: anything it cannot vouch for is left out (and logged).
+ * Which kept keys of `selectors` may go back into the mail server, and which
+ * selectors could not be checked. Never throws: a failure to read the copies
+ * or the platform's records is an undecidable check, not a "no".
  */
 export async function restorableDkimKeys(
   db: Database,
@@ -102,19 +127,22 @@ export async function restorableDkimKeys(
     readonly encryptionKey: string;
   },
   deps: RestoreDeps = {},
-): Promise<RestorableDkimKey[]> {
-  if (params.selectors.length === 0) return [];
+): Promise<RestoreCheck> {
+  if (params.selectors.length === 0) return { restorable: [], undecidable: [] };
   const resolveTxt = deps.resolveTxt ?? defaultResolveTxt;
+  const zoneHostedHere = deps.zoneHostedHere ?? isZoneWritable;
   let kept: ReadonlyMap<string, KeptKey>;
   try {
     kept = await readKeptDkimPrivateKeys(db, params.emailDomainId, params.encryptionKey);
   } catch (err) {
     log.warn({ emailDomainId: params.emailDomainId, err: err instanceof Error ? err.name : 'unknown' },
-      'DKIM restore: kept copies unreadable; new keys are made instead');
-    return [];
+      'DKIM restore: kept copies unreadable; the check is undecidable, retry');
+    return { restorable: [], undecidable: [...params.selectors] };
   }
 
-  const out: RestorableDkimKey[] = [];
+  const restorable: RestorableDkimKey[] = [];
+  const undecidable: string[] = [];
+  let hosted: boolean | null = null;
   for (const selector of params.selectors) {
     const copy = kept.get(selector);
     const ctx = { emailDomainId: params.emailDomainId, domain: params.domainName, selector };
@@ -129,31 +157,53 @@ export async function restorableDkimKeys(
       continue;
     }
     const name = `${selector}._domainkey.${params.domainName}`;
-    let matchedBy: RestorableDkimKey['matchedBy'] | null = null;
     try {
-      const live = await publicDnsKeys(name, resolveTxt);
-      if (live) {
-        matchedBy = live.includes(spki) ? 'dns' : null;
-        if (!matchedBy) log.warn(ctx, 'DKIM restore: public DNS publishes another key for this selector; a new key is made instead');
-      } else if ((await platformRecordKeys(db, params.domainId, name)).includes(spki)) {
-        matchedBy = 'platform';
+      const answer = await publicDnsAnswer(name, resolveTxt);
+      if (answer.kind === 'no_answer') {
+        log.warn(ctx, 'DKIM restore: public DNS gave no answer for the record; undecidable — nothing restored or minted, retry');
+        undecidable.push(selector);
+        continue;
+      }
+      if (answer.kind === 'keys') {
+        if (answer.keys.includes('')) {
+          log.warn(ctx, 'DKIM restore: the published record revokes the key (empty p=); never restored');
+        } else if (answer.keys.includes(spki)) {
+          restorable.push({ selector, privateKeyPem: copy.privateKeyPem, publicKeySpki: spki, matchedBy: 'dns' });
+        } else {
+          log.warn(ctx, 'DKIM restore: public DNS publishes another key for this selector; a new key is made instead');
+        }
+        continue;
+      }
+      // Public DNS: no such record. Only the platform's own zone may vouch.
+      hosted ??= await zoneHostedHere(db, params.domainId);
+      if (!hosted) {
+        log.warn(ctx, 'DKIM restore: the record is not in public DNS and the zone is hosted elsewhere; a new key is made instead');
+        continue;
+      }
+      const stored = await platformRecordKeys(db, params.domainId, name);
+      if (stored.includes(spki)) {
+        restorable.push({ selector, privateKeyPem: copy.privateKeyPem, publicKeySpki: spki, matchedBy: 'platform' });
       } else {
-        log.warn(ctx, 'DKIM restore: no published record carries the kept key; a new key is made instead');
+        log.warn(ctx, stored.includes('')
+          ? 'DKIM restore: the platform\'s record revokes the key (empty p=); never restored'
+          : 'DKIM restore: no record the platform holds carries the kept key; a new key is made instead');
       }
     } catch (err) {
       log.warn({ ...ctx, err: err instanceof Error ? err.name : 'unknown' },
-        'DKIM restore: the published record could not be checked; a new key is made instead');
+        'DKIM restore: the published record could not be checked; undecidable, retry');
+      undecidable.push(selector);
     }
-    if (matchedBy) out.push({ selector, privateKeyPem: copy.privateKeyPem, publicKeySpki: spki, matchedBy });
   }
-  return out;
+  return { restorable, undecidable };
 }
 
 /**
- * After a restore: a selector matched only by the platform's own record
- * (public DNS showed nothing) is republished with the SAME value, so a zone
- * the platform hosts carries it again. Records public DNS already showed are
- * left alone. Never throws — signing is restored either way.
+ * After a restore: a selector matched by the platform's own record (public
+ * DNS has none) is put back on the zone's provider with the SAME value. Only a
+ * create, which the provider makes idempotent (powerdns.ts createRecord skips a
+ * value it already holds): no delete first, so a failure leaves the zone as it
+ * was, and the platform's own row — already that value — is not touched.
+ * Never throws.
  */
 export async function republishRestoredDkim(
   db: Database,
@@ -166,17 +216,18 @@ export async function republishRestoredDkim(
 ): Promise<void> {
   for (const key of params.restored) {
     if (key.matchedBy !== 'platform') continue;
+    const name = `${key.selector}._domainkey.${params.domainName}`;
     try {
-      await upsertDkimTxtRecord(db, {
-        domainId: params.domainId,
-        domainName: params.domainName,
-        selector: key.selector,
-        publicKey: key.publicKeySpki,
-        encryptionKey: params.encryptionKey,
-      });
+      const outcome = await syncRecordToProviders(db, params.domainId, params.domainName, 'create', {
+        type: 'TXT', name, content: formatDkimDnsValue(key.publicKeySpki), ttl: 3600, priority: null,
+      }, params.encryptionKey);
+      if (outcome.status === 'failed') {
+        log.warn({ domain: params.domainName, selector: key.selector, message: outcome.message },
+          'DKIM restore: putting the restored key\'s record back on the provider failed');
+      }
     } catch (err) {
       log.warn({ domain: params.domainName, selector: key.selector, err: err instanceof Error ? err.name : 'unknown' },
-        'DKIM restore: republishing the restored key\'s record failed; the record the platform holds is unchanged');
+        'DKIM restore: putting the restored key\'s record back on the provider failed');
     }
   }
 }

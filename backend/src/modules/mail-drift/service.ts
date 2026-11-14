@@ -264,53 +264,25 @@ export async function recreateDriftItemEmpty(
     // the happy path that was merely stale, because the publish below is
     // inline. On the soft-fail and no-key paths it was actively wrong: DNS was
     // NOT updated and the operator was told to wait instead of act.
-    let dkimTxtPublished = false;
-    // The kept keys put back (restore.ts): their published records already
-    // verify, so the follow-up below does not ask for a DNS change for them.
-    let restoredSelectors: readonly string[] = [];
+    let dkimOutcome: string | null = null;
     try {
-      const { normalizeDomainDkim } = await import('../email-dkim/normalize.js');
-      const { keepDkimPrivateKey } = await import('../email-dkim/key-store.js');
-      const { restorableDkimKeys, republishRestoredDkim } = await import('../email-dkim/restore.js');
-      // Production and staging refuse to boot without the key (config/index.ts
-      // assertEncryptionKeyUsable); the zero key is the dev/test fallback only.
-      const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
-      const { activeSelector, createdPublicKey, restored } = await normalizeDomainDkim({
+      const { convergeDomainDkim, describeDkimConvergence } = await import('../email-dkim/converge.js');
+      const { platformEncryptionKey } = await import('../../shared/platform-encryption-key.js');
+      const dkim = await convergeDomainDkim(db, {
         accountId,
         stalwartDomainId: newStalwartId,
         baseUrl,
+        emailDomainId: edRow.id,
+        domainId: edRow.domainId,
+        domainName: item.expectedName,
         // The selector that signed before Stalwart lost the domain: the one to
         // keep active when its key is restored.
         currentDbSelector: edRow.dkimActiveSelector ?? null,
         expectAutoPair: true, // drift repair always just created the principal
-        keepKey: (selector, privateKeyPem) => keepDkimPrivateKey(db, {
-          emailDomainId: edRow.id, selector, privateKeyPem, encryptionKey,
-        }, log),
-        restorable: (selectors) => restorableDkimKeys(db, {
-          emailDomainId: edRow.id, domainId: edRow.domainId, domainName: item.expectedName, selectors, encryptionKey,
-        }),
+        encryptionKey: platformEncryptionKey(),
+        log,
       });
-      await db
-        .update(emailDomains)
-        .set({ dkimActiveSelector: activeSelector })
-        .where(eq(emailDomains.id, edRow.id));
-      restoredSelectors = restored.map((k) => k.selector);
-      await republishRestoredDkim(db, {
-        domainId: edRow.domainId, domainName: item.expectedName, restored, encryptionKey,
-      });
-      // Publish the dkim-1 TXT inline (platform-managed DNS) instead
-      // of waiting for the next dns-sync cycle.
-      if (createdPublicKey) {
-        const { upsertDkimTxtRecord } = await import('../email-dkim/dns-publish.js');
-        await upsertDkimTxtRecord(db, {
-          domainId: edRow.domainId,
-          domainName: item.expectedName,
-          selector: activeSelector,
-          publicKey: createdPublicKey,
-          encryptionKey,
-        });
-        dkimTxtPublished = true;
-      }
+      dkimOutcome = describeDkimConvergence(item.expectedName, dkim);
     } catch (err) {
       // Scrub PEM blocks + drop error payloads (a raw JmapError
       // carries the full JMAP response body in .details).
@@ -324,24 +296,11 @@ export async function recreateDriftItemEmpty(
         'DKIM A/B normalization after drift repair failed — domain keeps Stalwart auto-created signatures until rotated',
       );
     }
-    followUp = restoredSelectors.length > 0
-      ? `Stalwart Domain '${item.expectedName}' was recreated EMPTY, and its ` +
-        `DKIM keys were put back from the platform's kept copies ` +
-        `(${restoredSelectors.join(', ')}): the published DKIM records match ` +
-        `them, so mail keeps verifying and no DNS change is needed.`
-      : `Stalwart Domain '${item.expectedName}' was recreated EMPTY with ` +
-        `NEW DKIM keys — the platform held no copy of the previous keys that ` +
-        `DNS still publishes. Mail signed with ` +
-        `the new keys WILL fail DKIM, and therefore DMARC, at receivers until ` +
-        `the DKIM TXT records published in DNS match the new keys (visible in ` +
-        `Admin UI → Email → Domain → DKIM tab). ` +
-        (dkimTxtPublished
-          ? `The platform has already republished the dkim-1 TXT for any zone it ` +
-            `manages. A tenant whose DNS is hosted ELSEWHERE must update it at ` +
-            `their registrar — nothing can do that for them.`
-          : `The platform could NOT republish the DKIM TXT automatically, so ` +
-            `this will NOT resolve on its own: republish it from the DKIM tab ` +
-            `(and at the registrar for externally-hosted DNS).`);
+    followUp = `Stalwart Domain '${item.expectedName}' was recreated EMPTY. ` + (dkimOutcome
+      ?? `Its DKIM keys could NOT be restored or replaced (the mail server refused), so ` +
+        `mail is not signed with the published keys and this will NOT resolve on its own: ` +
+        `rotate the key from the DKIM tab, and publish the new record at the registrar for ` +
+        `externally-hosted DNS.`);
   } else {
     // mailbox kind
     const [mbRow] = await db

@@ -186,17 +186,28 @@ describe('reconcileRecoveredTenant', () => {
   // its published records keep verifying.
   it('offers the kept keys for restore, scoped to the domain', async () => {
     const restorable = restorableDkimKeys as unknown as ReturnType<typeof vi.fn>;
-    restorable.mockResolvedValue([]);
+    restorable.mockResolvedValue({ restorable: [], undecidable: [] });
     dkimMock.mockImplementation(async (p: { restorable?: (s: readonly string[]) => Promise<unknown> }) => {
       await p.restorable?.(['dkim-1', 'dkim-2']);
-      return { activeSelector: 'dkim-1', createdPublicKey: null, destroyed: [], failed: [], restored: [], keptCopy: null };
+      return { activeSelector: 'dkim-1', createdPublicKey: null, destroyed: [], failed: [], restored: [], keptCopy: null, undecidable: false };
     });
     const app = makeApp({ domains: [{ id: 'd1', stalwartDomainId: 'sw-a', dkimActiveSelector: 'dkim-2' }] });
     await reconcileRecoveredTenant(app, 't-1');
     expect(restorable).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       emailDomainId: 'd1', domainId: 'dom-d1', domainName: 'd1.example.test', selectors: ['dkim-1', 'dkim-2'],
-    }));
+    }), expect.anything());
     expect(dkimMock.mock.calls[0][0]).toMatchObject({ currentDbSelector: 'dkim-2' });
+  });
+
+  // DNS gave no answer: nothing was done, and the operator is told to retry.
+  it('reports an undecidable DKIM check as a gap to retry, not as regenerated', async () => {
+    dkimMock.mockResolvedValue({ activeSelector: 'dkim-1', createdPublicKey: null, destroyed: [], failed: [], restored: [], keptCopy: null, undecidable: true });
+    const app = makeApp({ domains: [{ id: 'd1', stalwartDomainId: 'sw-a', dkimActiveSelector: 'dkim-2' }] });
+    const { report, residualGaps } = await reconcileRecoveredTenant(app, 't-1');
+    expect(report.mail).toEqual({ domainsTotal: 1, dkimRegenerated: 0, failed: 1 });
+    expect(residualGaps.some((g) => /NOT restored yet/.test(g) && /dkim\/restore/.test(g))).toBe(true);
+    expect(residualGaps.some((g) => /could not regenerate DKIM/.test(g))).toBe(false);
+    expect((app as unknown as { _updates: unknown[] })._updates).toEqual([]);
   });
 
   // It used to mint the key and leave the zone with the old record.

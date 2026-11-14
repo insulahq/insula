@@ -88,6 +88,14 @@ describe('rotateDkimKey — kept copies', () => {
     expect(forget).toHaveBeenCalledWith(expect.anything(), 'ed-1', ['v1-rsa-legacy']);
   });
 
+  // A selector with a surviving row still signs with some key.
+  it('drops a selector\'s copy only when EVERY row of it is gone', async () => {
+    get.mockResolvedValue([row('s1', 'dkim-1'), row('a', 'v1-rsa-legacy'), row('b', 'v1-rsa-legacy'), row('c', 'v1-rsa-other')]);
+    set.mockResolvedValue({ destroyed: ['a', 'c'] }); // 'b' survives
+    await rotateDkimKey(stubDb({ active: 'dkim-1' }), 'ed-1', 'k'.repeat(64));
+    expect(forget).toHaveBeenCalledWith(expect.anything(), 'ed-1', ['v1-rsa-other']);
+  });
+
   it('keeps the copy of a straggler Stalwart refused to destroy', async () => {
     get.mockResolvedValue([row('s1', 'dkim-1'), row('old', 'v1-rsa-legacy')]);
     set.mockResolvedValue({ destroyed: [] });

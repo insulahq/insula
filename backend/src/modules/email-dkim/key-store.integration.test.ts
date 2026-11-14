@@ -13,6 +13,7 @@ import { isDbAvailable, runMigrations, cleanTables, closeTestDb, getTestDb } fro
 import { seedRegion, seedPlan, seedTenant, seedDomain } from '../../test-helpers/fixtures.js';
 import { emailDkimPrivateKeys, emailDomains } from '../../db/schema.js';
 import { upsertRow } from '../backup-restore/executors/_shared.js';
+import { dkimKeyRowRestorable } from '../backup-restore/executors/config-tables.js';
 import {
   dkimKeyRowId, forgetDkimPrivateKeysFor, keepDkimPrivateKey, readKeptDkimPrivateKey, readKeptDkimPrivateKeys,
 } from './key-store.js';
@@ -23,6 +24,7 @@ const KEY = 'c'.repeat(64);
 describe.skipIf(!dbAvailable)('kept DKIM keys (integration)', () => {
   const db = () => getTestDb();
   let emailDomainId = '';
+  let tenantId = '';
 
   beforeAll(async () => { await runMigrations(); });
   afterAll(async () => { await closeTestDb(); });
@@ -30,7 +32,7 @@ describe.skipIf(!dbAvailable)('kept DKIM keys (integration)', () => {
     await cleanTables();
     const regionId = (await seedRegion(db())).id;
     const planId = (await seedPlan(db())).id;
-    const tenantId = (await seedTenant(db(), regionId, planId)).id;
+    tenantId = (await seedTenant(db(), regionId, planId)).id;
     const domain = await seedDomain(db(), tenantId, { domainName: 'shop.example.com' });
     emailDomainId = crypto.randomUUID();
     await db().insert(emailDomains).values({ id: emailDomainId, domainId: domain.id, tenantId, enabled: 1 } as typeof emailDomains.$inferInsert);
@@ -74,6 +76,55 @@ describe.skipIf(!dbAvailable)('kept DKIM keys (integration)', () => {
     // And a bundle row whose email domain is not there is skipped, not an error.
     const orphan = { ...row, id: dkimKeyRowId('gone', 'dkim-1'), email_domain_id: crypto.randomUUID() };
     await db().transaction(async (tx) => { expect(await upsertRow(tx as never, 'email_dkim_private_keys', orphan)).toBe(false); });
+  });
+
+  // A copy that could not be replaced must not outlive its key.
+  it('a failed keep drops the selector\'s old copy', async () => {
+    await keepDkimPrivateKey(db(), { emailDomainId, selector: 'dkim-1', privateKeyPem: 'PEM-OLD', encryptionKey: KEY });
+    expect(await keepDkimPrivateKey(db(), { emailDomainId, selector: 'dkim-1', privateKeyPem: 'PEM-NEW', encryptionKey: 'zz' })).toBe(false);
+    expect(await readKeptDkimPrivateKey(db(), emailDomainId, 'dkim-1', KEY)).toEqual({ ok: false, reason: 'none' });
+  });
+
+  // A pod of the previous release inserts without an id during a rolling deploy.
+  it('0182 fills a missing id with the derived one', async () => {
+    await db().execute(sql`
+      INSERT INTO email_dkim_private_keys (email_domain_id, selector, private_key_encrypted) VALUES (${emailDomainId}, 'dkim-2', 'x')
+    `);
+    const [r] = await db().select().from(emailDkimPrivateKeys).where(eq(emailDkimPrivateKeys.selector, 'dkim-2'));
+    expect(r.id).toBe(dkimKeyRowId(emailDomainId, 'dkim-2'));
+  });
+
+  describe('a bundle row (dkimKeyRowRestorable)', () => {
+    const bundleRow = (over: Record<string, unknown> = {}) => ({
+      id: dkimKeyRowId(emailDomainId, 'dkim-1'), email_domain_id: emailDomainId, selector: 'dkim-1',
+      private_key_encrypted: 'cipher', created_at: new Date().toISOString(), ...over,
+    });
+    const restorable = (row: Record<string, unknown>, tenant: string | null) =>
+      db().transaction(async (tx) => dkimKeyRowRestorable(tx as never, row, tenant));
+
+    it('is restored into its own tenant, with its derived id', async () => {
+      expect(await restorable(bundleRow(), tenantId)).toBe(true);
+    });
+
+    it('is refused for another tenant\'s email domain', async () => {
+      const regionId = (await seedRegion(db())).id;
+      const planId = (await seedPlan(db())).id;
+      const other = (await seedTenant(db(), regionId, planId)).id;
+      expect(await restorable(bundleRow(), other)).toBe(false);
+      expect(await restorable(bundleRow(), null)).toBe(false);
+    });
+
+    it('is refused under any id but the derived one', async () => {
+      expect(await restorable(bundleRow({ id: crypto.randomUUID() }), tenantId)).toBe(false);
+      expect(await restorable(bundleRow({ selector: 'dkim-2' }), tenantId)).toBe(false); // id of dkim-1, says dkim-2
+    });
+
+    it('never replaces a live copy that is newer than the bundle\'s', async () => {
+      await keepDkimPrivateKey(db(), { emailDomainId, selector: 'dkim-1', privateKeyPem: 'PEM-NOW', encryptionKey: KEY });
+      expect(await restorable(bundleRow({ created_at: new Date(Date.now() - 86_400_000).toISOString() }), tenantId)).toBe(false);
+      expect(await restorable(bundleRow({ created_at: 'not a date' }), tenantId)).toBe(false);
+      expect(await restorable(bundleRow({ created_at: new Date(Date.now() + 60_000).toISOString() }), tenantId)).toBe(true);
+    });
   });
 
   it('the migration\'s SQL id formula is dkimKeyRowId, and 0180 replays cleanly', async () => {

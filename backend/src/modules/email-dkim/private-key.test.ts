@@ -116,11 +116,25 @@ describe('key store', () => {
 
   it('never fails the caller, and never logs the key, when the write fails', async () => {
     const warn = vi.fn();
+    const deleted: unknown[] = [];
     const db = {
       insert: () => ({ values: () => ({ onConflictDoUpdate: async () => { throw new Error(`insert failed: ${A.pem}`); } }) }),
+      delete: () => ({ where: async (w: unknown) => { deleted.push(w); } }),
     } as never;
     expect(await keepDkimPrivateKey(db, { emailDomainId: 'e1', selector: 'dkim-1', privateKeyPem: A.pem, encryptionKey: KEY }, { warn })).toBe(false);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(warn.mock.calls)).not.toContain('PRIVATE KEY');
+    // The selector's old copy is dropped, so it cannot outlive its key.
+    expect(deleted).toHaveLength(1);
+  });
+
+  it('still never throws when dropping the old copy fails too', async () => {
+    const warn = vi.fn();
+    const db = {
+      insert: () => ({ values: () => ({ onConflictDoUpdate: async () => { throw new Error('insert failed'); } }) }),
+      delete: () => ({ where: async () => { throw new Error('delete failed'); } }),
+    } as never;
+    expect(await keepDkimPrivateKey(db, { emailDomainId: 'e1', selector: 'dkim-1', privateKeyPem: A.pem, encryptionKey: KEY }, { warn })).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 });

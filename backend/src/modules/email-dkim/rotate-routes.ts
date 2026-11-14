@@ -26,7 +26,9 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { emailDomains, domains, auditLogs } from '../../db/schema.js';
 import { rotateDkimKey, DkimRotationError } from './rotate.js';
-import { redactPemBlocks } from './signatures.js';
+import { redactPemBlocks, resolveDkimAccountId } from './signatures.js';
+import { convergeDomainDkim, describeDkimConvergence } from './converge.js';
+import { platformEncryptionKey } from '../../shared/platform-encryption-key.js';
 
 const paramsSchema = z.object({
   tenantId: z.string().uuid(),
@@ -92,12 +94,10 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
         );
       }
 
-      // DNS-provider credentials are encrypted with PLATFORM_ENCRYPTION_KEY
-      // (same pattern as dns-records/service.ts; dev fallback is the zero
-      // key). The previous code read the nonexistent ENCRYPTION_KEY var and
-      // made every rotation 500 unconditionally.
-      const encryptionKey =
-        process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
+      // DNS-provider credentials and the kept key copy are encrypted with
+      // PLATFORM_ENCRYPTION_KEY. The previous code read the nonexistent
+      // ENCRYPTION_KEY var and made every rotation 500 unconditionally.
+      const encryptionKey = platformEncryptionKey();
 
       let result: Awaited<ReturnType<typeof rotateDkimKey>>;
       try {
@@ -156,6 +156,71 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
       });
 
       return success(result);
+    },
+  );
+
+  // POST …/dkim/restore — the retry for a restore whose DNS check was
+  // undecidable, and the repair for a selector Stalwart lost while keeping the
+  // domain: puts back every missing A/B selector whose kept key DNS still
+  // publishes, and mints only when none can be (restore.ts, converge.ts).
+  // Staff only: it can mint a key, and the tenant has Rotate key for that.
+  app.post<{ Params: RouteParams }>(
+    '/tenants/:tenantId/email-domains/:domainId/dkim/restore',
+    { onRequest: [authenticate, requireRole('super_admin', 'admin')] },
+    async (request) => {
+      const parsedParams = paramsSchema.safeParse(request.params);
+      if (!parsedParams.success) {
+        throw new ApiError('INVALID_PARAMS', parsedParams.error.issues.map((i) => i.message).join('; '), 400);
+      }
+      const { tenantId, domainId } = parsedParams.data;
+      const [row] = await app.db
+        .select({
+          edId: emailDomains.id,
+          domainId: emailDomains.domainId,
+          domainName: domains.domainName,
+          stalwartDomainId: emailDomains.stalwartDomainId,
+          dkimActiveSelector: emailDomains.dkimActiveSelector,
+        })
+        .from(emailDomains)
+        .innerJoin(domains, eq(domains.id, emailDomains.domainId))
+        .where(and(eq(emailDomains.id, domainId), eq(domains.tenantId, tenantId)));
+      if (!row) {
+        throw new ApiError('EMAIL_DOMAIN_NOT_FOUND', `Email domain '${domainId}' not found for tenant '${tenantId}'`, 404);
+      }
+      if (!row.stalwartDomainId) {
+        throw new ApiError('EMAIL_DOMAIN_NOT_PROVISIONED', `Email domain '${row.domainName}' is not on the mail server yet`, 409);
+      }
+      let result: Awaited<ReturnType<typeof convergeDomainDkim>>;
+      try {
+        result = await convergeDomainDkim(app.db, {
+          accountId: await resolveDkimAccountId(process.env.STALWART_MGMT_URL),
+          stalwartDomainId: row.stalwartDomainId,
+          baseUrl: process.env.STALWART_MGMT_URL,
+          emailDomainId: row.edId,
+          domainId: row.domainId,
+          domainName: row.domainName,
+          currentDbSelector: row.dkimActiveSelector,
+          expectAutoPair: false,
+          encryptionKey: platformEncryptionKey(),
+          log: request.log,
+        });
+      } catch (err) {
+        throw new ApiError('DKIM_RESTORE_FAILED',
+          redactPemBlocks(err instanceof Error ? err.message : String(err)).slice(0, 500), 502);
+      }
+      await app.db.insert(auditLogs).values({
+        id: crypto.randomUUID(),
+        actorId: (request.user as { sub?: string } | undefined)?.sub ?? 'system',
+        actorType: 'user',
+        actionType: 'email_domain.dkim.restore',
+        resourceType: 'email_domain',
+        resourceId: domainId,
+        changes: {
+          tenantId, domainName: row.domainName,
+          restored: result.restored, minted: result.minted, undecidable: result.undecidable,
+        } as unknown as Record<string, unknown>,
+      });
+      return success({ ...result, message: describeDkimConvergence(row.domainName, result) });
     },
   );
 }

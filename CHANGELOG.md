@@ -100,12 +100,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Its published DKIM records then failed every message until DNS changed, by hand at the
   registrar for a zone hosted elsewhere. They now put the kept key back under the same
   selector, so the records keep verifying and DNS stays as it is.
-  - A copy goes back only when the selector's TXT record still carries its public key: public
-    DNS when it answers, else the platform's own record. Anything else gets a new key as before.
+  - A copy goes back only when the selector's TXT record still carries its public key, never
+    when it is revoked (empty `p=`). Public DNS decides when it answers. The platform's own
+    record decides only when public DNS says there is none and the platform hosts the zone.
+    Anything else gets a new key as before.
+  - When public DNS gives no answer (SERVFAIL, timeout), nothing is restored and no key is
+    made: the drift item or recovery report says so, and
+    `POST …/email-domains/<id>/dkim/restore` (super_admin, admin) retries. That call also puts
+    back a selector Stalwart lost while keeping the domain.
   - Tenant bundles now carry the copies, still encrypted (migration 0180 gives the table an
     `id` derived from domain and selector, so a restore replaces the live row of the same
-    selector). A recovery onto a cluster with another `PLATFORM_ENCRYPTION_KEY` cannot decrypt
-    them and falls back to new keys.
+    selector; 0182 fills it for a pod of the previous release during a rolling deploy). A
+    bundle row is restored only into the tenant its email domain belongs to, under its derived
+    id, and never over a newer copy. A recovery onto a cluster with another
+    `PLATFORM_ENCRYPTION_KEY` cannot decrypt the copies and falls back to new keys.
   - Admin → Email → *DKIM keys after a restore* lists each case.
 
 ### Fixed

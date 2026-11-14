@@ -366,9 +366,25 @@ stopped before the domain reached Stalwart. So the published DKIM records
 keep verifying and nobody has to change DNS.
 
 A copy goes back only when the selector's TXT record still carries its public
-key. Public DNS decides when it answers; the platform's own record only when
-public DNS has none. Otherwise a new key is made, as before, and its record
-published where the platform hosts the zone.
+key:
+
+- **Public DNS answers** with the record: the copy must match it. An empty
+  `p=` is a revoked key and is never restored.
+- **Public DNS says there is no record** (NXDOMAIN, no TXT): the platform's own
+  record decides, but only for a zone a platform provider group hosts, and the
+  record is then put back on the provider. For a zone hosted elsewhere nothing
+  vouches for the copy.
+- **Public DNS gives no answer** (SERVFAIL, timeout): the check is
+  *undecidable*. Nothing is restored and **no new key is made**, because one
+  would replace a key DNS may well still publish. The domain keeps whatever
+  Stalwart signs with, and the drift item or recovery report says so. Retry
+  with `POST /api/v1/tenants/<tenant>/email-domains/<email domain>/dkim/restore`
+  (super_admin and admin). The same call puts back a selector Stalwart lost
+  while keeping the domain.
+
+Anything else gets a new key, as before, with its record published where the
+platform hosts the zone. For a zone hosted elsewhere, the follow-up says to
+verify (or, for a new key, update) the record at the DNS provider.
 
 | What was restored | DKIM afterwards |
 |---|---|
@@ -376,7 +392,7 @@ published where the platform hosts the zone.
 | Tenant recovered from its bundle, same cluster | The bundle carries the copies (still encrypted); the keys come back. |
 | Tenant recovered onto another cluster | The copies cannot be decrypted there (different `PLATFORM_ENCRYPTION_KEY`): new keys, records to republish. |
 | Platform database restored to an older point | The copies are those of that point. A copy that no longer matches what Stalwart signs with is never shown or restored; the card offers **Rotate key**. |
-| Stalwart restored to an older point | Stalwart signs with the keys of that point. Both selectors' records stay published, so mail verifies, unless a selector was rotated after that point: its record then carries the newer key, and one **Rotate key** fixes it. Nothing detects a single lost signature while the domain itself is there; the DKIM card shows the selector missing, and the other selector keeps signing. |
+| Stalwart restored to an older point | Stalwart signs with the keys of that point. Both selectors' records stay published, so mail verifies, unless a selector was rotated after that point: its record then carries the newer key, and one **Rotate key** fixes it. Nothing detects a single lost signature while the domain itself is there (the DKIM card shows the selector missing, and the other selector keeps signing); the `…/dkim/restore` call above puts it back. |
 
 Keys created before the platform kept copies have none and get new keys in
 these cases, as before. They are not rotated in bulk; a tenant who wants a
