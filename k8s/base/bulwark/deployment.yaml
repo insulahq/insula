@@ -291,7 +291,7 @@ spec:
         - name: feature-css-injector
           # Same digest as the `bulwark` container below — see the note there
           # for the version and how to re-resolve it. Both must move together.
-          image: ghcr.io/bulwarkmail/webmail@sha256:df2074bd1f714f89643da127acf547d4167b4960a22cc1a3fa1570b4584ad16f
+          image: ghcr.io/bulwarkmail/webmail@sha256:420069671e7776f49cf40882f35bc37b57593f224c7dddbeb6f78e52341fa207
           imagePullPolicy: IfNotPresent
           # busybox-style sh is available in the Bulwark image (Alpine
           # base). The script is intentionally tiny + has no error
@@ -331,7 +331,7 @@ spec:
               readOnly: true
       containers:
         - name: bulwark
-          # Bulwark 1.20.0 stable. Bump per ADR-039; the digest is
+          # Bulwark 1.21.0 stable. Bump per ADR-039; the digest is
           # also recorded in security/components.yaml (component `bulwark`),
           # which ci-component-watch-check.sh asserts against this file.
           #
@@ -360,7 +360,7 @@ spec:
           #
           # Digest provenance: `gh attestation verify oci://…@<digest> --owner
           # bulwarkmail` — SLSA v1, built by the upstream release workflow
-          # from tag 1.20.0.
+          # from tag 1.21.0.
           #
           # 1.16.0 stops an HTML attachment preview from running the sender's
           # script in the webmail origin, and makes delete/move act on the
@@ -393,7 +393,16 @@ spec:
           # session <jti>" app-password name, and stops a trusted sender from
           # loading remote content the organisation blocks. Rolling back below
           # 1.20.0 needs logos uploaded in its admin console uploaded again.
-          image: ghcr.io/bulwarkmail/webmail@sha256:df2074bd1f714f89643da127acf547d4167b4960a22cc1a3fa1570b4584ad16f
+          #
+          # 1.21.0 moves offline mail to an encrypted on-device database (still
+          # off by default in the browser; only the desktop app turns it on),
+          # revokes the replaced refresh token on a repeated sign-in, and keeps
+          # .env files out of the image. The server talks to no outside host
+          # 1.20.0 did not (the new dictionary host is the desktop app's). It
+          # keeps /api/health, the impersonation route, the "Support session
+          # <jti>" app-password name and the /contacts, /calendar and /files nav
+          # links the feature-visibility CSS hides.
+          image: ghcr.io/bulwarkmail/webmail@sha256:420069671e7776f49cf40882f35bc37b57593f224c7dddbeb6f78e52341fa207
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

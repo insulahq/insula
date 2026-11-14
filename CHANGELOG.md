@@ -119,6 +119,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     `PLATFORM_ENCRYPTION_KEY` cannot decrypt the copies and falls back to new keys.
   - Admin → Email → *DKIM keys after a restore* lists each case.
 
+### Changed
+
+- **Bulwark webmail 1.20.0 → 1.21.0.** It fixes no published advisory. Its security fixes: signing
+  in again to an account already signed in revokes the refresh token it replaces, a push preview
+  renews only the login it is for and refuses cross-site requests, and the image no longer copies
+  `.env` files from the build checkout.
+  - Offline mail moves to an encrypted database on the device and now also keeps calendars,
+    contacts and files. In the browser it stays off until the user turns it on; only Bulwark's new
+    desktop app turns it on by default.
+  - The reading pane shows whole conversations, and Undo send is on by default (5 seconds).
+  - Settings moved: every setting sits on the page people look for it first.
+  - It talks to no outside host 1.20.0 did not; the new dictionary download is the desktop app's.
+    Support sessions, health checks and the Contacts, Calendar and Files switches work as before:
+    the impersonation route, the app-password name and the navigation links are unchanged.
+
 ### Fixed
 
 - **Drift repair can recreate a lost mailbox again.** Admin → Email → Data drift → **Recreate

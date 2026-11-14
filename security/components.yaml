@@ -302,11 +302,11 @@ components:
     name: Bulwark webmail (JMAP-native SPA)
     tier: "0"
     kind: image
-    pinned: "sha256:df2074bd1f714f89643da127acf547d4167b4960a22cc1a3fa1570b4584ad16f"
+    pinned: "sha256:420069671e7776f49cf40882f35bc37b57593f224c7dddbeb6f78e52341fa207"
     pin_source: k8s/base/bulwark/deployment.yaml
     pin_check: true
     repos: [bulwarkmail/webmail]
-    watch: { type: github_releases, repo: bulwarkmail/webmail, advisories: bulwarkmail/webmail, pinned_version: "1.20.0" }
+    watch: { type: github_releases, repo: bulwarkmail/webmail, advisories: bulwarkmail/webmail, pinned_version: "1.21.0" }
     scan: trivy
     owner: platform
     notes: Internet-facing webmail, handles mail creds/content. Digest-pinned (good). Upstream advisories sparse → also watch manually.
