@@ -12,6 +12,152 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **Downloading a domain's certificate asks you to confirm it is you.** The file holds the private
+  key, so the SSL/TLS tab's **Download certificate** (tenant and admin panel) and creating a
+  download link (which fetches the same key unattended) now need a step-up right before: the
+  password or passkey. The server refuses without it (403 `STEP_UP_REQUIRED`), so the check does
+  not depend on the panel.
+  - An account with neither a password nor a passkey (single sign-on only) is told to register a
+    passkey and turn on passkey sign-in first (409 `STEP_UP_UNAVAILABLE`).
+  - Under "Login as tenant" the staff member confirms with **their own** password or passkey; the
+    tenant panel's dialog says so and names the staff account. The audit entry names the staff
+    member (`impersonatedBy`). Only `super_admin` and `admin` staff get key material this way,
+    checked against their current role in the database: `support` may impersonate to look, and is
+    refused with 403 `IMPERSONATOR_ROLE_NOT_ALLOWED`.
+  - An API token needs no step-up: the download and link routes work with it as before (scopes
+    `read` and `write`), and it is how a server picks up every renewal unattended. The audit entry
+    names the token. A tenant's AI agent is refused both routes (`AGENT_CREDENTIAL_NOT_ALLOWED`):
+    it would keep the key, or the link, after being disconnected.
+  - Wrong step-up passwords are limited per person (5 per 15 minutes, then 429 `STEP_UP_LOCKED`
+    until the window passes, migration 0181), no longer only per IP address. A right password
+    gives back only its own attempt, so the owner confirming elsewhere does not refresh a guesser's
+    allowance. Every failure is audited, and every refusal while locked as
+    `step_up.password.locked`, naming the impersonation when there is one. The dialog says when
+    password confirmation unlocks, and that a passkey still works.
+- **A step-up belongs to the session that gave it.** It used to be one clock per user, so a second
+  browser, or a stolen session token, passed every step-up gate for 30 minutes after the owner
+  confirmed anywhere. Each access token now names its session (`sid`, its refresh-token family; a
+  "Login as tenant" session is its single token), and a step-up is recorded for that session only
+  (`auth_step_ups`, migration 0179). Signing in still does not count as one. Windows: 5 minutes for
+  key material (DKIM private key, certificate download, creating a link), 30 minutes for the node
+  terminal, as before. Sessions signed in before this release are asked once more after their next
+  token refresh. What it does not cover: a token stolen from the same session still rides on that
+  session's step-up until its window ends (5 minutes for key material). During the rollout, pods
+  still on the old code check the old per-user clock (`users.last_step_up_at`) until they are
+  replaced. A token refresh now carries "Login as tenant" (`impersonatedBy`) over only from a token
+  for the same user.
+- **Certificate download links are temporary.** A link now lives 15 minutes, 1 hour (the default)
+  or 24 hours, never longer, checked on every use, and a leased reaper deletes expired links every
+  5 minutes. The limit of 20 links per domain counts live links only. **Operator note:** every existing link was revoked by migration 0179, including links
+  with no expiry or a year. A customer server that used one to pick up renewals needs an API token
+  on `GET /api/v1/tenants/<tenant>/domains/<domain>/ssl-cert/download` instead; tenants cannot
+  create API tokens themselves, so staff set that up.
+
+### Added
+
+- **The DMARC source lists say what each sending server is.** On the tenant
+  **Authentication** tab and the admin DMARC reports, every source shows its
+  reverse DNS name and badges, each with a tooltip:
+  - **CLUSTER**: one of the platform's own servers.
+  - **SPF**: the domain's current SPF record allows it. This is checked
+    against live DNS, because a forwarder rewrites the envelope sender the
+    report shows.
+  - **RELAY**: not ours, yet passing on messages that carried the domain's
+    DKIM signature from the platform's selectors. These are forwarders and
+    recipients' mail filters, not other senders. On a production domain, every
+    server outside the cluster was one of these, and the list made them look
+    like someone forging the domain. A Microsoft 365 recipient's inline scanner
+    shows up in Microsoft's reports a second time for each message, failing
+    wherever it added a banner.
+- **The DMARC policy recommendation leaves proven relay copies out.** They
+  are not the domain's senders, and no policy or fix on our side makes a
+  scanner's banner keep our signature intact. Counting them held every domain
+  whose recipients use such a scanner at `p=none`. A relay is dropped from the
+  failing sources only when all of its failures are proven copies. The pass
+  rate and failing count still show the reports' raw figures, with
+  "(N relays)", and the recommendation names what it left out. The server-side
+  check on applying a policy judges the same way. The failing-source count
+  behind the recommendation is now also kept to the tenant asking.
+- **Show the DKIM private key, to sign with it on another mail server.** On the tenant panel's
+  Email → Settings & DNS tab, the DKIM keys card has **Show private key** on the key that signs.
+  It shows the key with the domain (`d=`) and selector (`s=`) another server needs, and whether
+  the public key is published. It is for tenant administrators and staff, not `support`. It asks
+  for the same step-up, is sent `no-store`, and every hand-out is audited (`dkim_private_key`).
+  An API token gets it without a step-up but needs the `delete` scope, the strictest; a tenant's
+  AI agent is refused (it would keep the key after being disconnected).
+  - Stalwart masks every secret on read, so the platform now keeps its own copy, encrypted with
+    `PLATFORM_ENCRYPTION_KEY` like an uploaded TLS key, of each DKIM key it creates: enable,
+    rotation, drift repair, DR recreate (migration 0178, `email_dkim_private_keys`).
+  - A copy is shown only when its public key matches the one Stalwart signs with.
+  - Keys created before this release have no copy: the card says so, and **Rotate key** creates
+    one that can be shown. Existing keys are not rotated in bulk.
+  - One copy per selector, so `dkim-1` and `dkim-2` both have one while both records stay
+    published. A destroyed selector's copy goes with it. A rotation that could not keep its copy
+    says so on the card.
+  - The shown key hides itself after five minutes, and as soon as a rotation succeeds. A copy
+    the browser refuses says how to copy by hand.
+- **A domain's DKIM keys survive the mail server losing them.** Drift repair's "Recreate
+  empty", disaster recovery and a resumed email enable used to give such a domain NEW keys.
+  Its published DKIM records then failed every message until DNS changed, by hand at the
+  registrar for a zone hosted elsewhere. They now put the kept key back under the same
+  selector, so the records keep verifying and DNS stays as it is.
+  - A copy goes back only when the selector's TXT record still carries its public key, never
+    when it is revoked (empty `p=`). Public DNS decides when it answers. The platform's own
+    record decides only when public DNS says there is none and the platform hosts the zone.
+    Anything else gets a new key as before.
+  - When public DNS gives no answer (SERVFAIL, timeout), nothing is restored and no key is
+    made: the drift item or recovery report says so, and
+    `POST …/email-domains/<id>/dkim/restore` (super_admin, admin) retries. That call also puts
+    back a selector Stalwart lost while keeping the domain.
+  - Tenant bundles now carry the copies, still encrypted (migration 0180 gives the table an
+    `id` derived from domain and selector, so a restore replaces the live row of the same
+    selector; 0182 fills it for a pod of the previous release during a rolling deploy). A
+    bundle row is restored only into the tenant its email domain belongs to, under its derived
+    id, and never over a newer copy. A recovery onto a cluster with another
+    `PLATFORM_ENCRYPTION_KEY` cannot decrypt the copies and falls back to new keys.
+  - Admin → Email → *DKIM keys after a restore* lists each case.
+
+### Changed
+
+- **Bulwark webmail 1.20.0 → 1.21.0.** It fixes no published advisory. Its security fixes: signing
+  in again to an account already signed in revokes the refresh token it replaces, a push preview
+  renews only the login it is for and refuses cross-site requests, and the image no longer copies
+  `.env` files from the build checkout.
+  - Offline mail moves to an encrypted database on the device and now also keeps calendars,
+    contacts and files. In the browser it stays off until the user turns it on; only Bulwark's new
+    desktop app turns it on by default.
+  - The reading pane shows whole conversations, and Undo send is on by default (5 seconds).
+  - Settings moved: every setting sits on the page people look for it first.
+  - It talks to no outside host 1.20.0 did not; the new dictionary download is the desktop app's.
+    Support sessions, health checks and the Contacts, Calendar and Files switches work as before:
+    the impersonation route, the app-password name and the navigation links are unchanged.
+
+### Fixed
+
+- **Drift repair can recreate a lost mailbox again.** Admin → Email → Data drift → **Recreate
+  empty** on a mailbox failed every time with `STALWART_CREATE_REJECTED` ("Invalid key for
+  object"): it sent Stalwart an `emails` property its account schema does not have. It now uses
+  the same create as the backup restore, which also puts back what the old code dropped: the
+  quota, a suspended mailbox's suspension, send-only and forwarding rules, auto-reply, aliases and
+  their send-as identities. A part that cannot be put back is named in the drift item's note: the
+  15-minute reconciles retry the rules and aliases, and a quota is applied by saving it again.
+
+- **Disaster recovery publishes the DKIM record of a key it makes.** The recover regenerated a
+  domain's DKIM key when it had no copy, but left the zone with the old record, so every
+  message failed DKIM until someone republished it. It now publishes it, as enable and drift
+  repair do.
+
+- **The DMARC policy switch is always shown.** It offered only "apply the
+  recommended step" or "step back". A domain at `p=none` whose reports did not
+  back a tightening, which includes any domain with a RELAY that fails, showed
+  no control at all. It is now a NONE / QUARANTINE / REJECT switch in both
+  panels. It is disabled, with the reason, only when the platform does not hold
+  exactly one `_dmarc` record for the domain. A tightening the reports do not
+  back shows their reason and is published only when acknowledged. The API
+  refuses it without `acknowledgeNotRecommended: true`, as before.
+
 ## [2026.11.9] - 2026-11-13
 
 ### Changed

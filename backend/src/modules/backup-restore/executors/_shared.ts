@@ -97,6 +97,9 @@ export const RETIRED_BUNDLE_COLUMNS: Readonly<Record<string, readonly string[]>>
  */
 export const ORPHANABLE_BUNDLE_ROWS: Readonly<Record<string, { readonly column: string; readonly parent: string }>> = {
   ssl_certificates: { column: 'domain_id', parent: 'domains' },
+  // A kept DKIM key copy is meaningless without its email domain: a cart that
+  // restores the keys table alone skips the rows whose domain is not there.
+  email_dkim_private_keys: { column: 'email_domain_id', parent: 'email_domains' },
 };
 
 /** True when `row` points at a parent row that does not exist (yet) in this transaction. */

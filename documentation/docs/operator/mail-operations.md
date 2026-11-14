@@ -259,7 +259,20 @@ Each domain shows:
   believes it published.
 - **Failing sources** — expand the row to see individual sending servers, ordered
   by failing messages. The biggest sender is rarely the problem, so this is not
-  sorted by volume.
+  sorted by volume. Each server shows its reverse DNS name and badges (hover one
+  for what it means):
+    - **CLUSTER**: one of this cluster's node addresses.
+    - **SPF**: the domain's current SPF record allows it. This is checked live,
+      through the same public resolvers as the mail health checks.
+    - **RELAY**: not ours, yet passing on messages that carried the domain's DKIM
+      signature from the platform's selectors (`dkim-1`, `dkim-2` or the domain's
+      active one). These are forwarders and recipients' mail filters, not other
+      senders. Their SPF fails by construction; their DKIM fails where they
+      changed the message. Microsoft reports an inline scanner in front of a
+      Microsoft 365 mailbox (Check Point Harmony / Avanan, for example) as a
+      second copy of each message, failing wherever it added a banner. No
+      change on our side makes those pass; the recipient's admin can trust the
+      scanner (a trusted ARC sealer, or Enhanced Filtering for Connectors).
 - **Recommendation** — whether it is safe to tighten your policy yet.
 
 !!! warning "No reports is not the same as everything passing"
@@ -279,8 +292,8 @@ anyone can send as the domain and receivers deliver it. The cost is that on day
 one there is no evidence that all of the domain's legitimate mail aligns, so a
 sender that does not (a newsletter service, a web form, an office server) has
 its mail spam-foldered from the start, and nothing tells the sender. The DMARC
-reports show such a sender within a day or two; **Step back** (below) returns
-the domain to `p=none` while it is fixed. The domain owner can step back from
+reports show such a sender within a day or two; switching to **NONE** (below)
+returns the domain to `p=none` while it is fixed. The domain owner can switch back from
 the first day, on the tenant panel's **Authentication** tab; **Monitoring →
 Mail** lists a domain once its first report has arrived.
 
@@ -312,16 +325,39 @@ one matters most — one small but legitimate sender can fail every message it
 sends while your overall percentage still looks healthy, and it is that sender
 whose mail stops when you tighten.
 
-Nothing changes on its own. When a domain is ready, open its row in
-**Monitoring → Mail → DMARC** (or, as the domain owner, the domain's **DMARC**
-tab in the tenant panel) and choose **Apply p=quarantine** (later **p=reject**).
-The platform rewrites the `p=` of the `_dmarc` record it manages and keeps every
-other tag. It only accepts the step the recommendation allows at that moment —
-one level at a time, never while a source is failing.
+Proven RELAY copies are left out of that judgement: the messages a recipient's
+filter or a forwarder re-delivered, as the badge above defines them. They are
+not senders of the domain. A scanner that breaks our signature with a banner
+does so under any policy, and counting it would hold every domain whose
+recipients use one at `p=none` for good. A relay drops out of the failing count
+only if every failure it has is a proven copy. The domain's pass rate and
+failing-source count still show the reports' raw figures, marked "(N relays)",
+and the recommendation names what it left out. If the cluster's node list
+cannot be read, nothing is left out.
 
-**Step back** is always offered once a domain enforces: if legitimate mail
-starts landing in spam, return to the previous level immediately, without
-waiting for reports.
+!!! note "Reports are not authenticated"
+    DMARC aggregate reports are plain mail to the domain's `rua=` address, and
+    nothing in the standard proves who sent one. A forged report can make any
+    figure on this page look better than it is, including a source's relay
+    evidence, just as it could always inflate the pass rate. The recommendation
+    is advice, never applied on its own. Before tightening, look at the failing
+    sources it names, and at the reverse DNS names of the relays it left out.
+
+Nothing changes on its own. The policy is a **NONE / QUARANTINE / REJECT**
+switch in the domain's row in **Monitoring → Mail → DMARC**, and on the
+domain owner's **Authentication** tab in the tenant panel. A check mark shows
+the step the recommendation backs. The platform rewrites the `p=` of the
+`_dmarc` record it manages and keeps every other tag.
+
+A tightening the recommendation does not back can still be published: a jump
+past the next level, or a step while a source fails. The confirmation shows
+the recommendation's reason first, and the API refuses such a change without
+`acknowledgeNotRecommended: true`. This is deliberate. A failing source can be
+a RELAY that nothing on our side makes pass, and without it a domain whose
+recipients use such a filter would stay at `p=none` forever.
+
+Loosening is always accepted. If legitimate mail starts landing in spam,
+return to the previous level immediately, without waiting for reports.
 
 After a change, the reports keep showing the old policy for up to a day (they
 describe what receivers saw); the page says so and does not offer the same step

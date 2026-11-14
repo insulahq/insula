@@ -192,12 +192,14 @@ export const users = pgTable('users', {
   // lastLoginAt (one event per session) — this is renewable inside an
   // existing session. NULL = stale.
   lastCredentialCheckAt: timestamp('last_credential_check_at'),
-  // EXPLICIT step-up timestamp (ADR-041 evolved spec). Bumped ONLY by
-  // /me/step-up/* endpoints — login + passkey-verify do NOT count.
-  // Privileged actions (node-terminal session create) gate on THIS
-  // column, not lastCredentialCheckAt, so the very first terminal
-  // open after login always requires an explicit step-up prompt.
+  // When this person last stepped up anywhere — for display only. The gates
+  // read the per-session auth_step_ups (migration 0179); this column is what
+  // pods still on the old code read during the rollout.
   lastStepUpAt: timestamp('last_step_up_at'),
+  // Wrong step-up passwords in the current window (migration 0181): an
+  // attempt is reserved before the password is checked, per credential holder.
+  stepUpFailedAttempts: integer('step_up_failed_attempts').notNull().default(0),
+  stepUpFailedWindowStartedAt: timestamp('step_up_failed_window_started_at', { withTimezone: true }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   oidcSubject: varchar('oidc_subject', { length: 255 }),
   oidcIssuer: varchar('oidc_issuer', { length: 500 }),
@@ -1218,6 +1220,20 @@ export const auditLogs = pgTable('audit_logs', {
 // Reason values: 'logout' | 'rotated' | 'reuse_detected' | 'password_change' | 'admin_revoke'
 // Stored as varchar (not enum) so we can add new reasons without a migration.
 
+// Step-ups, per session (migration 0179). `sessionId` is the access token's
+// `sid` (its refresh-token family) or, without one, its `jti`; `userId` is
+// whose credential was checked — the staff member under "Login as tenant".
+export const authStepUps = pgTable('auth_step_ups', {
+  sessionId: varchar('session_id', { length: 64 }).primaryKey(),
+  userId: varchar('user_id', { length: 36 })
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  method: varchar('method', { length: 16 }).notNull(),
+  steppedUpAt: timestamp('stepped_up_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('auth_step_ups_at_idx').on(table.steppedUpAt),
+]);
+
 export const refreshTokens = pgTable('refresh_tokens', {
   id: varchar('id', { length: 36 }).primaryKey(),
   userId: varchar('user_id', { length: 36 })
@@ -2022,6 +2038,23 @@ export const emailDomains = pgTable('email_domains', {
   index('email_domains_stalwart_domain_idx').on(table.stalwartDomainId).where(isNotNull(table.stalwartDomainId)),
 ]);
 
+// Migration 0178: the platform's encrypted copy of each DKIM key it creates
+// (Stalwart masks secrets on read). Read by the tenant's "Show private key",
+// after a fresh step-up, and by restore.ts to put a key Stalwart lost back.
+// 0180: `id`, derived from (email_domain_id, selector) — key-store.ts
+// dkimKeyRowId — so a tenant bundle restores it by id. See email-dkim/key-store.ts.
+export const emailDkimPrivateKeys = pgTable('email_dkim_private_keys', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  emailDomainId: varchar('email_domain_id', { length: 36 })
+    .notNull()
+    .references(() => emailDomains.id, { onDelete: 'cascade' }),
+  selector: varchar('selector', { length: 63 }).notNull(),
+  privateKeyEncrypted: text('private_key_encrypted').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('email_dkim_private_keys_domain_selector_key').on(table.emailDomainId, table.selector),
+]);
+
 export const mailboxes = pgTable('mailboxes', {
   id: varchar('id', { length: 36 }).primaryKey(),
   // Migration 0020 — CASCADE from email_domains and tenant so
@@ -2675,7 +2708,10 @@ export const certDownloadTokens = pgTable('cert_download_tokens', {
   name: varchar('name', { length: 100 }).notNull(),
   /** sha256 of the plaintext token. The plaintext is never stored. */
   tokenHash: varchar('token_hash', { length: 64 }).notNull(),
-  /** NULL = never expires (an explicit customer choice in the UI). */
+  /**
+   * Links are temporary (15 minutes to 24 hours, migration 0179). NULL only on
+   * a row minted by old code mid-rollout: refused, and reaped.
+   */
   expiresAt: timestamp('expires_at', { withTimezone: true }),
   /** Bumped on every successful download so a stale token is identifiable. */
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
@@ -2689,6 +2725,8 @@ export const certDownloadTokens = pgTable('cert_download_tokens', {
   uniqueIndex('cert_download_tokens_hash_unique').on(table.tokenHash),
   index('cert_download_tokens_domain_idx').on(table.domainId),
   index('cert_download_tokens_tenant_idx').on(table.tenantId),
+  // The reaper's lookup (migration 0179).
+  index('cert_download_tokens_expires_idx').on(table.expiresAt),
 ]);
 
 export type CertDownloadToken = typeof certDownloadTokens.$inferSelect;

@@ -30,8 +30,8 @@ import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@insula/api
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { removeAllDkimSignaturesForDomain } from '../email-dkim/cleanup.js';
 import { purgeSpamTrainingSamplesForPrincipal } from '../mail-admin/spam-sample-cleanup.js';
-import { normalizeDomainDkim } from '../email-dkim/normalize.js';
-import { upsertDkimTxtRecord } from '../email-dkim/dns-publish.js';
+import { forgetDkimPrivateKeys } from '../email-dkim/key-store.js';
+import { convergeDomainDkim, describeDkimConvergence } from '../email-dkim/converge.js';
 import { redactPemBlocks } from '../email-dkim/signatures.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 
@@ -276,29 +276,22 @@ export async function enableEmailForDomain(
         // auto pair still signs and delivers; the first rotation
         // converges it onto the A/B pair.
         try {
-          const { activeSelector, createdPublicKey } = await normalizeDomainDkim({
+          // Restores kept keys before minting (an enable resuming one that
+          // stopped short), persists the selector, publishes a new key's TXT
+          // inline so mail sent in the first minutes verifies.
+          const dkim = await convergeDomainDkim(db, {
             accountId: domainAccountId,
             stalwartDomainId,
             baseUrl: process.env.STALWART_MGMT_URL,
+            emailDomainId: id,
+            domainId,
+            domainName: domain.domainName,
             currentDbSelector: existing?.dkimActiveSelector ?? null,
             expectAutoPair: createdPrincipal,
+            encryptionKey,
+            log,
           });
-          await db
-            .update(emailDomains)
-            .set({ dkimActiveSelector: activeSelector })
-            .where(eq(emailDomains.id, id));
-          // Publish the dkim-1 TXT inline so mail sent in the first
-          // minutes after enable verifies — the dns-sync reconciler
-          // (5-min cycle) would otherwise be the first to publish it.
-          if (createdPublicKey) {
-            await upsertDkimTxtRecord(db, {
-              domainId,
-              domainName: domain.domainName,
-              selector: activeSelector,
-              publicKey: createdPublicKey,
-              encryptionKey,
-            });
-          }
+          if (dkim.undecidable) log.warn({ domainName: domain.domainName }, describeDkimConvergence(domain.domainName, dkim));
         } catch (err) {
           // Scrub PEM blocks + drop error payloads (a raw JmapError
           // carries the full JMAP response body in .details).
@@ -478,6 +471,9 @@ export async function destroyStalwartArtifactsForEmailDomain(
       stalwartDomainId: emailDomain.stalwartDomainId,
       baseUrl: process.env.STALWART_MGMT_URL,
     });
+    // The kept key copies go with the keys (the row's FK cascade would also
+    // take them, but not every caller deletes the row).
+    await forgetDkimPrivateKeys(db, emailDomain.id);
   } catch (err) {
     failures.push(`dkim: ${err instanceof Error ? err.message : String(err)}`);
     log.warn(

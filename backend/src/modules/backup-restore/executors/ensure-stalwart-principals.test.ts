@@ -29,9 +29,9 @@ const sessionMock = getJmapSession as unknown as ReturnType<typeof vi.fn>;
 const domFindMock = findDomainByName as unknown as ReturnType<typeof vi.fn>;
 const domCreateMock = createDomain as unknown as ReturnType<typeof vi.fn>;
 
-/** Build an x:Account/set success envelope for the 'new-mailbox' create. */
+/** Build an x:Account/set success envelope for the 'recreated-mailbox' create. */
 function acctCreated(id: string) {
-  return { created: { 'new-mailbox': { id, type: 'individual' } }, notCreated: undefined };
+  return { created: { 'recreated-mailbox': { id, type: 'individual' } }, notCreated: undefined };
 }
 
 function makeApp(dbRows: Array<{
@@ -114,9 +114,9 @@ describe('ensureStalwartPrincipals', () => {
     // Create payload: BARE local part (not the full address) + the domain's id.
     expect(acctSetMock).toHaveBeenCalledOnce();
     const setArgs = acctSetMock.mock.calls[0]![0] as {
-      request: { create: { 'new-mailbox': { '@type': string; name: string; domainId: string } } };
+      request: { create: { 'recreated-mailbox': { '@type': string; name: string; domainId: string } } };
     };
-    expect(setArgs.request.create['new-mailbox']).toMatchObject({
+    expect(setArgs.request.create['recreated-mailbox']).toMatchObject({
       '@type': 'User', name: 'b', domainId: 'dom-existing',
     });
     // Quota applied AFTER create via updatePrincipal: 1024 MB → bytes.
@@ -176,9 +176,9 @@ describe('ensureStalwartPrincipals', () => {
     expect(domCreateMock.mock.calls[0]![0]).toMatchObject({ input: { type: 'domain', name: 'reborn.test' } });
     // …and the mailbox is bound to the FRESHLY-created domain's id (not a stale one).
     const setArgs = acctSetMock.mock.calls[0]![0] as {
-      request: { create: { 'new-mailbox': { name: string; domainId: string } } };
+      request: { create: { 'recreated-mailbox': { name: string; domainId: string } } };
     };
-    expect(setArgs.request.create['new-mailbox']).toMatchObject({ name: 'user', domainId: 'dom-new' });
+    expect(setArgs.request.create['recreated-mailbox']).toMatchObject({ name: 'user', domainId: 'dom-new' });
     expect(result.recreated).toBe(1);
     expect(result.outcomes[0]?.status).toBe('recreated');
   });

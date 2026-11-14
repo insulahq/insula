@@ -19,6 +19,14 @@
  *   - set `Cache-Control: private, no-store` (never let an intermediary hold it)
  *   - write an audit row carrying `private_key_downloaded`
  *   - refuse to say anything about domains the caller cannot already see
+ *
+ * The session route, and minting a link, also need a step-up made in the same
+ * session within 5 minutes (`assertFreshStepUp`, purpose `cert_download`): a
+ * stolen panel session must not be enough to walk off with the key. Under
+ * "Login as tenant" the staff member confirms with their own credential. An
+ * API token needs none — its scopes bind it. The link route has no session to
+ * step up: the link itself is the credential, minted behind that gate, and
+ * lives 24 hours at most.
  */
 
 import crypto from 'crypto';
@@ -39,6 +47,7 @@ import {
   type DomainRef,
 } from './bundle.js';
 import * as tokens from './token-service.js';
+import { assertFreshStepUp, attributionOf, type StepUpCaller } from '../auth/step-up-service.js';
 
 function getK8s() {
   try {
@@ -69,6 +78,8 @@ function auditDownload(
     source: CertBundle['source'];
     ip: string;
     path: string;
+    /** Who really acted: the staff member under "Login as tenant", an API token. */
+    attribution?: Record<string, unknown>;
     log: { error: (o: unknown, m: string) => void };
   },
 ): void {
@@ -89,6 +100,7 @@ function auditDownload(
         via: opts.via,
         source: opts.source,
         ...(opts.tokenName ? { token_name: opts.tokenName } : {}),
+        ...(opts.attribution ?? {}),
       },
       ipAddress: opts.ip,
     })
@@ -116,6 +128,7 @@ function auditTokenLifecycle(
     actorId: string;
     ip: string;
     path: string;
+    attribution?: Record<string, unknown>;
     log: { error: (o: unknown, m: string) => void };
   },
 ): void {
@@ -134,6 +147,7 @@ function auditTokenLifecycle(
       changes: {
         domain_id: opts.domainId,
         ...(opts.tokenName ? { token_name: opts.tokenName } : {}),
+        ...(opts.attribution ?? {}),
       },
       ipAddress: opts.ip,
     })
@@ -270,12 +284,20 @@ export async function certDownloadRoutes(app: FastifyInstance): Promise<void> {
     // tenant_admin and above only: `support` is read-only on the panel but has
     // no business holding a customer's private key, and neither does a
     // tenant_user.
+    // An API token calls this without a step-up (its scopes bind it): it is
+    // the way an unattended server picks up its renewed certificate. Not a
+    // TENANT agent (issuesCredential): it would keep the key after it is
+    // disconnected.
     scoped.get('/tenants/:tenantId/domains/:domainId/ssl-cert/download', {
       onRequest: [requireRole('super_admin', 'admin', 'tenant_admin')],
+      config: { issuesCredential: true },
       schema: { tags: ['TLS Certificates'], summary: 'Download a domain certificate bundle', security: [{ bearerAuth: [] }] },
     }, async (request, reply) => {
       const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
       const ref = await domainOr404(tenantId, domainId);
+      // After the ownership check, so a step-up answer never confirms that
+      // another tenant's domain exists.
+      await assertFreshStepUp(scoped.db, request.user as StepUpCaller, 'cert_download');
       const bundle = await buildCertBundle(scoped.db, getK8s(), ref, encryptionKey);
       if (!bundle) {
         throw new ApiError('CERT_NOT_FOUND', `No certificate has been issued for '${ref.domainName}' yet`, 404);
@@ -290,6 +312,7 @@ export async function certDownloadRoutes(app: FastifyInstance): Promise<void> {
         source: bundle.source,
         ip: request.ip,
         path: request.url,
+        attribution: attributionOf(request.user),
         log: request.log,
       });
       return sendPem(reply, bundle);
@@ -307,9 +330,15 @@ export async function certDownloadRoutes(app: FastifyInstance): Promise<void> {
 
     scoped.post('/tenants/:tenantId/domains/:domainId/cert-tokens', {
       onRequest: [requireRole('super_admin', 'admin', 'tenant_admin')],
+      // A link is a credential that works on its own: not for a tenant agent.
+      config: { issuesCredential: true },
       schema: { tags: ['TLS Certificates'], summary: 'Create a certificate download token', security: [{ bearerAuth: [] }] },
     }, async (request, reply) => {
       const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
+      // A link fetches the same certificate and key, unattended. Gating only
+      // the button would leave this as the way round.
+      await domainOr404(tenantId, domainId);
+      await assertFreshStepUp(scoped.db, request.user as StepUpCaller, 'cert_download');
       const parsed = createCertTokenInputSchema.safeParse(request.body);
       if (!parsed.success) {
         const first = parsed.error.issues[0];
@@ -327,7 +356,7 @@ export async function certDownloadRoutes(app: FastifyInstance): Promise<void> {
       auditTokenLifecycle(scoped.db, {
         tenantId, domainId, tokenId: created.id, tokenName: created.name,
         action: 'create', actorId: user?.sub ?? 'unknown',
-        ip: request.ip, path: request.url, log: request.log,
+        ip: request.ip, path: request.url, attribution: attributionOf(request.user), log: request.log,
       });
       reply.status(201);
       return success(created);
@@ -347,7 +376,7 @@ export async function certDownloadRoutes(app: FastifyInstance): Promise<void> {
       auditTokenLifecycle(scoped.db, {
         tenantId, domainId, tokenId, tokenName: revoked.name,
         action: 'delete', actorId: user?.sub ?? 'unknown',
-        ip: request.ip, path: request.url, log: request.log,
+        ip: request.ip, path: request.url, attribution: attributionOf(request.user), log: request.log,
       });
       reply.status(204).send();
     });

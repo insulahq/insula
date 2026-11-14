@@ -7,8 +7,9 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { platformEncryptionKey } from '../../shared/platform-encryption-key.js';
 
-const encryptionKey = () => process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires PLATFORM_ENCRYPTION_KEY env var */;
+const encryptionKey = (): string => platformEncryptionKey();
 
 export async function emailDomainRoutes(app: FastifyInstance): Promise<void> {
   // Phase 2c.5: create the k8s tenant once at plugin registration so

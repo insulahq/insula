@@ -58,6 +58,12 @@ export interface DmarcDomainStats {
   readonly windowDays: number;
   /** Distinct source IPs that failed at least one message in the window. */
   readonly failingSources: number;
+  /**
+   * Proven relay copies already left out of the counts above (a recipient's
+   * filter or a forwarder re-delivering mail we signed). Named in the reason,
+   * so a rate that differs from the reports' raw one is explained.
+   */
+  readonly ignoredRelayCopies?: { readonly messages: number; readonly sources: number };
 }
 
 export interface DmarcRecommendation {
@@ -92,6 +98,18 @@ export function nextPolicy(current: DmarcPolicy | null): DmarcPolicy | null {
  * rate is too low when the rate is computed from nothing.
  */
 export function recommendPolicy(stats: DmarcDomainStats): DmarcRecommendation {
+  const r = judge(stats);
+  const ignored = stats.ignoredRelayCopies;
+  if (!ignored || ignored.messages === 0) return r;
+  const copies = ignored.messages === 1 ? 'copy' : 'copies';
+  const relays = ignored.sources === 1 ? 'relay' : 'relays';
+  return {
+    ...r,
+    reason: `${r.reason} Not counted: ${ignored.messages} ${copies} passed on by ${ignored.sources} ${relays} (recipients' mail filters or forwarders re-delivering mail this platform signed).`,
+  };
+}
+
+function judge(stats: DmarcDomainStats): DmarcRecommendation {
   const base = { policyDomain: stats.policyDomain, currentPolicy: stats.currentPolicy };
 
   if (stats.reportCount === 0 || stats.totalMessages === 0) {

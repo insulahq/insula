@@ -15,6 +15,13 @@
  * `domainId`). These tests pin the request shape against a captured
  * mock so a regression that re-introduces the legacy shape fails
  * loudly.
+ *
+ * Second regression: the payload also carried `emails: [fullAddress]`,
+ * a property Stalwart 0.16's x:Account schema does not have, so every
+ * recreate on a live server was refused with "Invalid key for object".
+ * An earlier version of this test asserted that `emails` was SENT; the
+ * mock agreed with the code, not with Stalwart. The payload now comes
+ * from mailboxes/recreate-principal.ts, shared with the backup restore.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -22,6 +29,7 @@ const jmapCalls = vi.hoisted(() => ({
   getJmapSession: vi.fn(),
   createDomain: vi.fn(),
   accountSet: vi.fn(),
+  updatePrincipal: vi.fn(),
 }));
 
 vi.mock('../stalwart-jmap/client.js', () => jmapCalls);
@@ -36,6 +44,7 @@ function buildDbStub(driftRow: Record<string, unknown> | null, mailboxRow: Recor
     driftRow ? [driftRow] : [],   // 1. getActiveById: lookup drift item
     mailboxRow ? [mailboxRow] : [], // 2. mailbox lookup
     domainRow ? [domainRow] : [],   // 3. parent email_domains lookup
+    [],                             // 4. mailbox_aliases of the recreated mailbox
     driftRow ? [{ ...driftRow, resolvedAt: new Date(), resolvedVia: 'recreated' }] : [],
   ];
   let idx = 0;
@@ -79,6 +88,14 @@ describe('recreateDriftItemEmpty: mailbox kind', () => {
       id: 'mb-1',
       fullAddress: 'jane@xx.staging.example.test',
       emailDomainId: 'ed-1',
+      displayName: 'Jane',
+      quotaMb: 0,
+      status: 'active',
+      mailboxType: 'mailbox',
+      forwardingAddresses: null,
+      autoReply: 0,
+      autoReplySubject: null,
+      autoReplyBody: null,
     };
     const domainRow = { id: 'ed-1', stalwartDomainId: 'd-new' };
 
@@ -99,8 +116,35 @@ describe('recreateDriftItemEmpty: mailbox kind', () => {
     expect(create['@type']).toBe('User');
     expect(create.name).toBe('jane');                 // BARE local-part — not the full address
     expect(create.domainId).toBe('d-new');            // resolved from email_domains
-    expect(create.emails).toEqual(['jane@xx.staging.example.test']);
+    // Stalwart 0.16 refuses any key outside its schema ("Invalid key for
+    // object"); `emails` is one. Pin the exact key set createMailbox sends.
+    expect(Object.keys(create).sort()).toEqual(['@type', 'credentials', 'description', 'domainId', 'name']);
+    expect(create.description).toBe('Jane');
     expect(result.newStalwartId).toBe('principal-new');
+    expect(result.item.resolvedVia).toBe('recreated');
+  });
+
+  it('names a quota it could not set, and how to apply it, in the drift note', async () => {
+    const driftRow = {
+      id: 'drift-4', kind: 'mailbox', expectedName: 'q@x.example', expectedStalwartId: 'z',
+      platformRowId: 'mb-4', firstDetectedAt: new Date(), lastSeenAt: new Date(),
+      resolvedAt: null, resolvedVia: null, notes: null,
+    };
+    const mbRow = {
+      id: 'mb-4', fullAddress: 'q@x.example', emailDomainId: 'ed-4', displayName: null,
+      quotaMb: 100, status: 'active', mailboxType: 'mailbox', forwardingAddresses: null,
+      autoReply: 0, autoReplySubject: null, autoReplyBody: null,
+    };
+    jmapCalls.accountSet.mockResolvedValue({ created: { 'recreated-mailbox': { id: 'p-4' } }, notCreated: null });
+    jmapCalls.updatePrincipal.mockRejectedValue(new Error('stalwart 503'));
+
+    const db = buildDbStub(driftRow, mbRow, { id: 'ed-4', stalwartDomainId: 'd-4' });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await recreateDriftItemEmpty(db as any, 'drift-4', 'q@x.example');
+
+    expect(result.newStalwartId).toBe('p-4');
+    expect(result.followUp).toContain("Its quota could not be set on the mail server: save the mailbox's quota again.");
+    expect(result.followUp).not.toContain('15-minute reconcile');
   });
 
   it('refuses when parent Domain has no stalwart_domain_id (PARENT_DOMAIN_NOT_IN_STALWART)', async () => {

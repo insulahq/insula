@@ -135,4 +135,18 @@ describe('recommendPolicy — when it refuses', () => {
       expect(r.ready).toBe(r.recommendedPolicy !== null);
     }
   });
+
+  it('names the relay copies it was given as already left out', () => {
+    const r = recommendPolicy({
+      policyDomain: 'example.test', currentPolicy: 'none', reportCount: 10, totalMessages: 500,
+      passMessages: 500, windowDays: 20, failingSources: 0, ignoredRelayCopies: { messages: 32, sources: 1 },
+    });
+    expect(r.ready).toBe(true);
+    expect(r.reason).toMatch(/Not counted: 32 copies passed on by 1 relay \(/);
+    const none = recommendPolicy({
+      policyDomain: 'example.test', currentPolicy: 'none', reportCount: 10, totalMessages: 500,
+      passMessages: 500, windowDays: 20, failingSources: 0, ignoredRelayCopies: { messages: 0, sources: 0 },
+    });
+    expect(none.reason).not.toMatch(/Not counted/);
+  });
 });

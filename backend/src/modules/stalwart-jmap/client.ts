@@ -487,6 +487,8 @@ export interface StalwartDkimSignatureRow {
   readonly domainId: string;
   readonly selector: string;
   readonly stage?: string;
+  /** Base64 SubjectPublicKeyInfo DER of the signing key (not masked). */
+  readonly publicKey?: string;
 }
 
 interface XDkimGetResponse {

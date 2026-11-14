@@ -10,7 +10,14 @@ vi.mock('@/hooks/use-can-manage-certs', () => ({ useCanManageCerts: vi.fn(() => 
 vi.mock('@/lib/api-client', () => ({
   API_BASE: 'http://localhost:3000',
   apiFetch: vi.fn(),
-  ApiError: class ApiError extends Error {},
+  ApiError: class ApiError extends Error {
+    constructor(
+      public readonly status: number,
+      public readonly code: string,
+      message: string,
+      public readonly details?: Record<string, unknown>,
+    ) { super(message); }
+  },
 }));
 
 const mockApiFetch = vi.mocked(apiFetch);
@@ -82,14 +89,15 @@ describe('CertDownloadSection', () => {
   it('shows a newly created token once, with a copy control and a keep-it warning', async () => {
     const created = {
       data: {
-        id: 'tok-1', domainId: 'd-1', name: 'deploy', expiresAt: null,
+        id: 'tok-1', domainId: 'd-1', name: 'deploy', expiresAt: '2026-09-03T01:00:00Z',
         lastUsedAt: null, createdAt: '2026-09-03T00:00:00Z', expired: false,
         token: 'insula_cert_SECRETVALUE',
       },
     };
-    mockApiFetch.mockImplementation((path: string, opts?: { method?: string }) => {
+    const bodies: unknown[] = [];
+    mockApiFetch.mockImplementation((path: string, opts?: RequestInit) => {
       if (path.includes('download-availability')) return Promise.resolve(AVAILABLE);
-      if (path.includes('cert-tokens') && opts?.method === 'POST') return Promise.resolve(created);
+      if (path.includes('cert-tokens') && opts?.method === 'POST') { bodies.push(JSON.parse(String(opts.body ?? '{}'))); return Promise.resolve(created); }
       if (path.includes('cert-tokens')) return Promise.resolve({ data: [] });
       return Promise.resolve({ data: [] });
     });
@@ -103,6 +111,21 @@ describe('CertDownloadSection', () => {
     expect(screen.getByTestId('minted-token-value').textContent).toBe('insula_cert_SECRETVALUE');
     expect(screen.getByTestId('copy-token-button')).toBeTruthy();
     expect(minted.textContent).toMatch(/only time it is shown/i);
+    expect(minted.textContent).toMatch(/stops working/i);
+    // Default lifetime: one hour.
+    expect(bodies).toEqual([{ name: 'deploy', expiry: '1h' }]);
+  });
+
+  // Links are temporary: the only lifetimes offered are 15 minutes to 24
+  // hours, and the panel says what to do instead for unattended pickup.
+  it('offers only temporary lifetimes, defaulting to one hour', async () => {
+    route({});
+    renderSection();
+    fireEvent.click(await screen.findByTestId('new-cert-token-button'));
+    const select = screen.getByTestId('cert-token-expiry-select') as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual(['15m', '1h', '24h']);
+    expect(select.value).toBe('1h');
+    expect(screen.getByTestId('cert-links-temporary').textContent).toMatch(/15 minutes to\s+24 hours/);
   });
 
   it('lists existing tokens with last-used and offers revoke', async () => {
@@ -123,7 +146,7 @@ describe('CertDownloadSection', () => {
 
   it('requires confirmation before revoking', async () => {
     route({
-      tokens: { data: [{ id: 'tok-9', domainId: 'd-1', name: 'x', expiresAt: null, lastUsedAt: null, createdAt: '2026-08-01T00:00:00Z', expired: false }] },
+      tokens: { data: [{ id: 'tok-9', domainId: 'd-1', name: 'x', expiresAt: '2026-08-01T01:00:00Z', lastUsedAt: null, createdAt: '2026-08-01T00:00:00Z', expired: false }] },
     });
     renderSection();
     fireEvent.click(await screen.findByTestId('revoke-tok-9'));
@@ -150,7 +173,7 @@ describe('CertDownloadSection', () => {
       if (path.includes('download-availability')) return Promise.resolve(AVAILABLE);
       if (path.includes('cert-tokens') && opts?.method === 'DELETE') return Promise.reject(new Error('token is gone'));
       if (path.includes('cert-tokens')) {
-        return Promise.resolve({ data: [{ id: 'tok-9', domainId: 'd-1', name: 'x', expiresAt: null, lastUsedAt: null, createdAt: '2026-08-01T00:00:00Z', expired: false }] });
+        return Promise.resolve({ data: [{ id: 'tok-9', domainId: 'd-1', name: 'x', expiresAt: '2026-08-01T01:00:00Z', lastUsedAt: null, createdAt: '2026-08-01T00:00:00Z', expired: false }] });
       }
       return Promise.resolve({ data: [] });
     });
@@ -189,7 +212,83 @@ describe('CertDownloadSection', () => {
   it('shows the curl example against the token endpoint', async () => {
     route({});
     renderSection();
-    expect(await screen.findByText(/how to use a token/i)).toBeTruthy();
+    expect(await screen.findByText(/how to use a link/i)).toBeTruthy();
     expect(screen.getByText(/\/api\/v1\/certs\/example\.test\/download/)).toBeTruthy();
+  });
+
+  // The server refuses the bundle until the person has stepped up; the panel
+  // asks, then repeats the download.
+  it('asks to confirm it is you before downloading, then downloads', async () => {
+    let stepped = false;
+    mockApiFetch.mockImplementation((path: string, opts?: { method?: string }) => {
+      if (path === '/api/v1/me/step-up/password' && opts?.method === 'POST') { stepped = true; return Promise.resolve({ data: { ok: true } }); }
+      if (path.includes('download-availability')) return Promise.resolve(AVAILABLE);
+      return Promise.resolve({ data: [] });
+    });
+    const fetchMock = vi.fn(async () => (stepped
+      ? new Response('-----BEGIN PRIVATE KEY-----\nX\n-----END PRIVATE KEY-----', { status: 200 })
+      : new Response(JSON.stringify({ error: { code: 'STEP_UP_REQUIRED', message: 'Confirm it is you', details: { methods: ['password'] } } }), { status: 403 })));
+    vi.stubGlobal('fetch', fetchMock);
+    // The static methods only: replacing the URL global would break the lazy
+    // import of the step-up dialog.
+    const revokeUrl = vi.fn();
+    const saved = { create: URL.createObjectURL, revoke: URL.revokeObjectURL };
+    URL.createObjectURL = vi.fn(() => 'blob:stub');
+    URL.revokeObjectURL = revokeUrl;
+
+    renderSection();
+    await waitFor(() => expect((screen.getByTestId('download-cert-button') as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByTestId('download-cert-button'));
+    expect(await screen.findByTestId('step-up-dialog')).toBeTruthy();
+    expect(revokeUrl).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByTestId('step-up-password'), { target: { value: 'pw' } });
+    fireEvent.click(screen.getByTestId('step-up-password-submit'));
+    await waitFor(() => expect(revokeUrl).toHaveBeenCalledWith('blob:stub'));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId('download-error')).toBeNull();
+    URL.createObjectURL = saved.create;
+    URL.revokeObjectURL = saved.revoke;
+    vi.unstubAllGlobals();
+  });
+
+  it('downloads nothing when the step-up is cancelled', async () => {
+    route({});
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: { code: 'STEP_UP_REQUIRED', message: 'Confirm it is you', details: { methods: ['password'] } } }), { status: 403 }));
+    vi.stubGlobal('fetch', fetchMock);
+    renderSection();
+    await waitFor(() => expect((screen.getByTestId('download-cert-button') as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByTestId('download-cert-button'));
+    fireEvent.click(await screen.findByLabelText('Close'));
+    await waitFor(() => expect(screen.queryByTestId('step-up-dialog')).toBeNull());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('download-error')).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it('asks to confirm it is you before minting a token, then shows it', async () => {
+    const { ApiError } = await import('@/lib/api-client');
+    let stepped = false;
+    mockApiFetch.mockImplementation((path: string, opts?: { method?: string }) => {
+      if (path === '/api/v1/me/step-up/password' && opts?.method === 'POST') { stepped = true; return Promise.resolve({ data: { ok: true } }); }
+      if (path.includes('download-availability')) return Promise.resolve(AVAILABLE);
+      if (path.includes('cert-tokens') && opts?.method === 'POST') {
+        return stepped
+          ? Promise.resolve({ data: { id: 'tok-1', domainId: 'd-1', name: 'deploy', expiresAt: '2026-09-03T01:00:00Z', lastUsedAt: null, createdAt: '2026-09-03T00:00:00Z', expired: false, token: 'insula_cert_SECRETVALUE' } })
+          : Promise.reject(new ApiError(403, 'STEP_UP_REQUIRED', 'Confirm it is you', { methods: ['password'] }));
+      }
+      return Promise.resolve({ data: [] });
+    });
+
+    renderSection();
+    fireEvent.click(await screen.findByTestId('new-cert-token-button'));
+    fireEvent.change(screen.getByTestId('cert-token-name-input'), { target: { value: 'deploy' } });
+    fireEvent.click(screen.getByTestId('submit-cert-token'));
+    expect(await screen.findByTestId('step-up-dialog')).toBeTruthy();
+    expect(screen.queryByTestId('minted-token')).toBeNull();
+
+    fireEvent.change(screen.getByTestId('step-up-password'), { target: { value: 'pw' } });
+    fireEvent.click(screen.getByTestId('step-up-password-submit'));
+    expect((await screen.findByTestId('minted-token-value')).textContent).toBe('insula_cert_SECRETVALUE');
   });
 });
