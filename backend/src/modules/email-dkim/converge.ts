@@ -119,5 +119,6 @@ export function describeDkimConvergence(domainName: string, r: ConvergeDkimResul
         ? 'The platform has republished it for the zone it hosts.'
         : 'The zone is hosted elsewhere: its owner must update the record at their DNS provider.');
   }
-  return `The DKIM signatures of '${domainName}' were already in place.`;
+  return `Nothing was changed: '${domainName}' already signs with one of its A/B keys, and no missing ` +
+    'selector had a kept key its published record still carries.';
 }
