@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.10-rc.1] - 2026-11-14
+
 ### Security
 
 - **Downloading a domain's certificate asks you to confirm it is you.** The file holds the private
