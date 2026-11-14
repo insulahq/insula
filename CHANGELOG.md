@@ -121,6 +121,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Drift repair can recreate a lost mailbox again.** Admin → Email → Data drift → **Recreate
+  empty** on a mailbox failed every time with `STALWART_CREATE_REJECTED` ("Invalid key for
+  object"): it sent Stalwart an `emails` property its account schema does not have. It now uses
+  the same create as the backup restore, which also puts back what the old code dropped: the
+  quota, a suspended mailbox's suspension, send-only and forwarding rules, auto-reply, aliases and
+  their send-as identities. A part that cannot be put back is named in the drift item's note: the
+  15-minute reconciles retry the rules and aliases, and a quota is applied by saving it again.
+
 - **Disaster recovery publishes the DKIM record of a key it makes.** The recover regenerated a
   domain's DKIM key when it had no copy, but left the zone with the old record, so every
   message failed DKIM until someone republished it. It now publishes it, as enable and drift

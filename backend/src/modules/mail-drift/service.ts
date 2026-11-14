@@ -15,7 +15,6 @@
  * mail-stack-consolidate.sh or HA failback workflow out-of-band.
  */
 
-import { randomBytes } from 'node:crypto';
 import { and, desc, eq, gte, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { mailDriftItems, emailDomains, mailboxes, domains } from '../../db/schema.js';
@@ -23,6 +22,7 @@ import { ApiError } from '../../shared/errors.js';
 import type { MailDriftItem, MailDriftKind } from '@insula/api-contracts';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { RESOLVED_DRIFT_RETENTION_DAYS } from './retention.js';
+import { recreatableMailboxColumns, recreateMailboxPrincipal } from '../mailboxes/recreate-principal.js';
 
 const log = mailLogger().child({ module: 'mail-drift' });
 
@@ -160,18 +160,12 @@ export async function recreateDriftItemEmpty(
 
   // Lazy-load JMAP client. `getDomainJmapAccountId` is local to the
   // email-domains service (cached singleton); we duplicate the minimal
-  // session lookup here to keep mail-drift independent.
-  //
-  // NB: `accountSet` is the modern Stalwart 0.16 API that takes
-  // `domainId` + bare local-part `name`. The legacy `createMailbox`
-  // shim that passes the full address as `name` + `emails` is rejected
-  // by Stalwart 0.16 with "Invalid email local part" because the
-  // server validates `name` as a local-part token, not a full address.
-  // We call `accountSet` directly here to match `mailboxes/service.ts`.
+  // session lookup here to keep mail-drift independent. A mailbox is
+  // recreated by mailboxes/recreate-principal.ts, the same code the
+  // backup restore uses.
   const {
     getJmapSession,
     createDomain: jmapCreateDomain,
-    accountSet,
   } = await import('../stalwart-jmap/client.js');
   const baseUrl = process.env.STALWART_MGMT_URL;
   const session = await getJmapSession(baseUrl, process.env);
@@ -304,16 +298,7 @@ export async function recreateDriftItemEmpty(
   } else {
     // mailbox kind
     const [mbRow] = await db
-      .select({
-        id: mailboxes.id,
-        fullAddress: mailboxes.fullAddress,
-        emailDomainId: mailboxes.emailDomainId,
-        mailboxType: mailboxes.mailboxType,
-        forwardingAddresses: mailboxes.forwardingAddresses,
-        autoReply: mailboxes.autoReply,
-        autoReplySubject: mailboxes.autoReplySubject,
-        autoReplyBody: mailboxes.autoReplyBody,
-      })
+      .select({ ...recreatableMailboxColumns, emailDomainId: mailboxes.emailDomainId })
       .from(mailboxes)
       .where(eq(mailboxes.id, item.platformRowId));
     if (!mbRow) {
@@ -330,18 +315,10 @@ export async function recreateDriftItemEmpty(
         409,
       );
     }
-    // ADR-049: the platform no longer stores a primary password
-    // (generate-and-forget). Recreating a drifted mailbox mints a FRESH
-    // hidden primary — the old one was unrecoverable once Stalwart lost
-    // the account, and no human used it anyway. The user's login
-    // passwords were lost with the account; the operator issues new ones
-    // from the mailbox's Login passwords section after recovery.
-    const recreatedPrimarySecret = randomBytes(24).toString('base64url');
 
     // Resolve the parent Domain's Stalwart ID — `x:Account/set` needs
-    // `domainId` to bind the User to a domain, and rejects payloads
-    // that pass `emails` without it. If the parent domain itself is
-    // also drifting (no current stalwartDomainId), recreate the domain
+    // `domainId` to bind the User to a domain. If the parent domain itself
+    // is also drifting (no current stalwartDomainId), recreate the domain
     // first before retrying this mailbox.
     const [parentDomain] = await db
       .select({
@@ -365,101 +342,61 @@ export async function recreateDriftItemEmpty(
       );
     }
 
-    // Split fullAddress into local-part + domain. The platform-DB
-    // mailboxes.full_address column is unique-indexed in canonical
-    // lowercase, so `@` is always present exactly once.
-    const atIdx = mbRow.fullAddress.indexOf('@');
-    if (atIdx <= 0) {
+    // The platform-DB mailboxes.full_address column is unique-indexed in
+    // canonical lowercase, so `@` is always present exactly once.
+    if (mbRow.fullAddress.indexOf('@') <= 0) {
       throw new ApiError(
         'MAILBOX_ADDRESS_MALFORMED',
         `Mailbox ${mbRow.fullAddress} has no local-part — cannot recreate`,
         409,
       );
     }
-    const localPart = mbRow.fullAddress.slice(0, atIdx);
 
-    const result = await accountSet({
+    // ADR-049: the platform stores no primary password (generate-and-forget),
+    // so the helper mints a fresh hidden one. The user's login passwords were
+    // lost with the account; the operator issues new ones from the mailbox's
+    // Login passwords section after recovery.
+    const recreated = await recreateMailboxPrincipal(db, {
       accountId,
+      row: mbRow,
+      stalwartDomainId: parentDomain.stalwartDomainId,
       baseUrl,
-      request: {
-        create: {
-          'recreated-mailbox': {
-            '@type': 'User',
-            name: localPart,
-            domainId: parentDomain.stalwartDomainId,
-            emails: [mbRow.fullAddress],
-            credentials: {
-              '0': {
-                '@type': 'Password',
-                secret: recreatedPrimarySecret,
-                allowedIps: {},
-                expiresAt: null,
-              },
-            },
-          },
-        },
-      },
+      log,
     });
-    const notCreated = result.notCreated?.['recreated-mailbox'];
-    if (notCreated) {
+    if (!recreated.ok) {
+      if (recreated.code === 'PRINCIPAL_CREATE_NO_ID') {
+        throw new ApiError(
+          'STALWART_CREATE_NO_ID',
+          `Stalwart accepted the create call but returned no id — refusing to update platform DB`,
+          502,
+        );
+      }
       throw new ApiError(
         'STALWART_CREATE_REJECTED',
-        `Stalwart x:Account/set rejected recreate: ${notCreated.description ?? notCreated.type}`,
+        `Stalwart x:Account/set rejected recreate: ${recreated.reason}`,
         502,
-        { type: notCreated.type, properties: notCreated.properties ?? null },
+        { type: recreated.type ?? null, properties: recreated.properties ?? null },
       );
     }
-    const created = result.created?.['recreated-mailbox'] as { id?: string } | undefined;
-    if (!created?.id) {
-      throw new ApiError(
-        'STALWART_CREATE_NO_ID',
-        `Stalwart accepted the create call but returned no id — refusing to update platform DB`,
-        502,
-      );
-    }
-    newStalwartId = created.id;
-    await db
-      .update(mailboxes)
-      .set({ stalwartPrincipalId: newStalwartId })
-      .where(eq(mailboxes.id, mbRow.id));
-
-    // Re-apply platform-managed mail rules to the fresh principal — the
-    // recreated account starts with default permissions and no Sieve
-    // script, which would silently turn a send-only/forwarding mailbox
-    // back into a normal stored inbox. Best-effort: the boot reconcile
-    // (mail-rules-reconcile.ts) converges any failure here.
-    const declaresMailRules =
-      mbRow.mailboxType === 'send_only'
-      || (mbRow.forwardingAddresses?.length ?? 0) > 0
-      || mbRow.autoReply === 1;
-    if (declaresMailRules) {
-      try {
-        const { applyMailRules, applySendOnlyPermissions } = await import('../stalwart-jmap/sieve.js');
-        if (mbRow.mailboxType === 'send_only') {
-          await applySendOnlyPermissions({ accountId, principalId: newStalwartId, baseUrl });
-        }
-        await applyMailRules({
-          principalId: newStalwartId,
-          mailboxType: mbRow.mailboxType === 'send_only' ? 'send_only' : 'mailbox',
-          forwardingAddresses: mbRow.forwardingAddresses ?? [],
-          autoReply: mbRow.autoReply === 1 && mbRow.autoReplyBody?.trim()
-            ? { subject: mbRow.autoReplySubject, body: mbRow.autoReplyBody }
-            : null,
-          baseUrl,
-        });
-      } catch (err) {
-        log.warn({
-          mailboxId: mbRow.id,
-          err: err instanceof Error ? err.message : String(err),
-        }, 'recreate: mail-rules re-apply failed (boot reconcile will converge)');
-      }
-    }
+    newStalwartId = recreated.principalId;
+    // Mail rules, permissions and aliases converge in the 15-minute
+    // reconciles; nothing re-applies a quota but saving it again.
+    const reconciled = recreated.warnings.filter((w) => w !== 'quota');
+    const notReapplied =
+      (reconciled.length > 0
+        ? ` Its ${reconciled.join(' and ')} could not be put back yet (see the platform-api log); ` +
+          `the 15-minute reconcile puts them back.`
+        : '') +
+      (recreated.warnings.includes('quota')
+        ? ` Its quota could not be set on the mail server: save the mailbox's quota again.`
+        : '');
     followUp =
       `Stalwart mailbox principal for '${item.expectedName}' was recreated ` +
       `EMPTY. The previous Maildir is unrecoverable from Stalwart. ` +
       `If a tenant-bundle backup snapshot covers this mailbox, you can ` +
       `restore messages via Admin UI → Tenants → <tenant> → Backups → ` +
-      `Restore (mailbox subset). Otherwise the messages are permanently lost.`;
+      `Restore (mailbox subset). Otherwise the messages are permanently lost.` +
+      notReapplied;
   }
 
   // Mark drift resolved.

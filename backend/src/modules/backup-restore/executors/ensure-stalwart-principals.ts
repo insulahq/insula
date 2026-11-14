@@ -33,7 +33,6 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { randomBytes } from 'node:crypto';
 import { eq, inArray } from 'drizzle-orm';
 import {
   mailboxes as mailboxesTable,
@@ -41,14 +40,13 @@ import {
   domains as domainsTable,
 } from '../../../db/schema.js';
 import {
-  accountSet,
   createDomain,
   findDomainByName,
   findMailboxByEmail,
   getJmapSession,
-  updatePrincipal,
 } from '../../stalwart-jmap/client.js';
 import { ApiError } from '../../../shared/errors.js';
+import { recreatableMailboxColumns, recreateMailboxPrincipal } from '../../mailboxes/recreate-principal.js';
 
 type EnsureOutcome =
   | { status: 'existing'; address: string }
@@ -69,19 +67,6 @@ export interface EnsureStalwartPrincipalsArgs {
 export interface EnsureStalwartPrincipalsResult {
   outcomes: ReadonlyArray<EnsureOutcome>;
   recreated: number;
-}
-
-/**
- * Generate a strong random secret for the Stalwart principal.
- * Used ONLY as a placeholder password — the operator must rotate it
- * via the normal user-facing flow before the user logs in directly.
- * The master-user proxy auth (used by jmap-restore.py and admin
- * webmail) does NOT consult this secret.
- */
-function generatePrincipalSecret(): string {
-  // 32 bytes → 256-bit entropy. base64url-encoded for safe Stalwart
-  // ingestion (no padding chars that confuse some shell paths).
-  return randomBytes(32).toString('base64url');
 }
 
 export async function ensureStalwartPrincipals(
@@ -124,19 +109,7 @@ export async function ensureStalwartPrincipals(
   //    list is at most a few hundred per cart, and the column is
   //    indexed). Saves N+1 queries.
   const dbRows = await app.db
-    .select({
-      id: mailboxesTable.id,
-      fullAddress: mailboxesTable.fullAddress,
-      stalwartPrincipalId: mailboxesTable.stalwartPrincipalId,
-      displayName: mailboxesTable.displayName,
-      quotaMb: mailboxesTable.quotaMb,
-      status: mailboxesTable.status,
-      mailboxType: mailboxesTable.mailboxType,
-      forwardingAddresses: mailboxesTable.forwardingAddresses,
-      autoReply: mailboxesTable.autoReply,
-      autoReplySubject: mailboxesTable.autoReplySubject,
-      autoReplyBody: mailboxesTable.autoReplyBody,
-    })
+    .select({ ...recreatableMailboxColumns, stalwartPrincipalId: mailboxesTable.stalwartPrincipalId })
     .from(mailboxesTable)
     // Address list only. Callers MUST have already established that every
     // address's domain belongs to the target tenant
@@ -247,12 +220,6 @@ export async function ensureStalwartPrincipals(
         });
         continue;
       }
-      // Recreate the principal via the MODERN x:Account/set API. Stalwart 0.16
-      // rejects the legacy createMailbox shim (which passes the full address as
-      // `name` + `emails`) with "Invalid email local part" — it validates
-      // `name` as a bare local-part token and binds the account to its parent
-      // via `domainId`. Mirror mailboxes/service.ts:createMailbox exactly
-      // (create payload omits quota — unproven shape — quota patched after).
       const stalwartDomainId = domainIdByName.get((address.split('@')[1] ?? '').toLowerCase());
       if (!stalwartDomainId) {
         outcomes.push({
@@ -263,165 +230,33 @@ export async function ensureStalwartPrincipals(
         });
         continue;
       }
-      const localPart = address.split('@')[0] ?? dbRow.fullAddress;
-      const secret = generatePrincipalSecret();
-      const setResult = await accountSet({
+      // Same create + re-apply as drift repair's "Recreate empty"
+      // (mailboxes/recreate-principal.ts); it back-fills the row's
+      // stalwartPrincipalId so principals-sync does not see an orphan.
+      const recreatedPrincipal = await recreateMailboxPrincipal(app.db, {
         accountId: principalsAccountId,
+        row: dbRow,
+        stalwartDomainId,
         baseUrl: jmapBaseUrl,
         env: process.env,
-        request: {
-          create: {
-            'new-mailbox': {
-              '@type': 'User',
-              name: localPart,
-              domainId: stalwartDomainId,
-              credentials: {
-                '0': { '@type': 'Password', secret, allowedIps: {}, expiresAt: null },
-              },
-              ...(dbRow.displayName ? { description: dbRow.displayName } : {}),
-            },
-          },
-        },
+        log: app.log,
       });
-      const notCreated = setResult.notCreated?.['new-mailbox'];
-      if (notCreated) {
+      if (!recreatedPrincipal.ok) {
         outcomes.push({
           status: 'failed',
           address,
-          reason: `PRINCIPAL_CREATE_REJECTED: ${notCreated.description ?? notCreated.type}`,
+          reason: `${recreatedPrincipal.code}: ${recreatedPrincipal.reason}`,
         });
         continue;
       }
-      const created = setResult.created?.['new-mailbox'] as { id?: string } | undefined;
-      if (!created?.id) {
-        outcomes.push({
-          status: 'failed',
-          address,
-          reason: 'PRINCIPAL_CREATE_NO_ID: Stalwart returned no id for new principal',
-        });
-        continue;
-      }
-      const newPrincipalId = created.id;
-      // Apply the stored quota after create (create shape omits it — see
-      // mailboxes/service.ts). Best-effort: Stalwart falls back to the
-      // tenant/global default if this patch fails.
-      if (dbRow.quotaMb && dbRow.quotaMb > 0) {
-        try {
-          await updatePrincipal({
-            accountId: principalsAccountId,
-            id: newPrincipalId,
-            patch: { 'quotas/maxDiskQuota': dbRow.quotaMb * 1024 * 1024 },
-            baseUrl: jmapBaseUrl,
-            env: process.env,
-          });
-        } catch (quotaErr) {
-          app.log.warn(
-            {
-              module: 'ensure-stalwart-principals',
-              address,
-              err: quotaErr instanceof Error ? quotaErr.message : String(quotaErr),
-            },
-            'mailbox quota apply failed after principal recreate (non-fatal)',
-          );
-        }
-      }
-      // Re-apply platform-managed mail rules — the fresh principal starts
-      // with default permissions and no Sieve script, which would turn a
-      // send-only/forwarding mailbox back into a plain stored inbox until
-      // the next boot reconcile. Best-effort like the quota patch above.
-      const restoredSuspended = dbRow.status === 'disabled';
-      const declaresMailRules =
-        dbRow.mailboxType === 'send_only'
-        || (dbRow.forwardingAddresses?.length ?? 0) > 0
-        || dbRow.autoReply === 1
-        || restoredSuspended;
-      if (declaresMailRules) {
-        try {
-          const { applyMailRules, applyAccountAccessState } = await import('../../stalwart-jmap/sieve.js');
-          // Full access profile (send-only + suspension composed in one
-          // write — sequential permission patches clobber each other).
-          await applyAccountAccessState({
-            accountId: principalsAccountId,
-            principalId: newPrincipalId,
-            mailboxType: dbRow.mailboxType === 'send_only' ? 'send_only' : 'mailbox',
-            suspended: restoredSuspended,
-            baseUrl: jmapBaseUrl,
-          });
-          await applyMailRules({
-            principalId: newPrincipalId,
-            mailboxType: dbRow.mailboxType === 'send_only' ? 'send_only' : 'mailbox',
-            suspended: restoredSuspended,
-            forwardingAddresses: restoredSuspended ? [] : (dbRow.forwardingAddresses ?? []),
-            autoReply: !restoredSuspended && dbRow.autoReply === 1 && dbRow.autoReplyBody?.trim()
-              ? { subject: dbRow.autoReplySubject, body: dbRow.autoReplyBody }
-              : null,
-            baseUrl: jmapBaseUrl,
-          });
-        } catch (rulesErr) {
-          app.log.warn(
-            {
-              module: 'ensure-stalwart-principals',
-              address,
-              err: rulesErr instanceof Error ? rulesErr.message : String(rulesErr),
-            },
-            'mail-rules re-apply failed after principal recreate (boot reconcile will converge)',
-          );
-        }
-      }
-      // Re-apply per-mailbox aliases + send-as identities — the fresh
-      // principal starts with an empty alias map, which would silently
-      // drop every alias address until the next reconcile sweep.
-      // Best-effort like the rules re-apply above.
-      try {
-        const { mailboxAliases: mailboxAliasesTable } = await import('../../../db/schema.js');
-        const aliasRows = await app.db
-          .select()
-          .from(mailboxAliasesTable)
-          .where(eq(mailboxAliasesTable.mailboxId, dbRow.id));
-        const restoredDomainId = domainIdByName.get((address.split('@')[1] ?? '').toLowerCase());
-        if (aliasRows.length > 0 && restoredDomainId) {
-          const { setAccountAliases, reconcileIdentitiesForAccount } = await import('../../stalwart-jmap/account-aliases.js');
-          await setAccountAliases({
-            accountId: principalsAccountId,
-            principalId: newPrincipalId,
-            aliases: aliasRows.map((r) => ({
-              localPart: r.localPart,
-              stalwartDomainId: restoredDomainId,
-              // Suspended/disabled mailbox → every entry off.
-              enabled: !restoredSuspended && r.enabled === 1,
-            })),
-            baseUrl: jmapBaseUrl,
-          });
-          await reconcileIdentitiesForAccount({
-            principalId: newPrincipalId,
-            wantAddresses: aliasRows.filter((r) => r.enabled === 1).map((r) => r.fullAddress),
-            dropAddresses: aliasRows.filter((r) => r.enabled !== 1).map((r) => r.fullAddress),
-            baseUrl: jmapBaseUrl,
-          });
-        }
-      } catch (aliasErr) {
-        app.log.warn(
-          {
-            module: 'ensure-stalwart-principals',
-            address,
-            err: aliasErr instanceof Error ? aliasErr.message : String(aliasErr),
-          },
-          'mailbox-alias re-apply failed after principal recreate (reconcile sweep converges)',
-        );
-      }
-      // Back-fill the platform DB row's stalwartPrincipalId so the
-      // next principals-sync run doesn't see the row as an orphan.
-      await app.db
-        .update(mailboxesTable)
-        .set({ stalwartPrincipalId: newPrincipalId })
-        .where(eq(mailboxesTable.id, dbRow.id));
+      const newPrincipalId = recreatedPrincipal.principalId;
       outcomes.push({ status: 'recreated', address, stalwartPrincipalId: newPrincipalId });
       recreated++;
       app.log.info(
         {
           module: 'ensure-stalwart-principals',
           address,
-          stalwartPrincipalId: created.id,
+          stalwartPrincipalId: newPrincipalId,
           mailboxId: dbRow.id,
         },
         'recreated deleted Stalwart principal for restore',

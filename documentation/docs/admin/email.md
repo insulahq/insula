@@ -348,7 +348,11 @@ active.
 
 !!! warning "Recreating empty loses messages"
     "Recreate empty" rebuilds the missing Stalwart entry with no data — a
-    mailbox comes back empty. A domain gets its DKIM keys back when the
+    mailbox comes back empty. It keeps its settings: quota, suspension,
+    send-only and forwarding rules, auto-reply and aliases are put back
+    (the item's note names any that could not be yet). Its login passwords
+    are gone with the old entry: issue new ones from the mailbox's
+    **Login passwords** section. A domain gets its DKIM keys back when the
     platform kept a copy of them and DNS still publishes them (see *DKIM keys
     after a restore* below); otherwise it gets new ones, and the item says
     which records to republish. To preserve messages, restore Stalwart from a
