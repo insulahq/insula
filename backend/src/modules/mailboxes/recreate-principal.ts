@@ -14,8 +14,10 @@
  * outside that shape is re-applied after the create, best-effort: the quota,
  * the access profile (send-only and suspension in one write), the Sieve mail
  * rules, the aliases and their send-as identities. A step that fails is
- * logged and named in `warnings` so the caller can tell the operator; the
- * boot reconcile and the alias sweep converge it later.
+ * logged and named in `warnings` ('quota', 'suspension', 'send-only profile',
+ * 'access profile', 'mail rules', 'aliases') so the caller can tell the
+ * operator; the 15-minute mail-rules and alias reconciles converge all but
+ * the quota, which only a quota save re-applies.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -161,11 +163,18 @@ export async function recreateMailboxPrincipal(
     || row.autoReply === 1
     || suspended;
   if (declaresMailRules) {
+    const { applyMailRules, applyAccountAccessState, ensureSieveInterpreterLimits } = await import('../stalwart-jmap/sieve.js');
+    // Send-only and suspension in ONE write: sequential permission patches
+    // clobber each other. Named for what is at stake when it fails: until
+    // it lands, a suspended mailbox is not suspended on the mail server.
+    const accessStep = suspended ? 'suspension' : mailboxType === 'send_only' ? 'send-only profile' : 'access profile';
+    await step(accessStep, () => applyAccountAccessState({ accountId, principalId, mailboxType, suspended, baseUrl, env }));
     await step('mail rules', async () => {
-      const { applyMailRules, applyAccountAccessState } = await import('../stalwart-jmap/sieve.js');
-      // Send-only and suspension in ONE write: sequential permission
-      // patches clobber each other.
-      await applyAccountAccessState({ accountId, principalId, mailboxType, suspended, baseUrl, env });
+      // A rebuilt Stalwart has the default redirect limits; forwarding needs
+      // the platform's (as createMailbox and the reconcile ensure them).
+      if (!suspended && (row.forwardingAddresses?.length ?? 0) > 0) {
+        await ensureSieveInterpreterLimits({ accountId, baseUrl, env });
+      }
       await applyMailRules({
         principalId,
         mailboxType,

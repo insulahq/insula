@@ -11,6 +11,7 @@ const client = vi.hoisted(() => ({
 const sieve = vi.hoisted(() => ({
   applyMailRules: vi.fn(),
   applyAccountAccessState: vi.fn(),
+  ensureSieveInterpreterLimits: vi.fn(),
 }));
 const aliases = vi.hoisted(() => ({
   setAccountAliases: vi.fn(),
@@ -68,6 +69,7 @@ describe('recreateMailboxPrincipal', () => {
     client.updatePrincipal.mockResolvedValue(undefined);
     sieve.applyMailRules.mockResolvedValue(undefined);
     sieve.applyAccountAccessState.mockResolvedValue(undefined);
+    sieve.ensureSieveInterpreterLimits.mockResolvedValue(undefined);
     aliases.setAccountAliases.mockResolvedValue(undefined);
     aliases.reconcileIdentitiesForAccount.mockResolvedValue({ created: 0, destroyed: 0 });
   });
@@ -131,6 +133,43 @@ describe('recreateMailboxPrincipal', () => {
     expect(res).toEqual({ ok: true, principalId: 'p-new', warnings: ['quota'] });
     expect(updates).toEqual([{ stalwartPrincipalId: 'p-new' }]);
     expect(log.warn).toHaveBeenCalledOnce();
+  });
+
+  it('binds the row before any re-apply runs', async () => {
+    client.accountSet.mockResolvedValue(created());
+    const order: string[] = [];
+    const db = {
+      select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
+      update: () => ({ set: () => ({ where: () => { order.push('bind'); return Promise.resolve(); } }) }),
+    };
+    client.updatePrincipal.mockImplementation(async () => { order.push('quota'); });
+    sieve.applyAccountAccessState.mockImplementation(async () => { order.push('access'); });
+    await run(db as never, row({ status: 'disabled' }));
+    expect(order).toEqual(['bind', 'quota', 'access']);
+  });
+
+  it('ensures the Sieve redirect limits before pushing forwarding, not for a suspended mailbox', async () => {
+    client.accountSet.mockResolvedValue(created());
+    await run(dbStub().db, row({ forwardingAddresses: ['x@example.test'] }));
+    expect(sieve.ensureSieveInterpreterLimits).toHaveBeenCalledOnce();
+    expect(sieve.ensureSieveInterpreterLimits.mock.invocationCallOrder[0])
+      .toBeLessThan(sieve.applyMailRules.mock.invocationCallOrder[0]!);
+
+    sieve.ensureSieveInterpreterLimits.mockClear();
+    await run(dbStub().db, row({ status: 'disabled', forwardingAddresses: ['x@example.test'] }));
+    expect(sieve.ensureSieveInterpreterLimits).not.toHaveBeenCalled();
+  });
+
+  it('a failed suspension write is named as such, and the mail rules still go on', async () => {
+    client.accountSet.mockResolvedValue(created());
+    sieve.applyAccountAccessState.mockRejectedValue(new Error('stalwart 503'));
+    const res = await run(dbStub().db, row({ status: 'disabled' }));
+    expect(res).toEqual({ ok: true, principalId: 'p-new', warnings: ['suspension'] });
+    expect(sieve.applyMailRules).toHaveBeenCalledOnce();
+
+    sieve.applyMailRules.mockRejectedValue(new Error('sieve refused'));
+    const res2 = await run(dbStub().db, row({ mailboxType: 'send_only', quotaMb: 0 }));
+    expect(res2).toEqual({ ok: true, principalId: 'p-new', warnings: ['send-only profile', 'mail rules'] });
   });
 
   it('a refused create returns the server reason and binds nothing', async () => {
