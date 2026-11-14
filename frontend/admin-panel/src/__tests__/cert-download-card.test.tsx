@@ -9,7 +9,14 @@ vi.mock('@/hooks/use-can-manage-certs', () => ({ useCanManageCerts: vi.fn(() => 
 vi.mock('@/lib/api-client', () => ({
   API_BASE: 'http://localhost:3000',
   apiFetch: vi.fn(),
-  ApiError: class ApiError extends Error {},
+  ApiError: class ApiError extends Error {
+    constructor(
+      public readonly status: number,
+      public readonly code: string,
+      message: string,
+      public readonly details?: Record<string, unknown>,
+    ) { super(message); }
+  },
 }));
 
 const mockApiFetch = vi.mocked(apiFetch);
@@ -128,5 +135,50 @@ describe('CertDownloadCard (admin)', () => {
     route();
     renderCard();
     expect(await screen.findByText(/private key. Every download is recorded/i)).toBeTruthy();
+  });
+
+  // The bundle holds the customer's private key: the server asks the operator
+  // for a fresh step-up, and the card asks before repeating the download.
+  it('asks the operator to confirm it is them before downloading, then downloads', async () => {
+    let stepped = false;
+    mockApiFetch.mockImplementation((path: string, opts?: { method?: string }) => {
+      if (path === '/api/v1/me/step-up/password' && opts?.method === 'POST') { stepped = true; return Promise.resolve({ data: { ok: true } }); }
+      if (path.includes('download-availability')) return Promise.resolve(AVAILABLE);
+      return Promise.resolve({ data: [] });
+    });
+    const fetchMock = vi.fn(async () => (stepped
+      ? new Response('-----BEGIN PRIVATE KEY-----\nX\n-----END PRIVATE KEY-----', { status: 200 })
+      : new Response(JSON.stringify({ error: { code: 'STEP_UP_REQUIRED', message: 'Confirm it is you', details: { methods: ['password', 'passkey'] } } }), { status: 403 })));
+    vi.stubGlobal('fetch', fetchMock);
+    const saved = { create: URL.createObjectURL, revoke: URL.revokeObjectURL };
+    const revokeUrl = vi.fn();
+    URL.createObjectURL = vi.fn(() => 'blob:stub');
+    URL.revokeObjectURL = revokeUrl;
+
+    renderCard();
+    await waitFor(() => expect((screen.getByTestId('admin-download-cert-button') as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByTestId('admin-download-cert-button'));
+    expect(await screen.findByTestId('step-up-dialog')).toBeTruthy();
+    expect(screen.getByTestId('step-up-passkey')).toBeTruthy();
+
+    fireEvent.change(screen.getByTestId('step-up-password'), { target: { value: 'pw' } });
+    fireEvent.click(screen.getByTestId('step-up-password-submit'));
+    await waitFor(() => expect(revokeUrl).toHaveBeenCalledWith('blob:stub'));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId('admin-download-error')).toBeNull();
+    URL.createObjectURL = saved.create;
+    URL.revokeObjectURL = saved.revoke;
+    vi.unstubAllGlobals();
+  });
+
+  it('shows the refusal while impersonating instead of asking for a step-up', async () => {
+    route();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: { code: 'IMPERSONATION_FORBIDDEN', message: 'Key material is released only to the signed-in account owner, not while impersonating.' } }), { status: 403 })));
+    renderCard();
+    await waitFor(() => expect((screen.getByTestId('admin-download-cert-button') as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByTestId('admin-download-cert-button'));
+    expect((await screen.findByTestId('admin-download-error')).textContent).toMatch(/not while impersonating/);
+    expect(screen.queryByTestId('step-up-dialog')).toBeNull();
+    vi.unstubAllGlobals();
   });
 });

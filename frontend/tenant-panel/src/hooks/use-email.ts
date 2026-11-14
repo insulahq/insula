@@ -1,6 +1,6 @@
-import type { MailUsageResponse, MailDomainStatsResponse, EmailConnectionInfo, CreateImapSyncJobRequest, UpdateImapSyncJobRequest, CreateLoginPasswordRequest, DkimKeysResponse, DkimRotateResult, MailDnsCheck, MailDnsRepairRequest, MailDnsRepairResult } from '@insula/api-contracts';
+import type { MailUsageResponse, MailDomainStatsResponse, EmailConnectionInfo, CreateImapSyncJobRequest, UpdateImapSyncJobRequest, CreateLoginPasswordRequest, DkimKeysResponse, DkimPrivateKey, DkimRotateResult, MailDnsCheck, MailDnsRepairRequest, MailDnsRepairResult } from '@insula/api-contracts';
 export type { MailDnsCheck, MailDnsRepairResult } from '@insula/api-contracts';
-export type { DkimKey, DkimRotateResult } from '@insula/api-contracts';
+export type { DkimKey, DkimPrivateKey, DkimRotateResult } from '@insula/api-contracts';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 
@@ -481,6 +481,18 @@ export function useDkimKeys(tenantId?: string, emailDomainId?: string) {
       apiFetch<DkimKeysEnvelope>(`/api/v1/tenants/${tenantId}/email-domains/${emailDomainId}/dkim/keys`),
     enabled: !!tenantId && !!emailDomainId,
   });
+}
+
+/**
+ * The private key of the domain's signing selector. A plain call, not a query:
+ * the key must not sit in the query cache, and the server answers
+ * STEP_UP_REQUIRED until the person has confirmed it is them (useStepUpGate).
+ */
+export async function fetchDkimPrivateKey(tenantId: string, emailDomainId: string): Promise<DkimPrivateKey> {
+  const res = await apiFetch<{ readonly data: DkimPrivateKey }>(
+    `/api/v1/tenants/${tenantId}/email-domains/${emailDomainId}/dkim/private-key`,
+  );
+  return res.data;
 }
 
 export function useRotateDkimKey(tenantId: string, emailDomainId: string) {

@@ -7,7 +7,7 @@ const { hashToken, mintToken, TOKEN_PREFIX } = __testing;
 
 type Row = {
   id: string; tenantId: string; domainId: string; name: string;
-  tokenHash: string; expiresAt: Date | null;
+  tokenHash: string; expiresAt: Date | null; createdAt: Date;
 };
 
 /**
@@ -32,10 +32,12 @@ function dbWith(rows: Row[]): { db: Database; lookups: () => number } {
   return { db, lookups: () => count };
 }
 
+/** A live link: made a minute ago, one hour to live. */
 function row(over: Partial<Row> = {}): Row {
+  const createdAt = new Date(Date.now() - 60_000);
   return {
     id: 'tok-1', tenantId: 't-1', domainId: 'd-1', name: 'deploy-pipeline',
-    tokenHash: 'x', expiresAt: null, ...over,
+    tokenHash: 'x', createdAt, expiresAt: new Date(createdAt.getTime() + 3600_000), ...over,
   };
 }
 
@@ -88,20 +90,33 @@ describe('verifyToken', () => {
   });
 
   it('rejects an expired token', async () => {
-    const { db } = dbWith([row({ tokenHash: hashToken(good), expiresAt: new Date('2020-01-01') })]);
+    const createdAt = new Date('2020-01-01T00:00:00Z');
+    const { db } = dbWith([row({ tokenHash: hashToken(good), createdAt, expiresAt: new Date('2020-01-01T01:00:00Z') })]);
     expect(await verifyToken(db, good)).toBeNull();
   });
 
   it('accepts a token whose expiry is still in the future', async () => {
-    const future = new Date(Date.now() + 3600_000);
-    const { db } = dbWith([row({ tokenHash: hashToken(good), expiresAt: future })]);
+    const { db } = dbWith([row({ tokenHash: hashToken(good) })]);
     expect(await verifyToken(db, good)).not.toBeNull();
   });
 
   it('treats expiry as inclusive — a token expiring exactly now is dead', async () => {
     const now = new Date('2026-09-03T12:00:00Z');
-    const { db } = dbWith([row({ tokenHash: hashToken(good), expiresAt: now })]);
+    const { db } = dbWith([row({ tokenHash: hashToken(good), createdAt: new Date(now.getTime() - 60_000), expiresAt: now })]);
     expect(await verifyToken(db, good, now)).toBeNull();
+  });
+
+  // Links are temporary. One minted under the old rules by a pod still on the
+  // old code mid-rollout — never expiring, or for a year — is refused even
+  // before the reaper deletes it.
+  it('refuses a link outside the lifetime rules: no expiry, or more than 24 hours', async () => {
+    const never = dbWith([row({ tokenHash: hashToken(good), expiresAt: null })]);
+    expect(await verifyToken(never.db, good)).toBeNull();
+    const createdAt = new Date(Date.now() - 60_000);
+    const year = dbWith([row({ tokenHash: hashToken(good), createdAt, expiresAt: new Date(createdAt.getTime() + 365 * 86_400_000) })]);
+    expect(await verifyToken(year.db, good)).toBeNull();
+    const day = dbWith([row({ tokenHash: hashToken(good), createdAt, expiresAt: new Date(createdAt.getTime() + 86_400_000) })]);
+    expect(await verifyToken(day.db, good)).not.toBeNull();
   });
 
   // A JWT presented here must not be honoured: this route is deliberately

@@ -62,6 +62,11 @@ export const CONFIG_DUMP_TABLES = [
   'users',
   'domains',
   'emailDomains',
+  // Must follow `emailDomains` — FK email_domain_id → email_domains.id. The
+  // kept DKIM key copies, still encrypted under PLATFORM_ENCRYPTION_KEY: a
+  // same-cluster restore puts the domain's own keys back into the mail server
+  // (email-dkim/restore.ts), so its published DKIM records keep verifying.
+  'emailDkimPrivateKeys',
   'mailboxes',
   'emailAliases',
   // Must follow `mailboxes` — FK mailbox_id → mailboxes.id.
@@ -278,6 +283,16 @@ async function selectTenantRows(
     }
     case 'emailDomains': {
       const r = await rawDb.execute(sql`SELECT * FROM email_domains WHERE tenant_id = ${tenantId}`);
+      return r.rows;
+    }
+    case 'emailDkimPrivateKeys': {
+      // No direct tenant_id — chain through the email domain (grandchild,
+      // like customDeploymentImageCredentials).
+      const r = await rawDb.execute(sql`
+        SELECT k.* FROM email_dkim_private_keys k
+        JOIN email_domains e ON e.id = k.email_domain_id
+        WHERE e.tenant_id = ${tenantId}
+      `);
       return r.rows;
     }
     case 'tenantOidcProviders': {

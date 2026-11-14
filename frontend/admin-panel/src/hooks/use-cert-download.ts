@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { apiFetch, API_BASE } from '@/lib/api-client';
+import { apiFetch, API_BASE, ApiError } from '@/lib/api-client';
 import type {
   CertToken,
   CertDownloadAvailability,
@@ -78,12 +78,16 @@ export async function downloadCertBundle(
     headers: { Authorization: `Bearer ${localStorage.getItem('auth_token') ?? ''}` },
   });
   if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
+    // An ApiError with the envelope's code and details, so a STEP_UP_REQUIRED
+    // refusal reaches useStepUpGate like any apiFetch error.
+    let error = new ApiError(res.status, 'UNKNOWN', `HTTP ${res.status}`);
     try {
-      const body = await res.json() as { error?: { message?: string } };
-      if (body?.error?.message) detail = body.error.message;
+      const body = await res.json() as { error?: { code?: string; message?: string; details?: Record<string, unknown> } };
+      if (body?.error) {
+        error = new ApiError(res.status, body.error.code ?? 'UNKNOWN', body.error.message ?? `HTTP ${res.status}`, body.error.details);
+      }
     } catch { /* non-JSON error body — keep the status */ }
-    throw new Error(detail);
+    throw error;
   }
   const pem = await res.text();
   const url = URL.createObjectURL(new Blob([pem], { type: 'application/x-pem-file' }));

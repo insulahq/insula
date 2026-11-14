@@ -1,12 +1,18 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, ShieldCheck, Undo2 } from 'lucide-react';
+import { AlertTriangle, Loader2, ShieldCheck } from 'lucide-react';
 import type { ApplyDmarcPolicyResponse, DmarcDomainSummary, DmarcPolicyValue } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 
 const ORDER: readonly DmarcPolicyValue[] = ['none', 'quarantine', 'reject'];
+
+const OPTIONS: ReadonlyArray<{ readonly value: DmarcPolicyValue; readonly label: string; readonly title: string }> = [
+  { value: 'none', label: 'NONE', title: 'p=none — receivers only report mail that fails DMARC; nothing is filtered.' },
+  { value: 'quarantine', label: 'QUARANTINE', title: 'p=quarantine — receivers send mail that fails DMARC to spam.' },
+  { value: 'reject', label: 'REJECT', title: 'p=reject — receivers refuse mail that fails DMARC outright.' },
+];
 
 const EFFECT: Record<DmarcPolicyValue, string> = {
   none: 'Receivers only report mail that fails DMARC; nothing is filtered.',
@@ -23,18 +29,39 @@ interface DmarcPolicyActionsProps {
 }
 
 /**
- * Acting on the DMARC recommendation: apply the recommended tightening, or
- * step back one level. The server re-checks the recommendation, so this only
- * offers what it will accept; stepping back is always possible, because it is
- * the way out when legitimate mail starts landing in spam.
+ * The published DMARC policy as a NONE / QUARANTINE / REJECT switch, always
+ * shown. It used to offer only "apply the recommended step" or "step back", so
+ * a domain at p=none whose reports did not back a tightening yet showed no
+ * control at all. Loosening publishes after a confirmation; a tightening the
+ * reports do not back shows their reason first and is sent as acknowledged —
+ * the server refuses it otherwise.
  */
 export default function DmarcPolicyActions({ summary, endpoint, invalidateKey }: DmarcPolicyActionsProps) {
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState<DmarcPolicyValue | null>(null);
+  const domain = summary.policyDomain;
+  const published = summary.managedPolicy;
+  const rec = summary.recommendation;
+  const nextStep = published ? ORDER[ORDER.indexOf(published) + 1] ?? null : null;
+  const recommended = rec.ready && rec.recommendedPolicy !== null && rec.recommendedPolicy === nextStep
+    ? rec.recommendedPolicy : null;
+  const notBacked = (p: DmarcPolicyValue): boolean =>
+    published !== null && ORDER.indexOf(p) > ORDER.indexOf(published) && p !== recommended;
+  /** Why the reports do not back `p` — the recommendation's own reason only when it is about `p`. */
+  const notBackedReason = (p: DmarcPolicyValue): string => {
+    if (recommended) return `They back ${recommended.toUpperCase()} first; ${p.toUpperCase()} skips a step.`;
+    if (rec.ready && rec.recommendedPolicy !== null && rec.recommendedPolicy === published) {
+      return `p=${published} is published but not yet in the reports; wait for them to confirm it before going further.`;
+    }
+    return rec.reason;
+  };
+
   const apply = useMutation({
     mutationFn: (policy: DmarcPolicyValue) => apiFetch<{ data: ApplyDmarcPolicyResponse }>(endpoint, {
       method: 'POST',
-      body: JSON.stringify({ domain: summary.policyDomain, policy }),
+      body: JSON.stringify(notBacked(policy)
+        ? { domain, policy, acknowledgeNotRecommended: true }
+        : { domain, policy }),
     }),
     onSuccess: () => {
       setConfirming(null);
@@ -42,99 +69,112 @@ export default function DmarcPolicyActions({ summary, endpoint, invalidateKey }:
     },
   });
 
-  const published = summary.managedPolicy;
-  if (summary.managedRecordCount > 1) {
-    return (
-      <p className="text-xs text-amber-700 dark:text-amber-400" data-testid={`dmarc-duplicate-${summary.policyDomain}`}>
-        This domain has {summary.managedRecordCount} <code className="font-mono">_dmarc</code> records. Receivers
-        ignore a policy published twice — remove the duplicate under the domain&apos;s DNS records first.
-      </p>
-    );
-  }
-  if (published === null) {
-    return (
-      <p className="text-xs text-gray-500 dark:text-gray-400" data-testid={`dmarc-unmanaged-${summary.policyDomain}`}>
-        The <code className="font-mono">_dmarc</code> record of this domain is not managed by the platform — change its
-        policy at the domain&apos;s DNS provider.
-      </p>
-    );
-  }
+  const blocked = summary.managedRecordCount > 1 ? (
+    <p className="text-xs text-amber-700 dark:text-amber-400" data-testid={`dmarc-duplicate-${domain}`}>
+      This domain has {summary.managedRecordCount} <code className="font-mono">_dmarc</code> records. Receivers
+      ignore a policy published twice — remove the duplicate under the domain&apos;s DNS records first.
+    </p>
+  ) : published === null ? (
+    <p className="text-xs text-gray-500 dark:text-gray-400" data-testid={`dmarc-unmanaged-${domain}`}>
+      The <code className="font-mono">_dmarc</code> record of this domain is not managed by the platform — change its
+      policy at the domain&apos;s DNS provider.
+    </p>
+  ) : null;
 
-  const rec = summary.recommendation;
-  const nextStep = ORDER[ORDER.indexOf(published) + 1] ?? null;
-  const tighten = rec.ready && rec.recommendedPolicy !== null && rec.recommendedPolicy === nextStep
-    ? rec.recommendedPolicy : null;
-  const stepBack = ORDER[ORDER.indexOf(published) - 1] ?? null;
-  const lagging = summary.currentPolicy !== null && summary.currentPolicy !== published;
+  const lagging = published !== null && summary.currentPolicy !== null && summary.currentPolicy !== published;
   const result = apply.data?.data;
 
   return (
-    <div className="space-y-2" data-testid={`dmarc-actions-${summary.policyDomain}`}>
+    <div className="space-y-2" data-testid={`dmarc-actions-${domain}`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <div
+          role="radiogroup"
+          aria-label={`DMARC policy for ${domain}`}
+          className="inline-flex overflow-hidden rounded-md border border-gray-300 dark:border-gray-600"
+          data-testid={`dmarc-policy-switch-${domain}`}
+        >
+          {OPTIONS.map((o) => {
+            const selected = published === o.value;
+            return (
+              <button
+                key={o.value}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                disabled={blocked !== null || apply.isPending}
+                title={o.value === recommended ? `${o.title} Recommended: the reports back this step.` : o.title}
+                onClick={() => { if (!selected) { apply.reset(); setConfirming(o.value); } }}
+                className={`inline-flex items-center gap-1 border-r border-gray-300 px-3 py-1.5 text-xs font-semibold last:border-r-0 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 ${
+                  selected
+                    ? 'bg-brand-500 text-white'
+                    : 'bg-white text-gray-700 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700/50'
+                }`}
+                data-testid={`dmarc-policy-option-${domain}-${o.value}`}
+              >
+                {o.value === recommended && <ShieldCheck size={12} className="text-emerald-600 dark:text-emerald-400" />}
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
+        {recommended && (
+          <span className="text-xs text-emerald-700 dark:text-emerald-400" data-testid={`dmarc-recommended-${domain}`}>
+            The reports back moving to {recommended.toUpperCase()}.
+          </span>
+        )}
+      </div>
+
+      {blocked}
+
       {lagging && (
-        <p className="text-xs text-gray-600 dark:text-gray-400" data-testid={`dmarc-lagging-${summary.policyDomain}`}>
+        <p className="text-xs text-gray-600 dark:text-gray-400" data-testid={`dmarc-lagging-${domain}`}>
           p={published} is published; the reports still show p={summary.currentPolicy} — they catch up within a day.
         </p>
       )}
 
-      {confirming ? (
-        <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-900 dark:text-amber-200">
+      {confirming && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
           <p>
-            Publish <strong>p={confirming}</strong> for {summary.policyDomain}? {EFFECT[confirming]}
+            Publish <strong>p={confirming}</strong> for {domain}? {EFFECT[confirming]}
           </p>
+          {notBacked(confirming) && (
+            <p className="mt-2 flex items-start gap-1.5 text-xs" data-testid={`dmarc-not-backed-${domain}`}>
+              <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+              <span>The reports do not back this yet. {notBackedReason(confirming)}</span>
+            </p>
+          )}
           <div className="mt-2 flex gap-2">
             <button
               type="button"
               onClick={() => apply.mutate(confirming)}
               disabled={apply.isPending}
               className="inline-flex items-center gap-1.5 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50"
-              data-testid={`dmarc-confirm-${summary.policyDomain}`}
+              data-testid={`dmarc-confirm-${domain}`}
             >
-              {apply.isPending && <Loader2 size={12} className="animate-spin" />} Publish p={confirming}
+              {apply.isPending && <Loader2 size={12} className="animate-spin" />}
+              Publish p={confirming}{notBacked(confirming) ? ' anyway' : ''}
             </button>
             <button
               type="button"
               onClick={() => { setConfirming(null); apply.reset(); }}
               disabled={apply.isPending}
-              className="rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50"
+              className="rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700/50"
             >
               Cancel
             </button>
           </div>
         </div>
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          {tighten && (
-            <button
-              type="button"
-              onClick={() => setConfirming(tighten)}
-              className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 dark:bg-emerald-700 dark:hover:bg-emerald-600"
-              data-testid={`dmarc-apply-${summary.policyDomain}`}
-            >
-              <ShieldCheck size={13} /> Apply p={tighten}
-            </button>
-          )}
-          {stepBack && (
-            <button
-              type="button"
-              onClick={() => setConfirming(stepBack)}
-              className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50"
-              data-testid={`dmarc-step-back-${summary.policyDomain}`}
-            >
-              <Undo2 size={13} /> Step back to p={stepBack}
-            </button>
-          )}
-        </div>
       )}
 
-      {apply.error && <ErrorPanel error={extractOperatorError(apply.error)} compact testId={`dmarc-apply-error-${summary.policyDomain}`} />}
+      {apply.error && <ErrorPanel error={extractOperatorError(apply.error)} compact testId={`dmarc-apply-error-${domain}`} />}
       {result && !result.published && (
-        <p className="text-xs text-amber-700 dark:text-amber-400" data-testid={`dmarc-publish-manually-${summary.policyDomain}`}>
+        <p className="text-xs text-amber-700 dark:text-amber-400" data-testid={`dmarc-publish-manually-${domain}`}>
           This domain&apos;s DNS is hosted elsewhere — publish it there:{' '}
           <code className="break-all font-mono">{result.recordName} TXT &quot;{result.recordValue}&quot;</code>
         </p>
       )}
       {result && result.published && (
-        <p className="text-xs text-emerald-700 dark:text-emerald-400" data-testid={`dmarc-applied-${summary.policyDomain}`}>
+        <p className="text-xs text-emerald-700 dark:text-emerald-400" data-testid={`dmarc-applied-${domain}`}>
           p={result.policy} is published.
         </p>
       )}

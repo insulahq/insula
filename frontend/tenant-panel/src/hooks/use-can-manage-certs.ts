@@ -1,7 +1,8 @@
 import { useAuth } from '@/hooks/use-auth';
 
 /**
- * May the current user download a private key or manage cert-download tokens?
+ * May the current user download a private key (a certificate bundle, a DKIM
+ * signing key) or manage cert-download tokens?
  *
  * Deliberately NARROWER than `useCanManage`, which includes `support`. The
  * backend excludes `support` from every key-bearing route

@@ -84,6 +84,24 @@ describe.skipIf(!dbAvailable)('apply DMARC policy (integration)', () => {
       .rejects.toMatchObject({ code: 'DMARC_TIGHTENING_NOT_READY' });
   });
 
+  // The domain owner may decide against the recommendation, but only by
+  // saying so: a source the reports count as failing can be a recipient's
+  // filter re-delivering mail we signed, which nothing on our side fixes.
+  it('applies a tightening the reports do not back only when it is acknowledged', async () => {
+    await expect(applyDmarcPolicy(db(), { domain: DOMAIN, policy: 'reject', tenantId }))
+      .rejects.toMatchObject({ code: 'DMARC_TIGHTENING_NOT_READY' });
+    await expect(applyDmarcPolicy(db(), { domain: DOMAIN, policy: 'reject', acknowledgeNotRecommended: false, tenantId }))
+      .rejects.toMatchObject({ code: 'DMARC_TIGHTENING_NOT_READY' });
+    expect(await recordValue()).toBe(`v=DMARC1; p=none; rua=mailto:dmarc@${DOMAIN}`);
+
+    const res = await applyDmarcPolicy(db(), { domain: DOMAIN, policy: 'reject', acknowledgeNotRecommended: true, tenantId });
+    expect(res).toMatchObject({ policy: 'reject', published: false });
+    expect(await recordValue()).toBe(`v=DMARC1; p=reject; rua=mailto:dmarc@${DOMAIN}`);
+    // The acknowledgement is not a key to someone else's domain.
+    await expect(applyDmarcPolicy(db(), { domain: DOMAIN, policy: 'none', acknowledgeNotRecommended: true, tenantId: otherTenantId }))
+      .rejects.toMatchObject({ code: 'DMARC_RECORD_NOT_MANAGED' });
+  });
+
   it('always allows loosening — the way back when legitimate mail is quarantined', async () => {
     await db().update(dnsRecords).set({ recordValue: `v=DMARC1; p=reject; rua=mailto:dmarc@${DOMAIN}` })
       .where(eq(dnsRecords.id, recordId));

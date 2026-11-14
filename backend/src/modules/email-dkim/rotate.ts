@@ -66,6 +66,8 @@ import {
   redactPemBlocks,
 } from './signatures.js';
 import { mailLogger } from '../../shared/mail-logger.js';
+import { forgetDkimPrivateKeysFor, keepDkimPrivateKey } from './key-store.js';
+import { dkimDomainLock, type DkimDomainLock } from './lock.js';
 
 const log = mailLogger().child({ module: 'email-dkim-rotate' });
 
@@ -84,6 +86,12 @@ export interface RotateDkimResult {
   readonly stalwartDkimSignatureId: string;
   /** Selectors whose stale signatures were destroyed (target reuse + straggler sweep). */
   readonly destroyedSelectors: readonly string[];
+  /**
+   * Whether the platform kept its encrypted copy of the new key. False: the
+   * key signs as normal, but cannot be shown or restored until the next
+   * rotation.
+   */
+  readonly keptCopy: boolean;
 }
 
 export class DkimRotationError extends Error {
@@ -138,6 +146,21 @@ export function planDkimRotation(
  * responsible for any UI surfacing or audit-log entry.
  */
 export async function rotateDkimKey(
+  db: Database,
+  emailDomainId: string,
+  encryptionKey: string,
+  /**
+   * Under the domain's DKIM lock (lock.ts), like every other path that makes
+   * keys. `waitForLock: false` throws DkimDomainBusyError at once (the route
+   * answers 409); `lock` is a stand-in for tests.
+   */
+  opts: { readonly waitForLock?: boolean; readonly lock?: DkimDomainLock } = {},
+): Promise<RotateDkimResult> {
+  const lock = opts.lock ?? dkimDomainLock(db);
+  return lock(emailDomainId, { wait: opts.waitForLock ?? true }, () => rotateUnlocked(db, emailDomainId, encryptionKey));
+}
+
+async function rotateUnlocked(
   db: Database,
   emailDomainId: string,
   encryptionKey: string,
@@ -224,6 +247,21 @@ export async function rotateDkimKey(
         'DKIM rotation: straggler signatures were not destroyed — they keep dual-signing until the next rotation',
       );
     }
+    // A destroyed straggler's kept copy goes with it: it can never be shown
+    // (no signature reports its key) and must never be restored. Only once
+    // EVERY row of that selector is gone — a selector with a surviving row
+    // still signs with some key. The target's copy is replaced below, with
+    // the new key.
+    const domainRows = rows.filter((r) => r.domainId === stalwartDomainId);
+    const destroyedStragglers = [...new Set(plan.stragglerRows.map((r) => r.selector))]
+      .filter((sel) => sel !== plan.target
+        && domainRows.filter((r) => r.selector === sel).every((r) => destroyedSet.has(r.id)));
+    try {
+      await forgetDkimPrivateKeysFor(db, emailDomainId, destroyedStragglers);
+    } catch (err) {
+      log.warn({ emailDomainId, err: err instanceof Error ? err.name : 'unknown' },
+        'DKIM rotation: could not drop the copies of destroyed selectors; they are never served (no signature matches them)');
+    }
   }
 
   // 3+4. Mint the new key under the target selector. The previous
@@ -245,6 +283,9 @@ export async function rotateDkimKey(
         : redactPemBlocks(err instanceof Error ? err.message : String(err)).slice(0, 500);
     throw new DkimRotationError(safe, 'STALWART_API_ERROR');
   }
+  // The only moment the platform holds the key: keep the encrypted copy the
+  // tenant's "Show private key" reads (key-store.ts). Never fails the rotation.
+  const keptCopy = await keepDkimPrivateKey(db, { emailDomainId, selector: plan.target, privateKeyPem: privateKey, encryptionKey }, log);
 
   // 5. Upsert the target selector's TXT record (in-DB + DNS provider).
   // See dns-publish.ts for the replace-not-duplicate semantics and the
@@ -275,5 +316,6 @@ export async function rotateDkimKey(
     txtRecordValue,
     stalwartDkimSignatureId: signatureId,
     destroyedSelectors: [...new Set(destroyRows.map((r) => r.selector))],
+    keptCopy,
   };
 }

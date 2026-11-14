@@ -100,6 +100,7 @@ export const BUNDLE_COMPONENTS: ReadonlyArray<ComponentOwnership> = [
       'users',
       'domains',
       'emailDomains',
+      'emailDkimPrivateKeys',
       'mailboxes',
       'emailAliases',
       'mailboxAliases',

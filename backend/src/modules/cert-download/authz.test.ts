@@ -120,7 +120,8 @@ describe('token verification feeds the right binding into that check', () => {
           where: () => ({
             limit: () => Promise.resolve([{
               id: 'tok-1', tenantId: TENANT_A, domainId: 'dom-a1',
-              name: 'deploy', tokenHash: hashToken(token), expiresAt: null,
+              name: 'deploy', tokenHash: hashToken(token),
+              createdAt: new Date(Date.now() - 60_000), expiresAt: new Date(Date.now() + 3_600_000),
             }]),
           }),
         }),

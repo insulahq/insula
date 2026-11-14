@@ -36,6 +36,7 @@ const LEASED: ReadonlyArray<{ file: string; job: string; timers?: number }> = [
   { file: 'modules/bandwidth/meter.ts', job: 'bandwidth-meter' },
   { file: 'modules/traffic/rollup-collect.ts', job: 'traffic-rollup' },
   { file: 'modules/metrics/usage-reaper-scheduler.ts', job: 'usage-reaper' },
+  { file: 'modules/cert-download/token-reaper.ts', job: 'cert-token-reaper' },
   { file: 'modules/tenant-lifecycle/scheduler.ts', job: 'lifecycle-hook-retry' },
   { file: 'server.ts', job: 'subscription-expiry' },
   { file: 'server.ts', job: 'deployment-auto-upgrade' },

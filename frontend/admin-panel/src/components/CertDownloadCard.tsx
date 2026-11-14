@@ -7,6 +7,7 @@ import {
   downloadCertBundle,
 } from '@/hooks/use-cert-download';
 import { useCanManageCerts } from '@/hooks/use-can-manage-certs';
+import { useStepUpGate } from '@/hooks/use-step-up-gate';
 
 /**
  * Admin-side certificate download for a tenant's domain.
@@ -45,12 +46,15 @@ export default function CertDownloadCard({ tenantId, domainId, domainName }: Pro
   const availability = useCertDownloadAvailability(tenantId, domainId);
   const tokensQuery = useCertTokens(tenantId, domainId);
   const revoke = useRevokeCertToken(tenantId, domainId);
+  // The bundle holds the customer's private key: the server asks the operator
+  // for a fresh step-up first.
+  const gate = useStepUpGate(`the certificate and private key of ${domainName}`);
 
   async function handleDownload() {
     setDownloading(true);
     setError(null);
     try {
-      await downloadCertBundle(tenantId, domainId, domainName);
+      await gate.run(() => downloadCertBundle(tenantId, domainId, domainName));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -204,6 +208,7 @@ export default function CertDownloadCard({ tenantId, domainId, domainName }: Pro
           </p>
         )}
       </div>
+      {gate.dialog}
     </div>
   );
 }

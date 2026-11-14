@@ -46,6 +46,8 @@ import { getTenantMailDaily } from './daily.js';
 import { schedulePollSoon } from './dmarc.js';
 import { getMailOverview } from './overview.js';
 import { applyDmarcPolicy } from './dmarc-apply.js';
+import { defaultSourceFactDeps, enrichDmarcSources, provenRelayCopies } from './dmarc-source-facts.js';
+import type { RelayCopyLookup } from './dmarc-summary.js';
 import { parseBody } from '../../shared/validate-body.js';
 
 export async function mailEventsWebhookRoutes(app: FastifyInstance): Promise<void> {
@@ -117,6 +119,47 @@ const dmarcOverviewQuerySchema = z.object({
  * with the FBL retirement and the name would otherwise describe
  * routes that no longer exist.
  */
+/**
+ * One domain's DMARC sources with their badges and reverse DNS. `tenantId`
+ * scopes the rows (see dmarcSourcesForDomain) AND the signed-message counts
+ * behind RELAY, so both describe the same reports.
+ */
+async function sourcesWithFacts(
+  app: FastifyInstance,
+  query: { domain: string; windowDays?: number; limit?: number },
+  tenantId?: string,
+) {
+  const now = new Date();
+  const windowDays = query.windowDays ?? DMARC_WINDOW_DAYS;
+  const counts = await dmarcSourcesForDomain(app.db, query.domain, {
+    windowDays, limit: query.limit, now, tenantId,
+  });
+  const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+  return enrichDmarcSources(app.db, counts, {
+    policyDomain: query.domain,
+    since: new Date(now.getTime() - windowDays * 86_400_000),
+    tenantId,
+    deps: await defaultSourceFactDeps(kubeconfigPath, app.log),
+  });
+}
+
+/**
+ * Proven relay copies for the recommendation. The scope is the summary's own
+ * (it passes its tenant), so the apply check — scoped to the record's tenant —
+ * judges exactly what the panel showed. Unknown on any failure.
+ */
+function relayLookup(app: FastifyInstance): RelayCopyLookup {
+  return async (policyDomains, since, tenantId) => {
+    try {
+      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+      return await provenRelayCopies(app.db, policyDomains, { since, tenantId }, await defaultSourceFactDeps(kubeconfigPath, app.log));
+    } catch (err) {
+      app.log.warn({ err: err instanceof Error ? err.message : String(err) }, 'dmarc summary: relay lookup unavailable');
+      return null;
+    }
+  };
+}
+
 export async function mailReportRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   // Report rows carry PII (reported source IPs, policy domains) —
@@ -134,7 +177,7 @@ export async function mailReportRoutes(app: FastifyInstance): Promise<void> {
   app.get('/admin/mail/dmarc', async (request) => {
     const q = dmarcOverviewQuerySchema.safeParse(request.query ?? {});
     const windowDays = q.success ? (q.data.windowDays ?? DMARC_WINDOW_DAYS) : DMARC_WINDOW_DAYS;
-    const domains = await dmarcDomainSummaries(app.db, { windowDays });
+    const domains = await dmarcDomainSummaries(app.db, { windowDays, relayCopies: relayLookup(app) });
     const overview: DmarcOverview = {
       windowDays,
       domains,
@@ -150,7 +193,11 @@ export async function mailReportRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [requireRole('super_admin', 'admin')],
   }, async (request) => {
     const input = parseBody(applyDmarcPolicySchema, request.body);
-    return success(await applyDmarcPolicy(app.db, input));
+    const result = await applyDmarcPolicy(app.db, input, { relayCopies: relayLookup(app) });
+    // The audit hook records the POST; this says whether the recommendation was overridden.
+    request.log.info({ domain: result.domain, policy: result.policy, acknowledgeNotRecommended: input.acknowledgeNotRecommended === true },
+      'dmarc policy applied');
+    return success(result);
   });
 
   app.get('/admin/mail/dmarc/sources', async (request) => {
@@ -164,11 +211,7 @@ export async function mailReportRoutes(app: FastifyInstance): Promise<void> {
         { field: first.path.join('.') },
       );
     }
-    const sources = await dmarcSourcesForDomain(app.db, parsed.data.domain, {
-      windowDays: parsed.data.windowDays,
-      limit: parsed.data.limit,
-    });
-    return success(sources);
+    return success(await sourcesWithFacts(app, parsed.data));
   });
 
   // ── Abuse reports, estate-wide ───────────────────────────────────────────
@@ -278,7 +321,9 @@ export async function mailUsageRoutes(app: FastifyInstance): Promise<void> {
     const { tenantId } = request.params as { tenantId: string };
     const q = dmarcOverviewQuerySchema.safeParse(request.query ?? {});
     const windowDays = q.success ? (q.data.windowDays ?? DMARC_WINDOW_DAYS) : DMARC_WINDOW_DAYS;
-    const domains = await dmarcDomainSummaries(app.db, { windowDays, tenantId, includeUnreported: true });
+    const domains = await dmarcDomainSummaries(app.db, {
+      windowDays, tenantId, includeUnreported: true, relayCopies: relayLookup(app),
+    });
     const overview: DmarcOverview = {
       windowDays,
       domains,
@@ -360,7 +405,10 @@ export async function mailUsageRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
     const input = parseBody(applyDmarcPolicySchema, request.body);
-    return success(await applyDmarcPolicy(app.db, { ...input, tenantId }));
+    const result = await applyDmarcPolicy(app.db, { ...input, tenantId }, { relayCopies: relayLookup(app) });
+    request.log.info({ tenantId, domain: result.domain, policy: result.policy, acknowledgeNotRecommended: input.acknowledgeNotRecommended === true },
+      'dmarc policy applied');
+    return success(result);
   });
 
   app.get('/tenants/:tenantId/mail/dmarc/sources', {
@@ -387,11 +435,7 @@ export async function mailUsageRoutes(app: FastifyInstance): Promise<void> {
     // separate ownership lookup — it would turn that empty result into a
     // clearer 404, but it is not what makes this safe, and a comment claiming
     // two locks where the code has one is how a reviewer stops looking.
-    const sources = await dmarcSourcesForDomain(app.db, parsed.data.domain, {
-      windowDays: parsed.data.windowDays,
-      limit: parsed.data.limit,
-      tenantId,
-    });
+    const sources = await sourcesWithFacts(app, parsed.data, tenantId);
     return success({
       domain: parsed.data.domain,
       windowDays: parsed.data.windowDays ?? DMARC_WINDOW_DAYS,

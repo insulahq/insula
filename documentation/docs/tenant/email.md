@@ -208,6 +208,43 @@ more).
 The **DKIM keys** card lets you view the cryptographic keys that prove your mail
 is genuine (these are part of the DNS records above).
 
+#### Signing from another mail server with the same key
+
+If another server also sends mail as your domain (an office mail server, an
+appliance), it can sign with the **same** DKIM key, so the record that is
+already published verifies its mail too. On the key marked **Signing**, click
+**Show private key** (tenant administrators only). You are asked to confirm it
+is you with your password or passkey first; that counts for 5 minutes, in this
+browser session only. (Under **Login as tenant**, staff confirm with their own
+password or passkey.)
+
+The card then shows the key with what the other server needs: the domain
+(`d=`), the selector (`s=`, for example `dkim-1`) and the key itself, with a
+**Copy key** button. The public key is already published, so no DNS change is
+needed. Every time the key is shown it is written to the audit log.
+
+!!! warning "Anyone with the key can sign mail as your domain"
+    Put it only on servers you control, and never paste it into a ticket or a
+    repository.
+
+After you **Rotate key** here, copy the new key to the other server too: the
+old key keeps verifying only until the following rotation replaces it.
+
+The platform keeps a copy of the keys it creates from now on. A key created
+before that cannot be shown, and the platform does not replace existing keys
+for you: if you want to see it, click **Rotate key** once. That creates a new
+key that can be shown, and the current key keeps signing alongside it for a
+while. If a rotation could not keep its copy, the card says so; the new key
+signs as normal, and the next rotation tries again.
+
+The shown key hides itself after five minutes, and as soon as you rotate.
+
+The same copy keeps your mail verifying if the mail server ever loses your
+domain's keys (a restore or a repair): the platform puts the same key back
+under the same selector, so the records already published in DNS keep
+matching and you do not have to change anything. It does this only when the
+published record still carries that key.
+
 A newly enabled domain's DMARC record is `p=quarantine`: mail that claims to
 come from your domain but fails its checks goes to the recipient's spam folder.
 If you also send through another service (a newsletter tool, a web form, an
@@ -249,16 +286,33 @@ top of the page:
 - **Failing senders** — how many distinct servers sent mail as your domain that
   failed the check.
 - **Current policy** — what your published record tells receivers to do with
-  mail that fails: monitor only, quarantine, or reject. This record is
-  maintained for you; contact support if you want it changed. It also protects
+  mail that fails: monitor only, quarantine, or reject. It also protects
   your own mailboxes: forged mail that claims to come from your domain — a
   "your mailbox is full" message that seems to come from your own mail admin,
   say — goes to Junk under quarantine and is refused under reject. Under
-  monitor only, it can still reach the inbox.
+  monitor only, it can still reach the inbox. Change it with the **NONE /
+  QUARANTINE / REJECT** switch (hover an option for what it does). A check
+  mark shows the step the reports back. Moving to a stricter policy the
+  reports do not back yet is possible, but the confirmation first tells you
+  why they don't. Going back to a looser policy is always possible. If your
+  domain's DNS is hosted elsewhere, the switch shows the record to publish
+  there.
 - **Who sent as &lt;your domain&gt;** — every sending server the receivers saw,
-  worst first. A server with failures is either one of yours that needs its SPF
-  or DKIM fixed (a newsletter tool or CRM sending on your behalf is the usual
-  culprit), or one that should not be sending as you at all.
+  worst first, with its reverse DNS name under the address. A server with
+  failures is one of yours that needs its SPF or DKIM fixed (a newsletter tool
+  or CRM sending on your behalf is the usual culprit), one that should not be
+  sending as you at all, or a relay. Badges say which (hover one for what it
+  means):
+    - **CLUSTER** — the platform's own mail server.
+    - **SPF** — your domain's current SPF record allows this server to send.
+    - **RELAY** — not a sender: a forwarder, or a recipient's spam or security
+      filter, passing on mail the platform sent and signed for you. Its SPF
+      check always fails, because it is not your server. DKIM passes unless it
+      changed the message (a filter that adds an "external sender" banner, for
+      example). Nothing on your side makes it pass. Under a stricter policy,
+      that recipient's own mail admin decides whether such mail is trusted.
+      The recommendation for your policy does not count relayed copies, and
+      **Failing senders** says how many of the servers are relays.
 
 !!! info "An empty tab is not an all-clear"
 

@@ -303,7 +303,8 @@ export async function nodeTerminalRoutes(app: FastifyInstance): Promise<void> {
       // Step-up freshness — mirror createSession. Importing here to
       // avoid circulars.
       const { getStepUpStatus } = await import('../auth/step-up-service.js');
-      const status = await getStepUpStatus(app.db, user.sub);
+      // Session-bound: a step-up made in another session does not count.
+      const status = await getStepUpStatus(app.db, user);
       if (status.required) {
         if (status.methods.length === 0) {
           throw new ApiError(

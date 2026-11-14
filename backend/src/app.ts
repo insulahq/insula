@@ -3041,6 +3041,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       }, 24 * 60 * 60 * 1000); // 24h
       app.addHook('onClose', () => clearInterval(refreshPruneInterval));
 
+      // Certificate download links are temporary (15 minutes to 24 hours):
+      // delete the expired ones every few minutes, on one replica.
+      {
+        const { startCertTokenReaper } = await import('./modules/cert-download/token-reaper.js');
+        const certTokenReaper = startCertTokenReaper(app.db, app.log);
+        app.addHook('onClose', () => clearInterval(certTokenReaper));
+      }
+
       // Hourly prune of expired passkey challenges + consumed tokens.
       // Both have 5-min TTL so the table grows fast under sustained
       // login traffic — hourly is plenty. Failure is non-fatal.

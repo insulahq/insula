@@ -72,10 +72,13 @@ The platform supports **passkeys** (WebAuthn) alongside passwords and external
 OIDC (Google/Apple via an external provider, ADR-022). A passkey signs in on
 its own (it is already two factors); a password can be paired with a
 time-based code from an authenticator app (TOTP, with single-use backup codes)
-as a second step. Both are optional per user. Sensitive admin
-actions — like opening a node terminal — require a fresh **step-up** credential
-challenge within a short freshness window, so a stolen session alone isn't
-enough.
+as a second step. Both are optional per user. Sensitive actions — opening a
+node terminal, showing a DKIM private key, downloading a certificate with its
+private key — require a fresh **step-up** credential challenge within a short
+window (30 minutes for the terminal, 5 for key material). The step-up belongs
+to the session that gave it, so a stolen session token alone isn't enough.
+Under "Login as tenant" staff confirm with their own credential. API tokens
+need no step-up; their scopes bind them.
 
 ## Audit log
 

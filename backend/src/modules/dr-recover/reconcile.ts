@@ -27,7 +27,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import type { DrRecoverReconcile } from '@insula/api-contracts';
-import { tenants, emailDomains, deployments } from '../../db/schema.js';
+import { tenants, domains, emailDomains, deployments } from '../../db/schema.js';
 
 /** Deployment statuses that were intentionally NOT running pre-loss — leave them down. */
 const REDEPLOY_SKIP_STATUSES: ReadonlySet<string> = new Set(['stopped', 'deleting', 'deleted']);
@@ -133,15 +133,32 @@ async function reconcileMailStep(
   const domainsRows = await app.db
     .select({
       id: emailDomains.id,
+      domainId: emailDomains.domainId,
+      domainName: domains.domainName,
       stalwartDomainId: emailDomains.stalwartDomainId,
       dkimActiveSelector: emailDomains.dkimActiveSelector,
     })
     .from(emailDomains)
+    .innerJoin(domains, eq(domains.id, emailDomains.domainId))
     .where(eq(emailDomains.tenantId, tenantId));
   report.mail.domainsTotal = domainsRows.length;
   if (domainsRows.length === 0) return;
 
-  const { normalizeDomainDkim } = await import('../email-dkim/normalize.js');
+  const { convergeDomainDkim, describeDkimConvergence } = await import('../email-dkim/converge.js');
+  const { platformEncryptionKey } = await import('../../shared/platform-encryption-key.js');
+  // The reconcile never throws: a missing key (production refuses the zero
+  // key) is a gap for every domain, like any other mail failure.
+  let encryptionKey: string;
+  try {
+    encryptionKey = platformEncryptionKey();
+  } catch (err) {
+    report.mail.failed += domainsRows.length;
+    app.log.error({ module: 'dr-reconcile', tenantId, err: errMsg(err) }, 'reconcile: DKIM skipped — no usable encryption key');
+    residualGaps.push(`DKIM could not be regenerated for ${domainsRows.length} email domain(s): ${errMsg(err)}`);
+    return;
+  }
+  // Domains whose published records DNS did not answer for: nothing was done; retry.
+  const undecided: string[] = [];
   for (const d of domainsRows) {
     // The mailboxes restore back-fills stalwartDomainId with THIS cluster's id.
     // If it's still absent (mailboxes not recovered / mail stack down) we can't
@@ -151,17 +168,27 @@ async function reconcileMailStep(
       continue;
     }
     try {
-      const res = await normalizeDomainDkim({
+      // The bundle carries the kept copies (still encrypted): on the same
+      // cluster the domain gets its own keys back and DNS keeps verifying. A
+      // new key (nothing restorable) has its record published, which this step
+      // used to skip — every message then failed DKIM until someone republished
+      // it by hand.
+      const dkim = await convergeDomainDkim(app.db, {
         accountId: accountId as never,
         stalwartDomainId: d.stalwartDomainId,
         baseUrl: process.env.STALWART_MGMT_URL,
+        emailDomainId: d.id,
+        domainId: d.domainId,
+        domainName: d.domainName,
         currentDbSelector: d.dkimActiveSelector,
         expectAutoPair: false,
+        encryptionKey,
+        log: app.log,
       });
-      if (res.activeSelector && res.activeSelector !== d.dkimActiveSelector) {
-        await app.db.update(emailDomains)
-          .set({ dkimActiveSelector: res.activeSelector })
-          .where(eq(emailDomains.id, d.id));
+      if (dkim.undecidable) {
+        report.mail.failed += 1;
+        undecided.push(describeDkimConvergence(d.domainName, dkim));
+        continue;
       }
       report.mail.dkimRegenerated += 1;
     } catch (err) {
@@ -169,9 +196,11 @@ async function reconcileMailStep(
       app.log.warn({ module: 'dr-reconcile', tenantId, emailDomainId: d.id, err: errMsg(err) }, 'reconcile: DKIM regenerate failed');
     }
   }
-  if (report.mail.failed > 0) {
+  residualGaps.push(...undecided);
+  const otherFailures = report.mail.failed - undecided.length;
+  if (otherFailures > 0) {
     residualGaps.push(
-      `${report.mail.failed} email domain(s) could not regenerate DKIM — re-enable them from `
+      `${otherFailures} email domain(s) could not regenerate DKIM — re-enable them from `
       + 'Email → Domains to restore outbound mail signing.',
     );
   }
