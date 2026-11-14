@@ -162,6 +162,15 @@ describe.skipIf(!dbAvailable)('temporary certificate download links (integration
     await expect(createToken(db(), tenantId, domainId, { name: 'fresh', expiry: '1h' }, null)).resolves.toMatchObject({ name: 'fresh' });
   });
 
+  it('holds the 20-link cap under concurrent creates', async () => {
+    const results = await Promise.allSettled(Array.from({ length: 25 }, (_, i) =>
+      createToken(db(), tenantId, domainId, { name: `race-${i}`, expiry: '15m' }, null)));
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(20);
+    const refused = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(refused).toHaveLength(5);
+    for (const r of refused) expect((r.reason as { code?: string }).code).toBe('CERT_TOKEN_LIMIT_REACHED');
+  });
+
   it('the leased reaper runs the same delete', async () => {
     const now = Date.now();
     await db().insert(certDownloadTokens).values({

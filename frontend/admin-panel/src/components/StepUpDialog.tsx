@@ -30,8 +30,16 @@ function windowText(seconds: number | null): string | null {
 const INPUT_CLASS =
   'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
-function messageOf(err: unknown): string {
+function messageOf(err: unknown, canPasskey: boolean): string {
   if (err instanceof ApiError && err.code === 'STEP_UP_FAILED') return 'That did not match. Try again.';
+  if (err instanceof ApiError && err.code === 'STEP_UP_LOCKED') {
+    // Locked per person after too many wrong passwords; the server says for how long.
+    const seconds = typeof err.details?.retry_after === 'number' ? err.details.retry_after : null;
+    const when = seconds === null
+      ? 'later'
+      : `at ${new Date(Date.now() + seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (in about ${Math.max(1, Math.ceil(seconds / 60))} min)`;
+    return `Password confirmation is locked after too many wrong passwords. It unlocks ${when}.${canPasskey ? ' A passkey still works.' : ''}`;
+  }
   if (err instanceof Error && err.name === 'NotAllowedError') return 'The passkey prompt was closed or timed out.';
   return err instanceof Error ? err.message : 'Could not confirm it is you.';
 }
@@ -61,7 +69,7 @@ export default function StepUpDialog({ what, refusal, onVerified, onCancel }: St
       setPassword('');
       onVerified();
     } catch (err) {
-      setError(messageOf(err));
+      setError(messageOf(err, canPasskey));
     } finally {
       setBusy(null);
     }

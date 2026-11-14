@@ -83,6 +83,9 @@ describe('assertFreshStepUp', () => {
       const err = await errorOf(assertFreshStepUp(db, caller, 'cert_download'));
       expect(err.status).toBe(403);
       expect(err.code).toBe('IMPERSONATOR_ROLE_NOT_ALLOWED');
+      // One fixed answer, whatever the account's role or state.
+      expect(err.message).toBe('Under "Login as tenant" private keys are handed out only to super_admin and admin staff.');
+      expect(err.details).toEqual({ purpose: 'cert_download' });
       expect(select).toHaveBeenCalledTimes(1);
     }
     // An agent acting as a tenant for a support user is refused too, though API tokens skip the step-up.

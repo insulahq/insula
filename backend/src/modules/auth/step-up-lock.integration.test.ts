@@ -65,11 +65,17 @@ describe.skipIf(!dbAvailable)('step-up password lock (integration)', () => {
 
     const failures = await db().select({ changes: auditLogs.changes, actorId: auditLogs.actorId })
       .from(auditLogs).where(eq(auditLogs.actionType, 'step_up.password.failed'));
-    expect(failures).toHaveLength(STEP_UP_MAX_FAILED_PASSWORDS + 1);
+    expect(failures).toHaveLength(STEP_UP_MAX_FAILED_PASSWORDS);
     for (const f of failures) {
       expect(f.actorId).toBe(staff);
       expect(f.changes).toMatchObject({ impersonatedBy: staff, actingAs: tenantUser });
     }
+    // The refusal while locked is its own event: the password was not checked.
+    const lockedRows = await db().select({ changes: auditLogs.changes, status: auditLogs.httpStatus })
+      .from(auditLogs).where(eq(auditLogs.actionType, 'step_up.password.locked'));
+    expect(lockedRows).toHaveLength(1);
+    expect(lockedRows[0].status).toBe(429);
+    expect(lockedRows[0].changes).toMatchObject({ reason: 'STEP_UP_LOCKED', impersonatedBy: staff, retryAfter: expect.any(Number) });
 
     // The window passes: the right password goes through and gives the attempts back.
     await db().update(users).set({ stepUpFailedWindowStartedAt: sql`now() - interval '16 minutes'` }).where(eq(users.id, staff));
@@ -79,6 +85,18 @@ describe.skipIf(!dbAvailable)('step-up password lock (integration)', () => {
     // The tenant user's own allowance was never touched.
     const [tenant] = await db().select({ n: users.stepUpFailedAttempts }).from(users).where(and(eq(users.id, tenantUser)));
     expect(tenant.n).toBe(0);
+  });
+
+  // A guesser's attempts must not be refreshed by the owner stepping up
+  // elsewhere: a right password gives back only its own attempt.
+  it('the owner\'s success does not give the guesser\'s attempts back', async () => {
+    for (let i = 0; i < 3; i++) expect((await attempt('wrong')).statusCode).toBe(401);
+    expect((await attempt('staff-pass')).statusCode).toBe(200);
+    const [row] = await db().select({ n: users.stepUpFailedAttempts }).from(users).where(eq(users.id, staff));
+    expect(row.n).toBe(3);
+    expect((await attempt('wrong')).statusCode).toBe(401);
+    expect((await attempt('wrong')).statusCode).toBe(401);
+    expect((await attempt('wrong')).statusCode).toBe(429);
   });
 
   it('parallel guesses cannot get past the allowance', async () => {

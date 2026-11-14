@@ -145,12 +145,16 @@ describe('verifyStepUpPassword', () => {
       .rejects.toMatchObject({ code: 'STEP_UP_METHOD_UNAVAILABLE', status: 409 });
   });
 
-  it('on success notes the credential check, gives the attempts back, and records no step-up by itself', async () => {
+  // The owner's success gives back only its own attempt: wrong guesses stay
+  // counted until the window expires (proven against Postgres in
+  // step-up-lock.integration.test.ts).
+  it('on success notes the credential check, keeps the window, and records no step-up by itself', async () => {
     const { db, updateSet } = sequencedDb([[{ id: 'u1', passwordHash: await hashNewPassword('correct'), status: 'active' }]]);
     await verifyStepUpPassword(db, 'u1', 'correct');
-    expect(updateSet).toHaveBeenLastCalledWith({
-      lastCredentialCheckAt: expect.any(Date), stepUpFailedAttempts: 0, stepUpFailedWindowStartedAt: null,
-    });
+    const last = updateSet.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(last.lastCredentialCheckAt).toBeInstanceOf(Date);
+    expect(last).toHaveProperty('stepUpFailedAttempts');
+    expect(last).not.toHaveProperty('stepUpFailedWindowStartedAt');
   });
 
   // Per credential holder, whatever address the guesses come from.

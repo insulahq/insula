@@ -214,11 +214,12 @@ export async function assertFreshStepUp(
       .where(eq(users.id, caller.impersonatedBy))
       .limit(1);
     if (!staff || staff.status !== 'active' || !KEY_MATERIAL_IMPERSONATOR_ROLES.has(staff.role)) {
+      // One fixed answer: it says nothing about the account's role or state.
       throw new ApiError(
         'IMPERSONATOR_ROLE_NOT_ALLOWED',
-        `Under "Login as tenant" private keys are handed out only to super_admin and admin staff; your staff role is ${staff?.status === 'active' ? staff.role : 'not active'}.`,
+        'Under "Login as tenant" private keys are handed out only to super_admin and admin staff.',
         403,
-        { purpose, role: staff?.role ?? null },
+        { purpose },
       );
     }
   }
@@ -292,7 +293,9 @@ async function lockedError(db: Database, userId: string, nowMs: number): Promise
  *
  * Throws ApiError on bad credentials, and 429 STEP_UP_LOCKED once the holder
  * used up STEP_UP_MAX_FAILED_PASSWORDS in the window (a right password then
- * waits too). A right password gives the window's attempts back. Mirror of
+ * waits too). A right password gives back only the attempt it used itself:
+ * the wrong ones stay counted until the window expires, so the owner stepping
+ * up elsewhere cannot refresh a guesser's allowance. Mirror of
  * `verifyPassword` in auth/service.ts but scoped to step-up so we can keep
  * the rate-limit + audit semantics distinct.
  */
@@ -329,7 +332,6 @@ export async function verifyStepUpPassword(
   }
   await db.update(users).set({
     lastCredentialCheckAt: new Date(nowMs),
-    stepUpFailedAttempts: 0,
-    stepUpFailedWindowStartedAt: null,
+    stepUpFailedAttempts: sql`GREATEST(${users.stepUpFailedAttempts} - 1, 0)`,
   }).where(eq(users.id, userId));
 }

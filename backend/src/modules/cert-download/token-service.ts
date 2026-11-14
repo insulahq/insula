@@ -123,11 +123,15 @@ export async function createToken(
   const token = mintToken();
   const id = crypto.randomUUID();
 
-  // Count and insert in one transaction. Without it two concurrent creates can
-  // both pass the check and land at 21+ — a quota bypass rather than a
-  // security hole, but the cap exists to bound the table and the blast radius
-  // of a compromised panel session, so it should actually hold.
+  // Count and insert under a per-domain advisory lock, held to the end of the
+  // transaction. A transaction alone does not serialise them: at READ
+  // COMMITTED two concurrent creates both count 19 and both insert, landing at
+  // 21+ — a quota bypass rather than a security hole, but the cap exists to
+  // bound the table and the blast radius of a compromised panel session, so it
+  // should actually hold. The lock makes the second create wait for the
+  // first's insert to commit, then count it.
   const row = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`cert-download-links:${domainId}`}))`);
     const [{ n }] = await tx
       .select({ n: count() })
       .from(certDownloadTokens)

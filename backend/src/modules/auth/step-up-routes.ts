@@ -64,7 +64,7 @@ async function credentialPanel(db: Database, caller: StepUpCaller & { panel: 'ad
 async function recordStepUpAudit(
   db: Database,
   caller: StepUpCaller,
-  actionType: 'step_up.password.success' | 'step_up.password.failed' |
+  actionType: 'step_up.password.success' | 'step_up.password.failed' | 'step_up.password.locked' |
               'step_up.passkey.success' | 'step_up.passkey.failed',
   request: FastifyRequest,
   changes?: Record<string, unknown>,
@@ -83,7 +83,7 @@ async function recordStepUpAudit(
       actorType: 'user',
       httpMethod: request.method,
       httpPath: request.url.slice(0, 500),
-      httpStatus: actionType.endsWith('.failed') ? 401 : 200,
+      httpStatus: actionType.endsWith('.locked') ? 429 : actionType.endsWith('.failed') ? 401 : 200,
       changes: {
         ...(changes ?? {}),
         ...(caller.impersonatedBy ? { impersonatedBy: caller.impersonatedBy, actingAs: caller.sub } : {}),
@@ -162,9 +162,13 @@ export async function stepUpRoutes(app: FastifyInstance): Promise<void> {
       });
     } catch (err) {
       // Best-effort audit on failure — the user is real (bearer-auth
-      // already verified the JWT) so we know who attempted.
-      await recordStepUpAudit(app.db, caller, 'step_up.password.failed', request, {
+      // already verified the JWT) so we know who attempted. A refusal
+      // because the holder is locked out is its own event: the password
+      // was not even checked.
+      const locked = err instanceof ApiError && err.code === 'STEP_UP_LOCKED';
+      await recordStepUpAudit(app.db, caller, locked ? 'step_up.password.locked' : 'step_up.password.failed', request, {
         reason: err instanceof ApiError ? err.code : 'unknown',
+        ...(locked && err instanceof ApiError ? { retryAfter: err.details?.retry_after } : {}),
       });
       throw err;
     }

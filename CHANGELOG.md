@@ -31,8 +31,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     names the token. A tenant's AI agent is refused both routes (`AGENT_CREDENTIAL_NOT_ALLOWED`):
     it would keep the key, or the link, after being disconnected.
   - Wrong step-up passwords are limited per person (5 per 15 minutes, then 429 `STEP_UP_LOCKED`
-    until the window passes, migration 0181), no longer only per IP address. Every failure is
-    audited, naming the impersonation when there is one.
+    until the window passes, migration 0181), no longer only per IP address. A right password
+    gives back only its own attempt, so the owner confirming elsewhere does not refresh a guesser's
+    allowance. Every failure is audited, and every refusal while locked as
+    `step_up.password.locked`, naming the impersonation when there is one. The dialog says when
+    password confirmation unlocks, and that a passkey still works.
 - **A step-up belongs to the session that gave it.** It used to be one clock per user, so a second
   browser, or a stolen session token, passed every step-up gate for 30 minutes after the owner
   confirmed anywhere. Each access token now names its session (`sid`, its refresh-token family; a

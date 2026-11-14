@@ -48,6 +48,17 @@ describe('StepUpDialog', () => {
     expect(apiFetch).toHaveBeenLastCalledWith('/api/v1/me/step-up/password', expect.objectContaining({ body: JSON.stringify({ password: 'right' }) }));
   });
 
+  it('says when password confirmation is locked, when it unlocks, and that a passkey still works', async () => {
+    apiFetch.mockRejectedValueOnce(new ApiError(429, 'STEP_UP_LOCKED', 'Too many wrong passwords.', { retry_after: 600 }));
+    render(<StepUpDialog what="the key" refusal={refusal()} onVerified={vi.fn()} onCancel={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('step-up-password'), { target: { value: 'x' } });
+    fireEvent.click(screen.getByTestId('step-up-password-submit'));
+    const err = await screen.findByTestId('step-up-error');
+    expect(err).toHaveTextContent(/Password confirmation is locked/);
+    expect(err).toHaveTextContent(/in about 10 min/);
+    expect(err).toHaveTextContent('A passkey still works.');
+  });
+
   it('a closed passkey prompt is said as such, and verifies nothing', async () => {
     apiFetch.mockResolvedValueOnce({ data: { challenge: 'c' } });
     startAuthentication.mockRejectedValueOnce(Object.assign(new Error('closed'), { name: 'NotAllowedError' }));
