@@ -12,6 +12,11 @@ describe('platformEncryptionKey', () => {
     expect(() => platformEncryptionKey({ PLATFORM_ENV: 'staging' })).toThrow(/PLATFORM_ENCRYPTION_KEY is required/);
   });
 
+  it('throws for a production build whose PLATFORM_ENV was left at the development default', () => {
+    expect(() => platformEncryptionKey({ NODE_ENV: 'production' })).toThrow(/NODE_ENV=production/);
+    expect(() => platformEncryptionKey({ NODE_ENV: 'production', PLATFORM_ENV: 'development' })).toThrow(MissingEncryptionKeyError);
+  });
+
   it('keeps the zero-key fallback for development and tests', () => {
     expect(platformEncryptionKey({ PLATFORM_ENV: 'development' })).toBe('0'.repeat(64));
     expect(platformEncryptionKey({})).toBe('0'.repeat(64));

@@ -146,7 +146,17 @@ async function reconcileMailStep(
 
   const { convergeDomainDkim, describeDkimConvergence } = await import('../email-dkim/converge.js');
   const { platformEncryptionKey } = await import('../../shared/platform-encryption-key.js');
-  const encryptionKey = platformEncryptionKey();
+  // The reconcile never throws: a missing key (production refuses the zero
+  // key) is a gap for every domain, like any other mail failure.
+  let encryptionKey: string;
+  try {
+    encryptionKey = platformEncryptionKey();
+  } catch (err) {
+    report.mail.failed += domainsRows.length;
+    app.log.error({ module: 'dr-reconcile', tenantId, err: errMsg(err) }, 'reconcile: DKIM skipped — no usable encryption key');
+    residualGaps.push(`DKIM could not be regenerated for ${domainsRows.length} email domain(s): ${errMsg(err)}`);
+    return;
+  }
   // Domains whose published records DNS did not answer for: nothing was done; retry.
   const undecided: string[] = [];
   for (const d of domainsRows) {

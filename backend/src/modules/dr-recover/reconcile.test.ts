@@ -54,6 +54,8 @@ function makeApp(opts: { namespace?: string | null; domains?: DomainRow[]; deps?
       },
     }),
     update: () => ({ set: (patch: Record<string, unknown>) => ({ where: () => { updates.push({ patch }); return Promise.resolve(); } }) }),
+    // The per-domain DKIM lock's transaction (email-dkim/lock.ts): granted.
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ execute: async () => ({ rows: [{ ok: true }] }) }),
   };
   return {
     db,
@@ -197,6 +199,23 @@ describe('reconcileRecoveredTenant', () => {
       emailDomainId: 'd1', domainId: 'dom-d1', domainName: 'd1.example.test', selectors: ['dkim-1', 'dkim-2'],
     }), expect.anything());
     expect(dkimMock.mock.calls[0][0]).toMatchObject({ currentDbSelector: 'dkim-2' });
+  });
+
+  // The reconcile never throws: no usable key is a gap for every domain.
+  it('turns a missing encryption key into a gap instead of throwing', async () => {
+    const saved = { key: process.env.PLATFORM_ENCRYPTION_KEY, env: process.env.NODE_ENV };
+    delete process.env.PLATFORM_ENCRYPTION_KEY;
+    process.env.NODE_ENV = 'production';
+    try {
+      const app = makeApp({ domains: [{ id: 'd1', stalwartDomainId: 'sw-a', dkimActiveSelector: 'dkim-1' }] });
+      const { report, residualGaps } = await reconcileRecoveredTenant(app, 't-1');
+      expect(report.mail).toEqual({ domainsTotal: 1, dkimRegenerated: 0, failed: 1 });
+      expect(residualGaps.some((g) => /PLATFORM_ENCRYPTION_KEY is required/.test(g))).toBe(true);
+      expect(dkimMock).not.toHaveBeenCalled();
+    } finally {
+      if (saved.key === undefined) delete process.env.PLATFORM_ENCRYPTION_KEY; else process.env.PLATFORM_ENCRYPTION_KEY = saved.key;
+      process.env.NODE_ENV = saved.env;
+    }
   });
 
   // DNS gave no answer: nothing was done, and the operator is told to retry.

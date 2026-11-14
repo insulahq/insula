@@ -28,6 +28,8 @@ import { emailDomains, domains, auditLogs } from '../../db/schema.js';
 import { rotateDkimKey, DkimRotationError } from './rotate.js';
 import { redactPemBlocks, resolveDkimAccountId } from './signatures.js';
 import { convergeDomainDkim, describeDkimConvergence } from './converge.js';
+import { DkimDomainBusyError } from './lock.js';
+import { attributionOf } from '../auth/step-up-service.js';
 import { platformEncryptionKey } from '../../shared/platform-encryption-key.js';
 
 const paramsSchema = z.object({
@@ -101,8 +103,11 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
 
       let result: Awaited<ReturnType<typeof rotateDkimKey>>;
       try {
-        result = await rotateDkimKey(app.db, domainId, encryptionKey);
+        result = await rotateDkimKey(app.db, domainId, encryptionKey, { waitForLock: false });
       } catch (err) {
+        if (err instanceof DkimDomainBusyError) {
+          throw new ApiError('DKIM_CHANGE_IN_PROGRESS', err.message, 409);
+        }
         const classified = err instanceof DkimRotationError && err.code !== 'STALWART_API_ERROR';
         // A failure on the mail server (or anywhere unclassified) carries text
         // that names internal hosts. Staff see it; a tenant gets a sentence,
@@ -190,7 +195,11 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
       if (!row.stalwartDomainId) {
         throw new ApiError('EMAIL_DOMAIN_NOT_PROVISIONED', `Email domain '${row.domainName}' is not on the mail server yet`, 409);
       }
-      let result: Awaited<ReturnType<typeof convergeDomainDkim>>;
+      // Audited whatever happens — success, undecidable, refused or failed —
+      // with the tenant in its own column and who really acted (token,
+      // impersonation).
+      let result: Awaited<ReturnType<typeof convergeDomainDkim>> | null = null;
+      let outcome: 'success' | 'undecidable' | 'busy' | 'failed' = 'failed';
       try {
         result = await convergeDomainDkim(app.db, {
           accountId: await resolveDkimAccountId(process.env.STALWART_MGMT_URL),
@@ -203,24 +212,38 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
           expectAutoPair: false,
           encryptionKey: platformEncryptionKey(),
           log: request.log,
+          waitForLock: false,
         });
+        outcome = result.undecidable ? 'undecidable' : 'success';
       } catch (err) {
+        if (err instanceof DkimDomainBusyError) {
+          outcome = 'busy';
+          throw new ApiError('DKIM_CHANGE_IN_PROGRESS', err.message, 409);
+        }
         throw new ApiError('DKIM_RESTORE_FAILED',
           redactPemBlocks(err instanceof Error ? err.message : String(err)).slice(0, 500), 502);
+      } finally {
+        try {
+          await app.db.insert(auditLogs).values({
+            id: crypto.randomUUID(),
+            tenantId,
+            actorId: (request.user as { sub?: string } | undefined)?.sub ?? 'system',
+            actorType: 'user',
+            actionType: 'email_domain.dkim.restore',
+            resourceType: 'email_domain',
+            resourceId: domainId,
+            changes: {
+              outcome, domainName: row.domainName,
+              restored: result?.restored ?? [], minted: result?.minted ?? false,
+              ...attributionOf(request.user),
+            } as unknown as Record<string, unknown>,
+          });
+        } catch (auditErr) {
+          request.log.error({ err: auditErr instanceof Error ? auditErr.message : String(auditErr), emailDomainId: domainId },
+            'DKIM restore: audit row could not be written');
+        }
       }
-      await app.db.insert(auditLogs).values({
-        id: crypto.randomUUID(),
-        actorId: (request.user as { sub?: string } | undefined)?.sub ?? 'system',
-        actorType: 'user',
-        actionType: 'email_domain.dkim.restore',
-        resourceType: 'email_domain',
-        resourceId: domainId,
-        changes: {
-          tenantId, domainName: row.domainName,
-          restored: result.restored, minted: result.minted, undecidable: result.undecidable,
-        } as unknown as Record<string, unknown>,
-      });
-      return success({ ...result, message: describeDkimConvergence(row.domainName, result) });
+      return success({ ...result!, message: describeDkimConvergence(row.domainName, result!) });
     },
   );
 }

@@ -67,6 +67,7 @@ import {
 } from './signatures.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { forgetDkimPrivateKeysFor, keepDkimPrivateKey } from './key-store.js';
+import { dkimDomainLock, type DkimDomainLock } from './lock.js';
 
 const log = mailLogger().child({ module: 'email-dkim-rotate' });
 
@@ -145,6 +146,21 @@ export function planDkimRotation(
  * responsible for any UI surfacing or audit-log entry.
  */
 export async function rotateDkimKey(
+  db: Database,
+  emailDomainId: string,
+  encryptionKey: string,
+  /**
+   * Under the domain's DKIM lock (lock.ts), like every other path that makes
+   * keys. `waitForLock: false` throws DkimDomainBusyError at once (the route
+   * answers 409); `lock` is a stand-in for tests.
+   */
+  opts: { readonly waitForLock?: boolean; readonly lock?: DkimDomainLock } = {},
+): Promise<RotateDkimResult> {
+  const lock = opts.lock ?? dkimDomainLock(db);
+  return lock(emailDomainId, { wait: opts.waitForLock ?? true }, () => rotateUnlocked(db, emailDomainId, encryptionKey));
+}
+
+async function rotateUnlocked(
   db: Database,
   emailDomainId: string,
   encryptionKey: string,

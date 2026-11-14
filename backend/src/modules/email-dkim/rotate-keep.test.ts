@@ -36,6 +36,8 @@ const row = (id: string, selector: string): StalwartDkimSignatureRow =>
 /** One email domain whose active selector is `state.active`; update() records the flip. */
 function stubDb(state: { active: string | null }) {
   return {
+    // The per-domain lock's transaction (lock.ts): granted.
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ execute: async () => ({ rows: [{ ok: true }] }) }),
     select: () => ({ from: () => ({ innerJoin: () => ({ where: () => Promise.resolve([{
       id: 'ed-1', domainId: 'd-1', domainName: 'shop.example.test', stalwartDomainId: 'sw-1', dkimActiveSelector: state.active,
     }]) }) }) }),
@@ -94,6 +96,21 @@ describe('rotateDkimKey — kept copies', () => {
     set.mockResolvedValue({ destroyed: ['a', 'c'] }); // 'b' survives
     await rotateDkimKey(stubDb({ active: 'dkim-1' }), 'ed-1', 'k'.repeat(64));
     expect(forget).toHaveBeenCalledWith(expect.anything(), 'ed-1', ['v1-rsa-other']);
+  });
+
+  it('runs under the domain lock, and does nothing when it is held', async () => {
+    const { DkimDomainBusyError } = await import('./lock.js');
+    get.mockResolvedValue([row('s1', 'dkim-1')]);
+    const taken: Array<{ id: string; wait: boolean }> = [];
+    await rotateDkimKey(stubDb({ active: 'dkim-1' }), 'ed-1', 'k'.repeat(64), {
+      lock: async (id, o, work) => { taken.push({ id, wait: o.wait }); return work(); },
+    });
+    expect(taken).toEqual([{ id: 'ed-1', wait: true }]);
+    create.mockClear();
+    await expect(rotateDkimKey(stubDb({ active: 'dkim-1' }), 'ed-1', 'k'.repeat(64), {
+      waitForLock: false, lock: async () => { throw new DkimDomainBusyError('ed-1'); },
+    })).rejects.toBeInstanceOf(DkimDomainBusyError);
+    expect(create).not.toHaveBeenCalled();
   });
 
   it('keeps the copy of a straggler Stalwart refused to destroy', async () => {

@@ -81,13 +81,31 @@ describe('normalizeDomainDkim — restore before mint', () => {
     expect(res.createdPublicKey).toMatch(/BEGIN PUBLIC KEY/);
   });
 
-  it('falls back to minting when Stalwart refuses the kept key', async () => {
+  // The refused key is valid and its record still verifies: a new key minted
+  // under the selector would replace it. Undecidable, retry instead.
+  it('mints NOTHING when Stalwart refuses a restorable key, and keeps the auto pair signing', async () => {
     get.mockResolvedValue([row('auto-rsa', 'v1-rsa-x')]);
     create.mockRejectedValueOnce(new Error('refused -----BEGIN PRIVATE KEY-----\nAAA\n-----END PRIVATE KEY-----'));
-    const res = await normalizeDomainDkim({ ...base, restorable: async () => ok([key('dkim-1')]) });
-    expect(create).toHaveBeenCalledTimes(2); // the refused restore, then the mint
-    expect(res.restored).toEqual([]);
-    expect(res.createdPublicKey).toMatch(/BEGIN PUBLIC KEY/);
+    const keepKey = vi.fn(async () => true);
+    const res = await normalizeDomainDkim({ ...base, keepKey, restorable: async () => ok([key('dkim-1')]) });
+    expect(create).toHaveBeenCalledTimes(1); // the refused restore only
+    expect(res).toMatchObject({ undecidable: true, restored: [], createdPublicKey: null, destroyed: [] });
+    expect(set).not.toHaveBeenCalled(); // nothing A/B signs: the auto pair stays
+    expect(keepKey).not.toHaveBeenCalled();
+  });
+
+  it('keeps what did come back when only one selector is refused, mints nothing, and sweeps the auto pair', async () => {
+    get.mockResolvedValue([row('auto-rsa', 'v1-rsa-x'), row('auto-ed', 'v1-ed25519-x', ED25519_SIGNATURE_TYPE)]);
+    create.mockImplementation(async (p: { selector: string }) => {
+      if (p.selector === 'dkim-2') throw new Error('transient');
+      return `new-${p.selector}`;
+    });
+    const res = await normalizeDomainDkim({ ...base, currentDbSelector: 'dkim-2', restorable: async () => ok([key('dkim-1'), key('dkim-2')]) });
+    expect(res.undecidable).toBe(true);
+    expect(res.restored.map((k) => k.selector)).toEqual(['dkim-1']);
+    expect(res.createdPublicKey).toBeNull();
+    expect(res.activeSelector).toBe('dkim-1'); // the persisted dkim-2 did not come back
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ destroy: ['auto-rsa', 'auto-ed'] }));
   });
 
   // DNS gave no answer: a new key would replace one DNS may well still

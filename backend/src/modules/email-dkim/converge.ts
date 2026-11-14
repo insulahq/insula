@@ -16,6 +16,7 @@ import { normalizeDomainDkim } from './normalize.js';
 import { keepDkimPrivateKey, type KeepKeyLog } from './key-store.js';
 import { republishRestoredDkim, restorableDkimKeys, type RestoreDeps } from './restore.js';
 import { upsertDkimTxtRecord } from './dns-publish.js';
+import { dkimDomainLock, type DkimDomainLock } from './lock.js';
 
 export interface ConvergeDkimResult {
   /** The selector now persisted as active; null when the check was undecidable (nothing changed). */
@@ -34,6 +35,11 @@ export interface ConvergeDkimResult {
   readonly zoneHostedHere: boolean;
 }
 
+export interface ConvergeDeps extends RestoreDeps {
+  /** The per-domain lock (lock.ts); tests pass a stand-in. */
+  readonly lock?: DkimDomainLock;
+}
+
 export async function convergeDomainDkim(
   db: Database,
   params: {
@@ -47,8 +53,22 @@ export async function convergeDomainDkim(
     readonly expectAutoPair: boolean;
     readonly encryptionKey: string;
     readonly log?: KeepKeyLog;
+    /**
+     * False: throw DkimDomainBusyError at once when another DKIM change of the
+     * domain holds the lock (the staff route answers 409). Default: wait.
+     */
+    readonly waitForLock?: boolean;
   },
-  deps: RestoreDeps = {},
+  deps: ConvergeDeps = {},
+): Promise<ConvergeDkimResult> {
+  const lock = deps.lock ?? dkimDomainLock(db);
+  return lock(params.emailDomainId, { wait: params.waitForLock ?? true }, () => convergeUnlocked(db, params, deps));
+}
+
+async function convergeUnlocked(
+  db: Database,
+  params: Parameters<typeof convergeDomainDkim>[1],
+  deps: RestoreDeps,
 ): Promise<ConvergeDkimResult> {
   const res = await normalizeDomainDkim({
     accountId: params.accountId,
@@ -65,13 +85,15 @@ export async function convergeDomainDkim(
     }, deps),
   });
   const zoneHostedHere = await (deps.zoneHostedHere ?? isZoneWritable)(db, params.domainId);
-  if (res.undecidable) {
+  if (res.undecidable && res.restored.length === 0) {
     return {
       activeSelector: null, restored: [], minted: false, txtPublished: false, keptCopy: null,
       undecidable: true, zoneHostedHere,
     };
   }
 
+  // Also when part of the run is undecidable (a kept key Stalwart refused to
+  // take back): the selectors that did come back are recorded and published.
   await db.update(emailDomains).set({ dkimActiveSelector: res.activeSelector }).where(eq(emailDomains.id, params.emailDomainId));
   await republishRestoredDkim(db, {
     domainId: params.domainId, domainName: params.domainName, restored: res.restored, encryptionKey: params.encryptionKey,
@@ -91,7 +113,7 @@ export async function convergeDomainDkim(
     minted: res.createdPublicKey !== null,
     txtPublished,
     keptCopy: res.keptCopy,
-    undecidable: false,
+    undecidable: res.undecidable,
     zoneHostedHere,
   };
 }

@@ -170,9 +170,10 @@ export interface NormalizeResult {
   /** Whether the key this run minted was kept (null when none was minted). */
   readonly keptCopy: boolean | null;
   /**
-   * The published records could not be checked (DNS gave no answer): nothing
-   * was restored, minted or swept, and `activeSelector` is not to be persisted.
-   * Retry later (POST …/dkim/restore).
+   * Retry later (POST …/dkim/restore). Either the published records could not
+   * be checked (DNS gave no answer: nothing was restored, minted or swept, and
+   * `activeSelector` is not to be persisted), or Stalwart refused a kept key
+   * back (nothing was minted; `restored` lists what did come back).
    */
   readonly undecidable: boolean;
 }
@@ -228,14 +229,18 @@ export async function normalizeDomainDkim(params: {
   const plan = planDkimNormalization(rows, stalwartDomainId, params.currentDbSelector ?? null);
 
   // Restore before mint: put back every missing A/B selector whose kept key
-  // DNS still publishes. Each create is soft — a refused one just leaves that
-  // selector to the paths below.
+  // DNS still publishes. A create Stalwart refuses makes the run undecidable
+  // (nothing minted), never a reason to mint.
   const present = rows
     .filter((r) => r.domainId === stalwartDomainId && isAbSelector(r.selector) && r['@type'] === RSA_SIGNATURE_TYPE)
     .map((r) => r.selector);
   const pair: readonly DkimAbSelector[] = [DKIM_SELECTOR_A, DKIM_SELECTOR_B];
   const missing = pair.filter((s) => !present.includes(s));
   const restored: RestorableDkimKey[] = [];
+  // Selectors whose kept key Stalwart refused to take back. The key is valid
+  // and on hand, so a new one minted under the selector would replace (or
+  // contradict) a record that still verifies: such a run mints nothing.
+  const refused: string[] = [];
   if (params.restorable && missing.length > 0) {
     let check: RestoreCheck;
     try {
@@ -264,9 +269,10 @@ export async function normalizeDomainDkim(params: {
         });
         restored.push(key);
       } catch (err) {
+        refused.push(key.selector);
         log.warn(
           { stalwartDomainId, selector: key.selector, err: redactPemBlocks(err instanceof Error ? err.message : String(err)).slice(0, 300) },
-          'DKIM normalize: Stalwart refused the kept key back; the selector is left to the mint path',
+          'DKIM normalize: Stalwart refused the kept key back; nothing is minted for it — retry',
         );
       }
     }
@@ -279,7 +285,7 @@ export async function normalizeDomainDkim(params: {
   let createdSignatureId: string | null = null;
   let createdPublicKey: string | null = null;
   let keptCopy: boolean | null = null;
-  if (plan.createSelector && restored.length === 0) {
+  if (plan.createSelector && restored.length === 0 && refused.length === 0) {
     const { privateKey, publicKey } = generateDkimKeyPair();
     createdSignatureId = await createRsaDkimSignature({
       accountId,
@@ -305,7 +311,9 @@ export async function normalizeDomainDkim(params: {
 
   let destroyed: readonly string[] = [];
   let failed: readonly string[] = [];
-  if (plan.destroyIds.length > 0) {
+  // Create-before-destroy: the auto pair goes only when an A/B key signs.
+  const abSigns = present.length > 0 || restored.length > 0 || createdSignatureId !== null;
+  if (plan.destroyIds.length > 0 && abSigns) {
     const res = await dkimSignatureSet({ accountId, destroy: plan.destroyIds, baseUrl });
     destroyed = res.destroyed ?? [];
     const destroyedSet = new Set(destroyed);
@@ -322,5 +330,8 @@ export async function normalizeDomainDkim(params: {
     { stalwartDomainId, activeSelector, createdSignatureId, restored: restored.map((k) => k.selector), destroyed },
     'DKIM signatures normalized onto the A/B selector pair',
   );
-  return { activeSelector, createdSignatureId, createdPublicKey, destroyed, failed, restored, keptCopy, undecidable: false };
+  return {
+    activeSelector, createdSignatureId, createdPublicKey, destroyed, failed, restored, keptCopy,
+    undecidable: refused.length > 0,
+  };
 }

@@ -297,7 +297,7 @@ export async function recreateDriftItemEmpty(
       );
     }
     followUp = `Stalwart Domain '${item.expectedName}' was recreated EMPTY. ` + (dkimOutcome
-      ?? `Its DKIM keys could NOT be restored or replaced (the mail server refused), so ` +
+      ?? `Its DKIM keys could NOT be restored or replaced (the mail server refused, or the step could not run — see the platform-api log), so ` +
         `mail is not signed with the published keys and this will NOT resolve on its own: ` +
         `rotate the key from the DKIM tab, and publish the new record at the registrar for ` +
         `externally-hosted DNS.`);

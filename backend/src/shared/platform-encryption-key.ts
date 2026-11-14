@@ -13,8 +13,8 @@
 const KEY_REQUIRED_ENVS: ReadonlySet<string> = new Set(['production', 'staging']);
 
 export class MissingEncryptionKeyError extends Error {
-  constructor(platformEnv: string) {
-    super(`PLATFORM_ENCRYPTION_KEY is required when PLATFORM_ENV=${platformEnv}; refusing to use the zero key`);
+  constructor(where: string) {
+    super(`PLATFORM_ENCRYPTION_KEY is required when ${where}; refusing to use the zero key`);
     this.name = 'MissingEncryptionKeyError';
   }
 }
@@ -23,6 +23,9 @@ export function platformEncryptionKey(env: NodeJS.ProcessEnv = process.env): str
   const key = env.PLATFORM_ENCRYPTION_KEY;
   if (key) return key;
   const platformEnv = env.PLATFORM_ENV ?? 'development';
-  if (KEY_REQUIRED_ENVS.has(platformEnv)) throw new MissingEncryptionKeyError(platformEnv);
+  if (KEY_REQUIRED_ENVS.has(platformEnv)) throw new MissingEncryptionKeyError(`PLATFORM_ENV=${platformEnv}`);
+  // A production build with PLATFORM_ENV left at its development default is
+  // still production: never the zero key there either.
+  if (env.NODE_ENV === 'production') throw new MissingEncryptionKeyError('NODE_ENV=production');
   return '0'.repeat(64);
 }

@@ -14,6 +14,7 @@ import { seedRegion, seedPlan, seedTenant, seedDomain } from '../../test-helpers
 import { emailDkimPrivateKeys, emailDomains } from '../../db/schema.js';
 import { upsertRow } from '../backup-restore/executors/_shared.js';
 import { dkimKeyRowRestorable } from '../backup-restore/executors/config-tables.js';
+import { dkimDomainLock, DkimDomainBusyError } from './lock.js';
 import {
   dkimKeyRowId, forgetDkimPrivateKeysFor, keepDkimPrivateKey, readKeptDkimPrivateKey, readKeptDkimPrivateKeys,
 } from './key-store.js';
@@ -125,6 +126,26 @@ describe.skipIf(!dbAvailable)('kept DKIM keys (integration)', () => {
       expect(await restorable(bundleRow({ created_at: 'not a date' }), tenantId)).toBe(false);
       expect(await restorable(bundleRow({ created_at: new Date(Date.now() + 60_000).toISOString() }), tenantId)).toBe(true);
     });
+  });
+
+  // Two DKIM changes of one domain at once could both mint dkim-1.
+  it('the per-domain lock serialises, and a fail-fast taker gets DkimDomainBusyError', async () => {
+    const lock = dkimDomainLock(db());
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let entered!: () => void;
+    const inside = new Promise<void>((r) => { entered = r; });
+    const first = lock(emailDomainId, { wait: true }, async () => { entered(); await held; return 'first'; });
+    await inside;
+    await expect(lock(emailDomainId, { wait: false }, async () => 'second')).rejects.toBeInstanceOf(DkimDomainBusyError);
+    // Another domain is not blocked.
+    expect(await lock(crypto.randomUUID(), { wait: false }, async () => 'other')).toBe('other');
+    // A waiting taker runs once the first is done.
+    const waiting = lock(emailDomainId, { wait: true }, async () => 'waited');
+    release();
+    expect(await first).toBe('first');
+    expect(await waiting).toBe('waited');
+    expect(await lock(emailDomainId, { wait: false }, async () => 'free again')).toBe('free again');
   });
 
   it('the migration\'s SQL id formula is dkimKeyRowId, and 0180 replays cleanly', async () => {
