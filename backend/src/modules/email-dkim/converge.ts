@@ -122,9 +122,9 @@ async function convergeUnlocked(
 export function describeDkimConvergence(domainName: string, r: ConvergeDkimResult): string {
   if (r.undecidable) {
     return `The DKIM keys of '${domainName}' were NOT restored yet and no new key was made: public DNS ` +
-      `gave no answer when the published records were checked. Mail is not DKIM-signed with the ` +
-      `published keys until this is retried (POST /api/v1/tenants/<tenant>/email-domains/<email ` +
-      `domain>/dkim/restore, staff only).`;
+      `gave no answer when the published records were checked. A key Stalwart lost stays missing ` +
+      `until this is retried (POST /api/v1/tenants/<tenant>/email-domains/<email domain>/dkim/restore, ` +
+      `staff only); mail still signs with any key Stalwart kept, and leaves unsigned only if it kept none.`;
   }
   if (r.restored.length > 0) {
     return `The DKIM keys of '${domainName}' were put back from the platform's kept copies ` +
