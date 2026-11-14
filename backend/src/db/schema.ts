@@ -192,12 +192,14 @@ export const users = pgTable('users', {
   // lastLoginAt (one event per session) — this is renewable inside an
   // existing session. NULL = stale.
   lastCredentialCheckAt: timestamp('last_credential_check_at'),
-  // EXPLICIT step-up timestamp (ADR-041 evolved spec). Bumped ONLY by
-  // /me/step-up/* endpoints — login + passkey-verify do NOT count.
-  // Privileged actions (node-terminal session create) gate on THIS
-  // column, not lastCredentialCheckAt, so the very first terminal
-  // open after login always requires an explicit step-up prompt.
+  // When this person last stepped up anywhere — for display only. The gates
+  // read the per-session auth_step_ups (migration 0179); this column is what
+  // pods still on the old code read during the rollout.
   lastStepUpAt: timestamp('last_step_up_at'),
+  // Wrong step-up passwords in the current window (migration 0181): an
+  // attempt is reserved before the password is checked, per credential holder.
+  stepUpFailedAttempts: integer('step_up_failed_attempts').notNull().default(0),
+  stepUpFailedWindowStartedAt: timestamp('step_up_failed_window_started_at', { withTimezone: true }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   oidcSubject: varchar('oidc_subject', { length: 255 }),
   oidcIssuer: varchar('oidc_issuer', { length: 500 }),

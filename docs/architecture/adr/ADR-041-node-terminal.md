@@ -85,6 +85,10 @@ The shell runs in the **host's** namespaces. Inside the shell:
    stolen token ride on the owner's step-up). OIDC-only users with no local
    credential get `STEP_UP_UNAVAILABLE 409`. The same mechanism gates key
    material (DKIM private key, certificate download) with a 5-minute window.
+   Limits: a token stolen from the SAME session still rides on that
+   session's step-up until the window ends; during a rollout, pods still on
+   the old code read the old per-user column. Wrong step-up passwords are
+   limited per credential holder (5 per 15 minutes, migration 0181).
 3. **WS token:** every session ships with a 256-bit
    ([`randomBytes(32)`](../../backend/src/modules/node-terminal/service.ts))
    single-use token bound to the sessionId. 60s TTL — burned on first

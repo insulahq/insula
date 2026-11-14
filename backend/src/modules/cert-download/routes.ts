@@ -285,9 +285,12 @@ export async function certDownloadRoutes(app: FastifyInstance): Promise<void> {
     // no business holding a customer's private key, and neither does a
     // tenant_user.
     // An API token calls this without a step-up (its scopes bind it): it is
-    // the way an unattended server picks up its renewed certificate.
+    // the way an unattended server picks up its renewed certificate. Not a
+    // TENANT agent (issuesCredential): it would keep the key after it is
+    // disconnected.
     scoped.get('/tenants/:tenantId/domains/:domainId/ssl-cert/download', {
       onRequest: [requireRole('super_admin', 'admin', 'tenant_admin')],
+      config: { issuesCredential: true },
       schema: { tags: ['TLS Certificates'], summary: 'Download a domain certificate bundle', security: [{ bearerAuth: [] }] },
     }, async (request, reply) => {
       const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
@@ -327,6 +330,8 @@ export async function certDownloadRoutes(app: FastifyInstance): Promise<void> {
 
     scoped.post('/tenants/:tenantId/domains/:domainId/cert-tokens', {
       onRequest: [requireRole('super_admin', 'admin', 'tenant_admin')],
+      // A link is a credential that works on its own: not for a tenant agent.
+      config: { issuesCredential: true },
       schema: { tags: ['TLS Certificates'], summary: 'Create a certificate download token', security: [{ bearerAuth: [] }] },
     }, async (request, reply) => {
       const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };

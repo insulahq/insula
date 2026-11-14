@@ -26,6 +26,17 @@ export function stepUpMaxAgeMs(purpose: StepUpPurpose): number {
 /** A step-up row older than this is dead: every window is shorter. */
 const STEP_UP_ROW_TTL_MS = 24 * 60 * 60 * 1000;
 
+/** Wrong step-up passwords a credential holder may make per window, then 429. */
+export const STEP_UP_MAX_FAILED_PASSWORDS = 5;
+export const STEP_UP_FAILED_WINDOW_MS = 15 * 60 * 1000;
+
+/**
+ * Staff roles that may take key material out under "Login as tenant". Support
+ * may impersonate (to look), but holds no customer's private key, as it does
+ * not on the admin panel's own routes.
+ */
+const KEY_MATERIAL_IMPERSONATOR_ROLES: ReadonlySet<string> = new Set(['super_admin', 'admin']);
+
 /** The token claims the step-up reads. */
 export interface StepUpCaller {
   readonly sub: string;
@@ -180,6 +191,10 @@ export async function recordStepUp(
  *                            passkey (OIDC-only), so there is nothing to step
  *                            up with
  *
+ *   403 IMPERSONATOR_ROLE_NOT_ALLOWED  under "Login as tenant", the staff
+ *                            member's CURRENT role (read from the database,
+ *                            not the token) is not super_admin or admin
+ *
  * An API token passes: it cannot step up, and its scopes bind it instead
  * (operator decision; the routes give it the strictest scope that fits).
  * The check runs on the server for every request; the panel's dialog only
@@ -190,6 +205,23 @@ export async function assertFreshStepUp(
   caller: StepUpCaller,
   purpose: StepUpPurpose,
 ): Promise<void> {
+  // First, and for API tokens too: an agent acting as a tenant carries
+  // impersonatedBy as well.
+  if (caller.impersonatedBy) {
+    const [staff] = await db
+      .select({ role: users.roleName, status: users.status })
+      .from(users)
+      .where(eq(users.id, caller.impersonatedBy))
+      .limit(1);
+    if (!staff || staff.status !== 'active' || !KEY_MATERIAL_IMPERSONATOR_ROLES.has(staff.role)) {
+      throw new ApiError(
+        'IMPERSONATOR_ROLE_NOT_ALLOWED',
+        `Under "Login as tenant" private keys are handed out only to super_admin and admin staff; your staff role is ${staff?.status === 'active' ? staff.role : 'not active'}.`,
+        403,
+        { purpose, role: staff?.role ?? null },
+      );
+    }
+  }
   if (caller.apiToken) return;
   const status = await getStepUpStatus(db, caller, stepUpMaxAgeMs(purpose));
   if (!status.required) return;
@@ -222,18 +254,53 @@ export async function assertFreshStepUp(
 }
 
 /**
+ * Take one attempt from the holder's allowance — atomically, BEFORE the
+ * password is checked, so parallel guesses serialise on the row lock and at
+ * most STEP_UP_MAX_FAILED_PASSWORDS pass per window (the TOTP scheme,
+ * totp-service.ts). The route's rate limit is per IP, because it runs before
+ * the token is read; this is per person, whichever address they come from.
+ */
+async function reservePasswordAttempt(db: Database, userId: string, nowMs: number): Promise<boolean> {
+  const now = new Date(nowMs);
+  const windowFloor = new Date(nowMs - STEP_UP_FAILED_WINDOW_MS);
+  const windowOver = sql`(${users.stepUpFailedWindowStartedAt} IS NULL OR ${users.stepUpFailedWindowStartedAt} < ${windowFloor})`;
+  const rows = await db.update(users).set({
+    stepUpFailedAttempts: sql`CASE WHEN ${windowOver} THEN 1 ELSE ${users.stepUpFailedAttempts} + 1 END`,
+    stepUpFailedWindowStartedAt: sql`CASE WHEN ${windowOver} THEN ${now} ELSE ${users.stepUpFailedWindowStartedAt} END`,
+  }).where(and(
+    eq(users.id, userId),
+    sql`(${windowOver} OR ${users.stepUpFailedAttempts} < ${STEP_UP_MAX_FAILED_PASSWORDS})`,
+  )).returning({ id: users.id });
+  return rows.length === 1;
+}
+
+async function lockedError(db: Database, userId: string, nowMs: number): Promise<ApiError> {
+  const [row] = await db
+    .select({ start: users.stepUpFailedWindowStartedAt })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  const windowStart = row?.start?.getTime() ?? nowMs;
+  const retryAfter = Math.max(1, Math.ceil((windowStart + STEP_UP_FAILED_WINDOW_MS - nowMs) / 1000));
+  return new ApiError('STEP_UP_LOCKED', 'Too many wrong passwords. Try again later.', 429, { retry_after: retryAfter });
+}
+
+/**
  * Verify a password as a step-up challenge for `userId` — the credential
  * holder (stepUpCredentialHolder). Does NOT issue session tokens and does not
  * record the step-up itself: the route records it for the calling session.
  *
- * Throws ApiError on bad credentials. Mirror of `verifyPassword` in
- * auth/service.ts but scoped to step-up so we can keep the rate-limit
- * + audit semantics distinct.
+ * Throws ApiError on bad credentials, and 429 STEP_UP_LOCKED once the holder
+ * used up STEP_UP_MAX_FAILED_PASSWORDS in the window (a right password then
+ * waits too). A right password gives the window's attempts back. Mirror of
+ * `verifyPassword` in auth/service.ts but scoped to step-up so we can keep
+ * the rate-limit + audit semantics distinct.
  */
 export async function verifyStepUpPassword(
   db: Database,
   userId: string,
   password: string,
+  nowMs: number = Date.now(),
 ): Promise<void> {
   if (!password) {
     throw new ApiError('VALIDATION_ERROR', 'Password is required', 400);
@@ -255,9 +322,14 @@ export async function verifyStepUpPassword(
     throw new ApiError('STEP_UP_METHOD_UNAVAILABLE',
       'Password step-up is not configured for this account', 409);
   }
+  if (!(await reservePasswordAttempt(db, userId, nowMs))) throw await lockedError(db, userId, nowMs);
   const ok = await verifyPassword(password, user.passwordHash);
   if (!ok) {
     throw new ApiError('STEP_UP_FAILED', 'Step-up authentication failed', 401);
   }
-  await db.update(users).set({ lastCredentialCheckAt: new Date() }).where(eq(users.id, userId));
+  await db.update(users).set({
+    lastCredentialCheckAt: new Date(nowMs),
+    stepUpFailedAttempts: 0,
+    stepUpFailedWindowStartedAt: null,
+  }).where(eq(users.id, userId));
 }

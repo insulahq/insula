@@ -128,6 +128,25 @@ describe('certificate download step-up', () => {
     expect(mint.statusCode).toBe(201);
   });
 
+  // A tenant's AI agent holding a private key, or a link, would keep it after
+  // it is disconnected: refused, whatever its scopes (issuesCredential).
+  it('refuses a tenant agent the key and the link, however it is scoped', async () => {
+    const agent = app.jwt.sign({
+      sub: 'u1', role: 'tenant_admin', panel: 'tenant', tenantId: REF.tenantId, iat: Math.floor(Date.now() / 1000),
+      apiToken: { tokenId: 'oauth-1', kind: 'oauth', name: 'agent', scopes: ['read', 'write', 'delete'], via: 'mcp', audience: 'tenant' },
+    });
+    const dl = await app.inject({ method: 'GET', url: `${base}/ssl-cert/download`, headers: { authorization: `Bearer ${agent}` } });
+    expect(dl.statusCode).toBe(403);
+    expect(dl.json().error.code).toBe('AGENT_CREDENTIAL_NOT_ALLOWED');
+    const mint = await app.inject({
+      method: 'POST', url: `${base}/cert-tokens`, headers: { authorization: `Bearer ${agent}` }, payload: { name: 'ci', expiry: '24h' },
+    });
+    expect(mint.statusCode).toBe(403);
+    expect(mint.json().error.code).toBe('AGENT_CREDENTIAL_NOT_ALLOWED');
+    expect(buildCertBundle).not.toHaveBeenCalled();
+    expect(createToken).not.toHaveBeenCalled();
+  });
+
   it('works under "Login as tenant", and the audit row names the staff member', async () => {
     const imp = app.jwt.sign({
       sub: 'u1', role: 'tenant_admin', panel: 'tenant', tenantId: REF.tenantId, impersonatedBy: 'staff-1',

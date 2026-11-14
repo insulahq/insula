@@ -29,6 +29,7 @@ describe.skipIf(!dbAvailable)('step-up per session (integration)', () => {
   const db = () => getTestDb();
   const owner = crypto.randomUUID();
   const staff = crypto.randomUUID();
+  const supportStaff = crypto.randomUUID();
   const tenantUser = crypto.randomUUID();
 
   beforeAll(async () => { await runMigrations(); });
@@ -36,11 +37,27 @@ describe.skipIf(!dbAvailable)('step-up per session (integration)', () => {
   beforeEach(async () => {
     await cleanTables();
     await db().execute(sql.raw('TRUNCATE TABLE auth_step_ups, cert_download_tokens CASCADE'));
-    for (const [id, panel, role] of [[owner, 'admin', 'admin'], [staff, 'admin', 'support'], [tenantUser, 'tenant', 'tenant_admin']] as const) {
+    for (const [id, panel, role] of [
+      [owner, 'admin', 'admin'], [staff, 'admin', 'admin'], [supportStaff, 'admin', 'support'], [tenantUser, 'tenant', 'tenant_admin'],
+    ] as const) {
       await db().insert(users).values({
         id, email: `${id}@example.test`, passwordHash: 'h', fullName: 'Test', roleName: role, panel, status: 'active',
       } as typeof users.$inferInsert);
     }
+  });
+
+  // Support may impersonate to look, not to take a customer's private key —
+  // and the role is the one the staff member has NOW, not the one they had.
+  it('under "Login as tenant" hands key material only to super_admin/admin staff, by their current role', async () => {
+    const asSupport = { sub: tenantUser, impersonatedBy: supportStaff, sid: 'imp:s1' };
+    await recordStepUp(db(), asSupport, 'password');
+    expect(await refusal(assertFreshStepUp(db(), asSupport, 'dkim_private_key'))).toBe('IMPERSONATOR_ROLE_NOT_ALLOWED');
+
+    const asAdmin = { sub: tenantUser, impersonatedBy: staff, sid: 'imp:a1' };
+    await recordStepUp(db(), asAdmin, 'password');
+    expect(await refusal(assertFreshStepUp(db(), asAdmin, 'cert_download'))).toBe('passed');
+    await db().update(users).set({ roleName: 'support' }).where(eq(users.id, staff));
+    expect(await refusal(assertFreshStepUp(db(), asAdmin, 'cert_download'))).toBe('IMPERSONATOR_ROLE_NOT_ALLOWED');
   });
 
   it('a step-up counts for the session that made it, not for another session of the same user', async () => {
@@ -134,6 +151,15 @@ describe.skipIf(!dbAvailable)('temporary certificate download links (integration
     expect(await reapExpiredTokens(db())).toBe(3);
     const left = await db().select({ id: certDownloadTokens.id }).from(certDownloadTokens);
     expect(left.map((r) => r.id)).toEqual([live.id]);
+  });
+
+  it('the 20-link cap counts live links only', async () => {
+    const now = Date.now();
+    await db().insert(certDownloadTokens).values(Array.from({ length: 20 }, (_, i) => ({
+      id: crypto.randomUUID(), tenantId, domainId, name: `old-${i}`, tokenHash: `h-${i}`, createdBy: null,
+      createdAt: new Date(now - 2 * 3600_000), expiresAt: new Date(now - 3600_000),
+    })));
+    await expect(createToken(db(), tenantId, domainId, { name: 'fresh', expiry: '1h' }, null)).resolves.toMatchObject({ name: 'fresh' });
   });
 
   it('the leased reaper runs the same delete', async () => {

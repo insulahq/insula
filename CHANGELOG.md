@@ -23,10 +23,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     passkey and turn on passkey sign-in first (409 `STEP_UP_UNAVAILABLE`).
   - Under "Login as tenant" the staff member confirms with **their own** password or passkey; the
     tenant panel's dialog says so and names the staff account. The audit entry names the staff
-    member (`impersonatedBy`).
+    member (`impersonatedBy`). Only `super_admin` and `admin` staff get key material this way,
+    checked against their current role in the database: `support` may impersonate to look, and is
+    refused with 403 `IMPERSONATOR_ROLE_NOT_ALLOWED`.
   - An API token needs no step-up: the download and link routes work with it as before (scopes
     `read` and `write`), and it is how a server picks up every renewal unattended. The audit entry
-    names the token.
+    names the token. A tenant's AI agent is refused both routes (`AGENT_CREDENTIAL_NOT_ALLOWED`):
+    it would keep the key, or the link, after being disconnected.
+  - Wrong step-up passwords are limited per person (5 per 15 minutes, then 429 `STEP_UP_LOCKED`
+    until the window passes, migration 0181), no longer only per IP address. Every failure is
+    audited, naming the impersonation when there is one.
 - **A step-up belongs to the session that gave it.** It used to be one clock per user, so a second
   browser, or a stolen session token, passed every step-up gate for 30 minutes after the owner
   confirmed anywhere. Each access token now names its session (`sid`, its refresh-token family; a
@@ -34,10 +40,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   (`auth_step_ups`, migration 0179). Signing in still does not count as one. Windows: 5 minutes for
   key material (DKIM private key, certificate download, creating a link), 30 minutes for the node
   terminal, as before. Sessions signed in before this release are asked once more after their next
-  token refresh.
+  token refresh. What it does not cover: a token stolen from the same session still rides on that
+  session's step-up until its window ends (5 minutes for key material). During the rollout, pods
+  still on the old code check the old per-user clock (`users.last_step_up_at`) until they are
+  replaced. A token refresh now carries "Login as tenant" (`impersonatedBy`) over only from a token
+  for the same user.
 - **Certificate download links are temporary.** A link now lives 15 minutes, 1 hour (the default)
   or 24 hours, never longer, checked on every use, and a leased reaper deletes expired links every
-  5 minutes. **Operator note:** every existing link was revoked by migration 0179, including links
+  5 minutes. The limit of 20 links per domain counts live links only. **Operator note:** every existing link was revoked by migration 0179, including links
   with no expiry or a year. A customer server that used one to pick up renewals needs an API token
   on `GET /api/v1/tenants/<tenant>/domains/<domain>/ssl-cert/download` instead; tenants cannot
   create API tokens themselves, so staff set that up.

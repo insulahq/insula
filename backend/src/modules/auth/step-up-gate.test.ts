@@ -10,8 +10,16 @@ import { describe, it, expect, vi } from 'vitest';
 import { assertFreshStepUp } from './step-up-service.js';
 import { ApiError } from '../../shared/errors.js';
 
-function dbWith(user: Record<string, unknown> | null, stepUpAt: Date | null = null) {
-  const queue: unknown[][] = [user ? [user] : [], stepUpAt ? [{ at: stepUpAt }] : []];
+/**
+ * Selects in the order the gate makes them: under impersonation the staff
+ * member's role first, then the credential holder, then the session's row.
+ */
+function dbWith(user: Record<string, unknown> | null, stepUpAt: Date | null = null, staff?: Record<string, unknown> | null) {
+  const queue: unknown[][] = [
+    ...(staff === undefined ? [] : [staff ? [staff] : []]),
+    user ? [user] : [],
+    stepUpAt ? [{ at: stepUpAt }] : [],
+  ];
   const select = vi.fn(() => ({ from: () => ({ where: () => ({ limit: async () => queue.shift() ?? [] }) }) }));
   return { db: { select } as never, select };
 }
@@ -55,13 +63,32 @@ describe('assertFreshStepUp', () => {
     expect(err.message).toMatch(/passkey/);
   });
 
+  const admin = { role: 'admin', status: 'active' };
+
   it('under "Login as tenant" asks for the staff member\'s own credential, and lets a fresh one through', async () => {
     const caller = { sub: 'tenant-user', impersonatedBy: 'staff-1', sid: 'imp:t1' };
-    const err = await errorOf(assertFreshStepUp(dbWith({ ...password, email: 'staff@example.test' }).db, caller, 'dkim_private_key'));
+    const err = await errorOf(assertFreshStepUp(dbWith({ ...password, email: 'staff@example.test' }, null, admin).db, caller, 'dkim_private_key'));
     expect(err.code).toBe('STEP_UP_REQUIRED');
     expect(err.message).toMatch(/your own staff/);
     expect(err.details).toMatchObject({ impersonation: true, credentialEmail: 'staff@example.test' });
-    await expect(assertFreshStepUp(dbWith(password, minutesAgo(1)).db, caller, 'dkim_private_key')).resolves.toBeUndefined();
+    await expect(assertFreshStepUp(dbWith(password, minutesAgo(1), { role: 'super_admin', status: 'active' }).db, caller, 'dkim_private_key'))
+      .resolves.toBeUndefined();
+  });
+
+  // Support may impersonate to look, but holds no customer's private key.
+  it('refuses key material to a support (or inactive) impersonator, whatever its step-up, before asking for one', async () => {
+    const caller = { sub: 'tenant-user', impersonatedBy: 'staff-1', sid: 'imp:t1' };
+    for (const staff of [{ role: 'support', status: 'active' }, { role: 'admin', status: 'disabled' }, null]) {
+      const { db, select } = dbWith(password, minutesAgo(1), staff);
+      const err = await errorOf(assertFreshStepUp(db, caller, 'cert_download'));
+      expect(err.status).toBe(403);
+      expect(err.code).toBe('IMPERSONATOR_ROLE_NOT_ALLOWED');
+      expect(select).toHaveBeenCalledTimes(1);
+    }
+    // An agent acting as a tenant for a support user is refused too, though API tokens skip the step-up.
+    const agent = { ...caller, apiToken: { tokenId: 't1' } };
+    expect((await errorOf(assertFreshStepUp(dbWith(null, null, { role: 'support', status: 'active' }).db, agent, 'cert_download'))).code)
+      .toBe('IMPERSONATOR_ROLE_NOT_ALLOWED');
   });
 
   it('an API token passes without a step-up, without even a database read', async () => {

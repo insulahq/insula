@@ -19,10 +19,19 @@ import {
 import { hashNewPassword } from './service.js';
 import { ApiError } from '../../shared/errors.js';
 
-/** Each select() resolves to the next entry of `answers`. */
-function sequencedDb(answers: unknown[][]) {
+/**
+ * Each select() resolves to the next entry of `answers`. An update's
+ * `.returning()` is the password-attempt reservation: it returns a row unless
+ * `locked`.
+ */
+function sequencedDb(answers: unknown[][], opts: { locked?: boolean } = {}) {
   const queue = [...answers];
-  const updateSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+  const updateSet = vi.fn().mockReturnValue({
+    where: vi.fn(() => ({
+      returning: async () => (opts.locked ? [] : [{ id: 'u1' }]),
+      then: (res: (v: unknown) => unknown) => Promise.resolve(undefined).then(res),
+    })),
+  });
   const db = {
     select: vi.fn(() => ({
       from: () => ({ where: () => ({ limit: async () => queue.shift() ?? [] }) }),
@@ -136,9 +145,25 @@ describe('verifyStepUpPassword', () => {
       .rejects.toMatchObject({ code: 'STEP_UP_METHOD_UNAVAILABLE', status: 409 });
   });
 
-  it('on success notes the credential check, and records no step-up by itself', async () => {
+  it('on success notes the credential check, gives the attempts back, and records no step-up by itself', async () => {
     const { db, updateSet } = sequencedDb([[{ id: 'u1', passwordHash: await hashNewPassword('correct'), status: 'active' }]]);
     await verifyStepUpPassword(db, 'u1', 'correct');
-    expect(updateSet).toHaveBeenCalledWith({ lastCredentialCheckAt: expect.any(Date) });
+    expect(updateSet).toHaveBeenLastCalledWith({
+      lastCredentialCheckAt: expect.any(Date), stepUpFailedAttempts: 0, stepUpFailedWindowStartedAt: null,
+    });
+  });
+
+  // Per credential holder, whatever address the guesses come from.
+  it('once the allowance is used up, refuses with 429 before checking the password', async () => {
+    const start = new Date(Date.now() - 5 * 60_000);
+    const { db } = sequencedDb([
+      [{ id: 'u1', passwordHash: await hashNewPassword('correct'), status: 'active' }],
+      [{ start }],
+    ], { locked: true });
+    const err = await verifyStepUpPassword(db, 'u1', 'correct').catch((e: unknown) => e as ApiError);
+    expect(err).toMatchObject({ code: 'STEP_UP_LOCKED', status: 429 });
+    // Ten minutes of the 15-minute window are left.
+    expect((err as ApiError).details?.retry_after).toBeGreaterThan(590);
+    expect((err as ApiError).details?.retry_after).toBeLessThanOrEqual(600);
   });
 });

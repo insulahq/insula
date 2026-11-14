@@ -252,7 +252,8 @@ where from.
 
 Under **Login as tenant** the customer's panel asks for **your own** staff
 password or passkey, not the customer's, and the audit entry names you
-(`impersonatedBy`). An API token needs no confirmation: it is held to its
+(`impersonatedBy`). Only `super_admin` and `admin` staff get the key this way;
+`support` can impersonate to look but is refused. An API token needs no confirmation: it is held to its
 scopes instead (`read` for the download, `write` for creating a link). This is
 how a server you run for a customer picks up every renewal unattended.
 

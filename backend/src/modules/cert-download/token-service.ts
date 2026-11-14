@@ -20,7 +20,7 @@
  */
 
 import crypto from 'crypto';
-import { and, count, desc, eq, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, isNull, lte, or, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { certDownloadTokens, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
@@ -134,11 +134,14 @@ export async function createToken(
       .where(and(
         eq(certDownloadTokens.tenantId, tenantId),
         eq(certDownloadTokens.domainId, domainId),
+        // Live links only: an expired one the reaper has not deleted yet
+        // must not hold a slot.
+        gt(certDownloadTokens.expiresAt, now),
       ));
     if (Number(n) >= MAX_TOKENS_PER_DOMAIN) {
       throw new ApiError(
         'CERT_TOKEN_LIMIT_REACHED',
-        `A domain can have at most ${MAX_TOKENS_PER_DOMAIN} certificate tokens. Revoke one you no longer use.`,
+        `A domain can have at most ${MAX_TOKENS_PER_DOMAIN} live download links. Revoke one you no longer use.`,
         409,
       );
     }

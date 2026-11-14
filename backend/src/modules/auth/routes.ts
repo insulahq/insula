@@ -712,9 +712,11 @@ export async function authRoutes(app: FastifyInstance) {
     if (authHeader?.startsWith('Bearer ')) {
       try {
         const decoded = request.server.jwt.verify<JwtPayload>(authHeader.slice(7));
-        // Never carry a claim across from a non-session (pre-auth) token.
+        // Never carry a claim across from a non-session (pre-auth) token, nor
+        // from a token for someone else: impersonatedBy names who the staff
+        // member is, and only a token for this refresh row's user may say so.
         assertAccessToken(decoded);
-        if (decoded.impersonatedBy) impersonatedBy = decoded.impersonatedBy;
+        if (decoded.impersonatedBy && decoded.sub === user.id) impersonatedBy = decoded.impersonatedBy;
       } catch {
         // Access token may be expired by now (that's why we're refreshing).
         // Accept the refresh anyway — impersonation claim is non-critical.
