@@ -145,9 +145,19 @@ The checks above are also wired into the
 [notification system](monitoring.md#notifications), so mail health reaches
 your inbox instead of waiting to be noticed on a dashboard:
 
+- **Sending limit reached** — a tenant's mail domain reaching 80% or 100% of
+  its hourly or daily limit notifies the tenant; at 100% the operator too. The
+  limits are per mail domain, and so is the alert: it names the domain and
+  when the mail it holds goes out, and opens the tenant's **Email** tab (the
+  tenant's copy opens **Email → Statistics** with the domain picked). Mail
+  over a limit is held in the queue and delivered when the window resets (the
+  next full UTC hour, or 00:00 UTC); once a domain has its daily limit of
+  messages waiting, new submissions are refused with a temporary `452`. The
+  mail server counts every delivery attempt, retries included, so holding can
+  start before the platform's count reaches the limit.
 - **Outbound send-abuse** — a tenant saturating their sending limits fires
   warning/critical alerts (paired with the per-tenant sending-protection
-  throttle).
+  throttle). They open the tenant's **Email** tab.
 - **Mailbox quota** — tenants are warned as mailboxes approach their size cap.
 - **DNS blocklist listing** — your sending IP appearing on a DNSBL alerts
   admins immediately, before customers notice bounces.

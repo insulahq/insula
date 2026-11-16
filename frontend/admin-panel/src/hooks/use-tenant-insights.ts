@@ -39,8 +39,10 @@ export function useTenantMailUsage(tenantId: string | undefined) {
   return useQuery(tenantQuery<MailUsageResponse>('tenant-mail-usage', tenantId, `tenants/${tenantId}/mail/usage`, 30_000));
 }
 
-export function useTenantMailDaily(tenantId: string | undefined) {
-  return useQuery(tenantQuery<MailDailyResponse>('tenant-mail-daily', tenantId, `tenants/${tenantId}/mail/daily`));
+/** Per UTC day; `domain` narrows it to one sending domain, the unit the daily limit applies to. */
+export function useTenantMailDaily(tenantId: string | undefined, domain?: string | null) {
+  const path = `tenants/${tenantId}/mail/daily${domain ? `?domain=${encodeURIComponent(domain)}` : ''}`;
+  return useQuery({ ...tenantQuery<MailDailyResponse>('tenant-mail-daily', tenantId, path), queryKey: ['tenant-mail-daily', tenantId, domain ?? null] });
 }
 
 export function useTenantMailDomainStats(tenantId: string | undefined) {

@@ -1057,12 +1057,17 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'admin.email_quota_exceeded',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: '{{tenantLabel}} saturated its {{window}} sending limit',
+    subjectTemplate: '{{tenantLabel}}: {{domain}} reached its {{window}} sending limit',
     bodyTemplate: emailMjml(
       'Tenant sending limit saturated',
-      '{{tenantLabel}} sent {{used}} of {{limit}} messages ({{percent}}%) in the current {{window}} window, '
-      + 'as of {{occurredAt}}. A saturated sender is the shape of both a compromised account and a '
-      + 'deliverability risk to the whole platform.<br /><br />'
+      '{{tenantLabel}}\'s domain {{domain}} sent {{used}} of {{limit}} messages ({{percent}}%) in the current '
+      + '{{window}} window, as of {{occurredAt}}. The limit is per mail domain. Mail over it is accepted and '
+      + 'held in the queue until {{releasesAt}}, then delivered; once the domain has as many messages '
+      + 'waiting as its daily limit, new submissions are refused with a temporary error. The mail server '
+      + 'counts every delivery attempt, retries included, so holding can start before this count reaches '
+      + 'the limit.<br /><br />'
+      + 'A saturated sender is the shape of both a compromised account and a deliverability risk to the '
+      + 'whole platform.<br /><br />'
       + '<strong>Sending accounts:</strong> {{topSenders}}<br /><br />'
       + 'Which account is responsible decides the response: one unfamiliar address suggests a '
       + 'compromise, a single service address suggests a runaway integration, and traffic spread '
@@ -1072,6 +1077,8 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'tenantLabel', type: 'string', required: false },
+      { name: 'domain', type: 'string', required: false },
+      { name: 'releasesAt', type: 'string', required: false },
       { name: 'window', type: 'string', required: false },
       { name: 'used', type: 'string', required: false },
       { name: 'limit', type: 'string', required: false },
@@ -1084,12 +1091,14 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'admin.email_quota_exceeded',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: '{{tenantLabel}} at its {{window}} sending limit',
-    bodyTemplate: '{{tenantLabel}}: {{used}}/{{limit}} messages ({{percent}}%) this {{window}} as of {{occurredAt}}. Sending accounts: {{topSenders}}',
+    subjectTemplate: '{{tenantLabel}}: {{domain}} at its {{window}} sending limit',
+    bodyTemplate: '{{tenantLabel}}: {{domain}} sent {{used}}/{{limit}} messages ({{percent}}%) this {{window}} as of {{occurredAt}}; mail over the limit is held until {{releasesAt}}. Sending accounts: {{topSenders}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'tenantLabel', type: 'string', required: false },
+      { name: 'domain', type: 'string', required: false },
+      { name: 'releasesAt', type: 'string', required: false },
       { name: 'window', type: 'string', required: false },
       { name: 'used', type: 'string', required: false },
       { name: 'limit', type: 'string', required: false },
@@ -1515,12 +1524,14 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'tenant.email_quota_warning',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: 'Email sending at {{percent}}% of your {{window}} limit',
+    subjectTemplate: '{{domain}}: email sending at {{percent}}% of the {{window}} limit',
     bodyTemplate: emailMjml(
       'Email usage at {{percent}}%',
-      'Your account has sent {{used}} of {{limit}} messages ({{percent}}%) in the current '
-      + '{{window}} window, as of {{occurredAt}}. Messages beyond the limit are deferred '
-      + 'until the window rolls over.<br /><br />'
+      '{{domain}} has sent {{used}} of {{limit}} messages ({{percent}}%) in the current '
+      + '{{window}} window, as of {{occurredAt}}. The limit applies to each of your mail domains on its '
+      + 'own. Messages beyond it are accepted and held until the window resets ({{releasesAt}}), then '
+      + 'delivered. Every delivery attempt counts, retries included, so holding can start a little '
+      + 'before this count reaches the limit.<br /><br />'
       + '<strong>Sending accounts:</strong> {{topSenders}}<br /><br />'
       + 'This is the point at which an unexpected address is still worth checking — after the '
       + 'limit is reached, mail is already being held.',
@@ -1528,6 +1539,8 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     bodyFormat: 'mjml',
     variablesSchema: [
       ...COMMON_VARS,
+      { name: 'domain', type: 'string', required: false },
+      { name: 'releasesAt', type: 'string', required: false },
       { name: 'window', type: 'string', required: true },
       { name: 'percent', type: 'string', required: true },
       { name: 'used', type: 'string', required: true },
@@ -1539,11 +1552,12 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'tenant.email_quota_warning',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: 'Email sending at {{percent}}% of the {{window}} limit',
-    bodyTemplate: '{{used}} of {{limit}} messages sent this {{window}} as of {{occurredAt}}. Sending accounts: {{topSenders}}',
+    subjectTemplate: '{{domain}}: email sending at {{percent}}% of the {{window}} limit',
+    bodyTemplate: '{{domain}}: {{used}} of {{limit}} messages sent this {{window}} as of {{occurredAt}}. Sending accounts: {{topSenders}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
+      { name: 'domain', type: 'string', required: false },
       { name: 'window', type: 'string', required: true },
       { name: 'percent', type: 'string', required: true },
       { name: 'used', type: 'string', required: true },
@@ -1555,11 +1569,15 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'tenant.email_quota_exceeded',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: 'Email sending limit reached ({{window}})',
+    subjectTemplate: '{{domain}}: email sending limit reached ({{window}})',
     bodyTemplate: emailMjml(
       'Sending limit reached',
-      'Your account has sent {{used}} of {{limit}} messages in the current {{window}} window, '
-      + 'as of {{occurredAt}}. Further messages are deferred until the window rolls over.<br /><br />'
+      '{{domain}} has sent {{used}} of {{limit}} messages in the current {{window}} window, '
+      + 'as of {{occurredAt}}. Further messages from this domain are accepted and held until '
+      + '{{releasesAt}}, then delivered — nothing is discarded. Once the domain has as many messages '
+      + 'waiting as its daily limit, new messages are refused with a temporary error and your mail '
+      + 'program keeps them to send again. The limit applies to each of your mail domains on its own, '
+      + 'and every delivery attempt counts, retries included.<br /><br />'
       + '<strong>Sending accounts:</strong> {{topSenders}}<br /><br />'
       + 'If an address here is not one you expect to be sending, change its password — that is '
       + 'the usual sign of a compromised mailbox. If this is your normal volume, contact support '
@@ -1568,6 +1586,8 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     bodyFormat: 'mjml',
     variablesSchema: [
       ...COMMON_VARS,
+      { name: 'domain', type: 'string', required: false },
+      { name: 'releasesAt', type: 'string', required: false },
       { name: 'window', type: 'string', required: true },
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },
@@ -1578,11 +1598,13 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'tenant.email_quota_exceeded',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: 'Email sending limit reached ({{window}})',
-    bodyTemplate: '{{used}} of {{limit}} messages sent ({{percent}}%) this {{window}} as of {{occurredAt}} — further messages are deferred. Sending accounts: {{topSenders}}',
+    subjectTemplate: '{{domain}}: email sending limit reached ({{window}})',
+    bodyTemplate: '{{domain}}: {{used}} of {{limit}} messages sent ({{percent}}%) this {{window}} as of {{occurredAt}} — further messages are held until {{releasesAt}}, then delivered. Sending accounts: {{topSenders}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
+      { name: 'domain', type: 'string', required: false },
+      { name: 'releasesAt', type: 'string', required: false },
       { name: 'window', type: 'string', required: true },
       { name: 'used', type: 'string', required: true },
       { name: 'limit', type: 'string', required: true },

@@ -36,8 +36,50 @@ describe('resolveNotificationLinks', () => {
       adminBaseUrl: ADMIN, tenantBaseUrl: TENANT,
     });
     // Production pointed this at /tenants — the list, which shows no sending
-    // limits at all, so the click told the operator nothing.
-    expect(links[0]?.url).toBe(`${ADMIN}/tenants/t-123`);
+    // limits at all — and then at the tenant's Overview, which shows no held
+    // mail. Its Email tab has the per-domain usage and the held-back counts.
+    expect(links[0]?.url).toBe(`${ADMIN}/tenants/t-123/email`);
+  });
+
+  it('opens the tenant\'s Email tab from a send-limit saturation alert too, monitoring second', () => {
+    const links = resolveNotificationLinks({
+      categoryId: 'admin.email_abuse_warning',
+      resourceType: 'tenant', resourceId: 't-123', tenantId: null,
+      adminBaseUrl: ADMIN, tenantBaseUrl: TENANT,
+    });
+    expect(links[0]?.url).toBe(`${ADMIN}/tenants/t-123/email`);
+    expect(links).toContainEqual({ text: 'Open mail monitoring', url: `${ADMIN}/monitoring/mail`, style: 'secondary' });
+  });
+
+  // An abuse alert from before tenants were stamped on it falls back to
+  // Monitoring → Mail, the page its second link names: one button, not two.
+  it('does not repeat the primary page as a second link', () => {
+    const links = resolveNotificationLinks({
+      categoryId: 'admin.email_abuse_critical',
+      resourceType: null, resourceId: null, tenantId: null,
+      adminBaseUrl: ADMIN, tenantBaseUrl: TENANT,
+    });
+    expect(links.map((l) => l.url)).toEqual([`${ADMIN}/monitoring/mail`]);
+  });
+
+  it('opens Email → Statistics with the domain picked for a tenant send-limit notification', () => {
+    for (const categoryId of ['tenant.email_quota_exceeded', 'tenant.email_quota_warning']) {
+      const links = resolveNotificationLinks({
+        categoryId,
+        resourceType: 'email_domain', resourceId: 'ed-1', tenantId: 't1',
+        adminBaseUrl: ADMIN, tenantBaseUrl: TENANT,
+      });
+      expect(links[0]?.url).toBe('https://panel.example.test/email/statistics?emailDomain=ed-1');
+    }
+  });
+
+  it('opens Email → Statistics without a pick for a domain that has no email-domain row', () => {
+    const links = resolveNotificationLinks({
+      categoryId: 'tenant.email_quota_exceeded',
+      resourceType: null, resourceId: null, tenantId: 't1',
+      adminBaseUrl: ADMIN, tenantBaseUrl: TENANT,
+    });
+    expect(links[0]?.url).toBe('https://panel.example.test/email/statistics');
   });
 
   it('carries more than one link, primary first', () => {

@@ -66,11 +66,14 @@ describe.skipIf(!dbAvailable)('tenant mail statistics per domain (integration)',
   it('lists every email domain of the tenant with its 24-hour and 7-day figures, busiest first', async () => {
     const stats = await getTenantMailDomainStats(db(), tenantId);
     expect(stats.windowDays).toBe(7);
-    expect(stats.domains).toEqual([
+    // The current hour and day are covered in domain-usage.integration.test.ts,
+    // with a fixed clock; here they depend on when the suite runs.
+    expect(stats.domains).toMatchObject([
       { domain: 'shop.example.test', emailHosted: true, sent24h: 5, sent7d: 12, recipients7d: 16, rateLimited7d: 1, quotaRejected7d: 2 },
       { domain: 'relay-only.example.test', emailHosted: false, sent24h: 2, sent7d: 2, recipients7d: 2, rateLimited7d: 0, quotaRejected7d: 0 },
-      { domain: 'quiet.example.test', emailHosted: true, sent24h: 0, sent7d: 0, recipients7d: 0, rateLimited7d: 0, quotaRejected7d: 0 },
+      { domain: 'quiet.example.test', emailHosted: true, sent24h: 0, sent7d: 0, recipients7d: 0, rateLimited7d: 0, quotaRejected7d: 0, throttle: null },
     ]);
+    expect(stats.dailyLimit).toBeGreaterThan(0);
   });
 
   it('serves the tenant its own figures and refuses another tenant’s', async () => {

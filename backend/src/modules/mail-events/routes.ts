@@ -108,6 +108,12 @@ export async function mailEventsWebhookRoutes(app: FastifyInstance): Promise<voi
 // Window only — the domain list is not filterable here on purpose: an
 // operator looking at DMARC wants the whole estate, and a filtered view that
 // hides a failing domain is the wrong default.
+/** `?domain=` narrows the daily series to one sending domain (the limit is per domain). */
+const mailDailyQuerySchema = z.object({
+  domain: z.string().trim().toLowerCase().min(1).max(255)
+    .regex(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/, 'Invalid domain name').optional(),
+});
+
 const dmarcOverviewQuerySchema = z.object({
   windowDays: z.coerce.number().int().min(1).max(365).optional(),
 });
@@ -286,7 +292,17 @@ export async function mailUsageRoutes(app: FastifyInstance): Promise<void> {
     ],
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
-    return success(await getTenantMailDaily(app.db, tenantId));
+    const parsed = mailDailyQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        `Validation error: ${first.message} (${first.path.join('.')})`,
+        400,
+        { field: first.path.join('.') },
+      );
+    }
+    return success(await getTenantMailDaily(app.db, tenantId, { domain: parsed.data.domain ?? null }));
   });
 
   // Per-domain send figures for the tenant's Email → Statistics tab. Readable

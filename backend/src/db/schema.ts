@@ -1934,12 +1934,15 @@ export const emailQuotaEvents = pgTable('email_quota_events', {
   tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
     .references(() => tenants.id, { onDelete: 'cascade' }),
+  // The sending domain that crossed (mig 0183): the limits are per domain, so
+  // the dedupe is too. '' on rows from before the split.
+  domain: varchar('domain', { length: 255 }).notNull().default(''),
   windowKind: varchar('window_kind', { length: 8 }).notNull(),
   threshold: integer('threshold').notNull(),
   windowStart: timestamp('window_start', { withTimezone: true }).notNull(),
   firedAt: timestamp('fired_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
-  primaryKey({ columns: [table.tenantId, table.windowKind, table.threshold, table.windowStart] }),
+  primaryKey({ columns: [table.tenantId, table.domain, table.windowKind, table.threshold, table.windowStart] }),
 ]);
 
 // R6 PR 2 (mig 0058): outbound send accounting — hourly buckets per
@@ -1956,6 +1959,10 @@ export const emailSendCounters = pgTable('email_send_counters', {
   recipientCount: integer('recipient_count').notNull().default(0),
   bytesTotal: bigint('bytes_total', { mode: 'number' }).notNull().default(0),
   rateLimitedCount: integer('rate_limited_count').notNull().default(0),
+  // Of rateLimitedCount, the holds by the DAILY limit — retried at 00:00 UTC.
+  // The rest were held by the hourly limit, retried at the next full hour
+  // (mig 0183).
+  rateLimitedDailyCount: integer('rate_limited_daily_count').notNull().default(0),
   quotaRejectedCount: integer('quota_rejected_count').notNull().default(0),
 }, (table) => [
   primaryKey({ columns: [table.tenantId, table.domain, table.bucketStart] }),

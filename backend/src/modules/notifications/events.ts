@@ -17,6 +17,7 @@
 import { emitEvent, type EmitResult } from './dispatcher/dispatch.js';
 import { getProviderForCategoryEmail } from './providers/service.js';
 import type { Database } from '../../db/index.js';
+import { EMAIL_DOMAIN_RESOURCE } from './action-path.js';
 
 /**
  * Phase 1 of the notification-system rewrite: every legacy event
@@ -1286,6 +1287,10 @@ export async function notifyTenantResourceRecovered(
 
 export interface AdminEmailQuotaPayload {
   readonly tenantLabel: string;
+  /** The sending domain at its limit — the limits are per domain. */
+  readonly domain: string;
+  /** When the mail it holds is retried, e.g. "00:00 UTC (YYYY-MM-DD)". */
+  readonly releasesAt: string;
   readonly window: string;
   readonly used: string;
   readonly limit: string;
@@ -1627,6 +1632,10 @@ export async function notifyTenantScheduledTaskFailure(
 }
 
 export interface TenantEmailQuotaPayload {
+  /** The sending domain at its limit — the limits are per domain. */
+  readonly domain: string;
+  /** When the mail it holds is retried, e.g. "15:00 UTC". */
+  readonly releasesAt: string;
   readonly window: 'hour' | 'day';
   readonly percent: string;
   readonly used: string;
@@ -1635,21 +1644,34 @@ export interface TenantEmailQuotaPayload {
   /** Rendered as a list on every channel. */
   readonly topSenders: readonly string[];
 }
+/**
+ * The resource of a tenant send-limit notification: the email domain, so its
+ * link opens Email → Statistics with that domain picked (action-path.ts). A
+ * domain that only sends through the relay has no email-domain row; the link
+ * then opens the tab without a pick.
+ */
+function emailDomainResource(emailDomainId: string | null | undefined): { resourceType?: string; resourceId?: string } {
+  return emailDomainId ? { resourceType: EMAIL_DOMAIN_RESOURCE, resourceId: emailDomainId } : {};
+}
 /** 80% crossing — the mail-events threshold evaluator owns dedupe. */
 export async function notifyTenantEmailQuotaWarning(
   db: Database,
   tenantId: string,
   payload: TenantEmailQuotaPayload,
+  emailDomainId?: string | null,
 ): Promise<void> {
-  await dispatchSafe(db, 'tenant.email_quota_warning', { kind: 'tenant', tenantId }, payload, tenantId);
+  await dispatchSafe(db, 'tenant.email_quota_warning', { kind: 'tenant', tenantId }, payload, tenantId,
+    emailDomainResource(emailDomainId));
 }
 /** 100% crossing. */
 export async function notifyTenantEmailQuotaExceeded(
   db: Database,
   tenantId: string,
   payload: TenantEmailQuotaPayload,
+  emailDomainId?: string | null,
 ): Promise<void> {
-  await dispatchSafe(db, 'tenant.email_quota_exceeded', { kind: 'tenant', tenantId }, payload, tenantId);
+  await dispatchSafe(db, 'tenant.email_quota_exceeded', { kind: 'tenant', tenantId }, payload, tenantId,
+    emailDomainResource(emailDomainId));
 }
 
 // ── Mail monitoring: send-limit saturation + blocklist ───────────
@@ -1673,11 +1695,17 @@ export async function notifyAdminEmailSendingAbuse(
   level: 'warning' | 'critical',
   payload: AdminEmailAbusePayload,
   dedupeKey?: string,
+  /** The tenant this is about, so the link opens its Email tab. */
+  subjectTenantId?: string,
 ): Promise<void> {
   const categoryId = level === 'critical'
     ? 'admin.email_abuse_critical'
     : 'admin.email_abuse_warning';
-  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, { dedupeKey });
+  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, {
+    dedupeKey,
+    resourceType: subjectTenantId ? 'tenant' : undefined,
+    resourceId: subjectTenantId,
+  });
 }
 
 export interface AdminMailBlocklistedPayload {

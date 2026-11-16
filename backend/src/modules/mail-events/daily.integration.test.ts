@@ -54,12 +54,29 @@ describe.skipIf(!dbAvailable)('tenant mail per day (integration)', () => {
   });
 
   it('returns fourteen UTC days, oldest first, with every domain summed and empty days as zeros', async () => {
-    const { days } = await getTenantMailDaily(db(), tenantId, 14, NOW);
+    const { days, domain } = await getTenantMailDaily(db(), tenantId, { days: 14, now: NOW });
+    expect(domain).toBeNull();
     expect(days).toHaveLength(14);
     expect(days[0]).toEqual({ date: '2026-10-06', sent: 7, recipients: 7, rateLimited: 0, quotaRejected: 0 });
     expect(days[1]).toEqual({ date: '2026-10-07', sent: 0, recipients: 0, rateLimited: 0, quotaRejected: 0 });
     expect(days[12]).toEqual({ date: '2026-10-18', sent: 9, recipients: 9, rateLimited: 1, quotaRejected: 2 });
     expect(days[13]).toEqual({ date: '2026-10-19', sent: 2, recipients: 3, rateLimited: 0, quotaRejected: 0 });
+  });
+
+  // The limit is per domain, so the chart can be read one domain at a time —
+  // with the daily limit the line it is held to.
+  it('narrows to one domain, matched case-insensitively, with the daily limit in force', async () => {
+    const res = await getTenantMailDaily(db(), tenantId, { domain: 'SHOP.example.test', days: 14, now: NOW });
+    expect(res.domain).toBe('shop.example.test');
+    expect(res.dailyLimit).toBeGreaterThan(0);
+    expect(res.days[12]).toEqual({ date: '2026-10-18', sent: 5, recipients: 5, rateLimited: 1, quotaRejected: 0 });
+    expect(res.days.reduce((n, d) => n + d.sent, 0)).toBe(14);
+  });
+
+  it('refuses a domain filter that is not a domain name', async () => {
+    const admin = generateToken(app, { role: 'admin', panel: 'admin' });
+    const res = await app.inject({ method: 'GET', url: `/api/v1/tenants/${tenantId}/mail/daily?domain=a%27%20OR%201%3D1`, headers: { authorization: `Bearer ${admin}` } });
+    expect(res.statusCode).toBe(400);
   });
 
   it('serves an admin any tenant and refuses a tenant user another tenant’s days', async () => {

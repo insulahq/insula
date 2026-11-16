@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aggregateEvents, type StalwartWebhookEvent } from './ingest.js';
+import { aggregateEvents, heldWindowMs, type StalwartWebhookEvent } from './ingest.js';
 
 const T = '2026-06-12T10:15:30Z';
 const resolution = new Map([['alpha.example.com', 'tenant-1'], ['beta.example.com', 'tenant-2']]);
@@ -44,7 +44,33 @@ describe('aggregateEvents', () => {
       { type: 'queue.quota-exceeded', createdAt: T, data: { from: 'a@alpha.example.com' } },
     ], resolution);
     expect(deltas).toHaveLength(1);
-    expect(deltas[0]).toMatchObject({ sentCount: 0, rateLimitedCount: 1, quotaRejectedCount: 1 });
+    expect(deltas[0]).toMatchObject({ sentCount: 0, rateLimitedCount: 1, rateLimitedDailyCount: 0, quotaRejectedCount: 1 });
+  });
+
+  // The shape Stalwart v0.16 sends (its throttle code puts Limit = [count,
+  // period] and the JSON serializer writes a Duration as integer ms). A daily
+  // hold waits until 00:00 UTC, an hourly one until the next full hour, so
+  // which window held it decides whether the message is still waiting.
+  it('tells a daily hold from an hourly one by the window in the event', () => {
+    const held = (limit: unknown): StalwartWebhookEvent => ({
+      type: 'queue.rate-limit-exceeded', createdAt: T,
+      data: { from: 'a@alpha.example.com', id: 'MtaOutboundThrottle with id x', limit },
+    });
+    const { deltas } = aggregateEvents([held([100, 86_400_000]), held([100, 86_400_000]), held([50, 3_600_000])], resolution);
+    expect(deltas[0]).toMatchObject({ rateLimitedCount: 3, rateLimitedDailyCount: 2 });
+  });
+});
+
+describe('heldWindowMs', () => {
+  it('reads [count, periodMs] (v0.16) and limit + period (later releases)', () => {
+    expect(heldWindowMs({ limit: [100, 86_400_000] })).toBe(86_400_000);
+    expect(heldWindowMs({ limit: 100, period: 3_600_000 })).toBe(3_600_000);
+  });
+
+  it('is null when the event carries no window — counted as hourly, never told to wait until midnight', () => {
+    expect(heldWindowMs({ from: 'a@alpha.example.com' })).toBeNull();
+    expect(heldWindowMs({ limit: '[100, 86400000ms]' })).toBeNull();
+    expect(heldWindowMs(undefined)).toBeNull();
   });
 
   it('drops unresolvable sender domains as unattributed', () => {

@@ -6,7 +6,8 @@
  *
  * Consumed event types:
  *   queue.authenticated-message-queued  -> sent/recipients/bytes
- *   queue.rate-limit-exceeded           -> rate_limited
+ *   queue.rate-limit-exceeded           -> rate_limited (+ rate_limited_daily
+ *                                          when the daily window held it)
  *   queue.quota-exceeded                -> quota_rejected
  *
  * Everything else (incl. the incoming-report.* family pre-subscribed
@@ -50,6 +51,8 @@ export interface CounterDelta {
   recipientCount: number;
   bytesTotal: number;
   rateLimitedCount: number;
+  /** Of rateLimitedCount, the holds by a window of a day or longer (mig 0183). */
+  rateLimitedDailyCount: number;
   quotaRejectedCount: number;
 }
 
@@ -110,6 +113,25 @@ function senderAddressOf(data: Record<string, unknown> | undefined): string | nu
   return from.trim().toLowerCase().slice(0, 320);
 }
 
+const DAY_MS = 86_400_000;
+
+/**
+ * The length of the window that held a message, in milliseconds.
+ *
+ * Stalwart puts it on `queue.rate-limit-exceeded` as `limit: [count, periodMs]`
+ * (v0.16, read from its JSON event serializer and its throttle code); later
+ * releases split it into `limit: count` and `period: periodMs`. Both are read.
+ * Null when neither is there — the hold is then counted as hourly, the shorter
+ * promise, rather than told to wait until midnight.
+ */
+export function heldWindowMs(data: Record<string, unknown> | undefined): number | null {
+  const limit = data?.limit;
+  if (Array.isArray(limit) && typeof limit[1] === 'number' && Number.isFinite(limit[1])) return limit[1];
+  const period = data?.period;
+  if (typeof period === 'number' && Number.isFinite(period)) return period;
+  return null;
+}
+
 function hourBucket(createdAt: string | undefined): Date {
   const t = createdAt ? new Date(createdAt) : new Date();
   const ms = Number.isFinite(t.getTime()) ? t.getTime() : Date.now();
@@ -160,6 +182,7 @@ export function aggregateEvents(
         recipientCount: 0,
         bytesTotal: 0,
         rateLimitedCount: 0,
+        rateLimitedDailyCount: 0,
         quotaRejectedCount: 0,
       };
       byKey.set(key, delta);
@@ -195,6 +218,10 @@ export function aggregateEvents(
       delta.bytesTotal += typeof size === 'number' && Number.isFinite(size) ? Math.max(0, size) : 0;
     } else if (type === 'queue.rate-limit-exceeded') {
       delta.rateLimitedCount += 1;
+      // Stalwart's windows are fixed and epoch-aligned: a daily hold is retried
+      // at 00:00 UTC, an hourly one at the next full hour. Which one held it
+      // decides whether the message is still waiting.
+      if ((heldWindowMs(ev.data) ?? 0) >= DAY_MS) delta.rateLimitedDailyCount += 1;
     } else {
       delta.quotaRejectedCount += 1;
     }
@@ -282,6 +309,7 @@ export async function ingestMailEvents(
         recipientCount: d.recipientCount,
         bytesTotal: d.bytesTotal,
         rateLimitedCount: d.rateLimitedCount,
+        rateLimitedDailyCount: d.rateLimitedDailyCount,
         quotaRejectedCount: d.quotaRejectedCount,
       })
         .onConflictDoUpdate({
@@ -291,6 +319,7 @@ export async function ingestMailEvents(
             recipientCount: sql`${emailSendCounters.recipientCount} + ${d.recipientCount}`,
             bytesTotal: sql`${emailSendCounters.bytesTotal} + ${d.bytesTotal}`,
             rateLimitedCount: sql`${emailSendCounters.rateLimitedCount} + ${d.rateLimitedCount}`,
+            rateLimitedDailyCount: sql`${emailSendCounters.rateLimitedDailyCount} + ${d.rateLimitedDailyCount}`,
             quotaRejectedCount: sql`${emailSendCounters.quotaRejectedCount} + ${d.quotaRejectedCount}`,
           },
         });

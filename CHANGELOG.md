@@ -12,6 +12,57 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **The tenant dashboard warns while a sending limit holds mail back.** A **Sending limit
+  reached** card under *Needs your attention* lists each affected mail domain:
+  - how many messages are held back and until when, how many were refused today, and the
+    domain's mail this hour and today against the limits;
+  - each domain opens **Email → Statistics** with that domain picked;
+  - hovering the card explains that held mail is delivered when the limit resets, that refused
+    mail stays in the sender's outbox, and that every delivery attempt counts.
+- **Email → Statistics shows today and the last 14 days.** For the picked domain:
+  - this hour and today against the limits, and what is held back now and was refused today;
+  - while a limit is full, a banner names the limit and says when the held mail goes out;
+  - a **Sent per day, last 14 days** chart like the admin tenant page's, with the daily limit;
+  - the 7-day figures are now **Held back** and **Refused**, with what each means for the mail.
+
+### Fixed
+
+- **"Limit exceeded" while nothing was held, and held mail the page did not show.** The sending
+  limits apply per mail domain (the mail server keys them by sender domain), but several places
+  added a tenant's domains together and held the sum to the per-domain limit:
+  - the 80%/100% notifications, so two domains at 60 each read "exceeded 120/100";
+  - the admin tenant page's **Email sent today** and the Email tab's hour and day tiles;
+  - the tenant dashboard's **Sent today** and the send-limit card on Settings & DNS.
+
+  All of these now use one domain's figures: the busiest domain's, or the selected domain's on
+  Settings & DNS. The notifications are worked out and deduplicated per domain, so a second
+  domain reaching its limit later the same day is reported too (migration 0183). They name the
+  domain and when its held mail goes out.
+- **The admin tenant Overview shows mail a limit is holding back.** The limit notification
+  opened the Overview, which showed "111 / 100" and no held-back count; that count was only on
+  the Email tab. Now:
+  - **Needs attention** lists each held domain with its count and release time;
+  - the tile names the busiest domain and its held mail;
+  - the Email tab shows a banner while mail is held, and says how holding and refusal work;
+  - its chart opens on the busiest domain with the daily limit line, can switch domain, and no
+    longer counts held mail twice. Held mail is part of the sent mail, so it is drawn inside the
+    sent bar; refused mail is drawn on top.
+- **The send-limit notifications open where the limit is read.** The operator's alert opens the
+  tenant's **Email** tab, and so do the send-abuse alerts, with Monitoring → Mail as a second
+  link. The tenant's opens **Email → Statistics** with the domain picked.
+- **Hourly and daily holds are told apart.** The mail server's windows are whole UTC hours and
+  days. A message held by the daily limit waits until 00:00 UTC; one held by the hourly limit is
+  retried at the next full hour.
+  - The webhook ingest now records which window held each message, read from the event's `limit`
+    (migration 0183, `email_send_counters.rate_limited_daily_count`).
+  - That is what "held back now" is counted from. Holds recorded before this release count as
+    hourly, so on the day of the upgrade mail a daily limit held earlier stops showing as held
+    after the hour it was held in, although it still goes out at 00:00 UTC.
+  - On the first pass after the upgrade, a limit crossing already notified that hour or day is
+    notified once more, now naming its domain.
+
 ## [2026.11.10] - 2026-11-14
 
 ### Security

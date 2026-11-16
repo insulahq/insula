@@ -6,6 +6,7 @@ import { collect } from './section.js';
 import { describeChange } from './admin-service.js';
 import { buildTenantAlerts } from './alerts.js';
 import { autoRenewedSql, renewalAtSql } from '../certificates/renewal-policy-sql.js';
+import { getTenantMailToday } from '../mail-events/domain-usage.js';
 
 interface Logger { warn?(...a: unknown[]): void }
 
@@ -57,7 +58,7 @@ export async function buildTenantSummary(
     }, { logger }),
 
     collect('mail', async () => {
-      const r = await db.execute<Record<string, number | string | null>>(sql`
+      const r = await db.execute<Record<string, number | string | boolean | null>>(sql`
         SELECT
           -- platform_managed excluded so this numerator counts the same rows
           -- the limit below is enforced against (getTenantMailboxCount in
@@ -79,14 +80,14 @@ export async function buildTenantSummary(
             WHERE tenant_id = ${tenantId} AND status = 'active') AS used_mb,
           (SELECT COALESCE(SUM(quota_mb), 0)::float8 FROM mailboxes
             WHERE tenant_id = ${tenantId} AND status = 'active') AS quota_mb,
-          (SELECT COALESCE(SUM(sent_count), 0)::int FROM email_send_counters
-            -- >=, not >: buckets are hourly and START at midnight, so a strict >
-            -- left out every message sent in the first hour of the day.
-            WHERE tenant_id = ${tenantId} AND bucket_start >= date_trunc('day', NOW())) AS sent_today,
           -- Same override-first rule as max_boxes above: the enforced
           -- daily cap is tenants.email_send_rate_limit_daily when set.
           (SELECT COALESCE(t.email_send_rate_limit_daily, p.email_daily_send_limit, 0)::int FROM tenants t
-             LEFT JOIN hosting_plans p ON p.id = t.plan_id WHERE t.id = ${tenantId}) AS daily_limit
+             LEFT JOIN hosting_plans p ON p.id = t.plan_id WHERE t.id = ${tenantId}) AS daily_limit,
+          (SELECT COALESCE(t.email_send_rate_limit, p.email_hourly_send_limit, 0)::int FROM tenants t
+             LEFT JOIN hosting_plans p ON p.id = t.plan_id WHERE t.id = ${tenantId}) AS hourly_limit,
+          (SELECT (t.email_outbound_suspended OR t.status = 'suspended') FROM tenants t
+            WHERE t.id = ${tenantId}) AS outbound_suspended
       `);
       const x = (r.rows ?? [])[0] ?? {};
       const fullest = await db.execute<{ full_address: string; pct: number }>(sql`
@@ -98,6 +99,10 @@ export async function buildTenantSummary(
          LIMIT 1
       `);
       const f = (fullest.rows ?? [])[0];
+      // Per domain: the daily limit applies to each mail domain on its own, so
+      // the tile reads the busiest domain against it. The tenant-wide sum read
+      // "111 of 100" while each domain was within its own 100.
+      const today = await getTenantMailToday(db, tenantId);
       return {
         mailboxes: Number(x.boxes ?? 0),
         maxMailboxes: Number(x.max_boxes ?? 0),
@@ -105,8 +110,12 @@ export async function buildTenantSummary(
         storageLimitGb: Number(x.quota_mb ?? 0) / 1024,
         fullestMailboxPct: f ? Number(f.pct) : null,
         fullestMailboxAddress: f ? f.full_address : null,
-        sentToday: Number(x.sent_today ?? 0),
+        sentToday: today.busiestDay?.sentToday ?? 0,
         dailyLimit: Number(x.daily_limit ?? 0),
+        hourlyLimit: Number(x.hourly_limit ?? 0),
+        sentTodayDomain: today.busiestDay?.domain ?? null,
+        outboundSuspended: x.outbound_suspended === true || String(x.outbound_suspended) === 'true',
+        throttles: [...today.throttles],
       };
     }, { logger }),
 
