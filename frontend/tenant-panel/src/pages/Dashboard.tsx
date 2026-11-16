@@ -24,7 +24,7 @@ import {
   type MatrixCell,
 } from '@/components/console/ConsoleTiles';
 import {
-  COUNTING_EXPLAINED, HOLDING_EXPLAINED, REFUSAL_EXPLAINED, releaseLabel, statisticsPath, throttleText,
+  COUNTING_EXPLAINED, HOLDING_EXPLAINED, REFUSAL_EXPLAINED, statisticsPath, throttleText,
 } from '@/components/email/mail-throttle';
 
 /**
@@ -366,10 +366,10 @@ function MailThrottleCard({ throttles, hourlyLimit, dailyLimit }: {
         rows={[
           ['Hourly limit, per domain', String(hourlyLimit)],
           ['Daily limit, per domain', String(dailyLimit)],
-          ...throttles.flatMap((t): [string, string][] => [
-            [`${t.domain} held back`, t.heldNow > 0 ? `${t.heldNow} until ${releaseLabel(t.releasesAt)}` : '0'],
-            [`${t.domain} refused today`, String(t.refusedToday)],
-          ]),
+          // The domain alone as the label: it is the half that truncates, and
+          // "held back" / "refused" must survive in the value. The release
+          // time is on the card's own row.
+          ...throttles.map((t): [string, string] => [t.domain, `${t.heldNow} held · ${t.refusedToday} refused`]),
         ]}
         note={`${HOLDING_EXPLAINED} ${REFUSAL_EXPLAINED} ${COUNTING_EXPLAINED}`}
       />
