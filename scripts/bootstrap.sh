@@ -11644,6 +11644,7 @@ check_outbound_mail_ports() {
     # Split on ';' only — no glob expansion of an operator-supplied value.
     set -f
     IFS=';'
+    probes=()
     for entry in $spec; do
       [[ -n "${entry//[[:space:]]/}" ]] || continue
       port="${entry%%=*}"
@@ -11654,8 +11655,12 @@ check_outbound_mail_ports() {
         continue
       fi
       outbound_mail_port_status "$port" "$hosts" &
+      probes+=("$!")
     done
-    wait
+    # The probes by pid, never a bare `wait`: bash 5.3 (Ubuntu 26.04) also
+    # waits on background jobs this subshell inherited from its parent, and
+    # loops forever on "pid N is not a child of this shell".
+    (( ${#probes[@]} == 0 )) || wait "${probes[@]}"
   )"
   local open=() blocked=() unknown=() invalid=() details=()
   while read -r port status rest; do
