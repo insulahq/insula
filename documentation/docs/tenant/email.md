@@ -256,17 +256,47 @@ sender.
 
 ## Statistics (how much your domains sent)
 
-The **Statistics** tab shows, for the domain selected at the top, the mail it
-sent in the last 24 hours and the last 7 days, its recipients over those 7
-days, and how much your sending limits affected:
+The **Statistics** tab shows, for the domain selected at the top:
 
-- **Deferred** — held back by the sending rate limit and delivered later.
-- **Rejected** — refused because the sending quota was used up.
+- **Today against your limits** — mail sent this hour and today, each against
+  the limit, and how much a limit is **holding back now** and has **refused
+  today**. While a limit is full, a banner says which one and when the held
+  mail goes out.
+- **The last 24 hours and 7 days** — mail sent, its recipients, and how much
+  the limits held back or refused.
+- **Sent per day, last 14 days** — a bar per day: mail sent, the part a limit
+  held back and delivered later, and mail refused, with the daily limit drawn
+  across.
 
-Below that, **All your domains** lists the same figures for every one of your
+Below that, **All your domains** lists the figures for every one of your
 domains, sortable by any column. A domain that sent nothing shows zeros. One
 marked **sending only** sends through the platform's mail relay but hosts no
 mailboxes here.
+
+### Sending limits
+
+Your plan sets how many messages you may send **per hour** and **per day**.
+The limits apply to **each of your mail domains on its own**: with two domains
+and a daily limit of 100, each domain may send 100 a day. The hour is a whole
+hour by the clock (UTC) and the day runs from 00:00 UTC.
+
+- **Held back** — mail over a limit is not lost. It is accepted, held in the
+  queue and delivered when the limit resets: at the next full hour for the
+  hourly limit, at 00:00 UTC for the daily one.
+- **Refused** — once a domain has as many messages waiting as its daily limit,
+  new messages are refused with a temporary error. Your mail program keeps
+  them in its outbox and tries again; webmail shows an error and keeps your
+  draft.
+- **Every delivery attempt counts.** A message the receiving server did not
+  accept at the first try is retried, and each retry counts against the limit,
+  so mail can be held a little before the count here reaches it.
+
+While a limit is holding mail back, the **Hosting Overview** shows a
+**Sending limit reached** card under *Needs your attention*: each affected
+domain with what is held back and until when and what was refused. Hover it
+for how the limits work; click a domain to open its Statistics. The
+notifications at 80% and 100% of a limit name the domain and open the same
+place.
 
 ## Authentication (who is sending as your domain)
 

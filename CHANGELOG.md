@@ -12,6 +12,146 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **Roundcube 1.7.5 → 1.7.6**, a security release that fixes 17 reported vulnerabilities:
+  - Sieve script injection through a filter rule's operator and its set/include modifiers;
+  - IMAP command injection through a CRLF in a message id;
+  - SSRF past the CSS proxy's local-address check (nip.io/sslip.io names, 6to4 addresses);
+  - CSRF bypasses for file-only POSTs and for purging or expunging a folder;
+  - destructive Sieve actions triggered cross-site with a GET;
+  - mail header injection through a read-receipt subject;
+  - an open redirect when downloading an attachment;
+  - a `disabled_actions` bypass, written with `_` instead of `-`;
+  - attachment content passed to ImageMagick unchecked;
+  - a CPU loop in session decoding.
+
+  The same PHP as before (8.4.27). Nothing in our configuration changes:
+  - the IMAP host is set by the platform, so the new check on a host typed at the login form does
+    not apply;
+  - the `Received:` header stays off;
+  - webmail sign-in from the panel (the `jwt_auth` plugin) uses no API the release changed.
+
+### Added
+
+- **The tenant dashboard warns while a sending limit holds mail back.** A **Sending limit
+  reached** card under *Needs your attention* lists each affected mail domain:
+  - how many messages are held back and until when, how many were refused today, and the
+    domain's mail this hour and today against the limits;
+  - each domain opens **Email → Statistics** with that domain picked;
+  - hovering the card explains that held mail is delivered when the limit resets, that refused
+    mail stays in the sender's outbox, and that every delivery attempt counts.
+- **Email → Statistics shows today and the last 14 days.** For the picked domain:
+  - this hour and today against the limits, and what is held back now and was refused today;
+  - while a limit is full, a banner names the limit and says when the held mail goes out;
+  - a **Sent per day, last 14 days** chart like the admin tenant page's, with the daily limit;
+  - the 7-day figures are now **Held back** and **Refused**, with what each means for the mail.
+- **WAF trusted IPs per website.** On a route's Security tab, **WAF Trusted IPs** lists addresses
+  whose requests to that website the WAF still checks and logs but never blocks — the tenant's own
+  workstation, office or automation:
+  - single addresses, or networks up to /24 (IPv4) or /48 (IPv6), at most 20 per website;
+  - rendered as one rule per route behind its exact hostname, so no other site is affected
+    (a wildcard route cannot have any: a regex matching every host under it would also match a
+    sibling host that has its own route);
+  - their events are marked *not blocked · trusted IP* and do not count toward the auto-ban;
+  - **By source IP** in the WAF Log has a **Trust** button for each address (migration 0184).
+- **A WAF exclusion can cover every rule on one path.** The new scope **All rules** has no rule id
+  and needs a path. The WAF does not check that path at all, so nothing on it is blocked or logged.
+  It is meant for an endpoint whose every request carries content that looks like an attack, such
+  as an MCP or API endpoint posting HTML, SQL or shell text. It is "not checked" rather than
+  "logged, not blocked" because such an endpoint logs a row per rule per request, thousands a day,
+  which would push the website's real events out of its 20,000-event limit.
+- **The tenant WAF Log shows who sent each request.**
+  - **By rule and path** names each row's busiest source addresses.
+  - **By source IP** lists each address with its requests, how many were let through and why, the
+    rules it tripped, and how many paths it hit.
+  - Clicking an address shows only its events. The event list can be filtered by source IP, rule,
+    path and outcome, is sorted by the server, and pages with **Show more**. It used to be the
+    newest 50 events, sorted in the browser, so an address dropped out of sight within the hour on
+    a busy site.
+
+### Changed
+
+- **VictoriaMetrics v1.155.0 → v1.156.0.** Bug fixes only for the single-node server the platform
+  runs:
+  - `running_avg` and `range_avg` over series with gaps;
+  - a panic on large subqueries;
+  - query numbers with leading zeroes;
+  - cancelled queries no longer count as request errors;
+  - cgroup v1 limits set through systemd slices are detected.
+
+  A new metric, `process_cgroup_cpu_throttled_seconds_total`, reports CPU throttling. The
+  Enterprise licence flags it deprecates are not used here.
+- **The tenant API's route WAF log (`GET /tenants/:tenantId/routes/:routeId/waf-logs`) is paged.**
+  - It returns the standard `pagination` envelope (`cursor`, `has_more`, `total_count`) and filters
+    by `sourceIp`, `ruleId`, `path` and `outcome`, sorted with `sort=field:asc|desc`.
+  - Each event carries `detectionOnly` and `passReason`. It no longer carries `tenantId`,
+    `hostname`, `matchedData` and `eventKey`.
+  - A `limit` above 100 is now refused with 400 instead of being cut to 100. A client that read the
+    plain array as before keeps working on the first page.
+
+### Fixed
+
+- **Requests the WAF let through were shown as blocked.** The platform's IP allowlist makes the WAF
+  check and log an address's requests on every site but never block them. Their events nevertheless
+  read like blocks: "blocked or flagged", critical, no *not blocked* mark, and counted in the
+  dashboards' blocked figures. Whether a request was refused is now read from ModSecurity's audit
+  record (`is_interrupted`). When it was not, the event records why:
+  - *platform allowlist*;
+  - *trusted IP*;
+  - *below threshold* (rules matched, but the score stayed under the threshold);
+  - *not enforced* (over the threshold, and no list explains it).
+
+  WAF Events, both summaries and the tenant WAF Log mark those events, and the dashboards no longer
+  count them as blocked. Events from an allowlisted address are also no longer judged by the WAF
+  auto-ban (CrowdSec already refused to ban them). At the upgrade, older events from an address on
+  the allowlist with no record of a refusal are marked *platform allowlist* once. Other older
+  events keep no reason.
+- **A wildcard route's WAF events reach its tenant's WAF Log.** The scraper matched an event's host
+  to routes exactly, so the events of `shop.sites.example.test`, served by `*.sites.example.test`,
+  were filed as platform-host events. A host with its own route still goes to that route, as
+  Traefik routes it.
+
+- **"Limit exceeded" while nothing was held, and held mail the page did not show.** The sending
+  limits apply per mail domain (the mail server keys them by sender domain), but several places
+  added a tenant's domains together and held the sum to the per-domain limit:
+  - the 80%/100% notifications, so two domains at 60 each read "exceeded 120/100";
+  - the admin tenant page's **Email sent today** and the Email tab's hour and day tiles;
+  - the tenant dashboard's **Sent today** and the send-limit card on Settings & DNS.
+
+  All of these now use one domain's figures: the busiest domain's, or the selected domain's on
+  Settings & DNS. The notifications are worked out and deduplicated per domain, so a second
+  domain reaching its limit later the same day is reported too (migration 0183). They name the
+  domain and when its held mail goes out.
+- **The admin tenant Overview shows mail a limit is holding back.** The limit notification
+  opened the Overview, which showed "111 / 100" and no held-back count; that count was only on
+  the Email tab. Now:
+  - **Needs attention** lists each held domain with its count and release time;
+  - the tile names the busiest domain and its held mail;
+  - the Email tab shows a banner while mail is held, and says how holding and refusal work;
+  - its chart opens on the busiest domain with the daily limit line, can switch domain, and no
+    longer counts held mail twice. Held mail is part of the sent mail, so it is drawn inside the
+    sent bar; refused mail is drawn on top.
+- **The send-limit notifications open where the limit is read.** The operator's alert opens the
+  tenant's **Email** tab, and so do the send-abuse alerts, with Monitoring → Mail as a second
+  link. The tenant's opens **Email → Statistics** with the domain picked.
+- **Refused mail is counted.** When a domain's queue was full and Stalwart refused a submission
+  (`452 4.3.1 Mail system full`), the webhook event named only the quota object and no sender.
+  The ingest dropped it as unattributed, so "refused" read 0 everywhere.
+  - Refusals are now attributed to the domain the quota limits, read from the quota's
+    description in Stalwart's registry (cached for a minute).
+  - If Stalwart cannot be asked, that batch's refusals stay uncounted, as before.
+- **Hourly and daily holds are told apart.** The mail server's windows are whole UTC hours and
+  days. A message held by the daily limit waits until 00:00 UTC; one held by the hourly limit is
+  retried at the next full hour.
+  - The webhook ingest now records which window held each message, read from the event's `limit`
+    (migration 0183, `email_send_counters.rate_limited_daily_count`).
+  - That is what "held back now" is counted from. Holds recorded before this release count as
+    hourly, so on the day of the upgrade mail a daily limit held earlier stops showing as held
+    after the hour it was held in, although it still goes out at 00:00 UTC.
+  - On the first pass after the upgrade, a limit crossing already notified that hour or day is
+    notified once more, now naming its domain.
+
 ## [2026.11.10] - 2026-11-14
 
 ### Security

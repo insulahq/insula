@@ -49,7 +49,15 @@ export const wafLogSummaryRowSchema = z.object({
   requests: z.number().int(),
   /** Of those, checked in detection-only mode — logged, not blocked. */
   detectionOnly: z.number().int(),
+  /**
+   * Of those, let through for any reason: detection-only mode, or a pass
+   * reason (platform allowlist, trusted IP, score below the threshold).
+   * Absent from an older backend.
+   */
+  notBlocked: z.number().int().optional(),
   sourceIps: z.number().int(),
+  /** The addresses with most requests in this group, most first (at most 3). Absent from an older backend. */
+  topSourceIps: z.array(z.object({ sourceIp: z.string(), requests: z.number().int() })).optional(),
   firstSeenAt: z.string().datetime(),
   lastSeenAt: z.string().datetime(),
 });
@@ -58,6 +66,8 @@ export type WafLogSummaryRow = z.infer<typeof wafLogSummaryRowSchema>;
 export const wafLogSummaryResponseSchema = z.object({
   /** Requests blocked (or, detection-only, flagged) in the window: one per request, whatever rules matched. */
   requests: z.number().int(),
+  /** Of those, requests the WAF let through. Absent from an older backend. */
+  notBlocked: z.number().int().optional(),
   rows: z.array(wafLogSummaryRowSchema),
   /** More (host, rule, path) groups exist than were returned. */
   truncated: z.boolean(),

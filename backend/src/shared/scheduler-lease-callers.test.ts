@@ -48,6 +48,7 @@ const STARTED_ELSEWHERE: Readonly<Record<string, string>> = {
   'cluster-trusted-proxies modules/cluster-trusted-proxies/scheduler.ts#runReconcileExclusive <- modules/cluster-trusted-proxies/routes.ts': 'run-lock',
   'waf-rule-exclusions modules/waf-rule-exclusions/scheduler.ts#runWafExclusionReconcile <- modules/ingress-routes/routes.ts': 'run-lock',
   'waf-rule-exclusions modules/waf-rule-exclusions/scheduler.ts#runWafExclusionReconcile <- modules/security-hardening/routes.ts': 'run-lock',
+  'waf-rule-exclusions modules/waf-rule-exclusions/scheduler.ts#runWafExclusionReconcile <- modules/waf-trusted-ips/routes.ts': 'run-lock',
   'stalwart-domain-reconciler modules/mail-admin/stalwart-domain-reconciler.ts#runStalwartDomainReconcile <- modules/mail-admin/migration.ts': 'run-lock',
   'stalwart-domain-reconciler modules/mail-admin/stalwart-domain-reconciler.ts#runStalwartDomainReconcile <- modules/mail-admin/routes.ts': 'run-lock',
   'stalwart-domain-reconciler modules/mail-admin/stalwart-domain-reconciler.ts#runStalwartDomainReconcile <- modules/platform-domain/service.ts': 'run-lock',

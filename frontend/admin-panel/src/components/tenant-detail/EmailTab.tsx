@@ -25,6 +25,7 @@ import { Card, Chip, Meter, UsageTile, formatMb, type Tone } from './ui';
 import TenantPanelLink from './TenantPanelLink';
 import { tenantPanel } from './tenant-panel-paths';
 import MailDailyChart from './MailDailyChart';
+import { LIMITS_EXPLAINED, throttleText } from './mail-throttle';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
@@ -108,6 +109,9 @@ function OutboundCard({ tenant, tenantId }: { readonly tenant: Tenant; readonly 
               ? 'Every outbound submission is refused. Receiving and webmail keep working.'
               : <>Limited to <strong>{hourly ?? '—'} per hour</strong> and <strong>{daily ?? '—'} per day</strong> per mail domain{plan && custom ? `; the ${plan.name} plan allows ${plan.emailHourlySendLimit} and ${plan.emailDailySendLimit}` : ''}.</>}
           </p>
+          {!suspended && (
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400" data-testid="send-limits-explained">{LIMITS_EXPLAINED}</p>
+          )}
           <p className="mt-1 text-[13px]" data-testid="send-limits-live">
             {liveLoading ? (
               <span className="inline-flex items-center gap-1.5 text-gray-500"><Loader2 size={12} className="animate-spin" /> Asking the mail server…</span>
@@ -169,6 +173,7 @@ function OutboundCard({ tenant, tenantId }: { readonly tenant: Tenant; readonly 
 function UsageRow({ tenantId }: { readonly tenantId: string }) {
   const { data: usageRes } = useTenantMailUsage(tenantId);
   const usage = usageRes?.data?.day && usageRes.data.hour ? usageRes.data : undefined;
+  const throttles = usage?.throttles ?? [];
   const { data: statsRes } = useTenantMailDomainStats(tenantId);
   const stats = statsRes?.data.domains ?? [];
   const sent7d = stats.reduce((n, d) => n + d.sent7d, 0);
@@ -177,20 +182,39 @@ function UsageRow({ tenantId }: { readonly tenantId: string }) {
   const refused7d = stats.reduce((n, d) => n + d.quotaRejected7d, 0);
   const pct = (u?: { used: number; limit: number }) => (u && u.limit > 0 ? (u.used / u.limit) * 100 : null);
   const limits = `/tenants/${tenantId}/limits`;
+  // The hour and day tiles are the BUSIEST domain against the per-domain
+  // limit; the 7-day figures beside them are every domain added up, which no
+  // limit applies to.
+  const since = (d: string | null | undefined, what: string) => (d ? `${d} · ${what}` : what[0].toUpperCase() + what.slice(1));
   return (
-    <section aria-label="Sending usage" className="grid grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-4">
-      <UsageTile label="This hour" value={usage ? String(usage.hour.used) : '—'} of={usage ? `/ ${usage.hour.limit}` : undefined} pct={pct(usage?.hour)} note="Since the full hour, UTC" to={limits} testId="mail-hour" />
-      <UsageTile label="Today" value={usage ? String(usage.day.used) : '—'} of={usage ? `/ ${usage.day.limit}` : undefined} pct={pct(usage?.day)} note={usage ? `Since 00:00 UTC · ${usage.day.recipients} recipients` : undefined} to={limits} testId="mail-day" />
-      <UsageTile label="Last 7 days" value={String(sent7d)} of="messages" note={`${rcpt7d} recipients`} testId="mail-7d" />
-      <UsageTile
-        label="Held back, 7 days"
-        value={String(limited7d + refused7d)}
-        of="messages"
-        note={`${limited7d} over the rate limit · ${refused7d} refused by the queue cap`}
-        noteTone={limited7d + refused7d > 0 ? 'warn' : undefined}
-        to="/monitoring/mail"
-        testId="mail-held"
-      />
+    <section aria-label="Sending usage" className="space-y-4">
+      {throttles.length > 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-5 py-3.5 text-[13px] text-amber-900 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-200" data-testid="mail-throttles">
+          <p className="font-semibold">A sending limit is holding mail back</p>
+          <ul className="mt-1 space-y-0.5">
+            {throttles.map((t) => (
+              <li key={t.domain} data-testid={`mail-throttle-${t.domain}`}>
+                <span className="font-mono">{t.domain}</span>: {throttleText(t)}
+                {' '}({t.sentToday} sent today, {t.heldToday} held back today)
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-4">
+        <UsageTile label="This hour, busiest domain" value={usage ? String(usage.hour.used) : '—'} of={usage ? `/ ${usage.hour.limit}` : undefined} pct={pct(usage?.hour)} note={since(usage?.hour.domain, 'since the full hour, UTC')} to={limits} testId="mail-hour" />
+        <UsageTile label="Today, busiest domain" value={usage ? String(usage.day.used) : '—'} of={usage ? `/ ${usage.day.limit}` : undefined} pct={pct(usage?.day)} note={usage ? since(usage.day.domain, `since 00:00 UTC · ${usage.day.recipients} recipients`) : undefined} to={limits} testId="mail-day" />
+        <UsageTile label="Last 7 days" value={String(sent7d)} of="messages" note={`${rcpt7d} recipients`} testId="mail-7d" />
+        <UsageTile
+          label="Held back or refused, 7 days"
+          value={String(limited7d + refused7d)}
+          of="messages"
+          note={`${limited7d} held back by a limit, sent later · ${refused7d} refused, queue full`}
+          noteTone={limited7d + refused7d > 0 ? 'warn' : undefined}
+          to="/monitoring/mail"
+          testId="mail-held"
+        />
+      </div>
     </section>
   );
 }

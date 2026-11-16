@@ -19,6 +19,7 @@ vi.mock('./service.js', () => ({ listExclusionsForReconciler: vi.fn(async () => 
 vi.mock('../security-hardening/crowdsec-allowlists.js', () => ({
   listAllowlistEntries: vi.fn(async () => []),
 }));
+vi.mock('../waf-trusted-ips/service.js', () => ({ listTrustedIpsForReconciler: vi.fn(async () => []) }));
 
 import {
   reconcileWafExclusions,

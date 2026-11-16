@@ -16,7 +16,10 @@
 import { and, asc, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import {
+  buildHostnameRegexForRoute,
+  isWafExclusionPathRequired,
   isWafExclusionScopeValidForRule,
+  WAF_ALL_RULES_ID,
   WAF_CONTENT_TYPE_RULE_ID,
   type CreateTenantWafRuleExclusionRequest,
   type CreateWafRuleExclusionRequest,
@@ -65,10 +68,7 @@ export class WafRuleExclusionError extends Error {
  * Exported via `__test` only — unit-test target. The service-layer
  * call sites read it from this module's scope, not via the export.
  */
-const buildHostnameRegexFromHostname = (hostname: string): string => {
-  const escaped = hostname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return `^${escaped}$`;
-};
+const buildHostnameRegexFromHostname = (hostname: string): string => buildHostnameRegexForRoute(hostname);
 
 /** NULL-safe equality on path_regex: a host-wide row (NULL) and a path row are different exclusions. */
 const samePath = (pathRegex: string | null): SQL =>
@@ -78,12 +78,24 @@ const samePath = (pathRegex: string | null): SQL =>
 const describeTarget = (host: string, pathRegex: string | null): string =>
   pathRegex === null ? host : `${host} path ${pathRegex}`;
 
-/** Defence in depth behind the contract's refine (and the DB CHECK): a scope/rule pair that means nothing. */
-const assertScopeFitsRule = (scope: WafRuleExclusion['scope'], ruleId: string): void => {
+/**
+ * Defence in depth behind the contract's refines (and the DB CHECKs): a
+ * scope/rule pair that means nothing, or an all_rules row without a path —
+ * which would switch the WAF off for the whole host.
+ */
+const assertScopeFitsRule = (scope: WafRuleExclusion['scope'], ruleId: string, pathRegex: string | null): void => {
   if (!isWafExclusionScopeValidForRule(scope, ruleId)) {
     throw new WafRuleExclusionError(
       'INVALID_SCOPE',
-      `scope ${scope} applies to rule ${WAF_CONTENT_TYPE_RULE_ID} only, not ${ruleId}`,
+      scope === 'all_rules' || ruleId === WAF_ALL_RULES_ID
+        ? `scope all_rules takes rule id ${WAF_ALL_RULES_ID} and no other scope does (got scope ${scope}, rule ${ruleId})`
+        : `scope ${scope} applies to rule ${WAF_CONTENT_TYPE_RULE_ID} only, not ${ruleId}`,
+    );
+  }
+  if (isWafExclusionPathRequired(scope) && pathRegex === null) {
+    throw new WafRuleExclusionError(
+      'INVALID_SCOPE',
+      'scope all_rules needs a path: to stop checking every path, set the WAF mode to Off',
     );
   }
 };
@@ -222,8 +234,8 @@ export const createExclusion = async (
   input: CreateWafRuleExclusionRequest,
   createdBy: string,
 ): Promise<WafRuleExclusion> => {
-  assertScopeFitsRule(input.scope, input.ruleId);
   const pathRegex = input.pathRegex ?? null;
+  assertScopeFitsRule(input.scope, input.ruleId, pathRegex);
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${ADVISORY_LOCK_ID})`);
 
@@ -309,7 +321,7 @@ export const updateExclusion = async (
       reason: input.reason ?? current.reason,
       disabled: input.disabled ?? current.disabled,
     };
-    assertScopeFitsRule(next.scope, current.ruleId);
+    assertScopeFitsRule(next.scope, current.ruleId, next.pathRegex);
 
     if (!next.disabled) {
       // Re-enabling a disabled row also counts against MAX_ENABLED — without
@@ -426,8 +438,8 @@ export const createExclusionForTenantRoute = async (
   input: CreateTenantWafRuleExclusionRequest,
   createdBy: string,
 ): Promise<WafRuleExclusion> => {
-  assertScopeFitsRule(input.scope, input.ruleId);
   const pathRegex = input.pathRegex ?? null;
+  assertScopeFitsRule(input.scope, input.ruleId, pathRegex);
   return db.transaction(async (tx) => {
     // Take the advisory lock BEFORE the ownership check so a concurrent
     // route delete can't slip past loadTenantRoute and then fire a raw

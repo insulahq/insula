@@ -22,25 +22,30 @@
  * real effort deleting. Existing `auto` values migrate to `notify`, which is
  * what `auto` would now do anyway.
  *
+ * Both work PER MAIL DOMAIN, the unit Stalwart enforces the limits on: a
+ * tenant whose two domains sent 60 each has used 60% of each domain's 100, not
+ * 120% of anything, and nothing was held.
+ *
  * Dedupe:
- *   - quota: PK insert on (tenant, window, threshold, window_start) —
- *     each calendar window fires each threshold at most once.
+ *   - quota: PK insert on (tenant, domain, window, threshold, window_start) —
+ *     each domain fires each threshold at most once per calendar window.
  */
 
-import { and, eq, gte, lt, sql, inArray } from 'drizzle-orm';
+import { and, eq, gte, lt, sql, inArray, like } from 'drizzle-orm';
 import {
   tenants,
   hostingPlans,
   emailSendCounters,
   emailSenderCounters,
   emailQuotaEvents,
-  auditLogs,
+  emailDomains,
+  domains,
   platformSettings,
 } from '../../db/schema.js';
 import { buildEffectiveSendLimits } from '../email-outbound/rate-limit.js';
+import { readDomainUsage, windowStarts } from './domain-usage.js';
 import type { Database } from '../../db/index.js';
 import type { OutboundReconcileLogger } from '../email-outbound/service.js';
-import { randomUUID } from 'node:crypto';
 
 export type MailEnforcementMode = 'off' | 'notify';
 
@@ -68,14 +73,17 @@ export async function getMailEnforcementMode(db: Database): Promise<MailEnforcem
 
 // ── Quota usage ─────────────────────────────────────────────────────────────
 
-interface TenantUsageRow {
+/** One (tenant, sending domain)'s current hour and UTC day. */
+export interface DomainUsageRow {
   readonly tenantId: string;
+  readonly domain: string;
   readonly hourSent: number;
   readonly daySent: number;
 }
 
 export interface QuotaCrossing {
   readonly tenantId: string;
+  readonly domain: string;
   readonly window: 'hour' | 'day';
   readonly threshold: 80 | 100;
   readonly used: number;
@@ -83,12 +91,13 @@ export interface QuotaCrossing {
 }
 
 /**
- * Pure: usage rows + per-tenant limits -> threshold crossings.
+ * Pure: per-domain usage rows + per-tenant limits -> threshold crossings.
+ * The limits are per domain, so each row is held to them on its own.
  * A 100% crossing implies the 80% one; both rows are recorded but the
- * tenant is only notified at the HIGHEST new crossing per window.
+ * tenant is only notified at the HIGHEST new crossing per domain and window.
  */
 export function computeQuotaCrossings(
-  usage: readonly TenantUsageRow[],
+  usage: readonly DomainUsageRow[],
   limits: ReadonlyMap<string, { hourly: number; daily: number }>,
 ): QuotaCrossing[] {
   const crossings: QuotaCrossing[] = [];
@@ -102,7 +111,7 @@ export function computeQuotaCrossings(
       if (limit <= 0) continue; // blocked/suspended — no usage warnings
       for (const threshold of QUOTA_THRESHOLDS) {
         if ((used / limit) * 100 >= threshold) {
-          crossings.push({ tenantId: u.tenantId, window, threshold, used, limit });
+          crossings.push({ tenantId: u.tenantId, domain: u.domain, window, threshold, used, limit });
         }
       }
     }
@@ -123,11 +132,14 @@ export function computeQuotaCrossings(
 async function topSendersFor(
   db: Database,
   tenantId: string,
+  domain: string,
   window: 'hour' | 'day',
+  now: Date,
 ): Promise<string[] | null> {
-  const since = window === 'hour'
-    ? sql`date_trunc('hour', NOW())`
-    : sql`date_trunc('day', NOW())`;
+  const { hourStart, dayStart } = windowStarts(now);
+  const since = window === 'hour' ? hourStart : dayStart;
+  // The domain's own accounts: another domain's senders did not use its limit.
+  const domainPattern = `%@${domain.replace(/[\\%_]/g, (c) => `\\${c}`)}`;
   try {
     const rows = await db
       .select({
@@ -138,6 +150,7 @@ async function topSendersFor(
       .where(and(
         eq(emailSenderCounters.tenantId, tenantId),
         gte(emailSenderCounters.bucketStart, since),
+        like(emailSenderCounters.sender, domainPattern),
       ))
       .groupBy(emailSenderCounters.sender)
       .orderBy(sql`2 DESC`)
@@ -150,18 +163,27 @@ async function topSendersFor(
   }
 }
 
-async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger): Promise<number> {
-  const usage = (await db
-    .select({
-      tenantId: emailSendCounters.tenantId,
-      hourSent: sql<number>`COALESCE(SUM(${emailSendCounters.sentCount}) FILTER (WHERE ${emailSendCounters.bucketStart} >= date_trunc('hour', NOW())), 0)`,
-      daySent: sql<number>`COALESCE(SUM(${emailSendCounters.sentCount}), 0)`,
-    })
-    .from(emailSendCounters)
-    .where(gte(emailSendCounters.bucketStart, sql`date_trunc('day', NOW())`))
-    .groupBy(emailSendCounters.tenantId)) as TenantUsageRow[];
+/** lower(domain) → email_domains.id per tenant, for the tenant notification's Statistics link. */
+async function emailDomainIdsFor(db: Database, tenantIds: readonly string[]): Promise<Map<string, string>> {
+  if (tenantIds.length === 0) return new Map();
+  const rows = await db
+    .select({ tenantId: emailDomains.tenantId, id: emailDomains.id, domain: domains.domainName })
+    .from(emailDomains)
+    .innerJoin(domains, eq(domains.id, emailDomains.domainId))
+    .where(inArray(emailDomains.tenantId, [...tenantIds]));
+  return new Map(rows.map((r) => [`${r.tenantId}|${r.domain.toLowerCase()}`, r.id]));
+}
+
+async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger, now: Date): Promise<number> {
+  const usage: DomainUsageRow[] = (await readDomainUsage(db, { now })).map((u) => ({
+    tenantId: u.tenantId,
+    domain: u.domain,
+    hourSent: u.sentThisHour,
+    daySent: u.sentToday,
+  }));
 
   if (usage.length === 0) return 0;
+  const { hourStart, dayStart } = windowStarts(now);
 
   const limitRows = await db
     .select({
@@ -191,31 +213,29 @@ async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger)
   const crossings = computeQuotaCrossings(usage, limits);
   let notified = 0;
 
-  // Group by tenant+window so only the highest NEW threshold notifies.
-  const byTenantWindow = new Map<string, QuotaCrossing[]>();
+  const emailDomainIds = await emailDomainIdsFor(db, [...new Set(crossings.map((c) => c.tenantId))]);
+
+  // Group by tenant+domain+window so only the highest NEW threshold notifies.
+  const byDomainWindow = new Map<string, QuotaCrossing[]>();
   for (const c of crossings) {
-    const key = `${c.tenantId}|${c.window}`;
-    byTenantWindow.set(key, [...(byTenantWindow.get(key) ?? []), c]);
+    const key = `${c.tenantId}|${c.domain}|${c.window}`;
+    byDomainWindow.set(key, [...(byDomainWindow.get(key) ?? []), c]);
   }
 
-  for (const group of byTenantWindow.values()) {
+  for (const group of byDomainWindow.values()) {
     const sorted = [...group].sort((a, b) => b.threshold - a.threshold);
     let highestNew: QuotaCrossing | null = null;
     for (const c of sorted) {
-      // Drizzle passes SQL fragments through verbatim in .values()
-      // (is(value, SQL) check before Param wrapping) — the cast below
-      // only silences the column type; DB-side date_trunc keeps the
-      // dedupe key clock-skew-free across replicas.
-      const windowStart = c.window === 'hour'
-        ? sql`date_trunc('hour', NOW())`
-        : sql`date_trunc('day', NOW())`;
+      // The window start is the UTC hour or day the counts were read for —
+      // computed once per pass, so every replica keys the same window.
       const inserted = await db
         .insert(emailQuotaEvents)
         .values({
           tenantId: c.tenantId,
+          domain: c.domain,
           windowKind: c.window,
           threshold: c.threshold,
-          windowStart: windowStart as unknown as Date,
+          windowStart: c.window === 'hour' ? hourStart : dayStart,
         })
         .onConflictDoNothing()
         .returning({ threshold: emailQuotaEvents.threshold });
@@ -225,16 +245,19 @@ async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger)
     if (highestNew) {
       try {
         const { notifyTenantEmailQuotaWarning, notifyTenantEmailQuotaExceeded } = await import('../notifications/events.js');
-        const senders = await topSendersFor(db, highestNew.tenantId, highestNew.window);
+        const senders = await topSendersFor(db, highestNew.tenantId, highestNew.domain, highestNew.window, now);
         const payload = {
+          domain: highestNew.domain,
           window: highestNew.window,
           percent: String(Math.floor((highestNew.used / highestNew.limit) * 100)),
           used: String(highestNew.used),
           limit: String(highestNew.limit),
+          releasesAt: releaseTime(highestNew.window, now),
           topSenders: senders ?? ['no per-sender attribution recorded yet'],
         };
+        const emailDomainId = emailDomainIds.get(`${highestNew.tenantId}|${highestNew.domain}`) ?? null;
         if (highestNew.threshold >= 100) {
-          await notifyTenantEmailQuotaExceeded(db, highestNew.tenantId, payload);
+          await notifyTenantEmailQuotaExceeded(db, highestNew.tenantId, payload, emailDomainId);
           // The operator too, at 100% only. A tenant saturating the sending
           // limit is the shape of both a compromised account and a
           // platform-wide deliverability risk — and until now this event had
@@ -242,23 +265,25 @@ async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger)
           const { notifyAdminEmailQuotaExceeded } = await import('../notifications/events.js');
           await notifyAdminEmailQuotaExceeded(db, {
             tenantLabel: tenantNames.get(highestNew.tenantId) ?? highestNew.tenantId,
+            domain: highestNew.domain,
             topSenders: payload.topSenders,
+            releasesAt: payload.releasesAt,
             window: highestNew.window,
             used: payload.used,
             limit: payload.limit,
             percent: payload.percent,
-            occurredAt: new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
+            occurredAt: now.toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
           },
-          `email-quota-admin:${highestNew.tenantId}:${highestNew.window}:${new Date().toISOString().slice(0, 10)}`,
+          `email-quota-admin:${highestNew.tenantId}:${highestNew.domain}:${highestNew.window}:${(highestNew.window === 'hour' ? hourStart : dayStart).toISOString().slice(0, 13)}`,
           // The subject, so the alert links to THIS tenant. /tenants (the list)
           // shows no sending limits; the tenant's own page does.
           highestNew.tenantId);
         } else {
-          await notifyTenantEmailQuotaWarning(db, highestNew.tenantId, payload);
+          await notifyTenantEmailQuotaWarning(db, highestNew.tenantId, payload, emailDomainId);
         }
         notified += 1;
       } catch (err) {
-        logger.error({ err, tenantId: highestNew.tenantId }, 'mail thresholds: quota notification failed');
+        logger.error({ err, tenantId: highestNew.tenantId, domain: highestNew.domain }, 'mail thresholds: quota notification failed');
       }
     }
   }
@@ -269,6 +294,13 @@ async function evaluateQuotaUsage(db: Database, logger: OutboundReconcileLogger)
   );
 
   return notified;
+}
+
+/** When mail a full window holds is retried: the next full UTC hour, or 00:00 UTC. */
+export function releaseTime(window: 'hour' | 'day', now: Date): string {
+  const period = window === 'hour' ? 3_600_000 : 86_400_000;
+  const at = new Date((Math.floor(now.getTime() / period) + 1) * period);
+  return window === 'hour' ? `${at.toISOString().slice(11, 16)} UTC` : `00:00 UTC (${at.toISOString().slice(0, 10)})`;
 }
 
 // ── Send-limit saturation (abuse) ───────────────────────────────────────────
@@ -360,6 +392,7 @@ async function evaluateSendingAbuse(db: Database, logger: OutboundReconcileLogge
             : 'throttle the tenant’s hourly send limit and investigate the sender',
         },
         `abuse:${r.tenantId}:${domain}:${level}:${hourBucket}`,
+        r.tenantId,
       );
       fired += 1;
     } catch (err) {
@@ -387,7 +420,7 @@ export async function evaluateMailThresholds(
     return { mode, quotaNotifications: 0, abuseNotifications: 0 };
   }
 
-  const quotaNotifications = await evaluateQuotaUsage(db, logger).catch((err) => {
+  const quotaNotifications = await evaluateQuotaUsage(db, logger, new Date()).catch((err) => {
     logger.error({ err }, 'mail thresholds: quota evaluation failed');
     return 0;
   });

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { mailThrottleSchema } from './mail-limits.js';
 
 // ─── Legacy four-counter endpoint ────────────────────────────────────────────
 //
@@ -402,7 +403,15 @@ export const tenantDashboardSummarySchema = z.object({
     /** The largest single mailbox, as a fraction of its own quota. */
     fullestMailboxPct: z.number().nullable(),
     fullestMailboxAddress: z.string().nullable(),
-    sentToday: z.number(), dailyLimit: z.number(),
+    /**
+     * The busiest domain's mail today, against the daily limit. The limit is
+     * per mail domain, so `sentToday` is that one domain's count, not a sum.
+     */
+    sentToday: z.number(), dailyLimit: z.number(), hourlyLimit: z.number(),
+    sentTodayDomain: z.string().nullable(),
+    outboundSuspended: z.boolean(),
+    /** Domains a sending limit is holding back or refusing right now. */
+    throttles: z.array(mailThrottleSchema),
   })),
   domains: section(z.object({
     domains: z.number(), verified: z.number(),

@@ -13,7 +13,8 @@
  * that can actually fire.
  */
 import { Link } from 'react-router-dom';
-import type { TenantSite } from '@insula/api-contracts';
+import { AlertTriangle, ChevronRight } from 'lucide-react';
+import type { MailThrottle, TenantSite } from '@insula/api-contracts';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useOverviewSummary, useOverviewLive } from '@/hooks/use-hosting-overview';
 import { useSubscription } from '@/hooks/use-subscription';
@@ -22,6 +23,9 @@ import {
   AlertBand, HoverCard, MatrixTile, RefreshButton, SectionFallback, Tile, TileSkeleton, TriadBar,
   type MatrixCell,
 } from '@/components/console/ConsoleTiles';
+import {
+  COUNTING_EXPLAINED, HOLDING_EXPLAINED, REFUSAL_EXPLAINED, statisticsPath, throttleText,
+} from '@/components/email/mail-throttle';
 
 /**
  * A section label and nothing else.
@@ -61,6 +65,9 @@ export default function Dashboard() {
   const s = summary.data?.data;
   const l = live.data?.data;
   const alerts = s?.alerts.data ?? [];
+  const mail = s?.mail.data;
+  // `?? []`: during a rollout the panel can be ahead of the API.
+  const throttles = mail?.throttles ?? [];
   const loadingFirst = summary.isLoading && !s;
 
   return (
@@ -91,10 +98,13 @@ export default function Dashboard() {
             Checking your sites, mail and restore points…
           </p>
         </>
-      ) : alerts.length > 0 ? (
+      ) : alerts.length > 0 || throttles.length > 0 ? (
         <>
           <SectionHead title="Needs your attention" />
-          <AlertBand alerts={alerts} />
+          {throttles.length > 0 && mail && (
+            <MailThrottleCard throttles={throttles} hourlyLimit={mail.hourlyLimit} dailyLimit={mail.dailyLimit} />
+          )}
+          {alerts.length > 0 && <div className={throttles.length > 0 ? 'mt-3' : ''}><AlertBand alerts={alerts} /></div>}
         </>
       ) : (
         <>
@@ -298,15 +308,90 @@ function SiteStrip({ sites, loading }: { sites: readonly TenantSite[]; loading: 
   );
 }
 
+/* ── sending limits ──────────────────────────────────────────────── */
+
+/**
+ * A sending limit is holding back or refusing a domain's mail right now.
+ *
+ * One row per affected domain, each opening Email → Statistics with that
+ * domain picked. The hover card says what "held back" and "refused" mean for
+ * the mail, because the first question is always "is my mail lost?" — it is
+ * not: held mail goes out when the limit resets, refused mail stays in the
+ * sender's outbox.
+ */
+function MailThrottleCard({ throttles, hourlyLimit, dailyLimit }: {
+  throttles: readonly MailThrottle[];
+  hourlyLimit: number;
+  dailyLimit: number;
+}) {
+  const held = throttles.reduce((n, t) => n + t.heldNow, 0);
+  const refusing = throttles.some((t) => t.refusing);
+  return (
+    <section
+      className={`group relative rounded-xl border border-l-4 p-3 ${
+        refusing ? 'border-red-500 bg-red-50 dark:bg-red-950/40' : 'border-amber-500 bg-amber-50 dark:bg-amber-950/40'
+      }`}
+      aria-label="Sending limit reached"
+      data-testid="mail-throttle-card"
+    >
+      <div className={`flex flex-wrap items-center gap-2 text-sm font-semibold ${refusing ? 'text-red-700 dark:text-red-300' : 'text-amber-800 dark:text-amber-300'}`}>
+        <AlertTriangle size={15} aria-hidden="true" />
+        Sending limit reached
+        <span className="font-mono text-xs font-normal text-gray-600 dark:text-gray-400">
+          {held > 0 ? `${held} held back` : 'mail refused'} · {throttles.length === 1 ? throttles[0].domain : `${throttles.length} domains`}
+        </span>
+      </div>
+      <ul className="mt-2 flex flex-col gap-1.5">
+        {throttles.map((t) => (
+          <li key={t.domain}>
+            <Link
+              to={statisticsPath(t.emailDomainId)}
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-white/70 px-3 py-2 text-xs text-gray-800 hover:bg-white focus-visible:outline focus-visible:outline-2 dark:bg-gray-900/40 dark:text-gray-200 dark:hover:bg-gray-900/70"
+              data-testid={`mail-throttle-${t.domain}`}
+            >
+              <b className="min-w-0 truncate font-mono text-[13px] text-gray-900 dark:text-gray-100">{t.domain}</b>
+              <span className="min-w-0 flex-1">{throttleText(t)}</span>
+              <span className="whitespace-nowrap font-mono tabular-nums text-gray-600 dark:text-gray-400">
+                {t.sentToday} of {dailyLimit} today · {t.sentThisHour} of {hourlyLimit} this hour
+              </span>
+              <span className="inline-flex items-center whitespace-nowrap font-medium text-brand-600 dark:text-brand-400">
+                Statistics <ChevronRight size={13} aria-hidden="true" />
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+      <HoverCard
+        title="How sending limits work"
+        rows={[
+          ['Hourly limit, per domain', String(hourlyLimit)],
+          ['Daily limit, per domain', String(dailyLimit)],
+          // The domain alone as the label: it is the half that truncates, and
+          // "held back" / "refused" must survive in the value. The release
+          // time is on the card's own row.
+          ...throttles.map((t): [string, string] => [t.domain, `${t.heldNow} held · ${t.refusedToday} refused`]),
+        ]}
+        note={`${HOLDING_EXPLAINED} ${REFUSAL_EXPLAINED} ${COUNTING_EXPLAINED}`}
+      />
+    </section>
+  );
+}
+
 /* ── service tiles ───────────────────────────────────────────────── */
 
 function MailTile({ summary }: { summary: Summary | undefined }) {
   const m = summary?.mail.data;
   if (!m) return <SectionFallback title="Mail" to="/email" section={summary?.mail ?? { state: 'stale', reason: null, observedAt: null }} />;
+  const mThrottles = m.throttles ?? [];
+  const held = mThrottles.reduce((n, t) => n + t.heldNow, 0);
   const cells: MatrixCell[] = [
     { k: 'Mailboxes', v: String(m.mailboxes), sub: m.maxMailboxes > 0 ? `of ${m.maxMailboxes}` : undefined },
     { k: 'Storage used', v: `${m.storageUsedGb.toFixed(1)}`, sub: `of ${m.storageLimitGb.toFixed(0)} GB` },
-    { k: 'Sent today', v: String(m.sentToday), sub: m.dailyLimit > 0 ? `of ${m.dailyLimit}` : undefined },
+    // The busiest domain against the per-domain limit, never a sum.
+    {
+      k: 'Sent today', v: String(m.sentToday), sub: m.dailyLimit > 0 ? `of ${m.dailyLimit}` : undefined,
+      tone: mThrottles.length > 0 ? 'warn' : undefined,
+    },
     {
       k: 'Fullest mailbox',
       v: m.fullestMailboxPct == null ? '—' : `${m.fullestMailboxPct}%`,
@@ -321,8 +406,10 @@ function MailTile({ summary }: { summary: Summary | undefined }) {
         ['Storage used', `${m.storageUsedGb.toFixed(1)} of ${m.storageLimitGb.toFixed(0)} GB`],
         ['Fullest mailbox', m.fullestMailboxAddress
           ? `${m.fullestMailboxAddress} · ${m.fullestMailboxPct}%` : '—'],
-        ['Sent today', m.dailyLimit > 0 ? `${m.sentToday} of ${m.dailyLimit}` : String(m.sentToday)],
-      ]} note="A mailbox at 100% of its own quota refuses new mail — the count against your plan does not." />
+        ['Sent today, busiest domain', m.sentTodayDomain
+          ? `${m.sentTodayDomain} · ${m.dailyLimit > 0 ? `${m.sentToday} of ${m.dailyLimit}` : m.sentToday}` : 'nothing yet'],
+        ['Held back now', String(held)],
+      ]} note="Sending limits apply to each mail domain on its own. A mailbox at 100% of its own quota refuses new mail — the count against your plan does not." />
     )} />
   );
 }

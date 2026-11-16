@@ -1,15 +1,17 @@
 /**
- * One tenant's outbound mail per UTC calendar day — the admin tenant page's
- * Email tab draws its chart from this.
+ * One tenant's outbound mail per UTC calendar day — the charts on the admin
+ * tenant page's Email tab and the tenant panel's Email → Statistics tab.
  *
- * Summed over email_send_counters (hourly buckets) like the per-domain
- * statistics beside it, across all of the tenant's domains. Days are UTC so
- * they line up with the daily send limit, which resets at 00:00 UTC.
+ * Summed over email_send_counters (hourly buckets), for one domain or all of
+ * them. Days are UTC so they line up with the daily send limit, which resets
+ * at 00:00 UTC. The limit is per domain, so it is a line to read ONE domain
+ * against; the all-domains total is not held to it.
  */
 import { sql, eq, and, gte } from 'drizzle-orm';
 import { emailSendCounters } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { MailDailyResponse } from '@insula/api-contracts';
+import { getEffectiveSendLimits } from '../email-outbound/rate-limit.js';
 
 export const MAIL_DAILY_DAYS = 14;
 
@@ -38,9 +40,11 @@ export function fillDays(rows: readonly Day[], days: number, now: Date): Day[] {
 export async function getTenantMailDaily(
   db: Database,
   tenantId: string,
-  days: number = MAIL_DAILY_DAYS,
-  now: Date = new Date(),
+  opts: { readonly domain?: string | null; readonly days?: number; readonly now?: Date } = {},
 ): Promise<MailDailyResponse> {
+  const days = opts.days ?? MAIL_DAILY_DAYS;
+  const now = opts.now ?? new Date();
+  const domain = opts.domain?.toLowerCase() ?? null;
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - (days - 1) * 86_400_000);
   const day = sql<string>`to_char(${emailSendCounters.bucketStart} AT TIME ZONE 'UTC', 'YYYY-MM-DD')`;
   const rows = await db
@@ -52,10 +56,17 @@ export async function getTenantMailDaily(
       quotaRejected: sql<number>`COALESCE(SUM(${emailSendCounters.quotaRejectedCount}), 0)`,
     })
     .from(emailSendCounters)
-    .where(and(eq(emailSendCounters.tenantId, tenantId), gte(emailSendCounters.bucketStart, start)))
+    .where(and(
+      eq(emailSendCounters.tenantId, tenantId),
+      gte(emailSendCounters.bucketStart, start),
+      domain ? sql`LOWER(${emailSendCounters.domain}) = ${domain}` : undefined,
+    ))
     .groupBy(day);
+  const limits = await getEffectiveSendLimits(db, tenantId);
 
   return {
+    domain,
+    dailyLimit: limits.daily.limit,
     days: fillDays(rows.map((r) => ({
       date: String(r.date),
       // SUM over int comes back as a string from pg (bigint).

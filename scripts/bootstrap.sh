@@ -1238,6 +1238,9 @@ configure_branded_paths() {
 BOOTSTRAP_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PHASES_LIB="${BOOTSTRAP_SCRIPT_DIR}/lib/bootstrap-phases.sh"
 if [[ ! -r "$PHASES_LIB" ]]; then
+  # error() is defined above (the plain logger) and redefined below once the
+  # console renderer is loaded; shellcheck 0.11 sees only the later one.
+  # shellcheck disable=SC2218
   error "phase library missing at ${PHASES_LIB} — scripts/lib/ must accompany bootstrap.sh (clone the repo or use --remote; the 'curl | bash' one-liner is unsupported)."
 fi
 # shellcheck source=lib/bootstrap-phases.sh
@@ -11641,6 +11644,7 @@ check_outbound_mail_ports() {
     # Split on ';' only — no glob expansion of an operator-supplied value.
     set -f
     IFS=';'
+    probes=()
     for entry in $spec; do
       [[ -n "${entry//[[:space:]]/}" ]] || continue
       port="${entry%%=*}"
@@ -11651,8 +11655,12 @@ check_outbound_mail_ports() {
         continue
       fi
       outbound_mail_port_status "$port" "$hosts" &
+      probes+=("$!")
     done
-    wait
+    # The probes by pid, never a bare `wait`: bash 5.3 (Ubuntu 26.04) also
+    # waits on background jobs this subshell inherited from its parent, and
+    # loops forever on "pid N is not a child of this shell".
+    (( ${#probes[@]} == 0 )) || wait "${probes[@]}"
   )"
   local open=() blocked=() unknown=() invalid=() details=()
   while read -r port status rest; do

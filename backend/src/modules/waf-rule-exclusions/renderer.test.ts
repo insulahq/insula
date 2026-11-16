@@ -8,6 +8,8 @@ import {
   renderExclusions,
   renderIpBypass,
   renderOneExclusion,
+  renderTrustedIps,
+  TRUSTED_IP_RULE_ID_BASE,
 } from './renderer.js';
 
 const baseExclusion: WafRuleExclusion = {
@@ -302,5 +304,95 @@ describe('operator IP bypass (never blocked, still logged)', () => {
   it('is emitted before the per-rule exclusions', () => {
     const body = renderExclusions([{ ...baseExclusion, ruleId: '931100' }], ['192.0.2.10']).body;
     expect(body.indexOf('DetectionOnly')).toBeLessThan(body.indexOf('931100'));
+  });
+});
+
+describe('scope all_rules (no rule id, one path, the WAF does not check it)', () => {
+  const MCP = '^/mcp$';
+  const allRules = { ...baseExclusion, ruleId: '0', scope: 'all_rules' as const, pathRegex: MCP };
+
+  it('switches the rule engine off for the path, chained behind the host', () => {
+    const out = renderOneExclusion(allRules, 2);
+    const lines = out.split('\n');
+    expect(lines[0]).toBe(`# all rules for ^admin\\.example\\.com$ path ${MCP} — ${baseExclusion.reason} (by ${baseExclusion.createdBy})`);
+    expect(out).toContain('SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^admin\\.example\\.com$" \\');
+    expect(out).toContain(`    SecRule REQUEST_FILENAME "@rx ${MCP}" \\`);
+    expect(lines.at(-1)).toBe('         ctl:ruleEngine=Off"');
+    expect(out).not.toContain('ruleRemove');
+    expect(out.slice(0, out.indexOf('REQUEST_FILENAME'))).not.toContain('ctl:');
+  });
+
+  it('refuses to render one without a path (it would switch the WAF off for the host)', () => {
+    expect(() => renderOneExclusion({ ...allRules, pathRegex: null }, 0)).toThrow(/no path/);
+  });
+});
+
+describe('route trusted IPs (inspected and logged, never blocked, on one hostname)', () => {
+  const group = { routeId: '11111111-1111-4111-8111-111111111111', hostname: 'shop.example.test', values: ['203.0.113.7', '2001:db8:1::/48'] };
+
+  it('chains the source match behind the route hostname and sets DetectionOnly', () => {
+    const out = renderTrustedIps([group])!;
+    expect(out).toBe([
+      '# Trusted IPs of route 11111111-1111-4111-8111-111111111111 (shop.example.test): inspected and logged, never blocked',
+      'SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^shop\\.example\\.test$" \\',
+      `    "id:${TRUSTED_IP_RULE_ID_BASE},\\`,
+      '     phase:1,\\',
+      '     pass,\\',
+      '     nolog,\\',
+      '     chain"',
+      '    SecRule REQUEST_HEADERS:X-Real-Ip "@ipMatch 203.0.113.7,2001:db8:1::/48" \\',
+      '        "t:none,\\',
+      '         ctl:ruleEngine=DetectionOnly"',
+    ].join('\n'));
+  });
+
+  it('skips a wildcard route: no host regex covers only what it serves', () => {
+    expect(renderTrustedIps([{ ...group, hostname: '*.sites.example.test' }])).toBeNull();
+  });
+
+  it('one rule id per route, in their own range', () => {
+    const out = renderTrustedIps([group, { ...group, routeId: '2', hostname: 'blog.example.test' }])!;
+    expect(out).toContain(`id:${TRUSTED_IP_RULE_ID_BASE},`);
+    expect(out).toContain(`id:${TRUSTED_IP_RULE_ID_BASE + 1},`);
+  });
+
+  it('drops values that are not literal addresses, and a group left with none', () => {
+    expect(renderTrustedIps([{ ...group, values: ['203.0.113.7" ,phase:2', 'x'] }])).toBeNull();
+    const out = renderTrustedIps([{ ...group, values: ['bad value', '203.0.113.7'] }])!;
+    expect(out).toContain('@ipMatch 203.0.113.7"');
+  });
+
+  it('nothing to render leaves the file byte-identical (no WAF roll on upgrade)', () => {
+    expect(renderExclusions([], [], []).body).toBe(renderExclusions([]).body);
+    expect(renderExclusions([], ['192.0.2.10'], []).body).toBe(renderExclusions([], ['192.0.2.10']).body);
+    const rows = [{ ...baseExclusion, ruleId: '931100' }];
+    expect(renderExclusions(rows, ['192.0.2.10'], []).body).toBe(renderExclusions(rows, ['192.0.2.10']).body);
+  });
+
+  it('comes after the platform bypass and before the exclusions, so an all_rules path wins', () => {
+    const body = renderExclusions(
+      [{ ...baseExclusion, ruleId: '0', scope: 'all_rules', pathRegex: '^/mcp$' }],
+      ['192.0.2.10'],
+      [group],
+    ).body;
+    const bypass = body.indexOf('Operator IP bypass');
+    const trusted = body.indexOf('Trusted IPs of route');
+    const off = body.indexOf('ctl:ruleEngine=Off');
+    expect(bypass).toBeGreaterThan(-1);
+    expect(bypass).toBeLessThan(trusted);
+    expect(trusted).toBeLessThan(off);
+  });
+
+  it('every SecRule in a file with all three terminates (no dangling chain or continuation)', () => {
+    const body = renderExclusions(
+      [{ ...baseExclusion, ruleId: '0', scope: 'all_rules', pathRegex: '^/mcp$' }],
+      ['192.0.2.10'],
+      [group],
+    ).body;
+    const lines = body.split('\n');
+    lines.forEach((line, i) => {
+      if (line.endsWith('\\')) expect(lines[i + 1]?.trim().length).toBeGreaterThan(0);
+    });
+    expect(body.match(/chain"/g)?.length).toBe((body.match(/^ {4}SecRule /gm) ?? []).length);
   });
 });

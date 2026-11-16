@@ -1,11 +1,12 @@
 /**
  * One tenant's outbound mail, per domain — the tenant panel's Email →
- * Statistics tab.
+ * Statistics tab, and the admin tenant page's Email tab.
  *
  * The same counters and windows as the operator's Monitoring → Mail table
  * (rolling 24 hours and 7 days over email_send_counters), narrowed to one
  * tenant, so the figures a tenant reads and the ones their operator reads
- * agree.
+ * agree. Beside them, each domain's current UTC hour and day — the windows the
+ * per-domain limits count in — and the limit holding it back, if one is.
  *
  * Every email domain of the tenant is listed, including the ones that sent
  * nothing: a domain missing from the table reads as "not mine" or "broken",
@@ -17,15 +18,24 @@ import { sql, eq, and, gte } from 'drizzle-orm';
 import { emailSendCounters, emailDomains, domains } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { MailDomainStatsResponse } from '@insula/api-contracts';
+import { getEffectiveSendLimits } from '../email-outbound/rate-limit.js';
+import { readDomainUsage, throttleOf } from './domain-usage.js';
 
 export const DOMAIN_STATS_WINDOW_DAYS = 7;
 
-type Counts = Omit<MailDomainStatsResponse['domains'][number], 'domain' | 'emailHosted'>;
+type DomainRow = MailDomainStatsResponse['domains'][number];
+type Counts = Omit<DomainRow, 'domain' | 'emailHosted' | 'throttle'>;
 
-const ZERO: Counts = { sent24h: 0, sent7d: 0, recipients7d: 0, rateLimited7d: 0, quotaRejected7d: 0 };
+const ZERO: Counts = {
+  sent24h: 0, sent7d: 0, recipients7d: 0, rateLimited7d: 0, quotaRejected7d: 0, sentThisHour: 0, sentToday: 0,
+};
 
-export async function getTenantMailDomainStats(db: Database, tenantId: string): Promise<MailDomainStatsResponse> {
-  const [counted, hosted] = await Promise.all([
+export async function getTenantMailDomainStats(
+  db: Database,
+  tenantId: string,
+  now: Date = new Date(),
+): Promise<MailDomainStatsResponse> {
+  const [counted, hosted, today, limits] = await Promise.all([
     db
       .select({
         domain: emailSendCounters.domain,
@@ -42,18 +52,22 @@ export async function getTenantMailDomainStats(db: Database, tenantId: string): 
       ))
       .groupBy(emailSendCounters.domain),
     db
-      .select({ domain: domains.domainName })
+      .select({ id: emailDomains.id, domain: domains.domainName })
       .from(emailDomains)
       .innerJoin(domains, eq(domains.id, emailDomains.domainId))
       .where(eq(emailDomains.tenantId, tenantId)),
+    readDomainUsage(db, { tenantId, now }),
+    getEffectiveSendLimits(db, tenantId),
   ]);
 
   // Domain names compare case-insensitively: the counters store the envelope
   // sender's spelling, the domains table the tenant's — and two spellings of
   // one domain are two counter rows, added together here.
-  const byDomain = new Map<string, MailDomainStatsResponse['domains'][number]>();
+  const byDomain = new Map<string, Omit<DomainRow, 'throttle'>>();
+  const ids = new Map<string, string>();
   for (const h of hosted) {
     byDomain.set(h.domain.toLowerCase(), { domain: h.domain, emailHosted: true, ...ZERO });
+    ids.set(h.domain.toLowerCase(), h.id);
   }
   for (const c of counted) {
     const key = c.domain.toLowerCase();
@@ -67,9 +81,24 @@ export async function getTenantMailDomainStats(db: Database, tenantId: string): 
       quotaRejected7d: known.quotaRejected7d + Number(c.quotaRejected7d),
     });
   }
+  // readDomainUsage already groups by lower(domain).
+  const todayBy = new Map(today.map((u) => [u.domain, u]));
 
   return {
     windowDays: DOMAIN_STATS_WINDOW_DAYS,
-    domains: [...byDomain.values()].sort((a, b) => b.sent7d - a.sent7d || a.domain.localeCompare(b.domain)),
+    hourlyLimit: limits.hourly.limit,
+    dailyLimit: limits.daily.limit,
+    outboundSuspended: limits.suspended || limits.outboundSuspended,
+    domains: [...byDomain.entries()]
+      .map(([key, d]): DomainRow => {
+        const u = todayBy.get(key);
+        return {
+          ...d,
+          sentThisHour: u?.sentThisHour ?? 0,
+          sentToday: u?.sentToday ?? 0,
+          throttle: u ? throttleOf({ ...u, domain: d.domain }, ids.get(key) ?? null, now) : null,
+        };
+      })
+      .sort((a, b) => b.sent7d - a.sent7d || a.domain.localeCompare(b.domain)),
   };
 }

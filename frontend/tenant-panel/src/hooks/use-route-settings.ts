@@ -33,20 +33,6 @@ export interface DirUser {
   readonly createdAt: string;
 }
 
-export interface WafLogEntry {
-  readonly id: string;
-  readonly routeId: string;
-  readonly ruleId: string;
-  readonly severity: string;
-  readonly message: string;
-  readonly requestUri: string | null;
-  readonly requestMethod: string | null;
-  readonly sourceIp: string | null;
-  readonly createdAt: string;
-  /** Logged while the route's WAF was in detection-only mode: the request was not blocked. */
-  readonly detectionOnly?: boolean;
-}
-
 // ─── Route Detail ───────────────────────────────────────────────────────────
 
 function routeBasePath(tenantId: string, routeId: string) {
@@ -270,17 +256,6 @@ export function useToggleDirUser(tenantId: string | undefined, routeId: string |
 }
 
 // ─── WAF Logs ───────────────────────────────────────────────────────────────
-
-export function useRouteWafLogs(tenantId: string | undefined, routeId: string | undefined) {
-  return useQuery({
-    queryKey: ['route-waf-logs', tenantId, routeId],
-    queryFn: () =>
-      apiFetch<{ data: readonly WafLogEntry[] }>(
-        `${routeBasePath(tenantId!, routeId!)}/waf-logs`,
-      ),
-    enabled: Boolean(tenantId && routeId),
-  });
-}
 
 /** The route's WAF events grouped by rule and path, for the last `sinceSeconds`. */
 export function useRouteWafLogSummary(tenantId: string | undefined, routeId: string | undefined, sinceSeconds: number) {

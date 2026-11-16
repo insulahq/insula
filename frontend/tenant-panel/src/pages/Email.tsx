@@ -60,6 +60,7 @@ import {
 import { MailboxLoginPasswordsModal } from '@/components/MailboxLoginPasswords';
 import DkimKeysCard from '@/components/email/DkimKeysCard';
 import MailDnsCheckPanel, { MailRecordStatusPill, mailRecordStatus } from '@/components/email/MailDnsCheckPanel';
+import { throttleText } from '@/components/email/mail-throttle';
 import { useTabParam } from '@/hooks/use-tab-param';
 import { useOpenFromQuery } from '@/hooks/use-open-from-query';
 import type { TabOf } from '@/routes/tabbed-pages';
@@ -1659,7 +1660,7 @@ function SettingsTab({
       <DomainSettingsCard tenantId={tenantId} domain={current} />
       <DnsRecordsCard tenantId={tenantId} domain={current} />
       <DkimKeysCard tenantId={tenantId} domain={current} />
-      <RateLimitCard tenantId={tenantId} />
+      <RateLimitCard tenantId={tenantId} domain={current.domainName} />
       {/* Round-4 Phase 1: Danger zone — disable email for the current domain */}
       <DisableEmailCard tenantId={tenantId} domain={current} />
     </div>
@@ -2031,10 +2032,15 @@ function UsageBar({ label, used, limit, blocked }: {
   );
 }
 
-function RateLimitCard({ tenantId }: { readonly tenantId: string }) {
+function RateLimitCard({ tenantId, domain }: { readonly tenantId: string; readonly domain: string }) {
   const { data, isLoading } = useMailRateLimit(tenantId);
   const { data: usageData } = useMailUsage(tenantId);
   const usage = usageData?.data;
+  // The limits apply to each mail domain on its own, so the bars are THIS
+  // domain's mail — a domain that sent nothing today has no row, and is zero.
+  const perDomain = usage?.domains !== undefined;
+  const mine = usage?.domains?.find((d) => d.domain.toLowerCase() === domain.toLowerCase());
+  const throttle = usage?.throttles?.find((t) => t.domain.toLowerCase() === domain.toLowerCase());
   const info = data?.data;
   const sourceLabels: Record<string, string> = {
     tenant_override: 'Account-specific override',
@@ -2085,12 +2091,20 @@ function RateLimitCard({ tenantId }: { readonly tenantId: string }) {
 
       {usage && (
         <div className="space-y-2 border-t border-gray-100 dark:border-gray-700 pt-3" data-testid="mail-usage-bars">
-          <UsageBar label="Sent this hour" used={usage.hour.used} limit={usage.hour.limit} blocked={blocked} />
-          <UsageBar label="Sent today" used={usage.day.used} limit={usage.day.limit} blocked={blocked} />
-          {(usage.day.rateLimited > 0 || usage.day.quotaRejected > 0) && (
+          <p className="text-[11px] text-gray-500 dark:text-gray-400">
+            For <span className="font-mono">{domain}</span>. Each of your mail domains has its own limits.
+          </p>
+          {/* An API one release behind has no per-domain rows: show its figures rather than zeros. */}
+          <UsageBar label="Sent this hour" used={perDomain ? (mine?.sentThisHour ?? 0) : usage.hour.used} limit={usage.hour.limit} blocked={blocked} />
+          <UsageBar label="Sent today" used={perDomain ? (mine?.sentToday ?? 0) : usage.day.used} limit={usage.day.limit} blocked={blocked} />
+          {throttle ? (
+            <p className="text-[11px] text-amber-600 dark:text-amber-400" data-testid="mail-usage-throttle">
+              {throttleText(throttle)}. Held mail is delivered when the limit resets.
+            </p>
+          ) : ((mine?.heldToday ?? 0) > 0 || (mine?.refusedToday ?? 0) > 0) && (
             <p className="text-[11px] text-amber-600 dark:text-amber-400">
-              {usage.day.rateLimited > 0 && `${usage.day.rateLimited} deferred by the hourly/daily rate today. `}
-              {usage.day.quotaRejected > 0 && `${usage.day.quotaRejected} rejected over quota today.`}
+              {(mine?.heldToday ?? 0) > 0 && `${mine?.heldToday} held back by a limit today and sent later. `}
+              {(mine?.refusedToday ?? 0) > 0 && `${mine?.refusedToday} refused today while the queue was full.`}
             </p>
           )}
         </div>

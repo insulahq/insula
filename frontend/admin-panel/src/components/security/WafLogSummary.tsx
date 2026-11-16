@@ -39,7 +39,8 @@ export function WafEventsSummaryTable({ query, onWhitelist }: {
     <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden" data-testid="waf-summary">
       <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 text-sm text-gray-900 dark:text-gray-100 flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium" data-testid="waf-summary-total">
-          {summary.requests.toLocaleString()} request{summary.requests === 1 ? '' : 's'} blocked or flagged · {summary.rows.length}
+          {summary.requests.toLocaleString()} request{summary.requests === 1 ? '' : 's'}{' '}
+          {(summary.notBlocked ?? 0) > 0 ? `matched rules (${summary.notBlocked!.toLocaleString()} not blocked)` : 'blocked or flagged'} · {summary.rows.length}
           {summary.truncated ? '+' : ''} rule × path group{summary.rows.length === 1 ? '' : 's'}
         </span>
         <span className="text-xs text-gray-500 dark:text-gray-400">Same filters as the event list. A request can match several rules.</span>
@@ -75,13 +76,20 @@ export function WafEventsSummaryTable({ query, onWhitelist }: {
                     <td className="px-3 py-2 font-mono text-[11px] text-gray-700 dark:text-gray-200 break-all">{r.path}</td>
                     <td className="px-3 py-2 text-xs text-gray-900 dark:text-gray-100 whitespace-nowrap">
                       {r.requests.toLocaleString()}
-                      {r.detectionOnly > 0 && (
+                      {(r.notBlocked ?? r.detectionOnly) > 0 && (
                         <div className="text-[11px] text-amber-700 dark:text-amber-300" data-testid={`waf-summary-detected-${r.ruleId}-${r.path}`}>
-                          {r.detectionOnly === r.requests ? 'detected, not blocked' : `${r.detectionOnly.toLocaleString()} not blocked`}
+                          {notBlockedText(r)}
                         </div>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-xs text-gray-700 dark:text-gray-200">{r.sourceIps.toLocaleString()}</td>
+                    <td className="px-3 py-2 text-xs text-gray-700 dark:text-gray-200">
+                      {r.sourceIps.toLocaleString()}
+                      {(r.topSourceIps ?? []).map((t) => (
+                        <div key={t.sourceIp} className="font-mono text-[11px] text-gray-500 dark:text-gray-400 whitespace-nowrap" data-testid={`waf-summary-ip-${r.ruleId}-${t.sourceIp}`}>
+                          {t.sourceIp} ×{t.requests.toLocaleString()}
+                        </div>
+                      ))}
+                    </td>
                     <td className="px-3 py-2 text-[11px] text-gray-500 dark:text-gray-400 whitespace-nowrap">
                       <LocalTime iso={r.lastSeenAt} />
                     </td>
@@ -105,6 +113,13 @@ export function WafEventsSummaryTable({ query, onWhitelist }: {
       )}
     </div>
   );
+}
+
+/** "detected, not blocked" for a detection-only group; otherwise how many of the group passed. */
+function notBlockedText(r: WafLogSummaryRow): string {
+  const notBlocked = r.notBlocked ?? r.detectionOnly;
+  if (notBlocked === r.requests) return r.detectionOnly === r.requests ? 'detected, not blocked' : 'none blocked';
+  return `${notBlocked.toLocaleString()} not blocked`;
 }
 
 export function WafLogRetentionCard() {

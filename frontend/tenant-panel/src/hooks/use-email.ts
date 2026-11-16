@@ -1,4 +1,4 @@
-import type { MailUsageResponse, MailDomainStatsResponse, EmailConnectionInfo, CreateImapSyncJobRequest, UpdateImapSyncJobRequest, CreateLoginPasswordRequest, DkimKeysResponse, DkimPrivateKey, DkimRotateResult, MailDnsCheck, MailDnsRepairRequest, MailDnsRepairResult } from '@insula/api-contracts';
+import type { MailUsageResponse, MailDomainStatsResponse, MailDailyResponse, EmailConnectionInfo, CreateImapSyncJobRequest, UpdateImapSyncJobRequest, CreateLoginPasswordRequest, DkimKeysResponse, DkimPrivateKey, DkimRotateResult, MailDnsCheck, MailDnsRepairRequest, MailDnsRepairResult } from '@insula/api-contracts';
 export type { MailDnsCheck, MailDnsRepairResult } from '@insula/api-contracts';
 export type { DkimKey, DkimPrivateKey, DkimRotateResult } from '@insula/api-contracts';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -681,6 +681,17 @@ export function useMailUsage(tenantId?: string) {
     queryFn: () =>
       apiFetch<{ data: MailUsageResponse }>(`/api/v1/tenants/${tenantId}/mail/usage`),
     enabled: !!tenantId,
+    refetchInterval: 60_000,
+  });
+}
+
+/** One sending domain's mail per UTC day, last 14 days — Email → Statistics' chart. */
+export function useMailDaily(tenantId?: string, domain?: string) {
+  return useQuery({
+    queryKey: ['mail-daily', tenantId, domain],
+    queryFn: () =>
+      apiFetch<{ data: MailDailyResponse }>(`/api/v1/tenants/${tenantId}/mail/daily?domain=${encodeURIComponent(domain ?? '')}`),
+    enabled: !!tenantId && !!domain,
     refetchInterval: 60_000,
   });
 }

@@ -315,11 +315,11 @@ components:
     name: Roundcube webmail
     tier: "0"
     kind: image
-    pinned: "sha256:9e937fa38d957d88d6e5b85143b5225ad3d34821da59dbd13dab2857c9e5c058"
+    pinned: "sha256:6b73274335551e2c41b8dbfda74121ca3fa69142f9550cc6f1958a7d4e70fe74"
     pin_source: k8s/base/roundcube/deployment.yaml
     pin_check: true
     repos: [roundcube/roundcubemail]
-    watch: { type: github_releases, repo: roundcube/roundcubemail, advisories: roundcube/roundcubemail, pinned_version: "1.7.5" }
+    watch: { type: github_releases, repo: roundcube/roundcubemail, advisories: roundcube/roundcubemail, pinned_version: "1.7.6" }
     scan: trivy
     owner: platform
     notes: >-
@@ -376,7 +376,7 @@ components:
     name: VictoriaMetrics vmsingle (metrics TSDB + scraper + VMUI)
     tier: "1"
     kind: image
-    pinned: "v1.155.0"
+    pinned: "v1.156.0"
     pin_source: k8s/base/monitoring/vmsingle.yaml
     pin_check: true
     repos: [victoriametrics/victoria-metrics]
