@@ -12,6 +12,39 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **Roundcube 1.7.5 → 1.7.6**, a security release that fixes 17 reported vulnerabilities:
+  - Sieve script injection through a filter rule's operator and its set/include modifiers;
+  - IMAP command injection through a CRLF in a message id;
+  - SSRF past the CSS proxy's local-address check (nip.io/sslip.io names, 6to4 addresses);
+  - CSRF bypasses for file-only POSTs and for purging or expunging a folder;
+  - destructive Sieve actions triggered cross-site with a GET;
+  - mail header injection through a read-receipt subject;
+  - an open redirect when downloading an attachment;
+  - a `disabled_actions` bypass, written with `_` instead of `-`;
+  - attachment content passed to ImageMagick unchecked;
+  - a CPU loop in session decoding.
+
+  The same PHP as before (8.4.27). Nothing in our configuration changes:
+  - the IMAP host is set by the platform, so the new check on a host typed at the login form does
+    not apply;
+  - the `Received:` header stays off;
+  - webmail sign-in from the panel (the `jwt_auth` plugin) uses no API the release changed.
+
+### Changed
+
+- **VictoriaMetrics v1.155.0 → v1.156.0.** Bug fixes only for the single-node server the platform
+  runs:
+  - `running_avg` and `range_avg` over series with gaps;
+  - a panic on large subqueries;
+  - query numbers with leading zeroes;
+  - cancelled queries no longer count as request errors;
+  - cgroup v1 limits set through systemd slices are detected.
+
+  A new metric, `process_cgroup_cpu_throttled_seconds_total`, reports CPU throttling. The
+  Enterprise licence flags it deprecates are not used here.
+
 ### Added
 
 - **The tenant dashboard warns while a sending limit holds mail back.** A **Sending limit

@@ -71,11 +71,11 @@ spec:
           # Pinned by sha256 digest so a same-tag re-push can't silently
           # change the running image. Bump this when an upstream release
           # fixes a CVE or ships a feature we want. Get the digest:
-          #   docker pull roundcube/roundcubemail:1.7.5-fpm-alpine
-          #   docker inspect --format='{{index .RepoDigests 0}}' roundcube/roundcubemail:1.7.5-fpm-alpine
+          #   docker pull roundcube/roundcubemail:1.7.6-fpm-alpine
+          #   docker inspect --format='{{index .RepoDigests 0}}' roundcube/roundcubemail:1.7.6-fpm-alpine
           # Check the PHP inside too: a same-version tag can be rebuilt on an
           # older PHP than the newest tag carries.
-          image: roundcube/roundcubemail@sha256:9e937fa38d957d88d6e5b85143b5225ad3d34821da59dbd13dab2857c9e5c058
+          image: roundcube/roundcubemail@sha256:6b73274335551e2c41b8dbfda74121ca3fa69142f9550cc6f1958a7d4e70fe74
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
