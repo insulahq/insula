@@ -32,19 +32,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   - the `Received:` header stays off;
   - webmail sign-in from the panel (the `jwt_auth` plugin) uses no API the release changed.
 
-### Changed
-
-- **VictoriaMetrics v1.155.0 → v1.156.0.** Bug fixes only for the single-node server the platform
-  runs:
-  - `running_avg` and `range_avg` over series with gaps;
-  - a panic on large subqueries;
-  - query numbers with leading zeroes;
-  - cancelled queries no longer count as request errors;
-  - cgroup v1 limits set through systemd slices are detected.
-
-  A new metric, `process_cgroup_cpu_throttled_seconds_total`, reports CPU throttling. The
-  Enterprise licence flags it deprecates are not used here.
-
 ### Added
 
 - **The tenant dashboard warns while a sending limit holds mail back.** A **Sending limit
@@ -82,6 +69,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     path and outcome, is sorted by the server, and pages with **Show more**. It used to be the
     newest 50 events, sorted in the browser, so an address dropped out of sight within the hour on
     a busy site.
+
+### Changed
+
+- **VictoriaMetrics v1.155.0 → v1.156.0.** Bug fixes only for the single-node server the platform
+  runs:
+  - `running_avg` and `range_avg` over series with gaps;
+  - a panic on large subqueries;
+  - query numbers with leading zeroes;
+  - cancelled queries no longer count as request errors;
+  - cgroup v1 limits set through systemd slices are detected.
+
+  A new metric, `process_cgroup_cpu_throttled_seconds_total`, reports CPU throttling. The
+  Enterprise licence flags it deprecates are not used here.
+- **The tenant API's route WAF log (`GET /tenants/:tenantId/routes/:routeId/waf-logs`) is paged.**
+  - It returns the standard `pagination` envelope (`cursor`, `has_more`, `total_count`) and filters
+    by `sourceIp`, `ruleId`, `path` and `outcome`, sorted with `sort=field:asc|desc`.
+  - Each event carries `detectionOnly` and `passReason`. It no longer carries `tenantId`,
+    `hostname`, `matchedData` and `eventKey`.
+  - A `limit` above 100 is now refused with 400 instead of being cut to 100. A client that read the
+    plain array as before keeps working on the first page.
 
 ### Fixed
 
