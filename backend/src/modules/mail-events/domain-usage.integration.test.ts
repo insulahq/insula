@@ -12,6 +12,7 @@ import { emailSendCounters, emailDomains, emailQuotaEvents } from '../../db/sche
 import { readDomainUsage, getTenantMailToday } from './domain-usage.js';
 import { getTenantMailUsage } from './usage.js';
 import { getTenantMailDomainStats } from './domain-stats.js';
+import { ingestMailEvents, clearDomainCache, clearQuotaCache } from './ingest.js';
 
 const dbAvailable = await isDbAvailable();
 // 14:56 UTC: the daily limit was reached at 14:09 and mail is held until midnight.
@@ -88,6 +89,22 @@ describe.skipIf(!dbAvailable)('per-domain sending today (integration)', () => {
     expect(stats).toMatchObject({ hourlyLimit: 50, dailyLimit: 100, outboundSuspended: false });
     const shop = stats.domains.find((d) => d.domain === 'shop.example.test');
     expect(shop).toMatchObject({ sentToday: 101, sentThisHour: 10, throttle: { heldNow: 9, window: 'day' } });
+  });
+
+  // Stalwart's refusal event names only its quota object; the ingest finds the
+  // domain in the registry and counts the refusal there.
+  it('counts a refusal against the domain its quota limits', async () => {
+    clearDomainCache();
+    clearQuotaCache();
+    const at = new Date().toISOString();
+    const refusal = { type: 'queue.quota-exceeded', createdAt: at, data: { listenerId: 'submission', id: 'MtaQueueQuota with id q1', type: 'Sender' } };
+    const summary = await ingestMailEvents(db(), [refusal, refusal], async () => [
+      { id: 'q1', description: 'platform:send-limit:shop.example.test:backlog' },
+      { id: 'q2', description: 'an operator quota' },
+    ]);
+    expect(summary).toMatchObject({ counted: 2, unattributed: 0 });
+    const rows = await readDomainUsage(db(), { tenantId, now: new Date() });
+    expect(rows.find((r) => r.domain === 'shop.example.test')?.refusedToday).toBe(2);
   });
 
   // Migration 0183: the first domain to cross no longer uses up the day's alert

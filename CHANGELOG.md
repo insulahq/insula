@@ -52,6 +52,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **The send-limit notifications open where the limit is read.** The operator's alert opens the
   tenant's **Email** tab, and so do the send-abuse alerts, with Monitoring → Mail as a second
   link. The tenant's opens **Email → Statistics** with the domain picked.
+- **Refused mail is counted.** When a domain's queue was full and Stalwart refused a submission
+  (`452 4.3.1 Mail system full`), the webhook event named only the quota object and no sender.
+  The ingest dropped it as unattributed, so "refused" read 0 everywhere.
+  - Refusals are now attributed to the domain the quota limits, read from the quota's
+    description in Stalwart's registry (cached for a minute).
+  - If Stalwart cannot be asked, that batch's refusals stay uncounted, as before.
 - **Hourly and daily holds are told apart.** The mail server's windows are whole UTC hours and
   days. A message held by the daily limit waits until 00:00 UTC; one held by the hourly limit is
   retried at the next full hour.

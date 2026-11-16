@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aggregateEvents, heldWindowMs, type StalwartWebhookEvent } from './ingest.js';
+import { aggregateEvents, heldWindowMs, quotaDomainOf, quotaIdOf, type StalwartWebhookEvent } from './ingest.js';
 
 const T = '2026-06-12T10:15:30Z';
 const resolution = new Map([['alpha.example.com', 'tenant-1'], ['beta.example.com', 'tenant-2']]);
@@ -191,5 +191,47 @@ describe('platform addresses never consume a tenant allowance', () => {
       { type: 'queue.authenticated-message-queued', createdAt: '2026-09-17T09:00:00Z', data: { from: 'PostMaster@Example.TEST', to: ['a@b.test'] } },
     ] as unknown as StalwartWebhookEvent[], T);
     expect(deltas.every((d) => d.sentCount === 0)).toBe(true);
+  });
+});
+
+// Stalwart's queue.quota-exceeded names no sender — only the quota object
+// (smtp/queue/quota.rs). Every refusal used to be dropped as unattributed, so
+// "refused" read 0 while a full queue turned mail away with 452.
+describe('refusals (queue.quota-exceeded)', () => {
+  const refused: StalwartWebhookEvent = {
+    type: 'queue.quota-exceeded', createdAt: T,
+    data: { listenerId: 'submission', id: 'MtaQueueQuota with id joztb2xyacqa', type: 'Sender' },
+  };
+
+  it('reads the registry id from the event', () => {
+    expect(quotaIdOf(refused.data)).toBe('joztb2xyacqa');
+    expect(quotaIdOf({ id: 'plainid' })).toBe('plainid');
+    expect(quotaIdOf({})).toBeNull();
+  });
+
+  it('knows a platform quota\'s domain from its description, and nobody else\'s', () => {
+    expect(quotaDomainOf('platform:send-limit:Alpha.Example.com:backlog')).toBe('alpha.example.com');
+    expect(quotaDomainOf('platform:send-limit:alpha.example.com:block')).toBe('alpha.example.com');
+    expect(quotaDomainOf('operator quota')).toBeNull();
+    expect(quotaDomainOf('platform:send-limit:alpha.example.com:daily')).toBeNull();
+    expect(quotaDomainOf(null)).toBeNull();
+  });
+
+  it('counts a refusal against the domain its quota limits', () => {
+    const { deltas, summary } = aggregateEvents([refused, refused], resolution, new Map([['joztb2xyacqa', 'alpha.example.com']]));
+    expect(summary.unattributed).toBe(0);
+    expect(deltas).toEqual([expect.objectContaining({ tenantId: 'tenant-1', domain: 'alpha.example.com', quotaRejectedCount: 2, sentCount: 0 })]);
+  });
+
+  it('leaves a refusal by a quota it does not know unattributed', () => {
+    const { deltas, summary } = aggregateEvents([refused], resolution, new Map());
+    expect(deltas).toEqual([]);
+    expect(summary.unattributed).toBe(1);
+  });
+
+  it('still prefers a sender when the event carries one', () => {
+    const withFrom = { ...refused, data: { ...refused.data, from: 'b@beta.example.com' } };
+    const { deltas } = aggregateEvents([withFrom], resolution, new Map([['joztb2xyacqa', 'alpha.example.com']]));
+    expect(deltas[0]?.domain).toBe('beta.example.com');
   });
 });

@@ -17,6 +17,13 @@
  * doesn't resolve to a platform email domain are dropped (inbound
  * relay traffic, system mail).
  *
+ * `queue.quota-exceeded` carries NO sender: Stalwart emits only the quota
+ * object's id (`MtaQueueQuota with id <x>`) and the listener (smtp/queue/
+ * quota.rs). The platform's quota objects are one per domain, named in their
+ * description (`platform:send-limit:<domain>:backlog|:block`), so the id is
+ * resolved to its domain from Stalwart's registry. Until that lookup existed
+ * every refusal was dropped as unattributed and "refused" always read 0.
+ *
  * Counters are hourly buckets, upserted with ON CONFLICT .. DO UPDATE
  * increments so concurrent replicas / repeated batches never lose
  * counts. NOT per-message rows (descoped by the roadmap).
@@ -25,6 +32,8 @@
 import { sql, eq, inArray } from 'drizzle-orm';
 import { emailDomains, domains, emailSendCounters, emailSenderCounters } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
+import { DESCRIPTION_PREFIX } from '../email-outbound/stalwart-throttles.js';
+import { mtaQueueQuotaGet } from '../stalwart-jmap/client.js';
 
 // Walk err.cause for the SQLSTATE code (Drizzle >=0.34 wraps pg errors).
 function pgCode(e: unknown): string | undefined {
@@ -132,6 +141,30 @@ export function heldWindowMs(data: Record<string, unknown> | undefined): number 
   return null;
 }
 
+/** The registry id in a quota event's `id` ("MtaQueueQuota with id joztb2xyacqa"). */
+export function quotaIdOf(data: Record<string, unknown> | undefined): string | null {
+  const id = data?.id;
+  if (typeof id !== 'string' || id.trim() === '') return null;
+  const m = /with id\s+(\S+)\s*$/.exec(id);
+  return m ? m[1] : id.trim();
+}
+
+/** The domain a platform quota object is for, from its description; null for anyone else's. */
+export function quotaDomainOf(description: string | null | undefined): string | null {
+  if (!description?.startsWith(DESCRIPTION_PREFIX)) return null;
+  const rest = description.slice(DESCRIPTION_PREFIX.length);
+  const m = /^(.+):(backlog|block)$/.exec(rest);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** The sender domain an event counts against: `data.from`, or for a refusal its quota's domain. */
+function eventDomain(ev: StalwartWebhookEvent, quotaDomains: ReadonlyMap<string, string>): string | null {
+  const fromDomain = senderDomainOf(ev.data);
+  if (fromDomain || ev.type !== 'queue.quota-exceeded') return fromDomain;
+  const id = quotaIdOf(ev.data);
+  return id ? quotaDomains.get(id) ?? null : null;
+}
+
 function hourBucket(createdAt: string | undefined): Date {
   const t = createdAt ? new Date(createdAt) : new Date();
   const ms = Number.isFinite(t.getTime()) ? t.getTime() : Date.now();
@@ -145,6 +178,8 @@ function hourBucket(createdAt: string | undefined): Date {
 export function aggregateEvents(
   events: readonly StalwartWebhookEvent[],
   domainToTenant: ReadonlyMap<string, string>,
+  /** Quota registry id → the domain it limits, for refusals (which name no sender). */
+  quotaDomains: ReadonlyMap<string, string> = new Map(),
 ): { deltas: CounterDelta[]; senderDeltas: SenderDelta[]; summary: IngestSummary } {
   const byKey = new Map<string, CounterDelta>();
   const bySender = new Map<string, SenderDelta>();
@@ -163,7 +198,7 @@ export function aggregateEvents(
       continue;
     }
 
-    const domain = senderDomainOf(ev.data);
+    const domain = eventDomain(ev, quotaDomains);
     const tenantId = domain ? domainToTenant.get(domain) : undefined;
     if (!domain || !tenantId) {
       unattributed += 1;
@@ -284,18 +319,59 @@ async function resolveDomains(
   return result;
 }
 
+// ── Quota id -> domain cache ────────────────────────────────────────────────
+// Refusals arrive in bursts while a domain's queue is full; one registry read
+// per minute answers all of them. An id not found re-reads at most once a
+// minute too, so an unknown id cannot turn every webhook into a Stalwart call.
+
+const QUOTA_CACHE_TTL_MS = 60_000;
+let quotaCache: { readonly byId: ReadonlyMap<string, string>; readonly expires: number } | null = null;
+
+/** Test hook. */
+export function clearQuotaCache(): void {
+  quotaCache = null;
+}
+
+async function resolveQuotaDomains(
+  load: () => Promise<readonly { id: string; description: string | null }[]> = () => mtaQueueQuotaGet(),
+): Promise<ReadonlyMap<string, string>> {
+  const now = Date.now();
+  if (quotaCache && quotaCache.expires > now) return quotaCache.byId;
+  try {
+    const rows = await load();
+    const byId = new Map<string, string>();
+    for (const r of rows) {
+      const d = quotaDomainOf(r.description);
+      if (d) byId.set(r.id, d);
+    }
+    quotaCache = { byId, expires: now + QUOTA_CACHE_TTL_MS };
+    return byId;
+  } catch {
+    // Stalwart unreachable: the refusals in this batch stay unattributed, as
+    // they always were — never fail the webhook over them.
+    return quotaCache?.byId ?? new Map();
+  }
+}
+
 export async function ingestMailEvents(
   db: Database,
   events: readonly StalwartWebhookEvent[],
+  loadQuotas?: () => Promise<readonly { id: string; description: string | null }[]>,
 ): Promise<IngestSummary> {
+  const quotaIds = [...new Set(events
+    .filter((ev) => ev.type === 'queue.quota-exceeded' && senderDomainOf(ev.data) === null)
+    .map((ev) => quotaIdOf(ev.data))
+    .filter((id): id is string => id !== null))];
+  const quotaDomains = quotaIds.length > 0 ? await resolveQuotaDomains(loadQuotas) : new Map<string, string>();
+
   const wanted = [...new Set(
     events
-      .map((ev) => senderDomainOf(ev.data))
+      .map((ev) => eventDomain(ev, quotaDomains))
       .filter((d): d is string => d !== null),
   )];
   const domainToTenant = wanted.length > 0 ? await resolveDomains(db, wanted) : new Map<string, string>();
 
-  const { deltas, senderDeltas, summary } = aggregateEvents(events, domainToTenant);
+  const { deltas, senderDeltas, summary } = aggregateEvents(events, domainToTenant, quotaDomains);
 
   for (const d of deltas) {
     try {
