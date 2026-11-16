@@ -27,6 +27,15 @@
  *    knows, and an app that reads the raw body (Moodle's AJAX endpoint reads
  *    php://input whatever the Content-Type) receives what the WAF never saw.
  *    A body that is not valid JSON still fails (REQBODY_ERROR → 200002).
+ *  - 'all_rules' — no rule id (stored as WAF_ALL_RULES_ID, '0'): the WAF does
+ *    not check requests to the path at all (`ctl:ruleEngine=Off`), so nothing
+ *    is blocked or logged there. A path is required: host-wide, it would be
+ *    the route's WAF mode OFF under another name. Meant for an endpoint whose
+ *    every request carries content that looks like an attack — an MCP or API
+ *    endpoint posting HTML, SQL or shell text on behalf of its callers.
+ *    Off, not DetectionOnly: such an endpoint logs a row per rule per request
+ *    (thousands a day), which would push the route's real events out of its
+ *    retention ceiling.
  *
  * pathRegex (optional) narrows any scope to requests whose path matches it,
  * rendered as a chained `REQUEST_FILENAME @rx <pathRegex>`: the path without
@@ -71,17 +80,34 @@
 
 import { z } from 'zod';
 
-export const wafRuleExclusionScopeSchema = z.enum(['args', 'args_names_only', 'full_disable', 'text_plain_as_json']);
+export const wafRuleExclusionScopeSchema = z.enum(['args', 'args_names_only', 'full_disable', 'text_plain_as_json', 'all_rules']);
 export type WafRuleExclusionScope = z.infer<typeof wafRuleExclusionScopeSchema>;
 
 /** The only rule 'text_plain_as_json' applies to: CRS "Request content type is not allowed by policy". */
 export const WAF_CONTENT_TYPE_RULE_ID = '920420';
 
-/** Whether `scope` can be used with `ruleId` — 'text_plain_as_json' is meaningful for 920420 only. */
-export const isWafExclusionScopeValidForRule = (scope: WafRuleExclusionScope, ruleId: string): boolean =>
-  scope !== 'text_plain_as_json' || ruleId === WAF_CONTENT_TYPE_RULE_ID;
+/** The rule id an 'all_rules' exclusion is stored with — no CRS rule has it. */
+export const WAF_ALL_RULES_ID = '0';
 
-const SCOPE_RULE_MISMATCH = `scope text_plain_as_json applies to rule ${WAF_CONTENT_TYPE_RULE_ID} only`;
+/**
+ * Whether `scope` can be used with `ruleId`: 'text_plain_as_json' is
+ * meaningful for 920420 only, and 'all_rules' goes with WAF_ALL_RULES_ID and
+ * nothing else does.
+ */
+export const isWafExclusionScopeValidForRule = (scope: WafRuleExclusionScope, ruleId: string): boolean => {
+  if (scope === 'all_rules') return ruleId === WAF_ALL_RULES_ID;
+  if (ruleId === WAF_ALL_RULES_ID) return false;
+  return scope !== 'text_plain_as_json' || ruleId === WAF_CONTENT_TYPE_RULE_ID;
+};
+
+/** Whether `scope` needs a path: 'all_rules' host-wide would switch the WAF off for the host. */
+export const isWafExclusionPathRequired = (scope: WafRuleExclusionScope): boolean => scope === 'all_rules';
+
+const SCOPE_RULE_MISMATCH =
+  `scope text_plain_as_json applies to rule ${WAF_CONTENT_TYPE_RULE_ID} only; scope all_rules takes rule id ${WAF_ALL_RULES_ID}, and no other scope does`;
+const PATH_REQUIRED = 'scope all_rules needs a path: to stop checking every path, set the WAF mode to Off';
+const hasPathIfRequired = (v: { scope: WafRuleExclusionScope; pathRegex?: string | null }): boolean =>
+  !isWafExclusionPathRequired(v.scope) || (v.pathRegex ?? null) !== null;
 
 const hostnameRegexBase = z
   .string()
@@ -232,6 +258,9 @@ export const createTenantWafRuleExclusionRequestSchema = z.object({
 }).refine((v) => isWafExclusionScopeValidForRule(v.scope, v.ruleId), {
   message: SCOPE_RULE_MISMATCH,
   path: ['scope'],
+}).refine(hasPathIfRequired, {
+  message: PATH_REQUIRED,
+  path: ['pathRegex'],
 });
 export type CreateTenantWafRuleExclusionRequest =
   z.infer<typeof createTenantWafRuleExclusionRequestSchema>;
@@ -247,6 +276,9 @@ export const createWafRuleExclusionRequestSchema = z.object({
 }).refine((v) => isWafExclusionScopeValidForRule(v.scope, v.ruleId), {
   message: SCOPE_RULE_MISMATCH,
   path: ['scope'],
+}).refine(hasPathIfRequired, {
+  message: PATH_REQUIRED,
+  path: ['pathRegex'],
 });
 export type CreateWafRuleExclusionRequest = z.infer<typeof createWafRuleExclusionRequestSchema>;
 
@@ -276,6 +308,23 @@ export const buildHostnameRegexFromEventHost = (hostname: string): string => {
   const escaped = hostname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return `^${escaped}$`;
 };
+
+/**
+ * The X-Forwarded-Host regex for a tenant ROUTE's hostname — what tenant
+ * exclusions and trusted IPs are scoped by: the hostname, matched exactly.
+ *
+ * A wildcard route (`*.sites.example.test`) has no regex that covers only
+ * the hosts it serves: `^[^.]+\.sites\.example\.test$` also covers a host
+ * there with an exact route of its own (Traefik sends that one to its own
+ * route), whose WAF would then follow the wildcard route's exceptions. So a
+ * wildcard hostname is escaped like any other — a regex no request carries —
+ * and trusted IPs refuse a wildcard route outright (isWildcardRouteHostname).
+ */
+export const buildHostnameRegexForRoute = (hostname: string): string =>
+  `^${hostname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+
+/** A wildcard route's hostname (`*.sites.example.test`). */
+export const isWildcardRouteHostname = (hostname: string): boolean => hostname.startsWith('*.');
 
 /**
  * "Only this path" pre-fill: the event's request URI without its query string

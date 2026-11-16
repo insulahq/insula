@@ -26,8 +26,51 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   - while a limit is full, a banner names the limit and says when the held mail goes out;
   - a **Sent per day, last 14 days** chart like the admin tenant page's, with the daily limit;
   - the 7-day figures are now **Held back** and **Refused**, with what each means for the mail.
+- **WAF trusted IPs per website.** On a route's Security tab, **WAF Trusted IPs** lists addresses
+  whose requests to that website the WAF still checks and logs but never blocks — the tenant's own
+  workstation, office or automation:
+  - single addresses, or networks up to /24 (IPv4) or /48 (IPv6), at most 20 per website;
+  - rendered as one rule per route behind its exact hostname, so no other site is affected
+    (a wildcard route cannot have any: a regex matching every host under it would also match a
+    sibling host that has its own route);
+  - their events are marked *not blocked · trusted IP* and do not count toward the auto-ban;
+  - **By source IP** in the WAF Log has a **Trust** button for each address (migration 0184).
+- **A WAF exclusion can cover every rule on one path.** The new scope **All rules** has no rule id
+  and needs a path. The WAF does not check that path at all, so nothing on it is blocked or logged.
+  It is meant for an endpoint whose every request carries content that looks like an attack, such
+  as an MCP or API endpoint posting HTML, SQL or shell text. It is "not checked" rather than
+  "logged, not blocked" because such an endpoint logs a row per rule per request, thousands a day,
+  which would push the website's real events out of its 20,000-event limit.
+- **The tenant WAF Log shows who sent each request.**
+  - **By rule and path** names each row's busiest source addresses.
+  - **By source IP** lists each address with its requests, how many were let through and why, the
+    rules it tripped, and how many paths it hit.
+  - Clicking an address shows only its events. The event list can be filtered by source IP, rule,
+    path and outcome, is sorted by the server, and pages with **Show more**. It used to be the
+    newest 50 events, sorted in the browser, so an address dropped out of sight within the hour on
+    a busy site.
 
 ### Fixed
+
+- **Requests the WAF let through were shown as blocked.** The platform's IP allowlist makes the WAF
+  check and log an address's requests on every site but never block them. Their events nevertheless
+  read like blocks: "blocked or flagged", critical, no *not blocked* mark, and counted in the
+  dashboards' blocked figures. Whether a request was refused is now read from ModSecurity's audit
+  record (`is_interrupted`). When it was not, the event records why:
+  - *platform allowlist*;
+  - *trusted IP*;
+  - *below threshold* (rules matched, but the score stayed under the threshold);
+  - *not enforced* (over the threshold, and no list explains it).
+
+  WAF Events, both summaries and the tenant WAF Log mark those events, and the dashboards no longer
+  count them as blocked. Events from an allowlisted address are also no longer judged by the WAF
+  auto-ban (CrowdSec already refused to ban them). At the upgrade, older events from an address on
+  the allowlist with no record of a refusal are marked *platform allowlist* once. Other older
+  events keep no reason.
+- **A wildcard route's WAF events reach its tenant's WAF Log.** The scraper matched an event's host
+  to routes exactly, so the events of `shop.sites.example.test`, served by `*.sites.example.test`,
+  were filed as platform-host events. A host with its own route still goes to that route, as
+  Traefik routes it.
 
 - **"Limit exceeded" while nothing was held, and held mail the page did not show.** The sending
   limits apply per mail domain (the mail server keys them by sender domain), but several places

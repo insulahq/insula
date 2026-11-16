@@ -25,6 +25,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import UserLabel from '@/components/ui/UserLabel';
 import SortableHeader from '@/components/ui/SortableHeader';
+import { WafNotBlockedBadge } from './WafNotBlockedBadge';
 import PhoneSortBar from '@/components/ui/PhoneSortBar';
 import ScenariosCard from './ScenariosCard';
 import { CommunityBlocklistBanner, CommunityBlocklistCard } from './CommunityBlocklist';
@@ -126,7 +127,9 @@ import type {
 import {
   buildHostnameRegexFromEventHost,
   buildPathRegexFromEventUri,
+  isWafExclusionPathRequired,
   isWafExclusionScopeValidForRule,
+  WAF_ALL_RULES_ID,
   suggestWafExclusionScope,
   WAF_CONTENT_TYPE_RULE_ID,
   wafRuleExclusionPathRegexSchema,
@@ -763,6 +766,15 @@ function WafStatsPanel({ stats }: { stats: WafEventsResponse['stats'] }) {
             {stats.totalEventsDetectionOnly!.toLocaleString()} detected only — not blocked
           </div>
         )}
+        {(stats.totalEventsNotBlocked ?? 0) > (stats.totalEventsDetectionOnly ?? 0) && (
+          <div
+            className="text-xs text-sky-700 dark:text-sky-300 mt-0.5"
+            title="Let through although rules matched: the source is on the platform allowlist or a route's trusted IPs, or the score stayed below the threshold"
+            data-testid="waf-stats-not-blocked"
+          >
+            {((stats.totalEventsNotBlocked ?? 0) - (stats.totalEventsDetectionOnly ?? 0)).toLocaleString()} let through (allowlisted, trusted or below threshold)
+          </div>
+        )}
       </div>
 
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
@@ -818,15 +830,12 @@ function WafEventRow({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending }
       </td>
       <td className="px-2 py-2 align-top">
         <div className="font-mono text-xs text-gray-900 dark:text-gray-100">{ev.ruleId}</div>
-        {ev.detectionOnly && (
-          <span
-            className="mt-0.5 inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200"
-            title="The route's WAF is in detection-only mode: this request was logged, not blocked"
-            data-testid={`waf-event-detected-${ev.id}`}
-          >
-            Detected · not blocked
-          </span>
-        )}
+        <WafNotBlockedBadge
+          detectionOnly={ev.detectionOnly ?? false}
+          passReason={ev.passReason ?? null}
+          testId={`waf-event-detected-${ev.id}`}
+          className="mt-0.5"
+        />
         {whitelistAvailable && <WhitelistRuleButton ev={ev} onClick={onWhitelist} className="mt-1" />}
       </td>
       <td className="px-2 py-2 align-top">
@@ -954,14 +963,7 @@ function WafEventCard({ ev, onBan, onAllowlist, onWhitelist, isAllowlistPending 
           {ev.severity}
         </span>
         <span className="font-mono text-xs font-semibold text-gray-900 dark:text-gray-100">{ev.ruleId}</span>
-        {ev.detectionOnly && (
-          <span
-            className="inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200"
-            title="The route's WAF is in detection-only mode: this request was logged, not blocked"
-          >
-            Detected · not blocked
-          </span>
-        )}
+        <WafNotBlockedBadge detectionOnly={ev.detectionOnly ?? false} passReason={ev.passReason ?? null} />
         <span className="ml-auto font-mono text-[11px] text-gray-500 dark:text-gray-400">
           <LocalTime iso={ev.occurredAt} seconds />
         </span>
@@ -1864,19 +1866,22 @@ function WhitelistRuleModal({ prefill, onClose }: { prefill: WhitelistPrefill; o
   const hostnameRegexTrimmed = hostnameRegex.trim();
   const pathRegexTrimmed = pathRegex.trim();
   // The contract's own message: it names the rule broken (anchor, quote, syntax PCRE cannot compile).
+  const allRules = scope === 'all_rules';
+  // "All rules" has no rule id: it is stored as WAF_ALL_RULES_ID.
+  const effectiveRuleId = allRules ? WAF_ALL_RULES_ID : ruleId.trim();
   const pathError = pathRegexTrimmed === ''
-    ? null
+    ? (isWafExclusionPathRequired(scope) ? 'All rules needs a path — it would switch the WAF off for the whole host' : null)
     : wafRuleExclusionPathRegexSchema.safeParse(pathRegexTrimmed).error?.issues[0]?.message ?? null;
   const pathValid = pathError === null;
   const isContentTypeRule = ruleId.trim() === WAF_CONTENT_TYPE_RULE_ID;
   const valid =
-    /^[0-9]+$/.test(ruleId.trim())
+    /^[0-9]+$/.test(effectiveRuleId)
     && hostnameRegexTrimmed.length > 0
     && !hostnameRegexTrimmed.includes('"')
     && !hostnameRegexTrimmed.endsWith('\\')
     && isParseableRegex(hostnameRegexTrimmed)
     && pathValid
-    && isWafExclusionScopeValidForRule(scope, ruleId.trim())
+    && isWafExclusionScopeValidForRule(scope, effectiveRuleId)
     && reason.trim().length > 0;
 
   return (
@@ -1886,7 +1891,9 @@ function WhitelistRuleModal({ prefill, onClose }: { prefill: WhitelistPrefill; o
         <p className="text-xs text-gray-600 dark:text-gray-400 mb-4">
           Adds a CRS exclusion that scopes{' '}
           <code>
-            {scope === 'full_disable'
+            {scope === 'all_rules'
+              ? 'ctl:ruleEngine=Off (no rule checks the path)'
+              : scope === 'full_disable'
               ? 'ctl:ruleRemoveById'
               : scope === 'args_names_only'
                 ? 'ctl:ruleRemoveTargetById … ARGS_NAMES'
@@ -1910,7 +1917,15 @@ function WhitelistRuleModal({ prefill, onClose }: { prefill: WhitelistPrefill; o
             Pick <code>args</code> unless you know the rule matches names.
           </p>
         )}
+        {allRules && (
+          <p className="text-xs text-amber-700 dark:text-amber-400 mb-4" data-testid="whitelist-modal-all-rules-help">
+            <strong>No rule checks this path:</strong> nothing on it is blocked or logged. Meant for an
+            endpoint whose requests always carry content that looks like an attack (an MCP or API
+            endpoint). Keep the path exact, ending in <code>$</code>.
+          </p>
+        )}
         <div className="space-y-3 text-sm">
+          {!allRules && (
           <label className="flex flex-col gap-1">
             <span className="text-gray-700 dark:text-gray-200">Rule ID</span>
             <input
@@ -1925,6 +1940,7 @@ function WhitelistRuleModal({ prefill, onClose }: { prefill: WhitelistPrefill; o
               data-testid="whitelist-modal-rule-id"
             />
           </label>
+          )}
           <label className="flex flex-col gap-1">
             <span className="text-gray-700 dark:text-gray-200">Host regex (matches X-Forwarded-Host)</span>
             <input
@@ -1936,7 +1952,9 @@ function WhitelistRuleModal({ prefill, onClose }: { prefill: WhitelistPrefill; o
             <span className="text-[10px] text-gray-500">Anchor with ^…$ to avoid over-broad matches. No double-quotes.</span>
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-gray-700 dark:text-gray-200">Path regex (optional — empty = every path)</span>
+            <span className="text-gray-700 dark:text-gray-200">
+              {allRules ? 'Path regex (required)' : 'Path regex (optional — empty = every path)'}
+            </span>
             <input
               value={pathRegex}
               onChange={(e) => setPathRegex(e.target.value)}
@@ -1979,6 +1997,7 @@ function WhitelistRuleModal({ prefill, onClose }: { prefill: WhitelistPrefill; o
               {isContentTypeRule && (
                 <option value="text_plain_as_json">text_plain_as_json — accept text/plain, inspect it as JSON (920420)</option>
               )}
+              <option value="all_rules">all rules — do not check this path at all</option>
             </select>
           </label>
           <label className="flex flex-col gap-1">
@@ -2011,7 +2030,7 @@ function WhitelistRuleModal({ prefill, onClose }: { prefill: WhitelistPrefill; o
               setErr(null);
               mut.mutate(
                 {
-                  ruleId: ruleId.trim(),
+                  ruleId: effectiveRuleId,
                   hostnameRegex: hostnameRegex.trim(),
                   pathRegex: pathRegexTrimmed === '' ? null : pathRegexTrimmed,
                   scope,
@@ -2162,7 +2181,9 @@ export function WafExclusionsTab() {
             <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
               {sortedData.map((x) => (
                 <tr key={x.id} data-testid={`exclusion-row-${x.id}`}>
-                  <td className="px-4 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{x.ruleId}</td>
+                  <td className="px-4 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">
+                    {x.scope === 'all_rules' ? <span className="font-sans italic">all rules</span> : x.ruleId}
+                  </td>
                   <td className="px-4 py-2 font-mono text-[11px] text-gray-700 dark:text-gray-200 break-all">
                     {x.hostnameRegex}
                     <div className="text-gray-500 dark:text-gray-400" data-testid={`exclusion-path-${x.id}`}>
@@ -2174,12 +2195,14 @@ export function WafExclusionsTab() {
                         hardcoded "args_names" mislabelled every `args` row. */}
                     <span
                       className={
-                        x.scope === 'full_disable'
+                        x.scope === 'full_disable' || x.scope === 'all_rules'
                           ? 'rounded bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-200 px-2 py-0.5 text-[10px] uppercase'
                           : 'rounded bg-gray-100 dark:bg-gray-700/40 text-gray-700 dark:text-gray-200 px-2 py-0.5 text-[10px] uppercase'
                       }
                     >
-                      {x.scope === 'full_disable' ? 'full disable' : x.scope === 'text_plain_as_json' ? 'text/plain as JSON' : x.scope}
+                      {x.scope === 'full_disable' ? 'full disable'
+                        : x.scope === 'text_plain_as_json' ? 'text/plain as JSON'
+                          : x.scope === 'all_rules' ? 'all rules (not checked)' : x.scope}
                     </span>
                   </td>
                   <td className="px-4 py-2 text-xs">

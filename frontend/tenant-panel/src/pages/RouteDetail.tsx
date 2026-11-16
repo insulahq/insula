@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useMemo, useState, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, AlertTriangle, Info, Plus, Trash2, X, Shield, Settings,
@@ -7,8 +7,10 @@ import {
 import clsx from 'clsx';
 import {
   buildPathRegexFromEventUri,
+  isWafExclusionPathRequired,
   isWafExclusionScopeValidForRule,
   suggestWafExclusionScope,
+  WAF_ALL_RULES_ID,
   WAF_CONTENT_TYPE_RULE_ID,
   wafRuleExclusionPathRegexSchema,
   type WafMode,
@@ -20,10 +22,11 @@ import OidcSection from '@/components/OidcSection';
 import { HostnameLink } from '@/components/HostnameLink';
 import LocalTime from '@/components/ui/LocalTime';
 import SortableHeader from '@/components/ui/SortableHeader';
-import PhoneSortBar from '@/components/ui/PhoneSortBar';
-import { useIsPhone } from '@/hooks/use-is-phone';
 import { useSortable } from '@/hooks/use-sortable';
 import { WafLogSummary } from '@/components/routes/WafLogSummary';
+import { NO_WAF_LOG_FILTERS, WafLogEvents } from '@/components/routes/WafLogEvents';
+import { WafTrustedIpsSection } from '@/components/routes/WafTrustedIps';
+import type { RouteWafLogFilters } from '@/hooks/use-route-waf';
 import { localZoneTitle } from '@/lib/format-timestamp';
 import { utcOffsetLabel } from '@/lib/format-traffic';
 import MtlsSection from '@/components/MtlsSection';
@@ -44,13 +47,11 @@ import {
   useCreateDirUser,
   useDeleteDirUser,
   useToggleDirUser,
-  useRouteWafLogs,
   useRouteWafExclusions,
   useCreateRouteWafExclusion,
   useDeleteRouteWafExclusion,
   type RouteDetailResponse,
   type ProtectedDir,
-  type WafLogEntry,
   type WafRuleExclusionEntry,
 } from '@/hooks/use-route-settings';
 
@@ -408,8 +409,11 @@ function SecurityTab({ tenantId, routeId, route }: {
   readonly route: RouteDetailResponse;
 }) {
   const updateSecurity = useUpdateRouteSecurity(tenantId, routeId);
-  const { data: logsData, isLoading: wafLogsLoading } = useRouteWafLogs(tenantId, routeId);
-  const wafLogs = logsData?.data ?? [];
+  // The event list's filters: the summary sets the source IP ("show its events").
+  const [logFilters, setLogFilters] = useState<RouteWafLogFilters>(NO_WAF_LOG_FILTERS);
+  // An address picked in the WAF Log to trust: opens the Trusted IPs card with it.
+  const [trustPrefill, setTrustPrefill] = useState<string | null>(null);
+  const clearTrustPrefill = useCallback(() => setTrustPrefill(null), []);
 
   /* ── WAF state ──
      OWASP CRS toggle, anomaly threshold, and excluded rule IDs columns
@@ -632,17 +636,10 @@ function SecurityTab({ tenantId, routeId, route }: {
                   scope: suggestWafExclusionScope(r.ruleId),
                   reason: `False positive: rule ${r.ruleId} on ${r.path} (${r.requests} requests from ${r.sourceIps} IPs)`,
                 })}
+                onFilterIp={(ip) => setLogFilters({ ...NO_WAF_LOG_FILTERS, sourceIp: ip })}
+                onTrustIp={setTrustPrefill}
               />
-              <h4 className="text-xs font-medium text-gray-700 dark:text-gray-300" data-testid="waf-log-latest-heading">
-                Latest events{wafLogs.length > 0 ? ` (${wafLogs.length})` : ''}
-              </h4>
-              {wafLogsLoading ? (
-                <div className="flex items-center justify-center py-8"><Loader2 size={20} className="animate-spin text-blue-600" /></div>
-              ) : wafLogs.length === 0 ? (
-                <div className="py-4 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="waf-log-empty">No WAF events recorded.</div>
-              ) : (
-                <WafLogTable logs={wafLogs} />
-              )}
+              <WafLogEvents tenantId={tenantId} routeId={routeId} filters={logFilters} onFiltersChange={setLogFilters} />
             </div>
           )}
         </div>
@@ -668,6 +665,15 @@ function SecurityTab({ tenantId, routeId, route }: {
         tenantId={tenantId}
         routeId={routeId}
         hostname={route.hostname}
+      />
+
+      {/* ── WAF Trusted IPs Card ── */}
+      <WafTrustedIpsSection
+        tenantId={tenantId}
+        routeId={routeId}
+        hostname={route.hostname}
+        prefill={trustPrefill}
+        onPrefillDone={clearTrustPrefill}
       />
 
       {/* ── IP Allowlist Card ── */}
@@ -1279,8 +1285,6 @@ function ProtectedDirDetail({ tenantId, routeId, dir }: {
   );
 }
 
-// ─── WAF Log Section ────────────────────────────────────────────────────────
-
 // ─── WAF mode ───────────────────────────────────────────────────────────────
 // Off, detection only (every request checked and every match logged, nothing
 // blocked — run it as long as needed before enforcing), or enforced.
@@ -1302,170 +1306,6 @@ const WAF_MODE_HELP: Record<WafMode, string> = {
     + 'run it as long as you need, add exclusions for false positives, then enforce.',
   enforced: 'Requests that trip the rules are blocked (403) and logged below.',
 };
-
-const SEV_STYLE: Record<string, string> = {
-  critical: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
-  warning: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-  info: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
-};
-
-type SortKey = 'createdAt' | 'sourceIp' | 'severity' | 'ruleId' | 'score' | 'request';
-type SortDir = 'asc' | 'desc';
-
-function getScore(msg: string): number | null {
-  const m = msg.match(/Score:\s*(\d+)|Total Score:\s*(\d+)/);
-  return m ? parseInt(m[1] || m[2], 10) : null;
-}
-
-const WAF_LOG_SORTS: ReadonlyArray<{ readonly key: SortKey; readonly label: string }> = [
-  { key: 'createdAt', label: 'Time' },
-  { key: 'severity', label: 'Level' },
-  { key: 'ruleId', label: 'Rule' },
-  { key: 'score', label: 'Score' },
-  { key: 'sourceIp', label: 'IP' },
-  { key: 'request', label: 'Request' },
-];
-
-function WafLogTable({ logs }: { readonly logs: readonly WafLogEntry[] }) {
-  const isPhone = useIsPhone();
-  const [sortKey, setSortKey] = useState<SortKey>('createdAt');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
-
-  const toggleSort = (key: SortKey) => {
-    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-    else { setSortKey(key); setSortDir('desc'); }
-  };
-
-  const sorted = [...logs].sort((a, b) => {
-    const dir = sortDir === 'asc' ? 1 : -1;
-    switch (sortKey) {
-      case 'createdAt': return dir * (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-      case 'sourceIp': return dir * (a.sourceIp ?? '').localeCompare(b.sourceIp ?? '');
-      case 'severity': { const order: Record<string, number> = { critical: 0, warning: 1, info: 2 }; return dir * ((order[a.severity] ?? 3) - (order[b.severity] ?? 3)); }
-      case 'ruleId': return dir * a.ruleId.localeCompare(b.ruleId);
-      case 'score': return dir * ((getScore(a.message) ?? -1) - (getScore(b.message) ?? -1));
-      case 'request': return dir * ((a.requestUri ?? '').localeCompare(b.requestUri ?? ''));
-      default: return 0;
-    }
-  });
-
-  const SortHeader = ({ label, k, className, title }: { label: string; k: SortKey; className?: string; title?: string }) => (
-    <th
-      className={clsx('px-2 py-2 cursor-pointer select-none hover:text-gray-300 transition-colors', className)}
-      onClick={() => toggleSort(k)}
-      title={title}
-      aria-sort={sortKey === k ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
-    >
-      {label} {sortKey === k ? (sortDir === 'asc' ? '▲' : '▼') : ''}
-    </th>
-  );
-
-  if (isPhone) {
-    // On a phone, one block per hit: level, rule and score, what the rule is,
-    // then the request, and when and from where. The table's six columns are
-    // wider than the screen even stacked.
-    return (
-      <div className="rounded-b-xl bg-gray-950 font-mono text-[11px]" data-testid="waf-log-entries">
-        <PhoneSortBar
-          options={WAF_LOG_SORTS}
-          sortKey={sortKey}
-          direction={sortDir}
-          onSort={(k) => toggleSort(k as SortKey)}
-          className="border-b border-gray-800 px-3 py-2 font-sans"
-        />
-        <ul className="divide-y divide-gray-800">
-          {sorted.map((log) => {
-            const score = getScore(log.message);
-            const ruleName = log.ruleId === '949110' ? 'Anomaly Threshold' : log.message;
-            return (
-              <li key={log.id} className="space-y-1 px-3 py-2.5" data-testid={`waf-log-entry-${log.id}`}>
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <span className={clsx('inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase', SEV_STYLE[log.severity] ?? SEV_STYLE.info)}>
-                    {log.severity}
-                  </span>
-                  <span className="font-bold text-blue-400">{log.ruleId}</span>
-                  {score !== null && <span className="font-bold text-amber-400">score {score}</span>}
-                  {log.detectionOnly && (
-                    <span
-                      className="inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase bg-sky-900/60 text-sky-200"
-                      title="Logged in detection-only mode: this request was not blocked"
-                      data-testid={`waf-log-detected-${log.id}`}
-                    >
-                      detected · not blocked
-                    </span>
-                  )}
-                </div>
-                <p className="break-words text-gray-300">{ruleName}</p>
-                <p className="break-all text-green-400">{log.requestMethod ?? 'GET'} {log.requestUri ?? '/'}</p>
-                <p className="flex flex-wrap gap-x-3 text-gray-500">
-                  <LocalTime iso={log.createdAt} />
-                  <span className="text-gray-400">{log.sourceIp ?? '-'}</span>
-                </p>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-    );
-  }
-
-  return (
-    <div className="overflow-x-auto rounded-b-xl" data-testid="waf-log-entries">
-      <table className="w-full font-mono text-[11px] bg-gray-950">
-        <thead>
-          <tr className="border-b border-gray-800 text-gray-500 text-left">
-            <SortHeader label={`Time (${utcOffsetLabel()})`} k="createdAt" className="w-[110px] whitespace-nowrap" title={localZoneTitle()} />
-            <SortHeader label="IP" k="sourceIp" className="w-[80px]" />
-            <SortHeader label="Level" k="severity" className="w-[62px]" />
-            <SortHeader label="Rule" k="ruleId" />
-            <SortHeader label="Score" k="score" className="w-[48px]" />
-            <SortHeader label="Request" k="request" />
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((log, idx) => {
-            const score = getScore(log.message);
-            const isBlockRule = log.ruleId === '949110';
-            const ruleName = isBlockRule ? 'Anomaly Threshold' : log.message;
-            return (
-              <tr
-                key={log.id}
-                className={clsx(idx % 2 === 0 ? 'bg-gray-950' : 'bg-gray-900')}
-                data-testid={`waf-log-entry-${log.id}`}
-              >
-                <td className="px-2 py-1.5 text-gray-500 whitespace-nowrap"><LocalTime iso={log.createdAt} /></td>
-                <td className="px-2 py-1.5 text-gray-400 whitespace-nowrap">{log.sourceIp ?? '-'}</td>
-                <td className="px-2 py-1.5">
-                  <span className={clsx('inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase', SEV_STYLE[log.severity] ?? SEV_STYLE.info)}>
-                    {log.severity}
-                  </span>
-                </td>
-                <td className="px-2 py-1.5" title={log.message}>
-                  {log.detectionOnly && (
-                    <span
-                      className="mr-1.5 inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold uppercase bg-sky-900/60 text-sky-200"
-                      title="Logged in detection-only mode: this request was not blocked"
-                      data-testid={`waf-log-detected-${log.id}`}
-                    >
-                      detected · not blocked
-                    </span>
-                  )}
-                  <span className="text-blue-400 font-bold">{log.ruleId}</span>
-                  <span className="text-gray-600 mx-1">-</span>
-                  <span className="text-gray-300">{ruleName}</span>
-                </td>
-                <td className="px-2 py-1.5 text-amber-400 font-bold whitespace-nowrap">{score ?? ''}</td>
-                <td className="px-2 py-1.5 text-green-400 truncate max-w-[400px]" title={`${log.requestMethod ?? 'GET'} ${log.requestUri ?? '/'}`}>
-                  {log.requestMethod ?? 'GET'} {log.requestUri ?? '/'}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
 
 // ─── WAF Exclusions Section (B2) ────────────────────────────────────────────
 //
@@ -1540,7 +1380,9 @@ function WafExclusionsSection({ tenantId, routeId, hostname }: {
             nothing for rules that match parameter <em>values</em> (930120, 932160, …).
             Use <code className="text-[11px]">full_disable</code> only as a last resort.
             Give a <strong>path</strong> to limit an exclusion to one page or endpoint
-            instead of the whole domain.
+            instead of the whole domain. <code className="text-[11px]">all rules</code> stops the
+            WAF checking one path at all — for an endpoint that only ever receives content that looks
+            like an attack, such as an MCP or API endpoint.
           </p>
           <div className="flex justify-end gap-2">
             <button
@@ -1636,8 +1478,10 @@ function ConfirmDeleteWafExclusionModal({ ex, hostname, isDeleting, error, onCan
       <div className="w-full max-w-md rounded-lg bg-white dark:bg-gray-800 p-5 shadow-xl" data-testid="confirm-delete-waf-exclusion-modal">
         <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Delete WAF exclusion?</h3>
         <p className="text-sm text-gray-700 dark:text-gray-300">
-          The OWASP CRS rule <code className="font-mono text-xs bg-gray-100 dark:bg-gray-700 px-1 rounded">{ex.ruleId}</code>{' '}
-          will start enforcing again on <strong className="font-mono">{hostname}</strong>
+          {ex.scope === 'all_rules'
+            ? <>The WAF will check every rule again</>
+            : <>The OWASP CRS rule <code className="font-mono text-xs bg-gray-100 dark:bg-gray-700 px-1 rounded">{ex.ruleId}</code> will start enforcing again</>}{' '}
+          on <strong className="font-mono">{hostname}</strong>
           {ex.pathRegex && <> for paths matching <code className="font-mono text-xs">{ex.pathRegex}</code></>} within ~10s
           (modsec-crs pods roll). Any traffic that was previously allowed because of this exclusion
           may begin being blocked.
@@ -1680,7 +1524,9 @@ function ConfirmDeleteWafExclusionModal({ ex, hostname, isDeleting, error, onCan
 
 /** How the Scope column names a scope — the sort key and the badge share it. */
 function wafExclusionScopeLabel(scope: WafRuleExclusionScope): string {
-  return scope === 'text_plain_as_json' ? 'text/plain as JSON' : scope;
+  if (scope === 'text_plain_as_json') return 'text/plain as JSON';
+  if (scope === 'all_rules') return 'all rules';
+  return scope;
 }
 
 function WafExclusionRow({ ex, onDelete, isDeleting }: {
@@ -1690,14 +1536,16 @@ function WafExclusionRow({ ex, onDelete, isDeleting }: {
 }) {
   return (
     <tr data-testid={`waf-exclusion-row-${ex.id}`}>
-      <td className="px-3 py-2 font-mono text-gray-900 dark:text-gray-100">{ex.ruleId}</td>
+      <td className="px-3 py-2 font-mono text-gray-900 dark:text-gray-100">
+        {ex.scope === 'all_rules' ? <span className="font-sans italic">all rules</span> : ex.ruleId}
+      </td>
       <td className="px-3 py-2 font-mono text-[11px] text-gray-700 dark:text-gray-300 break-all" data-testid={`waf-exclusion-path-${ex.id}`}>
         {ex.pathRegex ?? <span className="font-sans italic text-gray-500 dark:text-gray-400">every path</span>}
       </td>
       <td className="px-3 py-2">
         <span className={clsx(
           'inline-flex rounded px-2 py-0.5 text-[10px] uppercase font-medium',
-          ex.scope === 'full_disable'
+          ex.scope === 'full_disable' || ex.scope === 'all_rules'
             ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200'
             : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200',
         )}>{wafExclusionScopeLabel(ex.scope)}</span>
@@ -1744,15 +1592,19 @@ function AddWafExclusionModal({ tenantId, routeId, hostname, prefill, onClose }:
   const create = useCreateRouteWafExclusion(tenantId, routeId);
 
   const pathTrimmed = pathRegex.trim();
+  const allRules = scope === 'all_rules';
+  // "All rules" has no rule id: it is stored as WAF_ALL_RULES_ID.
+  const effectiveRuleId = allRules ? WAF_ALL_RULES_ID : ruleId.trim();
+  const pathRequired = isWafExclusionPathRequired(scope);
   // The contract's own message: it names the rule broken (anchor, quote, syntax the WAF cannot compile).
   const pathError = pathTrimmed === ''
-    ? null
+    ? (pathRequired ? 'All rules needs a path — to stop checking every path, set the WAF mode to Off' : null)
     : wafRuleExclusionPathRegexSchema.safeParse(pathTrimmed).error?.issues[0]?.message ?? null;
   const pathValid = pathError === null;
   const isContentTypeRule = ruleId.trim() === WAF_CONTENT_TYPE_RULE_ID;
-  const valid = /^[0-9]+$/.test(ruleId.trim())
+  const valid = /^[0-9]+$/.test(effectiveRuleId)
     && pathValid
-    && isWafExclusionScopeValidForRule(scope, ruleId.trim())
+    && isWafExclusionScopeValidForRule(scope, effectiveRuleId)
     && reason.trim().length > 0;
 
   return (
@@ -1764,6 +1616,7 @@ function AddWafExclusionModal({ tenantId, routeId, hostname, prefill, onClose }:
           routes (and other tenants) are unaffected.
         </p>
         <div className="space-y-3 text-sm">
+          {!allRules && (
           <label className="flex flex-col gap-1">
             <span className="text-gray-700 dark:text-gray-200">Rule ID</span>
             <input
@@ -1782,8 +1635,11 @@ function AddWafExclusionModal({ tenantId, routeId, hostname, prefill, onClose }:
               false-positive event you want to suppress.
             </span>
           </label>
+          )}
           <label className="flex flex-col gap-1">
-            <span className="text-gray-700 dark:text-gray-200">Path (optional — empty = the whole domain)</span>
+            <span className="text-gray-700 dark:text-gray-200">
+              {pathRequired ? 'Path (required)' : 'Path (optional — empty = the whole domain)'}
+            </span>
             <input
               value={pathRegex}
               onChange={(e) => setPathRegex(e.target.value)}
@@ -1817,7 +1673,15 @@ function AddWafExclusionModal({ tenantId, routeId, hostname, prefill, onClose }:
               {isContentTypeRule && (
                 <option value="text_plain_as_json">text_plain_as_json — accept text/plain, inspect it as JSON (920420)</option>
               )}
+              <option value="all_rules">all rules — do not check this path at all</option>
             </select>
+            {allRules && (
+              <span className="text-[10px] text-amber-700 dark:text-amber-300" data-testid="add-waf-exclusion-all-rules-help">
+                Requests to this path are not checked by any rule — nothing on it is blocked or logged. Meant for
+                an endpoint whose requests always carry content that looks like an attack (an MCP or API endpoint
+                posting HTML, SQL or shell text). Keep the path as narrow as you can, ideally one exact path ending in $.
+              </span>
+            )}
             {scope === 'text_plain_as_json' && (
               <span className="text-[10px] text-gray-500" data-testid="add-waf-exclusion-text-plain-help">
                 Accepts a text/plain body (browser beacons, e.g. Moodle H5P progress saves) and has
@@ -1855,7 +1719,7 @@ function AddWafExclusionModal({ tenantId, routeId, hostname, prefill, onClose }:
             onClick={() => {
               setErr(null);
               create.mutate(
-                { ruleId: ruleId.trim(), pathRegex: pathTrimmed === '' ? null : pathTrimmed, scope, reason: reason.trim() },
+                { ruleId: effectiveRuleId, pathRegex: pathTrimmed === '' ? null : pathTrimmed, scope, reason: reason.trim() },
                 {
                   onSuccess: onClose,
                   onError: (e) => setErr(e instanceof Error ? e.message : 'Failed to add exclusion'),

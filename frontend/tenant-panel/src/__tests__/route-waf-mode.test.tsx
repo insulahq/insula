@@ -46,7 +46,7 @@ beforeEach(() => {
       return Promise.resolve({ data: { ...ROUTE, wafMode: 'enforced', wafDetectionOnly: false } }) as never;
     }
     if (url.includes('/waf-logs/summary')) return Promise.resolve({ data: SUMMARY }) as never;
-    if (url.endsWith('/waf-logs')) return Promise.resolve({ data: LOGS }) as never;
+    if (url.includes('/waf-logs?')) return Promise.resolve({ data: LOGS }) as never;
     if (url.endsWith('/waf-exclusions')) return Promise.resolve({ data: { exclusions } }) as never;
     if (url.endsWith('/routes/route-1')) return Promise.resolve({ data: ROUTE }) as never;
     return Promise.resolve({ data: [], pagination: { total_count: 0, cursor: null, has_more: false, page_size: 50 } }) as never;

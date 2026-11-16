@@ -5,7 +5,7 @@
  * Also handles basic-auth user CRUD and WAF log lifecycle.
  */
 
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { ingressRoutes, wafLogs, domains } from '../../db/schema.js';
 import type { WafMode } from '@insula/api-contracts';
 import { ApiError } from '../../shared/errors.js';
@@ -15,7 +15,6 @@ import {
   getWwwCompanionHostname,
 } from './service.js';
 import type { Database } from '../../db/index.js';
-import { assertRouteOwnedByTenant } from './route-ownership.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -217,17 +216,6 @@ export async function updateAdvancedSettings(
 }
 
 // ─── WAF Logs ───────────────────────────────────────────────────────────────
-
-export async function listWafLogs(db: Database, routeId: string, tenantId: string, limit = 50) {
-  await assertRouteOwnedByTenant(db, routeId, tenantId);
-  const capped = Math.min(limit, 100);
-  return db
-    .select()
-    .from(wafLogs)
-    .where(eq(wafLogs.routeId, routeId))
-    .orderBy(desc(wafLogs.createdAt))
-    .limit(capped);
-}
 
 export async function ingestWafLog(
   db: Database,

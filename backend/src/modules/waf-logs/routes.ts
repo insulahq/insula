@@ -5,6 +5,7 @@
  *   PATCH /admin/security/waf-log-settings      — { retentionDays } (super_admin)
  *   GET   /admin/security/waf-events/summary    — grouped by host/rule/path, WAF Events filters (super_admin)
  *   GET   /tenants/:tenantId/routes/:routeId/waf-logs/summary?sinceSeconds= — one route, its tenant only
+ *   GET   /tenants/:tenantId/routes/:routeId/waf-logs/sources?sinceSeconds= — the same events by source address
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
@@ -18,6 +19,7 @@ import { ApiError } from '../../shared/errors.js';
 import { assertRouteOwnedByTenant } from '../ingress-routes/route-ownership.js';
 import { loadWafLogSettings, saveRetentionDays } from './retention.js';
 import { summarizeForAdmin, summarizeForRoute } from './summary.js';
+import { summarizeRouteSources } from './route-events.js';
 
 const invalid = (issues: ReadonlyArray<{ path: PropertyKey[]; message: string }>): ApiError =>
   new ApiError('VALIDATION_ERROR', issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; '), 400);
@@ -61,5 +63,20 @@ export async function wafLogRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) throw invalid(parsed.error.issues);
     await assertRouteOwnedByTenant(app.db, routeId, tenantId);
     return success(await summarizeForRoute(app.db, routeId, parsed.data.sinceSeconds));
+  });
+
+  app.get('/tenants/:tenantId/routes/:routeId/waf-logs/sources', {
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
+    schema: {
+      tags: ['Ingress Route WAF'],
+      summary: 'WAF events of a route grouped by source IP',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request: FastifyRequest) => {
+    const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
+    const parsed = tenantWafLogSummaryQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) throw invalid(parsed.error.issues);
+    await assertRouteOwnedByTenant(app.db, routeId, tenantId);
+    return success(await summarizeRouteSources(app.db, routeId, parsed.data.sinceSeconds));
   });
 }

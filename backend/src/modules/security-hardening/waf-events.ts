@@ -17,6 +17,7 @@
 import { and, desc, eq, gte, ilike, inArray, isNull, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { wafLogs } from '../../db/schema.js';
+import { wafPassReasonSchema } from '@insula/api-contracts';
 import { loadScraperStatus } from '../ingress-routes/waf-log-scraper.js';
 
 // Matches SecurityHardeningDeps.db — kept loose to share the same instance
@@ -67,6 +68,8 @@ interface WafLogRow {
   readonly createdAt: Date | string;
   /** Optional: a row from before migration 0162 has none. */
   readonly detectionOnly?: boolean;
+  /** Optional: a row from before migration 0184 has none. */
+  readonly passReason?: string | null;
 }
 
 function rowToEvent(row: WafLogRow): WafEvent {
@@ -87,6 +90,7 @@ function rowToEvent(row: WafLogRow): WafEvent {
     sourceIp: row.sourceIp,
     occurredAt: ts,
     detectionOnly: row.detectionOnly ?? false,
+    passReason: wafPassReasonSchema.safeParse(row.passReason).data ?? null,
   };
 }
 
@@ -165,7 +169,7 @@ export async function computeStats(db: Db): Promise<WafEventsStats> {
   const cutoff = new Date(Date.now() - STATS_WINDOW_SECONDS * 1000);
   const baseWhere = gte(wafLogs.createdAt, cutoff);
 
-  type TotalsRow = { total: number; tenant_route: number; admin_host: number; detection_only: number; most_recent: string | Date | null };
+  type TotalsRow = { total: number; tenant_route: number; admin_host: number; detection_only: number; not_blocked: number; most_recent: string | Date | null };
   type TopRuleRow = { rule_id: string; cnt: number; message: string | null; severity: string | null };
   type HostRow = { hostname: string; is_admin_host: boolean; cnt: number };
 
@@ -177,6 +181,7 @@ export async function computeStats(db: Db): Promise<WafEventsStats> {
         COUNT(*) FILTER (WHERE route_id IS NOT NULL)::int AS tenant_route,
         COUNT(*) FILTER (WHERE route_id IS NULL)::int AS admin_host,
         COUNT(*) FILTER (WHERE detection_only)::int AS detection_only,
+        COUNT(*) FILTER (WHERE detection_only OR pass_reason IS NOT NULL)::int AS not_blocked,
         MAX(created_at) AS most_recent
       FROM waf_logs
       WHERE created_at >= ${cutoff}
@@ -229,7 +234,7 @@ export async function computeStats(db: Db): Promise<WafEventsStats> {
   ]);
 
   const totalsArr = (totalsRaw as unknown as { rows?: TotalsRow[] }).rows ?? [];
-  const totals: TotalsRow = totalsArr[0] ?? { total: 0, tenant_route: 0, admin_host: 0, detection_only: 0, most_recent: null };
+  const totals: TotalsRow = totalsArr[0] ?? { total: 0, tenant_route: 0, admin_host: 0, detection_only: 0, not_blocked: 0, most_recent: null };
 
   const topRules: WafTopRule[] = (((topRulesRaw as unknown as { rows?: TopRuleRow[] }).rows) ?? []).map((row) => ({
     ruleId: row.rule_id,
@@ -260,6 +265,7 @@ export async function computeStats(db: Db): Promise<WafEventsStats> {
     totalEvents: Number(totals.total ?? 0),
     totalEventsTenantRoute: Number(totals.tenant_route ?? 0),
     totalEventsDetectionOnly: Number(totals.detection_only ?? 0),
+    totalEventsNotBlocked: Number(totals.not_blocked ?? 0),
     totalEventsAdminHost: Number(totals.admin_host ?? 0),
     topRules,
     topHosts,

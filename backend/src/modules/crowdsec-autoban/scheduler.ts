@@ -281,6 +281,10 @@ async function newWafEventsSince(
         WHERE (created_at, id) > (${cursor.createdAt}::timestamp, ${cursor.id})
           AND created_at < NOW() - (${SETTLE_SECONDS} * INTERVAL '1 second')
           AND NOT detection_only
+          -- Let through because the platform allowlists the source or the
+          -- route trusts it: not judged, since a ban would block that address
+          -- on every site. Rows whose score stayed below the threshold are.
+          AND (pass_reason IS NULL OR pass_reason NOT IN ('allowlisted_ip', 'trusted_ip'))
         ORDER BY created_at ASC, id ASC LIMIT ${MAX_BATCH}
       `)
     : await db.execute(sql`
@@ -290,6 +294,7 @@ async function newWafEventsSince(
         WHERE created_at > NOW() - (${lookbackSeconds} * INTERVAL '1 second')
           AND created_at < NOW() - (${SETTLE_SECONDS} * INTERVAL '1 second')
           AND NOT detection_only
+          AND (pass_reason IS NULL OR pass_reason NOT IN ('allowlisted_ip', 'trusted_ip'))
         ORDER BY created_at ASC, id ASC LIMIT ${MAX_BATCH}
       `);
   const rawRows = ((result as unknown as { rows?: RawWafLogRow[] }).rows) ?? [];
@@ -571,8 +576,13 @@ export async function calibrateAutoban(
       tenantId: wafLogs.tenantId,
     })
     .from(wafLogs)
-    // Detection-only routes block nothing, and nothing bans for them either.
-    .where(and(gt(wafLogs.createdAt, since), eq(wafLogs.detectionOnly, false)))
+    // Detection-only routes block nothing, and nothing bans for them either;
+    // nor for a source the platform allowlists or the route trusts.
+    .where(and(
+      gt(wafLogs.createdAt, since),
+      eq(wafLogs.detectionOnly, false),
+      sql`(${wafLogs.passReason} IS NULL OR ${wafLogs.passReason} NOT IN ('allowlisted_ip', 'trusted_ip'))`,
+    ))
     .orderBy(desc(wafLogs.createdAt))
     .limit(10_000);
 

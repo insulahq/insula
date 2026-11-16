@@ -52,7 +52,7 @@ beforeEach(() => {
       return Promise.resolve({ data: exclusion({ id: 'x-new', ...body }) }) as never;
     }
     if (url.includes('/waf-logs/summary')) { summaryUrls.push(url); return Promise.resolve({ data: summary }) as never; }
-    if (url.endsWith('/waf-logs')) return Promise.resolve({ data: [] }) as never;
+    if (url.includes('/waf-logs?')) return Promise.resolve({ data: [] }) as never;
     if (url.endsWith('/waf-exclusions')) return Promise.resolve({ data: { exclusions } }) as never;
     if (url.endsWith('/routes/route-1')) return Promise.resolve({ data: ROUTE }) as never;
     return Promise.resolve({ data: [], pagination: { total_count: 0, cursor: null, has_more: false, page_size: 50 } }) as never;

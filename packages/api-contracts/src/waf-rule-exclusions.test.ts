@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildHostnameRegexForRoute,
   buildPathRegexFromEventUri,
   isPortablePathRegex,
+  isWafExclusionScopeValidForRule,
+  isWildcardRouteHostname,
+  WAF_ALL_RULES_ID,
   createTenantWafRuleExclusionRequestSchema,
   createWafRuleExclusionRequestSchema,
   updateWafRuleExclusionRequestSchema,
@@ -101,5 +105,41 @@ describe('buildPathRegexFromEventUri', () => {
 
   it.each([null, undefined, '', 'relative/path', '/a"b', `/${'a'.repeat(300)}`])('gives null for %j', (v) => {
     expect(buildPathRegexFromEventUri(v)).toBeNull();
+  });
+});
+
+describe('scope all_rules', () => {
+  const tenantCreate = (body: object) => createTenantWafRuleExclusionRequestSchema.safeParse({ reason: 'r', ...body });
+
+  it('goes with rule id 0, and nothing else does', () => {
+    expect(isWafExclusionScopeValidForRule('all_rules', WAF_ALL_RULES_ID)).toBe(true);
+    expect(isWafExclusionScopeValidForRule('all_rules', '941100')).toBe(false);
+    expect(isWafExclusionScopeValidForRule('args', WAF_ALL_RULES_ID)).toBe(false);
+    expect(isWafExclusionScopeValidForRule('full_disable', WAF_ALL_RULES_ID)).toBe(false);
+    expect(isWafExclusionScopeValidForRule('args', '941100')).toBe(true);
+  });
+
+  it('a create needs a path', () => {
+    expect(tenantCreate({ ruleId: '0', scope: 'all_rules', pathRegex: '^/mcp$' }).success).toBe(true);
+    const noPath = tenantCreate({ ruleId: '0', scope: 'all_rules' });
+    expect(noPath.success).toBe(false);
+    expect(noPath.error?.issues.map((i) => i.path.join('.'))).toContain('pathRegex');
+    expect(tenantCreate({ ruleId: '0', scope: 'all_rules', pathRegex: null }).success).toBe(false);
+    expect(tenantCreate({ ruleId: '941100', scope: 'all_rules', pathRegex: '^/mcp$' }).success).toBe(false);
+    expect(createWafRuleExclusionRequestSchema.safeParse({
+      ruleId: '0', scope: 'all_rules', hostnameRegex: '^a\\.example\\.test$', reason: 'r',
+    }).success).toBe(false);
+  });
+});
+
+describe('buildHostnameRegexForRoute', () => {
+  it('matches an exact hostname exactly', () => {
+    expect(buildHostnameRegexForRoute('shop.example.test')).toBe('^shop\\.example\\.test$');
+  });
+
+  it('a wildcard hostname is escaped like any other: no regex covers only what it serves', () => {
+    expect(buildHostnameRegexForRoute('*.sites.example.test')).toBe('^\\*\\.sites\\.example\\.test$');
+    expect(isWildcardRouteHostname('*.sites.example.test')).toBe(true);
+    expect(isWildcardRouteHostname('shop.example.test')).toBe(false);
   });
 });

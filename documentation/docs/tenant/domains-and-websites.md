@@ -150,14 +150,37 @@ Click any route to open its detail page, which has these tabs:
   *detected · not blocked*, but blocks nothing: run it against your real
   traffic for as long as you need, add exclusions for anything your site
   legitimately does, then switch to *Enforced*, which blocks with a 403.
-  The **WAF Log** opens with a summary by rule and path for the last day, week
-  or month — what was blocked or would have been — and an **Exclude on this
-  path** button for each row; the latest single events follow below it.
+  The **WAF Log** opens with a summary for the last day, week or month —
+  what was blocked or would have been. **By rule and path** lists each rule
+  on each path with its busiest source addresses and an **Exclude on this
+  path** button; **By source IP** lists each address with how many of its
+  requests matched rules, how many were let through, the rules it tripped,
+  and a **Trust** button. Click an address anywhere to show only its events
+  in the event list below, which you can also filter by rule, path and
+  outcome (blocked or not), sort, and page through with **Show more**.
+  An event marked *not blocked* was let through: *detected* (Detection only
+  mode), *platform allowlist* (the platform operator exempts that address on
+  every site), *trusted IP* (one of your trusted addresses, below), or
+  *below threshold* (rules matched, but not enough to block).
   An exclusion (under **WAF Exclusions**) switches one rule off for your
   website, or — when you give it a **path** such as `^/lib/ajax/service\.php$`
   — only for the pages whose address matches. For rule 920420 there is also
   **text_plain_as_json**, which accepts browser beacons sent as `text/plain`
-  and still inspects them.
+  and still inspects them. **All rules** needs a path and stops the WAF
+  checking that path at all — nothing on it is blocked or logged. Use it for an
+  endpoint whose requests always carry content that looks like an attack,
+  such as an MCP or API endpoint that receives HTML, SQL or shell text, and
+  keep the path exact (for example `^/mcp$`).
+  **WAF Trusted IPs** lists addresses whose requests to this website the WAF
+  still checks and logs but never blocks — your own workstation, office or
+  automation. A trusted address does not count toward the platform's automatic
+  ban either. Prefer single addresses; a network can be at most a /24 (IPv4)
+  or a /48 (IPv6), and a website can trust up to 20 entries. A trusted address
+  is a gap in the firewall for that website, so remove it when you no longer
+  need it. Changes take effect within a minute. A wildcard route
+  (`*.example.com`) cannot have trusted addresses — add them to a route with
+  the exact hostname. This is not the **IP Allowlist**, which decides who may
+  reach the website at all.
 - **Access Control** — [require a sign-in](#require-a-sign-in-oidc),
   client certificates (mTLS) and
   [password-protected folders](protected-directories.md).

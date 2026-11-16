@@ -160,3 +160,45 @@ describe('parseScrapedLog — detection-only events', () => {
     expect(parseScrapedLog(record('333.3', { 'X-Insula-Waf-Mode': 'enforce' }))[0]?.detectionOnly).toBe(false);
   });
 });
+
+// ModSecurity's audit record carries its verdict. Measured on production
+// (CRS 4.30): a blocked request is interrupted with 403; a request from an
+// allowlisted source is not, answers 200, and still lists 949110.
+describe('parseScrapedLog — the record\'s verdict', () => {
+  const record = (uid: string, interrupted: boolean | undefined, rules: string[], uri = '/mcp') => {
+    const tx: Record<string, unknown> = {
+      client_ip: '192.0.2.70',
+      time_stamp: 'Sun Nov 15 21:52:48 2026',
+      unique_id: uid,
+    };
+    if (interrupted !== undefined) tx.is_interrupted = interrupted;
+    tx.request = { method: 'POST', uri, headers: { 'X-Forwarded-Host': 'shop.example.test', 'X-Real-Ip': '203.0.113.7' } };
+    tx.response = { http_code: interrupted ? 403 : 200 };
+    tx.messages = rules.map((ruleId) => ({ message: `rule ${ruleId}`, details: { match: 'x', ruleId, file: 'f.conf', severity: '2' } }));
+    return JSON.stringify({ transaction: tx });
+  };
+
+  it('reads is_interrupted and whether 949110 was reached', () => {
+    const events = parseScrapedLog([
+      record('1.1', true, ['941100', '949110']),
+      record('2.2', false, ['941100', '949110']),
+      record('3.3', false, ['920350']),
+    ].join('\n'));
+    expect(events.map((e) => [e.uniqueId, e.interrupted, e.scoreExceeded, e.sourceIp])).toEqual([
+      ['1.1:941100', true, true, '203.0.113.7'],
+      ['2.2:941100', false, true, '203.0.113.7'],
+      ['3.3:920350', false, false, '203.0.113.7'],
+    ]);
+  });
+
+  it('a record without the field leaves the verdict unknown', () => {
+    expect(parseScrapedLog(record('4.4', undefined, ['941100']))[0]?.interrupted).toBeUndefined();
+  });
+
+  it('request content cannot forge the verdict: its quotes are escaped', () => {
+    const forged = record('5.5', true, ['941100'], '/x?a="is_interrupted":false,"ruleId":"949110"');
+    const [event] = parseScrapedLog(forged);
+    expect(event?.interrupted).toBe(true);
+    expect(event?.scoreExceeded).toBe(false);
+  });
+});

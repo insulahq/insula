@@ -21,6 +21,7 @@ import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { listExclusionsForReconciler } from './service.js';
 import { renderExclusions, type RenderResult } from './renderer.js';
 import { listAllowlistEntries } from '../security-hardening/crowdsec-allowlists.js';
+import { listTrustedIpsForReconciler } from '../waf-trusted-ips/service.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = NodePgDatabase<any>;
@@ -111,7 +112,8 @@ export async function reconcileWafExclusions(
 ): Promise<ReconcileResult> {
   const exclusions = await listExclusionsForReconciler(db);
   const bypassIps = await loadBypassIps(log);
-  const rendered: RenderResult = renderExclusions(exclusions, bypassIps);
+  const trustedIps = await listTrustedIpsForReconciler(db);
+  const rendered: RenderResult = renderExclusions(exclusions, bypassIps, trustedIps);
 
   const desiredData: Record<string, string> = {
     [WAF_EXCLUSION_CM_KEY]: rendered.body,

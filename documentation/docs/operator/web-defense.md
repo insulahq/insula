@@ -77,6 +77,7 @@ off for matching hosts:
 | `args_names_only` | Stops the rule inspecting parameter *names* only. | Rare. Only correct when the rule matches a field *name*. |
 | `full_disable` | Disables the rule entirely for matching hosts. | Last resort. |
 | `text_plain_as_json` | Rule **920420** only. Accepts a `text/plain` body and has the WAF parse it as JSON, so the body is still inspected. Other body types are still refused, and a `text/plain` body that is not JSON is blocked. | Browser *beacons* (`navigator.sendBeacon`) that post JSON as `text/plain` — Moodle saves H5P progress this way. |
+| `all_rules` | No rule id; a **path is required**. The WAF does not check requests to that path at all (`ctl:ruleEngine=Off`): nothing there is blocked or logged. | An endpoint whose every request carries attack-looking content — an MCP or API endpoint posting HTML, SQL or shell text for its callers. Keep the path exact (`^/mcp$`). |
 
 !!! warning "Do not switch 920420 off for a host"
     920420 refuses request body types the WAF cannot parse. With it off, a
@@ -121,6 +122,32 @@ side; the same rule, scope and path on one host can exist only once.
     matching exactly that route's hostname, so a tenant can never write an
     exclusion that affects another tenant's traffic. A tenant may narrow its
     exclusion further with a path regex.
+
+### The IP allowlist, tenant trusted IPs, and "not blocked" events
+
+An address on the **IP allowlist** (the CrowdSec `admin-panel` allowlist) is
+never banned, and the WAF runs it in detection-only mode **on every site**:
+its requests are still checked and logged but never blocked. Keep it to your
+own hosts and monitoring services.
+
+A tenant can do the same for **one route** with **WAF Trusted IPs** on the
+route's Security tab: single addresses or networks up to /24 (IPv4) or /48
+(IPv6), at most 20 per route. The platform renders them as one rule per route,
+chained behind the route's exact hostname, so they reach no other site. A
+wildcard route (`*.sites.example.test`) cannot have any: no hostname regex
+covers only the hosts it serves, because one that matches every label under it
+would also match a host there that has its own route. Rows of an
+allowlisted or trusted source do not count toward the WAF auto-ban.
+
+Whether a request was blocked comes from ModSecurity's own audit record
+(`is_interrupted`), not from the lists. When it was not, the event records why
+— *platform allowlist*, *trusted IP*, *below threshold* (rules matched but the
+score stayed under the threshold), or *not enforced* (the score was over the
+threshold and no list explains it, e.g. an entry removed since). WAF Events,
+the summaries and the tenant's WAF Log mark those events *not blocked*, and the
+dashboards do not count them as blocked. Events logged before this was
+recorded were marked once, at the upgrade, from the allowlist as it stood
+then; other old events keep no reason.
 
 ### Deploys, cron jobs and the app terminal are never WAF-blocked
 
