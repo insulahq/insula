@@ -1238,6 +1238,9 @@ configure_branded_paths() {
 BOOTSTRAP_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PHASES_LIB="${BOOTSTRAP_SCRIPT_DIR}/lib/bootstrap-phases.sh"
 if [[ ! -r "$PHASES_LIB" ]]; then
+  # error() is defined above (the plain logger) and redefined below once the
+  # console renderer is loaded; shellcheck 0.11 sees only the later one.
+  # shellcheck disable=SC2218
   error "phase library missing at ${PHASES_LIB} — scripts/lib/ must accompany bootstrap.sh (clone the repo or use --remote; the 'curl | bash' one-liner is unsupported)."
 fi
 # shellcheck source=lib/bootstrap-phases.sh
