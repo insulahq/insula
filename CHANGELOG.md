@@ -12,6 +12,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **A WAF rule change could cost a visitor a 502.** Saving an exclusion or a trusted IP rolls the
+  shared WAF sidecar. A pod stopped accepting connections the moment it was told to stop, while
+  Traefik could still reach it for a moment afterwards. Those requests got no verdict, and the WAF
+  fails closed, so a few visitors of WAF-protected sites (the panels too) got a 502. A lab cluster
+  under load saw 5 such requests over two rolls. The sidecar now keeps answering for 5 seconds
+  after it is told to stop, and its audit-log streamer stays up 10 seconds so those requests still
+  reach WAF Events.
+
 ## [2026.11.11] - 2026-11-17
 
 ### Security
