@@ -21,6 +21,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   under load saw 5 such requests over two rolls. The sidecar now keeps answering for 5 seconds
   after it is told to stop, and its audit-log streamer stays up 10 seconds so those requests still
   reach WAF Events.
+- **A scanner sweeping a private worker's tunnel address paged CRITICAL.** Each private worker has
+  a public address, `<slug>.tunnels.<apex>`, which its agent dials over WebSocket. Every other
+  request to that address reached the tunnel server's control port, which answers only the agent,
+  so Traefik returned 502. One sweep of a few hundred paths was enough to set off "API availability —
+  high error rate". This happened three times in a month on production. Only the agent's own path
+  now routes; anything else gets 404, and the agent connects as before. Existing workers change
+  when platform-api restarts on this release.
+- **"Platform surfaces — slow requests" fired on file transfers.** These requests last as long as
+  the transfer does, so the warning no longer counts them:
+  - file-manager uploads and large downloads;
+  - webmail attachment uploads and downloads;
+  - webmail's live-update stream, where each connection stays open for minutes.
+
+  Every one of the rule's six warnings in a month on production came from these routes. The rule
+  still counts everything else the panels, webmail and the Stalwart admin serve.
 
 ## [2026.11.11] - 2026-11-17
 

@@ -466,7 +466,7 @@ components:
     watch: { type: github_releases, repo: fatedier/frp, advisories: fatedier/frp }
     scan: trivy
     owner: platform
-    notes: fatedier/frps server image + frp client baked into private-worker-agent. Crosses trust boundaries → watch.
+    notes: fatedier/frps server image + frp client baked into private-worker-agent. Crosses trust boundaries → watch. Each tunnel IngressRoute admits only frp's fixed WebSocket handshake (`GET /~!frp`, FrpWebsocketPath in pkg/util/net/websocket.go); re-check that constant on a bump (private-workers/tunnel-route.test.ts pins it to this version).
 
   - id: backup-rclone
     name: backup-rclone shim (rclone DaemonSet for backup targets)

@@ -126,7 +126,17 @@ export function jmapStreamMatch(host: string): string {
   return `Host(\`${host}\`) && (${JMAP_STREAM_PREFIXES.map((p) => `PathPrefix(\`${p}\`)`).join(' || ')})`;
 }
 
-const isUploadRoute = (r: Route): boolean => (r.match ?? '').includes(`PathPrefix(\`${JMAP_STREAM_PREFIXES[0]}\`)`);
+/**
+ * True for the carve-out's rule, at any path set it has had (it once covered
+ * upload alone). Also read by the latency SLO, which leaves the carve-out out:
+ * its requests last as long as the transfer or the stream (monitoring/
+ * transfer-routes.ts).
+ */
+export function isJmapStreamMatch(match: string): boolean {
+  return match.includes(`PathPrefix(\`${JMAP_STREAM_PREFIXES[0]}\`)`);
+}
+
+const isUploadRoute = (r: Route): boolean => isJmapStreamMatch(r.match ?? '');
 const isJmapRoute = (r: Route): boolean => !isUploadRoute(r) && (r.match ?? '').includes('PathPrefix(`/jmap`)');
 
 function covered(live: LiveExclusions, id: string, route: Route): boolean | null {
