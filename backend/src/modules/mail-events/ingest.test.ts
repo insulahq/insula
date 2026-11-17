@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aggregateEvents, type StalwartWebhookEvent } from './ingest.js';
+import { aggregateEvents, heldWindowMs, quotaDomainOf, quotaIdOf, type StalwartWebhookEvent } from './ingest.js';
 
 const T = '2026-06-12T10:15:30Z';
 const resolution = new Map([['alpha.example.com', 'tenant-1'], ['beta.example.com', 'tenant-2']]);
@@ -44,7 +44,33 @@ describe('aggregateEvents', () => {
       { type: 'queue.quota-exceeded', createdAt: T, data: { from: 'a@alpha.example.com' } },
     ], resolution);
     expect(deltas).toHaveLength(1);
-    expect(deltas[0]).toMatchObject({ sentCount: 0, rateLimitedCount: 1, quotaRejectedCount: 1 });
+    expect(deltas[0]).toMatchObject({ sentCount: 0, rateLimitedCount: 1, rateLimitedDailyCount: 0, quotaRejectedCount: 1 });
+  });
+
+  // The shape Stalwart v0.16 sends (its throttle code puts Limit = [count,
+  // period] and the JSON serializer writes a Duration as integer ms). A daily
+  // hold waits until 00:00 UTC, an hourly one until the next full hour, so
+  // which window held it decides whether the message is still waiting.
+  it('tells a daily hold from an hourly one by the window in the event', () => {
+    const held = (limit: unknown): StalwartWebhookEvent => ({
+      type: 'queue.rate-limit-exceeded', createdAt: T,
+      data: { from: 'a@alpha.example.com', id: 'MtaOutboundThrottle with id x', limit },
+    });
+    const { deltas } = aggregateEvents([held([100, 86_400_000]), held([100, 86_400_000]), held([50, 3_600_000])], resolution);
+    expect(deltas[0]).toMatchObject({ rateLimitedCount: 3, rateLimitedDailyCount: 2 });
+  });
+});
+
+describe('heldWindowMs', () => {
+  it('reads [count, periodMs] (v0.16) and limit + period (later releases)', () => {
+    expect(heldWindowMs({ limit: [100, 86_400_000] })).toBe(86_400_000);
+    expect(heldWindowMs({ limit: 100, period: 3_600_000 })).toBe(3_600_000);
+  });
+
+  it('is null when the event carries no window — counted as hourly, never told to wait until midnight', () => {
+    expect(heldWindowMs({ from: 'a@alpha.example.com' })).toBeNull();
+    expect(heldWindowMs({ limit: '[100, 86400000ms]' })).toBeNull();
+    expect(heldWindowMs(undefined)).toBeNull();
   });
 
   it('drops unresolvable sender domains as unattributed', () => {
@@ -165,5 +191,47 @@ describe('platform addresses never consume a tenant allowance', () => {
       { type: 'queue.authenticated-message-queued', createdAt: '2026-09-17T09:00:00Z', data: { from: 'PostMaster@Example.TEST', to: ['a@b.test'] } },
     ] as unknown as StalwartWebhookEvent[], T);
     expect(deltas.every((d) => d.sentCount === 0)).toBe(true);
+  });
+});
+
+// Stalwart's queue.quota-exceeded names no sender — only the quota object
+// (smtp/queue/quota.rs). Every refusal used to be dropped as unattributed, so
+// "refused" read 0 while a full queue turned mail away with 452.
+describe('refusals (queue.quota-exceeded)', () => {
+  const refused: StalwartWebhookEvent = {
+    type: 'queue.quota-exceeded', createdAt: T,
+    data: { listenerId: 'submission', id: 'MtaQueueQuota with id joztb2xyacqa', type: 'Sender' },
+  };
+
+  it('reads the registry id from the event', () => {
+    expect(quotaIdOf(refused.data)).toBe('joztb2xyacqa');
+    expect(quotaIdOf({ id: 'plainid' })).toBe('plainid');
+    expect(quotaIdOf({})).toBeNull();
+  });
+
+  it('knows a platform quota\'s domain from its description, and nobody else\'s', () => {
+    expect(quotaDomainOf('platform:send-limit:Alpha.Example.com:backlog')).toBe('alpha.example.com');
+    expect(quotaDomainOf('platform:send-limit:alpha.example.com:block')).toBe('alpha.example.com');
+    expect(quotaDomainOf('operator quota')).toBeNull();
+    expect(quotaDomainOf('platform:send-limit:alpha.example.com:daily')).toBeNull();
+    expect(quotaDomainOf(null)).toBeNull();
+  });
+
+  it('counts a refusal against the domain its quota limits', () => {
+    const { deltas, summary } = aggregateEvents([refused, refused], resolution, new Map([['joztb2xyacqa', 'alpha.example.com']]));
+    expect(summary.unattributed).toBe(0);
+    expect(deltas).toEqual([expect.objectContaining({ tenantId: 'tenant-1', domain: 'alpha.example.com', quotaRejectedCount: 2, sentCount: 0 })]);
+  });
+
+  it('leaves a refusal by a quota it does not know unattributed', () => {
+    const { deltas, summary } = aggregateEvents([refused], resolution, new Map());
+    expect(deltas).toEqual([]);
+    expect(summary.unattributed).toBe(1);
+  });
+
+  it('still prefers a sender when the event carries one', () => {
+    const withFrom = { ...refused, data: { ...refused.data, from: 'b@beta.example.com' } };
+    const { deltas } = aggregateEvents([withFrom], resolution, new Map([['joztb2xyacqa', 'alpha.example.com']]));
+    expect(deltas[0]?.domain).toBe('beta.example.com');
   });
 });

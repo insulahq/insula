@@ -51,18 +51,76 @@ export type SendLimitSource = z.infer<typeof sendLimitSourceEnum>;
 export type EffectiveSendLimits = z.infer<typeof effectiveSendLimitsSchema>;
 
 // R6 PR 2 — tenant mail usage (current hour / day vs effective limits).
+//
+// The limits apply PER MAIL DOMAIN: Stalwart keys every throttle by sender
+// domain, so a tenant with two domains may send the daily limit from each.
+// Every "used" below is therefore one domain's figure, never a sum across
+// domains — a sum compared against a per-domain limit read as "over the limit"
+// while nothing was held.
 const usageWindowSchema = z.object({
+  /** The busiest domain's count in this window. */
   used: z.number().int().min(0),
   limit: z.number().int().min(0),
+  /** The domain `used` belongs to; null when nothing was sent in the window. */
+  domain: z.string().nullable(),
 });
+
+/** One sending domain's current hour and UTC day. */
+export const mailDomainUsageSchema = z.object({
+  domain: z.string(),
+  /** The tenant's email-domain row (Email → Statistics); null for a domain that only sends through the relay. */
+  emailDomainId: z.string().nullable(),
+  sentThisHour: z.number().int().min(0),
+  sentToday: z.number().int().min(0),
+  recipientsToday: z.number().int().min(0),
+  /** Messages a limit held back today (each hold counted once per delivery attempt it stopped). */
+  heldToday: z.number().int().min(0),
+  /** Submissions refused today because the domain's queue was full. */
+  refusedToday: z.number().int().min(0),
+});
+
+export type MailDomainUsage = z.infer<typeof mailDomainUsageSchema>;
+
+/**
+ * A sending limit holding back or refusing one domain's mail right now.
+ *
+ * Held mail was accepted ("250 queued"), parked, and is retried when the window
+ * that held it resets: a whole UTC hour for the hourly limit, 00:00 UTC for the
+ * daily one. Refused mail was turned away at submission with a temporary 452
+ * because the domain already had as many messages waiting as its daily limit;
+ * the sending program keeps it and tries again.
+ */
+export const mailThrottleSchema = z.object({
+  domain: z.string(),
+  emailDomainId: z.string().nullable(),
+  /** The window that is full: 'day' holds until 00:00 UTC, 'hour' until the next full hour. Null when only refusing. */
+  window: z.enum(['hour', 'day']).nullable(),
+  /** Held messages not yet released. */
+  heldNow: z.number().int().min(0),
+  /** When held messages are retried (ISO, UTC); null when none are held. */
+  releasesAt: z.string().nullable(),
+  heldToday: z.number().int().min(0),
+  refusedToday: z.number().int().min(0),
+  /** A submission was refused this UTC hour: the queue is full now. */
+  refusing: z.boolean(),
+  sentThisHour: z.number().int().min(0),
+  sentToday: z.number().int().min(0),
+});
+
+export type MailThrottle = z.infer<typeof mailThrottleSchema>;
 
 export const mailUsageResponseSchema = z.object({
   hour: usageWindowSchema,
   day: usageWindowSchema.extend({
+    /** For `domain`, like `used`. */
     recipients: z.number().int().min(0),
     rateLimited: z.number().int().min(0),
     quotaRejected: z.number().int().min(0),
   }),
+  /** Every domain that sent today, busiest first. */
+  domains: z.array(mailDomainUsageSchema),
+  /** The domains a limit is holding back or refusing right now. */
+  throttles: z.array(mailThrottleSchema),
   suspended: z.boolean(),
   outboundSuspended: z.boolean(),
 });
@@ -76,6 +134,10 @@ export type MailUsageResponse = z.infer<typeof mailUsageResponseSchema>;
  */
 export const mailDomainStatsResponseSchema = z.object({
   windowDays: z.number().int().min(1),
+  /** The limits in force, per domain. 0 with `outboundSuspended` means nothing leaves. */
+  hourlyLimit: z.number().int().min(0),
+  dailyLimit: z.number().int().min(0),
+  outboundSuspended: z.boolean(),
   domains: z.array(z.object({
     domain: z.string(),
     /** An email domain of the tenant; false for a domain that only sends through the relay. */
@@ -85,6 +147,11 @@ export const mailDomainStatsResponseSchema = z.object({
     recipients7d: z.number().int().min(0),
     rateLimited7d: z.number().int().min(0),
     quotaRejected7d: z.number().int().min(0),
+    /** This UTC hour and day, the windows the limits count in. */
+    sentThisHour: z.number().int().min(0),
+    sentToday: z.number().int().min(0),
+    /** Set while a limit is holding back or refusing this domain's mail. */
+    throttle: mailThrottleSchema.nullable(),
   })),
 });
 
@@ -95,6 +162,10 @@ export type MailDomainStatsResponse = z.infer<typeof mailDomainStatsResponseSche
  * the window present (a day that sent nothing is a row of zeros, not a gap).
  */
 export const mailDailyResponseSchema = z.object({
+  /** The one domain counted, or null for all of the tenant's domains added together. */
+  domain: z.string().nullable(),
+  /** The daily limit in force now — per domain, so it is a line to read one domain against. */
+  dailyLimit: z.number().int().min(0),
   days: z.array(z.object({
     /** UTC calendar day, `YYYY-MM-DD`. */
     date: z.string(),

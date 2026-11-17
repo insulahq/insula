@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import { authenticate, requireRole, requireTenantRoleByMethod, requireTenantAccess } from '../../middleware/auth.js';
-import { success } from '../../shared/response.js';
+import { paginated, success } from '../../shared/response.js';
 import { parseBody } from '../../shared/validate-body.js';
 import { ApiError } from '../../shared/errors.js';
 import { tenants, domains, ingressRoutes } from '../../db/schema.js';
@@ -17,7 +17,6 @@ import {
   updateRedirectSettings,
   updateSecuritySettings,
   updateAdvancedSettings,
-  listWafLogs,
   mapRouteToResponse,
 } from './settings-service.js';
 import {
@@ -33,8 +32,9 @@ import {
 } from './protected-dirs-service.js';
 import { deleteProtectedDirIngress } from './annotation-sync.js';
 import { routeDnsWarning } from './dns-warning.js';
-import { assertDomainOwnedByTenant, assertRouteInTenantDomain } from './route-ownership.js';
-import type { DeleteIngressRouteResult } from '@insula/api-contracts';
+import { assertDomainOwnedByTenant, assertRouteInTenantDomain, assertRouteOwnedByTenant } from './route-ownership.js';
+import { routeWafLogsQuerySchema, type DeleteIngressRouteResult } from '@insula/api-contracts';
+import { listRouteWafEvents } from '../waf-logs/route-events.js';
 import { reconcileIngress } from '../domains/k8s-ingress.js';
 import { ensureDomainCertificate } from '../certificates/service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -499,10 +499,19 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
     },
   }, async (request) => {
     const { tenantId, routeId } = request.params as { tenantId: string; routeId: string };
-    const query = request.query as { limit?: string };
-    const limit = query.limit ? Math.min(Number(query.limit), 100) : 50;
-    const logs = await listWafLogs(app.db, routeId, tenantId, limit);
-    return success(logs);
+    // Filtered (source IP, rule, path, outcome), sorted by the server and
+    // cursor-paged — waf-logs/route-events.ts.
+    const parsed = routeWafLogsQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      throw new ApiError(
+        'VALIDATION_ERROR',
+        parsed.error.issues.map((i) => `${i.path.join('.') || 'query'}: ${i.message}`).join('; '),
+        400,
+      );
+    }
+    await assertRouteOwnedByTenant(app.db, routeId, tenantId);
+    const page = await listRouteWafEvents(app.db, routeId, parsed.data);
+    return paginated(page.rows, page.pagination);
   });
 
   // ─── WAF Exclusions (B2 — tenant-scoped) ──────────────────────────────────

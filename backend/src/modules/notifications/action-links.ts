@@ -49,9 +49,17 @@ export interface ResolvedLink {
  */
 const EXTRA_LINKS: Readonly<Record<string, readonly LinkSpec[]>> = {
   // A saturated sender is either a compromise or a capacity problem. The
-  // tenant's own page answers "who is this", mail monitoring answers "what is
-  // it sending" — its per-domain table carries the deferred and rejected counts.
+  // tenant's Email tab (the primary link) answers "which domain, how much is
+  // held"; mail monitoring answers "what is the platform sending" next to it.
   'admin.email_quota_exceeded': [
+    { text: 'Open mail monitoring', path: '/monitoring/mail', style: 'secondary' },
+  ],
+  // The same pair for a burst of held/refused mail: the tenant first, the
+  // platform-wide picture second.
+  'admin.email_abuse_warning': [
+    { text: 'Open mail monitoring', path: '/monitoring/mail', style: 'secondary' },
+  ],
+  'admin.email_abuse_critical': [
     { text: 'Open mail monitoring', path: '/monitoring/mail', style: 'secondary' },
   ],
   // The limit lives on the tenant record; the usage lives on the mail page.
@@ -147,6 +155,9 @@ export function linkPathsFor(input: {
   for (const spec of EXTRA_LINKS[input.categoryId] ?? []) {
     const path = spec.path.replace(':tenantId', input.tenantId ?? '');
     if (path.includes(':') || path.endsWith('/')) continue;
+    // A row without the resource falls back to the page an extra link names —
+    // two buttons to one page.
+    if (path === primaryPath) continue;
     out.push({ text: spec.text, path, style: spec.style });
   }
   return out;

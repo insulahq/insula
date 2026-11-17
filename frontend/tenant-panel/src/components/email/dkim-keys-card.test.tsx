@@ -314,6 +314,10 @@ describe('DkimKeysCard — Show private key', () => {
     try {
       renderGated();
       await showKey();
+      // The hide timer starts in an effect, which a loaded run can defer past
+      // the first advance below — the timer then starts half a window late and
+      // the second advance stops short of it (seen in CI). act() runs it now.
+      await act(async () => {});
       // Halfway, with room for the real time a loaded test run spends: still there.
       await act(async () => { vi.advanceTimersByTime(KEY_SHOWN_MS / 2); });
       expect(screen.queryByTestId('dkim-private-key')).toBeTruthy();

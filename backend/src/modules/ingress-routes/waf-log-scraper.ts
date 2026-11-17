@@ -29,6 +29,14 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { wafLogs, ingressRoutes, domains, platformSettings } from '../../db/schema.js';
 import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { createWafLogPruner } from '../waf-logs/retention.js';
+import {
+  backfillAllowlistedPassReasons,
+  createAllowlistCache,
+  resolvePassReason,
+} from '../waf-logs/pass-reason.js';
+import { addressMatcher } from '../waf-trusted-ips/ip-value.js';
+import { trustedIpsByRoute } from '../waf-trusted-ips/service.js';
+import type { WafPassReason } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -64,6 +72,28 @@ const WAF_LOG_CONTAINERS = ['modsec', 'audit-redactor'] as const;
 // Set by the ModSecurity plugin on its check of a detection-only route
 // (k8s/base/traefik/plugins/modsecurity, WafModeHeader).
 const WAF_MODE_HEADER = 'X-Insula-Waf-Mode';
+
+/**
+ * A boolean field of the JSON audit record — `"<key>":true|false` — or null.
+ * The FIRST occurrence: the transaction's own fields (is_interrupted comes
+ * right after unique_id) precede the request, and request content is a JSON
+ * string, whose quotes are escaped, so it cannot spell `"key":false` itself.
+ */
+function extractJsonBool(line: string, key: string): boolean | null {
+  const needle = `"${key}":`;
+  const idx = line.indexOf(needle);
+  if (idx < 0) return null;
+  const rest = line.slice(idx + needle.length, idx + needle.length + 5);
+  if (rest.startsWith('true')) return true;
+  if (rest.startsWith('false')) return false;
+  return null;
+}
+
+/** The wildcard route that would serve `host` (`a.example.test` → `*.example.test`), or null. */
+function wildcardParent(host: string): string | null {
+  const dot = host.indexOf('.');
+  return dot > 0 && host.indexOf('.', dot + 1) > 0 ? `*${host.slice(dot)}` : null;
+}
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n);
@@ -201,6 +231,13 @@ interface ParsedWafEvent {
    * event seen only in an [error] line is not marked until its record is read.
    */
   readonly detectionOnly?: boolean;
+  /**
+   * The audit record's is_interrupted: whether ModSecurity refused the
+   * request. Undefined for an event whose record was not read this cycle.
+   */
+  readonly interrupted?: boolean;
+  /** The record lists 949110: the anomaly score reached the threshold. */
+  readonly scoreExceeded?: boolean;
 }
 
 /**
@@ -322,6 +359,10 @@ export function parseScrapedLog(logOutput: string): ParsedWafEvent[] {
   // Transactions checked in detection-only mode (the plugin's header, which it
   // strips from what clients send — so it cannot be forged).
   const uidDetectionOnly = new Set<string>();
+  // The record's verdict (is_interrupted) and whether the score reached the
+  // threshold (949110 listed) — what pass_reason is decided from.
+  const uidInterrupted = new Map<string, boolean>();
+  const uidScoreExceeded = new Set<string>();
 
   for (const line of lines) {
     // 1a. JSON audit-log lines contain the REAL client-facing hostname in
@@ -339,6 +380,9 @@ export function parseScrapedLog(logOutput: string): ParsedWafEvent[] {
         if (xfHost) uidToXfHost.set(jsonUid, xfHost);
         if (xRealIp) uidToRealIp.set(jsonUid, xRealIp);
         if (extractJsonField(line, WAF_MODE_HEADER) === 'detect') uidDetectionOnly.add(jsonUid);
+        const interrupted = extractJsonBool(line, 'is_interrupted');
+        if (interrupted !== null) uidInterrupted.set(jsonUid, interrupted);
+        if (line.includes('"ruleId":"949110"')) uidScoreExceeded.add(jsonUid);
       }
       // The JSON record is also the ONLY place the contributing rules appear
       // (see parseContributingRules). Emit one event per contributing rule so
@@ -415,6 +459,8 @@ export function parseScrapedLog(logOutput: string): ParsedWafEvent[] {
     events.push({
       ...event, hostname: resolvedHostname, sourceIp: resolvedIp, requestUri: resolvedUri, requestMethod: resolvedMethod,
       detectionOnly: uidDetectionOnly.has(uidPrefix),
+      interrupted: uidInterrupted.get(uidPrefix),
+      scoreExceeded: uidScoreExceeded.has(uidPrefix),
     });
   }
 
@@ -425,10 +471,16 @@ export function parseScrapedLog(logOutput: string): ParsedWafEvent[] {
  * Scrape ModSecurity logs from the NGINX Ingress Controller
  * and insert new events into the waf_logs table.
  */
+/** The platform allowlist as a matcher; null when it cannot be read. */
+export type AllowlistProvider = () => Promise<((ip: string) => boolean) | null>;
+
+const defaultAllowlist: AllowlistProvider = createAllowlistCache();
+
 export async function scrapeWafLogs(
   db: Database | LooseDb,
   k8s: K8sClients,
   sinceSeconds: number = LOG_SINCE_SECONDS,
+  allowlist: AllowlistProvider = defaultAllowlist,
 ): Promise<{ scraped: number; inserted: number; errors: string[] }> {
   const errors: string[] = [];
   let scraped = 0;
@@ -512,8 +564,11 @@ export async function scrapeWafLogs(
 
   if (events.length === 0) return { scraped: 0, inserted: 0, errors: [] };
 
-  // 3. Resolve hostnames to route IDs
+  // 3. Resolve hostnames to route IDs. A host no route names exactly may be
+  // served by a wildcard route (`*.example.test`); without this its events
+  // never reached the tenant's WAF log.
   const hostnames = [...new Set(events.map(e => e.hostname))];
+  const wildcardHosts = [...new Set(hostnames.map(wildcardParent).filter((h): h is string => h !== null))];
   const routes = await db
     .select({
       id: ingressRoutes.id,
@@ -521,10 +576,16 @@ export async function scrapeWafLogs(
       domainId: ingressRoutes.domainId,
     })
     .from(ingressRoutes)
-    .where(inArray(ingressRoutes.hostname, hostnames));
+    .where(inArray(ingressRoutes.hostname, [...hostnames, ...wildcardHosts]));
 
-  const routeMap = new Map<string, { id: string; domainId: string }>();
-  for (const r of routes) routeMap.set(r.hostname, { id: r.id, domainId: r.domainId });
+  const byHostname = new Map<string, { id: string; domainId: string }>();
+  for (const r of routes) byHostname.set(r.hostname, { id: r.id, domainId: r.domainId });
+  const routeFor = (host: string): { id: string; domainId: string } | undefined => {
+    const exact = byHostname.get(host);
+    if (exact) return exact;
+    const parent = wildcardParent(host);
+    return parent ? byHostname.get(parent) : undefined;
+  };
 
   // Resolve domain → tenant mapping
   const domainIds = [...new Set(routes.map(r => r.domainId))];
@@ -533,6 +594,19 @@ export async function scrapeWafLogs(
     : [];
   const tenantMap = new Map<string, string>();
   for (const d of domainRows) tenantMap.set(d.id, d.tenantId);
+
+  // Why a request ModSecurity did not refuse was let through. The lists are
+  // read only when this cycle has such a request (most cycles have none).
+  const passed = events.filter((e) => e.interrupted === false);
+  const allowlisted = passed.length > 0 ? await allowlist() : null;
+  const passedRouteIds = [...new Set(passed.map((e) => routeFor(e.hostname)?.id).filter((id): id is string => !!id))];
+  const trustedLists = passedRouteIds.length > 0 ? await trustedIpsByRoute(db as LooseDb, passedRouteIds) : new Map<string, string[]>();
+  const trustedMatchers = new Map([...trustedLists].map(([routeId, values]) => [routeId, addressMatcher(values)] as const));
+  const passReasonOf = (event: ParsedWafEvent, routeId: string | null): WafPassReason | null =>
+    resolvePassReason(event, {
+      allowlisted,
+      trusted: routeId ? trustedMatchers.get(routeId) ?? null : null,
+    });
 
   // 4. Insert events. Events whose hostname doesn't match an ingress_routes row
   // get route_id=NULL + tenant_id=NULL — admin/api/client/platform hosts that
@@ -556,7 +630,7 @@ export async function scrapeWafLogs(
   // conflicting write now REPAIRS those placeholders instead of being dropped.
   // Guarded so a later, worse read can never overwrite good data.
   for (const event of events) {
-    const route = routeMap.get(event.hostname);
+    const route = routeFor(event.hostname);
     const tenantId = route ? tenantMap.get(route.domainId) ?? null : null;
 
     try {
@@ -576,6 +650,7 @@ export async function scrapeWafLogs(
         // index, so those rows neither dedupe nor collide.
         eventKey: event.hasStableUid ? truncate(event.uniqueId, 128) : null,
         detectionOnly: event.detectionOnly ?? false,
+        passReason: passReasonOf(event, route?.id ?? null),
       };
       const written = await db
         .insert(wafLogs)
@@ -595,6 +670,9 @@ export async function scrapeWafLogs(
             // (another cycle): only the record marks detection-only, so a
             // later read may set it and nothing unsets it.
             detectionOnly: sql`${wafLogs.detectionOnly} OR excluded.detection_only`,
+            // Likewise only the record carries the verdict; the first reason
+            // written stays (a re-read of the same record gives the same one).
+            passReason: sql`coalesce(${wafLogs.passReason}, excluded.pass_reason)`,
           },
         })
         .returning({ id: wafLogs.id });
@@ -636,7 +714,21 @@ export function startWafLogScraper(
   // Retention: every 10 minutes, at most one at a time (waf-logs/retention.ts).
   const pruner = createWafLogPruner(db);
 
+  // The one-off pass_reason backfill (waf-logs/pass-reason.ts) — until it has run.
+  let backfillPending = true;
+
   const scrapeCycle = async () => {
+    if (backfillPending) {
+      try {
+        const res = await backfillAllowlistedPassReasons(db as unknown as LooseDb);
+        if (res.ran) console.log(`[waf-log-scraper] pass_reason backfill: ${res.updated} rows marked allowlisted_ip`);
+        // Done when it ran now or an earlier run left its flag; an unreadable
+        // allowlist is retried next cycle.
+        backfillPending = !res.done;
+      } catch (err) {
+        console.warn('[waf-log-scraper] pass_reason backfill failed:', err instanceof Error ? err.message : String(err));
+      }
+    }
     try {
       const result = await scrapeWafLogs(db, k8s, ranLastCycle ? LOG_SINCE_SECONDS : TAKEOVER_SINCE_SECONDS);
       status.lastCycleScraped = result.scraped;

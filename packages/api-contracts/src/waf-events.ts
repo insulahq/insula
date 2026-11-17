@@ -16,6 +16,7 @@
  */
 
 import { z } from 'zod';
+import { wafPassReasonSchema } from './waf-route-logs.js';
 
 export const wafEventSeveritySchema = z.enum(['critical', 'warning', 'info']);
 export type WafEventSeverity = z.infer<typeof wafEventSeveritySchema>;
@@ -45,6 +46,8 @@ export const wafEventSchema = z.object({
    * checked but NOT blocked. Absent from an older backend.
    */
   detectionOnly: z.boolean().optional(),
+  /** Why the WAF let the request through; null = blocked. Absent from an older backend. */
+  passReason: wafPassReasonSchema.nullable().optional(),
 });
 export type WafEvent = z.infer<typeof wafEventSchema>;
 
@@ -116,6 +119,8 @@ export const wafEventsStatsSchema = z.object({
    * and logged, not blocked. Absent from an older backend.
    */
   totalEventsDetectionOnly: z.number().int().min(0).optional(),
+  /** Of totalEvents, let through for any reason — detection-only or a pass reason. Absent from an older backend. */
+  totalEventsNotBlocked: z.number().int().min(0).optional(),
   topRules: z.array(wafTopRuleSchema),
   topHosts: z.array(wafTopHostSchema),
   topSourceIps: z.array(wafTopSourceIpSchema),

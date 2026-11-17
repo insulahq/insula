@@ -28,6 +28,7 @@ import { useNodeLabel } from '@/hooks/use-node-labels';
 import { formatMetricsCpu, formatMetricsGi } from '@/lib/format-metrics';
 import { createdByLabel } from '@/lib/created-by-label';
 import { Card, Chip, GoLink, KV, UsageTile, formatGb, type Tone } from './ui';
+import { throttleText, throttlesSummary } from './mail-throttle';
 import TenantPanelLink from './TenantPanelLink';
 import { tenantPanel } from './tenant-panel-paths';
 import { describeAuditEntry } from './audit-describe';
@@ -131,6 +132,20 @@ export default function OverviewTab({ tenant, tenantId, planName, issues, placem
       action: 'Open CPU scheduling',
     });
   }
+  // Mail a sending limit is holding back right now, per domain. The tile below
+  // showed "sent 111 / 100" and nothing about it, so an operator arriving from
+  // the limit alert read "over the limit, nothing held".
+  for (const t of mail?.throttles ?? []) { // `?? []`: the panel can be ahead of the API in a rollout
+    attention.push({
+      key: `mail-throttle:${t.domain}`,
+      tone: t.refusing ? 'bad' : 'warn',
+      title: `Sending limit reached on ${t.domain}`,
+      detail: `${throttleText(t)}. Held mail is delivered when the window resets.`,
+      since: null,
+      to: `${base}/email`,
+      action: 'Open email',
+    });
+  }
   const notOnServer = sendLive?.data.reachable ? sendLive.data.domains.filter((d) => !d.inEffect) : [];
   if (notOnServer.length > 0) {
     attention.push({
@@ -184,13 +199,20 @@ export default function OverviewTab({ tenant, tenantId, planName, issues, placem
           to={`${base}/traffic`}
           testId="usage-bandwidth"
         />
+        {/* The busiest domain against the per-domain limit, never the sum of
+            the tenant's domains: two domains at 60 are each within 100. */}
         <UsageTile
           label="Email sent today"
           value={mail ? String(mail.day.used) : '—'}
-          of={mail ? `/ ${mail.day.limit}` : undefined}
+          of={mail ? `/ ${mail.day.limit} per domain` : undefined}
           pct={mail ? pctOf(mail.day.used, mail.day.limit) : undefined}
-          note={mail ? (mail.outboundSuspended ? 'Outbound mail is suspended' : `${mail.hour.used} of ${mail.hour.limit} this hour`) : undefined}
-          noteTone={mail?.outboundSuspended ? 'warn' : undefined}
+          note={mail ? (mail.outboundSuspended
+            ? 'Outbound mail is suspended'
+            : throttlesSummary(mail.throttles ?? [])
+              ?? (mail.day.domain
+                ? `${mail.day.domain} · ${mail.hour.used} of ${mail.hour.limit} this hour`
+                : 'Nothing sent today')) : undefined}
+          noteTone={mail?.outboundSuspended || (mail?.throttles?.length ?? 0) > 0 ? 'warn' : undefined}
           to={`${base}/email`}
           testId="usage-mail"
         />

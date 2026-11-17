@@ -278,3 +278,54 @@ describe('Domains & certificates — when the earliest certificate renews', () =
     expect(screen.queryByText('0d')).not.toBeInTheDocument();
   });
 });
+
+/**
+ * The sending-limit warning card. It exists because a tenant at its limit was
+ * told "limit exceeded" and saw nothing about what had happened to the mail:
+ * it names each domain, says how much is held back and until when and how much
+ * was refused, explains on hover that held mail is not lost, and opens Email →
+ * Statistics with that domain picked.
+ */
+describe('Hosting overview — sending limit card', () => {
+  const throttle = {
+    domain: 'shop.example.test', emailDomainId: 'ed-1', window: 'day' as const, heldNow: 9,
+    releasesAt: '2026-11-17T00:00:00.000Z', heldToday: 9, refusedToday: 2, refusing: false,
+    sentThisHour: 10, sentToday: 101,
+  };
+  const mail = (throttles: unknown[]) => ok({
+    mailboxes: 6, maxMailboxes: 10, storageUsedGb: 11.4, storageLimitGb: 50, fullestMailboxPct: 42,
+    fullestMailboxAddress: 'sales@example.test', sentToday: 101, dailyLimit: 100, hourlyLimit: 50,
+    sentTodayDomain: 'shop.example.test', outboundSuspended: false, throttles,
+  });
+
+  it('is absent while no limit is holding mail', () => {
+    summaryFn.mockReturnValue({ data: { data: summary({ mail: mail([]) } as Partial<TenantDashboardSummary>) }, isLoading: false });
+    show();
+    expect(screen.queryByTestId('mail-throttle-card')).toBeNull();
+    expect(screen.getByText('Nothing needs you right now.')).toBeTruthy();
+  });
+
+  it('names the domain, what is held back and refused, and links to its statistics', () => {
+    summaryFn.mockReturnValue({ data: { data: summary({ mail: mail([throttle]) } as Partial<TenantDashboardSummary>) }, isLoading: false });
+    show();
+    const card = screen.getByTestId('mail-throttle-card');
+    expect(screen.queryByText('Nothing needs you right now.')).toBeNull();
+    const row = screen.getByTestId('mail-throttle-shop.example.test');
+    expect(row.getAttribute('href')).toBe('/email/statistics?emailDomain=ed-1');
+    expect(row.textContent).toContain('9 messages held back until');
+    expect(row.textContent).toContain('2 refused today');
+    expect(row.textContent).toContain('101 of 100 today');
+    // The hover card answers "is my mail lost?".
+    expect(card.textContent).toContain('How sending limits work');
+    expect(card.textContent).toContain('Mail over a limit is not lost');
+    expect(card.textContent).toContain('new messages are refused with a temporary error');
+  });
+
+  it('lists every affected domain, one link each; a relay-only domain opens the tab without a pick', () => {
+    const relay = { ...throttle, domain: 'relay.example.test', emailDomainId: null, heldNow: 0, window: null, releasesAt: null, refusing: true };
+    summaryFn.mockReturnValue({ data: { data: summary({ mail: mail([throttle, relay]) } as Partial<TenantDashboardSummary>) }, isLoading: false });
+    show();
+    expect(screen.getByTestId('mail-throttle-relay.example.test').getAttribute('href')).toBe('/email/statistics');
+    expect(screen.getByTestId('mail-throttle-relay.example.test').textContent).toContain('new mail refused while the queue is full');
+  });
+});

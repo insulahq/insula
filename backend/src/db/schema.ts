@@ -1529,6 +1529,11 @@ export const wafLogs = pgTable('waf_logs', {
   eventKey: varchar('event_key', { length: 128 }),
   // Logged on a route in detection-only mode: the request was NOT blocked.
   detectionOnly: boolean('detection_only').notNull().default(false),
+  // 0184: why ModSecurity did NOT refuse the request (its audit record's
+  // is_interrupted was false) — allowlisted_ip | trusted_ip | below_threshold |
+  // not_enforced. NULL = blocked, or logged before 0184. "Blocked" is
+  // NOT detection_only AND pass_reason IS NULL.
+  passReason: varchar('pass_reason', { length: 20 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
   uniqueIndex('waf_logs_event_key_uniq').on(table.eventKey),
@@ -1543,6 +1548,8 @@ export const wafLogs = pgTable('waf_logs', {
   index('waf_logs_created_id_idx').on(table.createdAt, table.id),
   index('waf_logs_hostname_created_idx').on(table.hostname, table.createdAt),
   index('waf_logs_rule_id_created_idx').on(table.ruleId, table.createdAt),
+  // 0184: a route's rows by source address — the tenant's "by source IP" view and IP filter.
+  index('waf_logs_route_source_created_idx').on(table.routeId, table.sourceIp, table.createdAt),
 ]);
 
 // F4 — DB-backed WAF rule exclusions. Companion to the static
@@ -1577,6 +1584,24 @@ export const wafRuleExclusions = pgTable('waf_rule_exclusions', {
   // it to include the (NULL, NULL) admin-scoped rows that dominate
   // this table.
   index('waf_rule_exclusions_tenant_route_idx').on(table.tenantId, table.routeId).where(isNotNull(table.tenantId)),
+]);
+
+// 0184: addresses a tenant trusts on ONE route — the WAF still inspects and
+// logs their requests on that route's hostname but never blocks them
+// (rendered as ctl:ruleEngine=DetectionOnly behind the hostname). The value is
+// canonical (modules/waf-trusted-ips/ip-value.ts); the DB CHECK keeps
+// non-address characters out of the rendered SecRule.
+export const wafTrustedIps = pgTable('waf_trusted_ips', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  tenantId: varchar('tenant_id', { length: 36 }).notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  routeId: varchar('route_id', { length: 36 }).notNull().references(() => ingressRoutes.id, { onDelete: 'cascade' }),
+  value: varchar('value', { length: 49 }).notNull(),
+  note: varchar('note', { length: 200 }),
+  createdBy: varchar('created_by', { length: 255 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('waf_trusted_ips_route_value_uniq').on(table.routeId, table.value),
+  index('waf_trusted_ips_tenant_idx').on(table.tenantId),
 ]);
 
 // F3 — CrowdSec auto-ban audit table. One row per evaluator decision
@@ -1934,12 +1959,15 @@ export const emailQuotaEvents = pgTable('email_quota_events', {
   tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
     .references(() => tenants.id, { onDelete: 'cascade' }),
+  // The sending domain that crossed (mig 0183): the limits are per domain, so
+  // the dedupe is too. '' on rows from before the split.
+  domain: varchar('domain', { length: 255 }).notNull().default(''),
   windowKind: varchar('window_kind', { length: 8 }).notNull(),
   threshold: integer('threshold').notNull(),
   windowStart: timestamp('window_start', { withTimezone: true }).notNull(),
   firedAt: timestamp('fired_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
-  primaryKey({ columns: [table.tenantId, table.windowKind, table.threshold, table.windowStart] }),
+  primaryKey({ columns: [table.tenantId, table.domain, table.windowKind, table.threshold, table.windowStart] }),
 ]);
 
 // R6 PR 2 (mig 0058): outbound send accounting — hourly buckets per
@@ -1956,6 +1984,10 @@ export const emailSendCounters = pgTable('email_send_counters', {
   recipientCount: integer('recipient_count').notNull().default(0),
   bytesTotal: bigint('bytes_total', { mode: 'number' }).notNull().default(0),
   rateLimitedCount: integer('rate_limited_count').notNull().default(0),
+  // Of rateLimitedCount, the holds by the DAILY limit — retried at 00:00 UTC.
+  // The rest were held by the hourly limit, retried at the next full hour
+  // (mig 0183).
+  rateLimitedDailyCount: integer('rate_limited_daily_count').notNull().default(0),
   quotaRejectedCount: integer('quota_rejected_count').notNull().default(0),
 }, (table) => [
   primaryKey({ columns: [table.tenantId, table.domain, table.bucketStart] }),

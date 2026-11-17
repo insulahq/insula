@@ -18,6 +18,11 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // As in vitest.config.ts: the contracts SOURCE of this checkout. In a
+      // worktree, node_modules is the main checkout's, so the package would
+      // resolve to the main checkout's dist and a contracts change made here
+      // would be invisible to the integration tests until CI.
+      '@insula/api-contracts': path.resolve(__dirname, '../packages/api-contracts/src/index.ts'),
     },
   },
 });

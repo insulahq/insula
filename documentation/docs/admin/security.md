@@ -125,7 +125,15 @@ four tabs:
   *Detected · not blocked* comes from a tenant route whose WAF is in
   **Detection only** (the route page's WAF mode): the request was checked and
   logged but let through. Those events never trigger an auto-ban, and the
-  dashboards do not count them as blocked.
+  dashboards do not count them as blocked. A row marked *Not blocked · …*
+  was let through for a recorded reason: *platform allowlist* (the source is
+  on the CrowdSec allowlist, which the WAF runs in detection-only mode on
+  every site), *trusted IP* (one of the route's WAF trusted IPs, which tenants
+  set per route), or *below threshold*. Allowlisted and trusted sources are
+  not auto-banned either; the dashboards do not count any of them as blocked.
+- **Rule exclusions with scope *all rules*** (no rule id, always with a path)
+  stop the WAF checking that path at all. The **WAF Exclusions** table shows
+  them as *all rules*.
 - **Banned IPs** — **this platform's own** ban decisions, one row per address:
   operator bans (timed or permanent), the WAF auto-ban scheduler, and
   detections made by the log-processing agent. The **Added by** column says

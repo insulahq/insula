@@ -43,6 +43,32 @@ const TENANT_SCOPED_ADMIN = new Set<string>([
   'admin.email_quota_exceeded',
 ]);
 
+/**
+ * Tenant-scoped admin categories that open one TAB of the tenant page. A
+ * sending-limit alert is answered on the tenant's Email tab — its usage, the
+ * held-back counts per domain and the limits live there; the Overview showed
+ * "sent 111 / 100" and nothing about what was held. Without a tenant on the
+ * row these fall back to their static page below.
+ */
+const TENANT_TAB_ADMIN: Readonly<Record<string, string>> = {
+  'admin.email_quota_exceeded': 'email',
+  'admin.email_abuse_warning': 'email',
+  'admin.email_abuse_critical': 'email',
+};
+
+/** `resourceType` of a notification about one of the tenant's email domains. */
+export const EMAIL_DOMAIN_RESOURCE = 'email_domain';
+
+/**
+ * Tenant categories about one email domain's sending: they open Email →
+ * Statistics with that domain picked, where its sending today, what is held
+ * back and until when, and the last 14 days are shown.
+ */
+const EMAIL_DOMAIN_STATISTICS = new Set<string>([
+  'tenant.email_quota_exceeded',
+  'tenant.email_quota_warning',
+]);
+
 /** categoryId → static landing page (no per-resource deep link). */
 const STATIC_PATHS: Record<string, string> = {
   // ---- admin / operator (admin-panel routes) ----
@@ -88,8 +114,8 @@ const STATIC_PATHS: Record<string, string> = {
   // ---- tenant self-service (tenant-panel routes) ----
   'tenant.bandwidth_exceeded': '/resource-usage',
   'tenant.bandwidth_warning': '/resource-usage',
-  'tenant.email_quota_exceeded': '/email',
-  'tenant.email_quota_warning': '/email',
+  'tenant.email_quota_exceeded': '/email/statistics',
+  'tenant.email_quota_warning': '/email/statistics',
   'tenant.custom_deployment_rolled_back': '/applications',
   'tenant.custom_deployment_failed': '/applications/custom',
   'tenant.suspended': '/settings',
@@ -196,6 +222,13 @@ export const RESOURCE_PATHS: Readonly<Record<string, Readonly<Record<string, str
 export function notificationActionPath(input: ActionPathInput): string | null {
   const { categoryId, resourceType, resourceId } = input;
   if (!categoryId) return null;
+
+  const tab = TENANT_TAB_ADMIN[categoryId];
+  if (tab && resourceType === 'tenant' && resourceId) return `/tenants/${resourceId}/${tab}`;
+
+  if (EMAIL_DOMAIN_STATISTICS.has(categoryId) && resourceType === EMAIL_DOMAIN_RESOURCE && resourceId) {
+    return `/email/statistics?emailDomain=${encodeURIComponent(resourceId)}`;
+  }
 
   if (TENANT_SCOPED_ADMIN.has(categoryId)) {
     return resourceType === 'tenant' && resourceId ? `/tenants/${resourceId}` : '/tenants';
