@@ -411,8 +411,9 @@ spec:
           # (GHSA-gccm-j6rm-xjmf). Its breaking changes miss this Deployment: the
           # shared-store password check applies only with REDIS_URL, the issuer
           # check only to OAuth with several sign-in servers. The impersonation
-          # JWT check, the app-password name and /api/health are unchanged. URLs
-          # drop the /en/ locale prefix. Sender logos are drawn in child processes
+          # JWT check, the app-password name and /api/health are unchanged. The
+          # mail view moves under the /en/ locale prefix; an old /mail/… address
+          # redirects there. Sender logos are drawn in child processes
           # (up to 2, 128 MB heap each), so watch memory against the limit below.
           # Do not roll back past 1.21.2.
           image: ghcr.io/bulwarkmail/webmail@sha256:037b85b1433233d2d7eebb83f928df5ecc3b4adc91dc7e4c55f0a2f69024e754

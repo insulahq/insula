@@ -28,7 +28,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Nothing in the platform's configuration changes. The release's breaking changes concern a shared
   session store and sign-in through several identity providers, and the platform uses neither.
   Webmail from the panels works as before, and signing out still removes the support session's
-  app password. Webmail addresses lose their `/en/` prefix.
+  app password. The mail view's addresses now start with `/en/`, and older bookmarks still open
+  it.
 
 ### Fixed
 
