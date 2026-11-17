@@ -12,6 +12,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **Bulwark webmail 1.21.0 → 1.21.2**, a security release that fixes 10 published advisories, all of
+  which affect 1.21.0. It is taken before the usual 7-day wait for them. The ones that matter most
+  on a shared mail server:
+  - another user of the same mail server could make a forged mail look verified (sender logo,
+    trusted invitation);
+  - the organisation's maximum session length did not end the stored sign-in;
+  - the webmail could send a credential Stalwart had already refused, outside the failed-login
+    budget, which could get its address banned;
+  - a mail from a verified sender could freeze the tab;
+  - with the app lock on, notifications still showed and acted on mail.
+
+  Nothing in the platform's configuration changes. The release's breaking changes concern a shared
+  session store and sign-in through several identity providers, and the platform uses neither.
+  Webmail from the panels works as before, and signing out still removes the support session's
+  app password. Webmail addresses lose their `/en/` prefix.
+
 ### Fixed
 
 - **A WAF rule change could cost a visitor a 502.** Saving an exclusion or a trusted IP rolls the
