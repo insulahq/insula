@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.11] - 2026-11-17
+
 ### Security
 
 - **Roundcube 1.7.5 → 1.7.6**, a security release that fixes 17 reported vulnerabilities:
