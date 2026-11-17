@@ -42,7 +42,7 @@ import {
   TRAEFIK_VERSION,
   INGRESSROUTE_PLURAL,
 } from '../ingress-routes/traefik-types.js';
-import type { MiddlewareBody } from '../ingress-routes/traefik-types.js';
+import type { IngressRouteBody, MiddlewareBody } from '../ingress-routes/traefik-types.js';
 import {
   applyMiddleware,
   applyIngressRoute,
@@ -71,6 +71,11 @@ const INGRESS_CONTROLLER_NAMESPACE =
 const TUNNEL_ISSUER_SETTING_KEY = 'private_worker_tunnel_issuer';
 const DEFAULT_TUNNEL_ISSUER = 'letsencrypt-prod-http01';
 const FRPS_BIND_PORT = 7000;
+/**
+ * The one path frpc dials over WebSocket: `FrpWebsocketPath` in frp's
+ * pkg/util/net/websocket.go, fixed (not configurable) through v0.71.1.
+ */
+export const FRP_WEBSOCKET_PATH = '/~!frp';
 /** frps's status API — reached by the platform's connection poller only (connection-poller.ts). */
 export const FRPS_WEB_API_PORT = 7500;
 export const FRPS_WEB_API_USER = 'platform';
@@ -789,6 +794,35 @@ async function upsertExternalNameService(
   }
 }
 
+/**
+ * The tunnel route's rule: the worker's host AND frpc's one path.
+ *
+ * The path cannot tell workers apart (every frpc dials the same one, hence a
+ * host per worker), but it is all the host ever legitimately carries. Matched
+ * on the host alone, every other request — a scanner sweeping the public,
+ * certificate-logged name — went to frps's bind port, which speaks only frp:
+ * frps closed the connection and Traefik answered 502. Those 502s are
+ * indistinguishable from a broken backend in the ingress availability SLO,
+ * and one sweep of a few hundred paths paged the operator CRITICAL. With the
+ * path in the rule nothing else routes, and Traefik answers 404.
+ *
+ * GET too: frps hands a connection to its WebSocket handler only when it
+ * starts with `GET /~!frp` (the handshake frpc sends); any other method on
+ * that path still reaches the frp protocol listener and becomes a 502.
+ */
+export function tunnelRouteMatch(tunnelHost: string): string {
+  return `${hostMatch(tunnelHost)} && Path(\`${FRP_WEBSOCKET_PATH}\`) && Method(\`GET\`)`;
+}
+
+/**
+ * True for a worker's tunnel rule. Its one request is the agent's WebSocket,
+ * open for as long as the agent stays connected, so the latency SLO leaves it
+ * out (monitoring/transfer-routes.ts).
+ */
+export function isTunnelRouteMatch(match: string): boolean {
+  return match.includes(`Path(\`${FRP_WEBSOCKET_PATH}\`)`);
+}
+
 async function upsertTunnelIngress(
   custom: k8s.CustomObjectsApi,
   slug: string,
@@ -883,28 +917,38 @@ async function upsertTunnelIngress(
     });
   }
 
-  // IngressRoute on the websecure entrypoint. No path rewrite — frpc
-  // dials the default WSS path `/~!frp`. Traefik forwards HTTP/1.1
-  // Upgrade/Connection headers natively, so no annotation tweaks
-  // needed for the long-lived WSS connection.
-  const ingressRoute = buildIngressRoute({
+  await applyIngressRoute(custom, buildTunnelIngressRoute(slug, tunnelHost, tenantNamespace));
+}
+
+/**
+ * Pure: the worker's IngressRoute on the websecure entrypoint. No path
+ * rewrite — frpc dials the default WSS path `/~!frp` (see tunnelRouteMatch).
+ * Traefik forwards HTTP/1.1 Upgrade/Connection headers natively, so no
+ * annotation tweaks needed for the long-lived WSS connection.
+ */
+export function buildTunnelIngressRoute(
+  slug: string,
+  tunnelHost: string,
+  tenantNamespace: string,
+): IngressRouteBody {
+  const name = `tunnel-${slug}`;
+  return buildIngressRoute({
     name,
     namespace: PLATFORM_SYSTEM_NAMESPACE,
     routes: [
       {
-        match: hostMatch(tunnelHost),
+        match: tunnelRouteMatch(tunnelHost),
         kind: 'Rule',
-        middlewares: [{ name: rateLimitName, namespace: PLATFORM_SYSTEM_NAMESPACE }],
+        middlewares: [{ name: `${name}-ratelimit`, namespace: PLATFORM_SYSTEM_NAMESPACE }],
         services: [{ name, port: FRPS_BIND_PORT }],
       },
     ],
-    tls: { secretName: tlsSecret },
+    tls: { secretName: `${name}-tls` },
     labels: {
       'insula.host/private-worker-tunnel': 'true',
       'insula.host/tenant-namespace': tenantNamespace,
     },
   });
-  await applyIngressRoute(custom, ingressRoute);
 }
 
 // ─── Reapers ────────────────────────────────────────────────────────────────

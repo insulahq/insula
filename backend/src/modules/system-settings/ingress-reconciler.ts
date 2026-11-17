@@ -314,6 +314,16 @@ const DOWNLOAD_PATH_REGEXP =
 // ─── Pure helpers (exported for testability) ─────────────────────────────
 
 /**
+ * True for the upload and download carve-outs' rules — the panel routes whose
+ * request lasts as long as the file takes to cross the wire. The latency SLO
+ * leaves them out (monitoring/transfer-routes.ts). Matched on the whole
+ * regexp, as the drift comparison below matches the download route.
+ */
+export function isPanelTransferMatch(match: string): boolean {
+  return match.includes(UPLOAD_PATH_REGEXP) || match.includes(DOWNLOAD_PATH_REGEXP);
+}
+
+/**
  * Extract a bare hostname from a URL string. Returns null for empty,
  * malformed, or unparseable input — caller must treat null as "skip this
  * route", never as "omit the host field" in the IngressRoute spec.

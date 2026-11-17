@@ -12,6 +12,51 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+- **Bulwark webmail 1.21.0 → 1.21.2**, a security release that fixes 10 published advisories, all of
+  which affect 1.21.0. It is taken before the usual 7-day wait for them. The ones that matter most
+  on a shared mail server:
+  - another user of the same mail server could make a forged mail look verified (sender logo,
+    trusted invitation);
+  - the organisation's maximum session length did not end the stored sign-in;
+  - the webmail could send a credential Stalwart had already refused, outside the failed-login
+    budget, which could get its address banned;
+  - a mail from a verified sender could freeze the tab;
+  - with the app lock on, notifications still showed and acted on mail.
+
+  Nothing in the platform's configuration changes. The release's breaking changes concern a shared
+  session store and sign-in through several identity providers, and the platform uses neither.
+  Webmail from the panels works as before, and signing out still removes the support session's
+  app password. The mail view's addresses now start with `/en/`, and older bookmarks still open
+  it.
+
+### Fixed
+
+- **A WAF rule change could cost a visitor a 502.** Saving an exclusion or a trusted IP rolls the
+  shared WAF sidecar. A pod stopped accepting connections the moment it was told to stop, while
+  Traefik could still reach it for a moment afterwards. Those requests got no verdict, and the WAF
+  fails closed, so a few visitors of WAF-protected sites (the panels too) got a 502. A lab cluster
+  under load saw 5 such requests over two rolls. The sidecar now keeps answering for 5 seconds
+  after it is told to stop, and its audit-log streamer stays up 10 seconds so those requests still
+  reach WAF Events.
+- **A scanner sweeping a private worker's tunnel address paged CRITICAL.** Each private worker has
+  a public address, `<slug>.tunnels.<apex>`, which its agent dials over WebSocket. Every other
+  request to that address reached the tunnel server's control port, which answers only the agent,
+  so Traefik returned 502. One sweep of a few hundred paths was enough to set off "API availability —
+  high error rate". This happened three times in a month on production. Only the agent's own path
+  now routes; anything else gets 404, and the agent connects as before. Existing workers change
+  when platform-api restarts on this release.
+- **"Platform surfaces — slow requests" fired on file transfers.** These requests last as long as
+  the transfer does, so the warning no longer counts them:
+  - file-manager uploads and large downloads;
+  - webmail attachment uploads and downloads;
+  - webmail's live-update stream, where each connection stays open for minutes;
+  - a private worker's tunnel connection, which stays open as long as its agent is connected.
+
+  Every one of the rule's six warnings in a month on production came from these routes. The rule
+  still counts everything else the panels, webmail and the Stalwart admin serve.
+
 ## [2026.11.11] - 2026-11-17
 
 ### Security

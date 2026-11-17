@@ -107,6 +107,24 @@ them brings the noise back:
 - **A share, not a percentile.** `histogram_quantile()` between two bucket
   edges is interpolation, so a p95 reported to the millisecond is arithmetic
   rather than measurement. A count of requests past a bucket edge is exact.
+- **Transfers left out.** Some requests last as long as the transfer does,
+  so they are left out of the count:
+  - the panels' file upload and large-download routes;
+  - JMAP's attachment upload and download;
+  - JMAP's event stream: webmail's push channel, where each connection stays
+    open for minutes;
+  - private workers' tunnel routes (`platform-system`, so inside
+    `platform-.*`), where the agent's WebSocket is one request lasting as long
+    as the agent stays connected.
+
+  On production these routes alone fired the rule: six times in a month, all
+  of them while the rest of the platform answered quickly. Their Traefik
+  `service` labels include a hash of the route's rule, and that rule contains
+  the host, so the label differs per install. The evaluator therefore computes
+  them each tick from the live IngressRoutes
+  (`backend/src/modules/monitoring/transfer-routes.ts`) and puts them into
+  `service!~"$EXCLUDED_SERVICES"`. If the routes cannot be read, nothing is
+  excluded: the rule counts them as before rather than going blind.
 
 If the alert fires, the usual cause is platform-api waiting on Postgres —
 check the API pods and `system-db` before the panels.

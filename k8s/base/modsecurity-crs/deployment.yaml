@@ -179,6 +179,23 @@ spec:
               port: http
             initialDelaySeconds: 30
             periodSeconds: 30
+          # Keep answering for 5 s after the pod starts terminating. The plugin
+          # reaches this container through the Service's cluster IP, and a
+          # passed request's verdict goes out on a new connection. nginx stops
+          # listening the moment it is told to stop, but each node keeps
+          # sending new connections to the pod until it has dropped the pod
+          # from the Service a moment later. Those connections were refused,
+          # and the plugin fails closed, so each one was a 502 to a visitor of
+          # a WAF-protected site. That happens on every roll, and a roll
+          # follows every exclusion or trusted-IP change. Measured on a lab
+          # cluster at about 330 requests a second: 5 refused verdicts over
+          # two rolls. The kubelet's own sleep action, as for the panels and
+          # the API. The default 30 s grace period covers the pause plus
+          # nginx finishing the requests it already has.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           volumeMounts:
             - name: audit-log
               mountPath: /var/log/modsec
@@ -263,6 +280,15 @@ spec:
               pipeline=$!
               trap 'trap - TERM INT QUIT; kill -TERM -1 2>/dev/null || true; exit 0' TERM INT QUIT
               while kill -0 "$pipeline" 2>/dev/null; do sleep 1; done
+          # Outlive the WAF container's 5 s pause. Each container is told to
+          # stop when its own preStop ends. Without a pause this one stopped at
+          # once, while modsec was still answering, and the audit records of
+          # those last requests would never reach WAF Events. 10 s covers that
+          # pause, nginx finishing its open requests and tail's one-second poll.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 10
           resources:
             requests:
               cpu: 5m

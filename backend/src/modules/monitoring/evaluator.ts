@@ -37,7 +37,7 @@ import { queryInstant, type VmClientOptions } from './vm-client.js';
 import { describeSuppression, type JoinGraceVerdict } from '../node-health/join-grace.js';
 import { isOutageHold } from '../node-health/outage-hold.js';
 import {
-  SLO_RULES, MONITORING_UNREACHABLE_RULE_ID, renderExpr, describeSubject, subjectKey, formatSloValue,
+  SLO_RULES, MONITORING_UNREACHABLE_RULE_ID, EXCLUDED_SERVICES, renderExpr, describeSubject, subjectKey, formatSloValue,
   sloValueIsInformative,
   type SloRule,
 } from './rules.js';
@@ -60,11 +60,31 @@ export interface EvaluatorLogger {
 const violationSince = new Map<string, number>();
 /** Consecutive vm-client failures (same in-memory rationale). */
 let vmFailureStreak = 0;
+/** The transfer-route set last logged (noteTransferRoutes). */
+let lastTransferRoutes: string | null = null;
 
 /** Test-only reset. */
 export function __resetEvaluatorStateForTest(): void {
   violationSince.clear();
   vmFailureStreak = 0;
+  lastTransferRoutes = null;
+}
+
+/**
+ * Logged when the set changes rather than every tick. An empty set is a warn:
+ * the latency rule then counts every route, so the transfer noise is back —
+ * a carve-out whose rule no predicate recognises any more, or a list the API
+ * returned empty, would otherwise be silent.
+ */
+function noteTransferRoutes(labels: readonly string[], log: EvaluatorLogger): void {
+  const key = labels.join(',');
+  if (key === lastTransferRoutes) return;
+  lastTransferRoutes = key;
+  if (labels.length === 0) {
+    log.warn('monitoring evaluator: no transfer routes found — the latency rule counts every platform route');
+  } else {
+    log.info(`monitoring evaluator: the latency rule leaves out ${labels.length} transfer route(s): ${key}`);
+  }
 }
 
 export function vmReachable(): boolean {
@@ -102,6 +122,13 @@ export interface EvaluateOptions {
    * healthy tick never pays for it. Omitted → no node is held.
    */
   readonly joinGrace?: JoinGraceLoader;
+  /**
+   * The transfer routes' service labels (transfer-routes.ts), read at most
+   * once per tick and only for a rule whose expr excludes them. Omitted or
+   * failing → nothing is excluded: the rule counts those routes as it did
+   * before, noisier but never blind.
+   */
+  readonly transferServices?: () => Promise<readonly string[]>;
 }
 
 const NO_SUBJECT = { key: '', labels: {}, label: null } as const;
@@ -267,10 +294,30 @@ export async function evaluateOnce(
   let anyQuerySucceeded = false;
   let anyQueryFailed = false;
 
+  let transfers: Promise<readonly string[]> | null = null;
+  const excludedFor = (rule: SloRule): Promise<readonly string[]> => {
+    const load = opts.transferServices;
+    if (!load || !rule.expr.includes(EXCLUDED_SERVICES)) return Promise.resolve([]);
+    transfers ??= load().then(
+      (labels) => {
+        noteTransferRoutes(labels, log);
+        return labels;
+      },
+      (err: unknown) => {
+        log.warn(
+          'monitoring evaluator: transfer routes unknown — this tick counts them:',
+          err instanceof Error ? err.message : String(err),
+        );
+        return [];
+      },
+    );
+    return transfers;
+  };
+
   for (const rule of SLO_RULES) {
     const ov = overrideById.get(rule.id);
     if (ov && !ov.enabled) continue;
-    const expr = renderExpr(rule, ov?.threshold ?? null);
+    const expr = renderExpr(rule, ov?.threshold ?? null, await excludedFor(rule));
     try {
       const samples = await queryInstant(expr, vmOpts);
       anyQuerySucceeded = true;
