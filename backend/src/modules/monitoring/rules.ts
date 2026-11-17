@@ -27,7 +27,9 @@ export interface SloRule {
   readonly severity: 'warning' | 'critical';
   /**
    * MetricsQL expression. `$T` is replaced with the effective threshold
-   * (default below or operator override) before querying.
+   * (default below or operator override) before querying, and
+   * `$EXCLUDED_SERVICES` with the transfer routes' service labels as a regex
+   * alternation (transfer-routes.ts; see renderExpr).
    *
    * IMPORTANT: any aggregation MUST carry a `by (...)` clause listing this
    * rule's `subjectLabels`. A bare `max(x) > 0` collapses every series into
@@ -163,6 +165,12 @@ export function subjectKey(
     .map((k) => `${k}=${labels[k] ?? labels[`exported_${k}`] ?? ''}`)
     .join(',');
 }
+
+/** Replaced by renderExpr with the transfer routes' service labels (transfer-routes.ts). */
+export const EXCLUDED_SERVICES = '$EXCLUDED_SERVICES';
+
+/** The platform's own surfaces, less the routes whose duration is a transfer's. */
+const PLATFORM_SURFACES = `service=~"(platform|mail)-.*",service!~"${EXCLUDED_SERVICES}"`;
 
 // 99.5% availability SLO ⇒ error budget 0.5%. Burn-rate multipliers per
 // the standard multiwindow guidance (14.4x fast / 6x slow).
@@ -311,10 +319,17 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
   // not yet run the 2026.9.18/0002 host-migration keeps evaluating this rule
   // correctly — picking an edge only the new set has (1, 2.5, …) would select
   // no series, sum to nothing, and leave the rule silently unable to fire.
+  //
+  // The transfer routes are left out (`$EXCLUDED_SERVICES`, transfer-routes.ts):
+  // file uploads and downloads, JMAP's attachments and event stream, and
+  // private workers' tunnels. Their requests last as long as the transfer, and
+  // an event-stream or tunnel connection is open for minutes or more by design. Counted here, they fired this rule while the
+  // rest of the platform answered quickly: on production the JMAP carve-out
+  // alone cleared the 10-request floor, most of its "slow" requests over 10 s.
   {
     id: 'platform-latency-slow-share',
     name: 'Platform surfaces — slow requests',
-    description: 'A sustained share of requests to the platform\'s own surfaces (admin panel, tenant panel, webmail, Stalwart admin) is taking over 1.2 seconds. This excludes tenant websites by design — a slow tenant app shows up on that tenant\'s health page, not here. Check platform-api and the panel pods, then the database: the usual cause is the API waiting on Postgres.',
+    description: 'A sustained share of requests to the platform\'s own surfaces (admin panel, tenant panel, webmail, Stalwart admin) is taking over 1.2 seconds. This excludes tenant websites by design — a slow tenant app shows up on that tenant\'s health page, not here — and file and attachment transfers, webmail\'s live-update stream and private workers\' tunnel connections, which last as long as the transfer or the connection does. Check platform-api and the panel pods, then the database: the usual cause is the API waiting on Postgres.',
     severity: 'warning',
     // Both sides of every comparison come from the SAME metric family
     // (`_bucket`, le="1.2" vs le="+Inf"), never `_count` vs `_bucket`.
@@ -331,10 +346,10 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     // lost: the two series are born together, carry identical labels, and the
     // quotient is guaranteed to land in [0,1] no matter how new the series is.
     expr:
-      '((1 - (sum(rate(traefik_service_request_duration_seconds_bucket{service=~"(platform|mail)-.*",le="1.2"}[30m]))'
-      + ' / sum(rate(traefik_service_request_duration_seconds_bucket{service=~"(platform|mail)-.*",le="+Inf"}[30m])))) > $T)'
-      + ' and ((sum(increase(traefik_service_request_duration_seconds_bucket{service=~"(platform|mail)-.*",le="+Inf"}[30m]))'
-      + ' - sum(increase(traefik_service_request_duration_seconds_bucket{service=~"(platform|mail)-.*",le="1.2"}[30m]))) >= 10)',
+      `((1 - (sum(rate(traefik_service_request_duration_seconds_bucket{${PLATFORM_SURFACES},le="1.2"}[30m]))`
+      + ` / sum(rate(traefik_service_request_duration_seconds_bucket{${PLATFORM_SURFACES},le="+Inf"}[30m])))) > $T)`
+      + ` and ((sum(increase(traefik_service_request_duration_seconds_bucket{${PLATFORM_SURFACES},le="+Inf"}[30m]))`
+      + ` - sum(increase(traefik_service_request_duration_seconds_bucket{${PLATFORM_SURFACES},le="1.2"}[30m]))) >= 10)`,
     subjectLabels: [],
     threshold: 0.05,
     forSeconds: 900,
@@ -648,8 +663,21 @@ export function ruleById(id: string): SloRule | undefined {
   return SLO_RULES.find((r) => r.id === id);
 }
 
-/** Substitute the effective threshold into the expression. */
-export function renderExpr(rule: SloRule, thresholdOverride: number | null | undefined): string {
+/**
+ * Substitute the effective threshold and the excluded services into the
+ * expression. With no services known the placeholder renders empty, and
+ * `service!~""` excludes nothing: the rule then counts every route, as it did
+ * before the exclusion existed, rather than going blind.
+ */
+export function renderExpr(
+  rule: SloRule,
+  thresholdOverride: number | null | undefined,
+  excludedServices: readonly string[] = [],
+): string {
   const t = thresholdOverride ?? rule.threshold;
-  return rule.expr.replaceAll('$T', String(t));
+  // Function replacements: a replacement STRING would read `$&`, `$$`… in it.
+  const services = excludedServices.join('|');
+  return rule.expr
+    .replaceAll(EXCLUDED_SERVICES, () => services)
+    .replaceAll('$T', () => String(t));
 }

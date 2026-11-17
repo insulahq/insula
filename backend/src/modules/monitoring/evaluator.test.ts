@@ -472,3 +472,67 @@ describe('monitoring evaluator — nodes that are still joining', () => {
     expect(notifyFiringSpy.mock.calls.some((c) => c[1].ruleId === 'acme-order-rate')).toBe(true);
   });
 });
+
+describe('monitoring evaluator — transfer routes left out of the latency rule', () => {
+  const LATENCY = 'traefik_service_request_duration_seconds_bucket';
+  const JMAP = 'mail-stalwart-webadmin-5e1f61032c54a5d7b5b8@kubernetescrd';
+  const PANEL = 'platform-platform-ingress-8fb24f7075dfc9474ea9@kubernetescrd';
+  const t0 = new Date('2026-10-01T12:00:00Z');
+  const later = new Date(t0.getTime() + 16 * 60_000); // past the rule's 900 s `for`
+
+  /**
+   * vmsingle as far as the latency rule's selector goes: slow requests exist
+   * on `slowOn`, and they survive the query only if the rendered
+   * `service!~"…"` (anchored, as in MetricsQL) does not match that series.
+   */
+  const vmWithSlowRequestsOn = (slowOn: string) => vi.fn(async (url: string | URL) => {
+    const q = decodeURIComponent(String(url));
+    const excluded = /service!~"([^"]*)"/.exec(q)?.[1];
+    const survives = q.includes(LATENCY) && excluded !== undefined && !new RegExp(`^(?:${excluded})$`).test(slowOn);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        status: 'success',
+        data: { resultType: 'vector', result: survives ? [{ metric: {}, value: [1, '0.2'] }] : [] },
+      }),
+    } as unknown as Response;
+  });
+
+  const run = async (slowOn: string, transferServices: () => Promise<readonly string[]>, log = logger) => {
+    const db = dbStub();
+    const fetchFn = vmWithSlowRequestsOn(slowOn) as never;
+    await evaluateOnce(db as never, log, { fetchFn, baseUrl: 'http://vm' }, t0, { transferServices });
+    await evaluateOnce(db as never, log, { fetchFn, baseUrl: 'http://vm' }, later, { transferServices });
+    return db._row('platform-latency-slow-share')?.state ?? 'absent';
+  };
+
+  it('does not fire on slow requests that are all on a transfer route', async () => {
+    expect(await run(JMAP, async () => [JMAP])).toBe('absent');
+  });
+
+  it('still fires on the platform\'s own slow requests', async () => {
+    expect(await run(PANEL, async () => [JMAP])).toBe('firing');
+  });
+
+  it('counts every route, and says so, when the live routes cannot be read', async () => {
+    const warn = vi.fn();
+    const state = await run(JMAP, async () => { throw new Error('IngressRoute list timed out after 3000ms'); }, { info: vi.fn(), warn });
+    expect(state).toBe('firing');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('transfer routes unknown'), expect.stringContaining('timed out'));
+  });
+
+  it('reads the routes once per tick, and logs the set only when it changes', async () => {
+    const load = vi.fn(async () => [JMAP]);
+    const info = vi.fn();
+    await run(PANEL, load, { info, warn: vi.fn() });
+    expect(load).toHaveBeenCalledTimes(2); // two ticks
+    expect(info.mock.calls.filter((c) => String(c[0]).includes('leaves out 1 transfer route'))).toHaveLength(1);
+  });
+
+  it('warns when the cluster reports no transfer routes at all', async () => {
+    const warn = vi.fn();
+    await run(PANEL, async () => [], { info: vi.fn(), warn });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no transfer routes found'));
+  });
+});

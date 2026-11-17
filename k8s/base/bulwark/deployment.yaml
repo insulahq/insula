@@ -291,7 +291,7 @@ spec:
         - name: feature-css-injector
           # Same digest as the `bulwark` container below — see the note there
           # for the version and how to re-resolve it. Both must move together.
-          image: ghcr.io/bulwarkmail/webmail@sha256:420069671e7776f49cf40882f35bc37b57593f224c7dddbeb6f78e52341fa207
+          image: ghcr.io/bulwarkmail/webmail@sha256:037b85b1433233d2d7eebb83f928df5ecc3b4adc91dc7e4c55f0a2f69024e754
           imagePullPolicy: IfNotPresent
           # busybox-style sh is available in the Bulwark image (Alpine
           # base). The script is intentionally tiny + has no error
@@ -331,7 +331,7 @@ spec:
               readOnly: true
       containers:
         - name: bulwark
-          # Bulwark 1.21.0 stable. Bump per ADR-039; the digest is
+          # Bulwark 1.21.2 stable. Bump per ADR-039; the digest is
           # also recorded in security/components.yaml (component `bulwark`),
           # which ci-component-watch-check.sh asserts against this file.
           #
@@ -360,7 +360,7 @@ spec:
           #
           # Digest provenance: `gh attestation verify oci://…@<digest> --owner
           # bulwarkmail` — SLSA v1, built by the upstream release workflow
-          # from tag 1.21.0.
+          # from tag 1.21.2.
           #
           # 1.16.0 stops an HTML attachment preview from running the sender's
           # script in the webmail origin, and makes delete/move act on the
@@ -402,7 +402,21 @@ spec:
           # keeps /api/health, the impersonation route, the "Support session
           # <jti>" app-password name and the /contacts, /calendar and /files nav
           # links the feature-visibility CSS hides.
-          image: ghcr.io/bulwarkmail/webmail@sha256:420069671e7776f49cf40882f35bc37b57593f224c7dddbeb6f78e52341fa207
+          #
+          # 1.21.2 closes a security review (10 GHSAs, all covering 1.21.0) and is
+          # taken inside its soak for them: a same-server user could make a forged
+          # mail look verified (GHSA-prh8-7whf-3x6r), the stored sign-in outlived
+          # the session limit (GHSA-c4wh-3943-pqfr), a refused credential was
+          # still sent to Stalwart outside the failed-login budget
+          # (GHSA-gccm-j6rm-xjmf). Its breaking changes miss this Deployment: the
+          # shared-store password check applies only with REDIS_URL, the issuer
+          # check only to OAuth with several sign-in servers. The impersonation
+          # JWT check, the app-password name and /api/health are unchanged. The
+          # mail view moves under the /en/ locale prefix; an old /mail/… address
+          # redirects there. Sender logos are drawn in child processes
+          # (up to 2, 128 MB heap each), so watch memory against the limit below.
+          # Do not roll back past 1.21.2.
+          image: ghcr.io/bulwarkmail/webmail@sha256:037b85b1433233d2d7eebb83f928df5ecc3b4adc91dc7e4c55f0a2f69024e754
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

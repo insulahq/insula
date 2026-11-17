@@ -23,6 +23,7 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { lazyNodeAlertHolds } from '../node-health/outage-hold.js';
 import { evaluateOnce, type EvaluatorLogger } from './evaluator.js';
+import { transferServiceSource } from './transfer-routes.js';
 
 export const EVALUATOR_TICK_MS = 60_000;
 const INITIAL_DELAY_MS = 90_000;
@@ -42,6 +43,7 @@ export function startMonitoringEvaluator(
   let timer: NodeJS.Timeout | null = null;
   let stopped = false;
   const tickMs = opts.tickMs ?? EVALUATOR_TICK_MS;
+  const transferServices = opts.k8s ? transferServiceSource(opts.k8s.custom) : undefined;
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
@@ -65,6 +67,7 @@ export function startMonitoringEvaluator(
           const now = new Date();
           await evaluateOnce(db, log, {}, now, {
             joinGrace: opts.k8s ? lazyNodeAlertHolds(opts.k8s, now) : undefined,
+            transferServices,
           });
         }
       });
@@ -75,7 +78,8 @@ export function startMonitoringEvaluator(
   };
 
   timer = setTimeout(tick, opts.initialDelayMs ?? INITIAL_DELAY_MS);
-  log.info(`monitoring evaluator started (tick ${tickMs}ms, one replica)`);
+  log.info(`monitoring evaluator started (tick ${tickMs}ms, one replica${
+    transferServices ? '' : '; no cluster client, so the latency rule counts transfer routes'})`);
   return {
     stop: () => {
       stopped = true;

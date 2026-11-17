@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SLO_RULES, ruleById, renderExpr, describeSubject, subjectKey } from './rules.js';
+import { SLO_RULES, EXCLUDED_SERVICES, ruleById, renderExpr, describeSubject, subjectKey } from './rules.js';
 
 describe('SLO_RULES — mail monitoring additions', () => {
   const MAIL_RULES = [
@@ -223,6 +223,32 @@ describe('SLO_RULES — platform-surface latency (replaces api-latency-p95)', ()
     // threshold — the same near-idle-denominator trap the availability rules
     // grew a floor for.
     expect(rule().expr).toMatch(/>=\s*\d+/);
+  });
+
+  it('leaves the transfer routes out of every selector, floor included', () => {
+    // An event-stream connection or a file upload lasts as long as the
+    // transfer. Left in, they fired this rule on their own; left out of only
+    // the ratio, they would still count toward the 10-request floor.
+    const selectors = [...rule().expr.matchAll(/traefik_service_request_duration_seconds_bucket\{([^}]*)\}/g)];
+    expect(selectors).toHaveLength(4);
+    for (const [, s] of selectors) expect(s).toContain(`service!~"${EXCLUDED_SERVICES}"`);
+  });
+
+  it('renders the excluded services as an anchored alternation, and as nothing when none are known', () => {
+    const a = 'mail-stalwart-webadmin-5e1f61032c54a5d7b5b8@kubernetescrd';
+    const b = 'platform-platform-ingress-c5c5f32d5e78b6706845@kubernetescrd';
+    const withLabels = renderExpr(rule(), null, [a, b]);
+    expect(withLabels.split(`service!~"${a}|${b}"`)).toHaveLength(5);
+    expect(withLabels).not.toContain('$');
+    // `service!~""` keeps every series that has a service label: the rule
+    // counts every route, as before, instead of evaluating nothing.
+    const without = renderExpr(rule(), null);
+    expect(without.split('service!~""')).toHaveLength(5);
+    expect(without).not.toContain('$');
+  });
+
+  it('leaves no placeholder behind in any rule', () => {
+    for (const r of SLO_RULES) expect(renderExpr(r, null, ['x@kubernetescrd'])).not.toMatch(/\$[A-Z]/);
   });
 
   it('reports an exactly-measurable value, not an interpolated percentile', () => {
