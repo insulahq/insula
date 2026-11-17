@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.12-rc.1] - 2026-11-17
+
 ### Security
 
 - **Bulwark webmail 1.21.0 → 1.21.2**, a security release that fixes 10 published advisories, all of
