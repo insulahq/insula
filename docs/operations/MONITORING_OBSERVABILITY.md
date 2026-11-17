@@ -112,7 +112,10 @@ them brings the noise back:
   - the panels' file upload and large-download routes;
   - JMAP's attachment upload and download;
   - JMAP's event stream: webmail's push channel, where each connection stays
-    open for minutes.
+    open for minutes;
+  - private workers' tunnel routes (`platform-system`, so inside
+    `platform-.*`), where the agent's WebSocket is one request lasting as long
+    as the agent stays connected.
 
   On production these routes alone fired the rule: six times in a month, all
   of them while the rest of the platform answered quickly. Their Traefik

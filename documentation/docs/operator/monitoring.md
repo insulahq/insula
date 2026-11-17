@@ -90,10 +90,11 @@ It deliberately **excludes tenant websites**. A slow tenant application is that
 tenant's problem and appears on their own health page; it is not a platform
 breach, and mixing the two produced warnings no one could act on.
 
-It also **excludes file transfers**: file-manager uploads and large downloads,
-webmail attachment uploads and downloads, and webmail's live-update connection.
-These requests last as long as the transfer does. The live-update connection
-stays open for minutes on purpose. Counted, they set off this warning while
+It also **excludes file transfers and long-lived connections**: file-manager
+uploads and large downloads, webmail attachment uploads and downloads, webmail's
+live-update connection, and private workers' tunnel connections. These requests
+last as long as the transfer or the connection does. The live-update and tunnel
+connections stay open for minutes or longer on purpose. Counted, they set off this warning while
 everything else was answering quickly.
 
 It also deliberately reports a *share of requests* rather than a percentile.

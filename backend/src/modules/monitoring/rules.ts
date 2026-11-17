@@ -321,15 +321,15 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
   // no series, sum to nothing, and leave the rule silently unable to fire.
   //
   // The transfer routes are left out (`$EXCLUDED_SERVICES`, transfer-routes.ts):
-  // file uploads and downloads, and JMAP's attachments and event stream. Their
-  // requests last as long as the transfer, and an event-stream connection is
-  // open for minutes by design. Counted here, they fired this rule while the
+  // file uploads and downloads, JMAP's attachments and event stream, and
+  // private workers' tunnels. Their requests last as long as the transfer, and
+  // an event-stream or tunnel connection is open for minutes or more by design. Counted here, they fired this rule while the
   // rest of the platform answered quickly: on production the JMAP carve-out
   // alone cleared the 10-request floor, most of its "slow" requests over 10 s.
   {
     id: 'platform-latency-slow-share',
     name: 'Platform surfaces — slow requests',
-    description: 'A sustained share of requests to the platform\'s own surfaces (admin panel, tenant panel, webmail, Stalwart admin) is taking over 1.2 seconds. This excludes tenant websites by design — a slow tenant app shows up on that tenant\'s health page, not here — and file and attachment transfers and webmail\'s live-update stream, which last as long as the transfer does. Check platform-api and the panel pods, then the database: the usual cause is the API waiting on Postgres.',
+    description: 'A sustained share of requests to the platform\'s own surfaces (admin panel, tenant panel, webmail, Stalwart admin) is taking over 1.2 seconds. This excludes tenant websites by design — a slow tenant app shows up on that tenant\'s health page, not here — and file and attachment transfers, webmail\'s live-update stream and private workers\' tunnel connections, which last as long as the transfer or the connection does. Check platform-api and the panel pods, then the database: the usual cause is the API waiting on Postgres.',
     severity: 'warning',
     // Both sides of every comparison come from the SAME metric family
     // (`_bucket`, le="1.2" vs le="+Inf"), never `_count` vs `_bucket`.

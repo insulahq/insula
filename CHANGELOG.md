@@ -32,7 +32,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   the transfer does, so the warning no longer counts them:
   - file-manager uploads and large downloads;
   - webmail attachment uploads and downloads;
-  - webmail's live-update stream, where each connection stays open for minutes.
+  - webmail's live-update stream, where each connection stays open for minutes;
+  - a private worker's tunnel connection, which stays open as long as its agent is connected.
 
   Every one of the rule's six warnings in a month on production came from these routes. The rule
   still counts everything else the panels, webmail and the Stalwart admin serve.

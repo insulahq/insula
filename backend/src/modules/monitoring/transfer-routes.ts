@@ -10,6 +10,9 @@
  *  - The panels' streaming-upload and large-download carve-outs
  *    (system-settings/ingress-reconciler.ts): a file takes as long as the
  *    client's link does.
+ *  - Private workers' tunnel routes (private-workers/reconciler.ts), in the
+ *    `platform-system` namespace and so inside the rule's `platform-.*`: the
+ *    agent's WebSocket is one request lasting as long as the connection.
  *
  * Production fired `platform-latency-slow-share` six times in a month; each
  * time nearly every slow request was on one of these routes (five times the
@@ -29,6 +32,7 @@
 import type * as k8s from '@kubernetes/client-node';
 import { isJmapStreamMatch } from '../../shared/traefik-mail-waf.js';
 import { isPanelTransferMatch } from '../system-settings/ingress-reconciler.js';
+import { isTunnelRouteMatch } from '../private-workers/reconciler.js';
 import { INGRESSROUTE_PLURAL, TRAEFIK_GROUP, TRAEFIK_VERSION } from '../ingress-routes/traefik-types.js';
 import { createLiveRouteSource, type LiveRouteIndex } from '../traffic/live-ingress-routes.js';
 
@@ -43,7 +47,7 @@ const SERVICE_LABEL = /^[\p{L}\p{N}-]+@[a-z]+$/u;
 export function transferServiceLabels(index: LiveRouteIndex): string[] {
   return [...index]
     .filter(([label, route]) => SERVICE_LABEL.test(label)
-      && (isJmapStreamMatch(route.match) || isPanelTransferMatch(route.match)))
+      && (isJmapStreamMatch(route.match) || isPanelTransferMatch(route.match) || isTunnelRouteMatch(route.match)))
     .map(([label]) => label)
     .sort();
 }

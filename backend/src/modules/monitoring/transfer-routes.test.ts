@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest';
 import { transferServiceLabels } from './transfer-routes.js';
 import { buildDesiredRoutes, buildIngressRouteBody } from '../system-settings/ingress-reconciler.js';
 import { jmapStreamMatch } from '../../shared/traefik-mail-waf.js';
+import { buildTunnelIngressRoute } from '../private-workers/reconciler.js';
 import { indexLiveRoutes, liveRoutesFromList } from '../traffic/traefik-routes.js';
 
 const panels = buildIngressRouteBody(
@@ -42,21 +43,28 @@ const webmail = {
   spec: { routes: [{ match: 'Host(`webmail.example.test`)', services: [{ name: 'bulwark', port: 80 }] }] },
 };
 
-const index = indexLiveRoutes(liveRoutesFromList({ items: [panels, stalwart, webmail] }));
+const tunnel = buildTunnelIngressRoute('photos-1a2b3c4d', 'photos-1a2b3c4d.tunnels.example.test', 'tenant-example');
+const anchor = {
+  metadata: { namespace: 'platform-system', name: 'tunnel-anchor' },
+  spec: { routes: [{ match: 'Host(`tunnels.example.test`)', services: [{ name: 'tunnel-anchor-default', port: 80 }] }] },
+};
+
+const index = indexLiveRoutes(liveRoutesFromList({ items: [panels, stalwart, webmail, tunnel, anchor] }));
 const matchesOf = (labels: readonly string[]) => labels.map((l) => index.get(l)!.match);
 
 describe('transferServiceLabels', () => {
   const labels = transferServiceLabels(index);
 
-  it('names the JMAP stream carve-out and both panels\' upload and download carve-outs', () => {
+  it('names the JMAP stream carve-out, both panels\' upload and download carve-outs and the tunnel', () => {
     const matches = matchesOf(labels);
     expect(matches.filter((m) => m.includes('/jmap/eventsource'))).toHaveLength(1);
     expect(matches.filter((m) => m.includes('files/upload-raw'))).toHaveLength(2);
     expect(matches.filter((m) => m.includes('files/download'))).toHaveLength(2);
-    expect(labels).toHaveLength(5);
+    expect(matches.filter((m) => m.includes('/~!frp'))).toHaveLength(1);
+    expect(labels).toHaveLength(6);
   });
 
-  it('leaves every other route in: panels, sign-in, WAF admin, the JMAP API, the Stalwart admin, webmail', () => {
+  it('leaves every other route in: panels, sign-in, WAF admin, the JMAP API, the Stalwart admin, webmail, the tunnel anchor', () => {
     const left = [...index.keys()].filter((l) => !labels.includes(l));
     const matches = left.map((l) => index.get(l)!.match);
     expect(matches).toEqual(expect.arrayContaining([
@@ -66,11 +74,13 @@ describe('transferServiceLabels', () => {
       `Host(\`${stalwartHost}\`) && (PathPrefix(\`/jmap\`) || Path(\`/.well-known/jmap\`))`,
       `Host(\`${stalwartHost}\`)`,
       'Host(`webmail.example.test`)',
+      'Host(`tunnels.example.test`)',
     ]));
     expect(matches.some((m) => m.includes('waf-rule-exclusions'))).toBe(true);
   });
 
   it('returns labels in Traefik\'s shape, the one the rule\'s series carry', () => {
+    // The rule selects `(platform|mail)-.*`: the tunnel's `platform-system-…` falls inside it.
     for (const l of labels) expect(l).toMatch(/^(platform|mail)-[a-z0-9-]+-[0-9a-f]{20}@kubernetescrd$/);
   });
 

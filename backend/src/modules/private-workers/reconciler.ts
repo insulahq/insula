@@ -814,6 +814,15 @@ export function tunnelRouteMatch(tunnelHost: string): string {
   return `${hostMatch(tunnelHost)} && Path(\`${FRP_WEBSOCKET_PATH}\`) && Method(\`GET\`)`;
 }
 
+/**
+ * True for a worker's tunnel rule. Its one request is the agent's WebSocket,
+ * open for as long as the agent stays connected, so the latency SLO leaves it
+ * out (monitoring/transfer-routes.ts).
+ */
+export function isTunnelRouteMatch(match: string): boolean {
+  return match.includes(`Path(\`${FRP_WEBSOCKET_PATH}\`)`);
+}
+
 async function upsertTunnelIngress(
   custom: k8s.CustomObjectsApi,
   slug: string,
