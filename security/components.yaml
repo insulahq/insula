@@ -951,8 +951,9 @@ components:
     owner: catalog
     notes: >-
       Tenant static hosting runtime. What tenants run is the Official Catalog's build
-      (insulahq/application-catalog static-nginx/, on the Minimus nginx base); the
-      catalog-images/ copy here is the older nginx:1.30-alpine variant.
+      (insulahq/application-catalog static-nginx/, on the official nginx:1.31.2-alpine
+      image since catalog #30, when Minimus's registry stopped serving anonymous pulls);
+      the catalog-images/ copy here is the older nginx:1.30-alpine variant.
 
   - id: catalog-nginx-php84
     name: catalog/nginx-php84 (PHP-FPM 8.4 runtime)
