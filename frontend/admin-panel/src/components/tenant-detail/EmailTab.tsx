@@ -26,6 +26,7 @@ import TenantPanelLink from './TenantPanelLink';
 import { tenantPanel } from './tenant-panel-paths';
 import MailDailyChart from './MailDailyChart';
 import { LIMITS_EXPLAINED, throttleText } from './mail-throttle';
+import { platformNote, splitPlatformMailboxes } from './platform-mailboxes';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
@@ -392,16 +393,19 @@ function MailboxesCard({ tenantId }: { readonly tenantId: string }) {
   const mailboxes = mailboxesRes?.data ?? [];
   const { sortedData, sortKey, sortDirection, onSort } = useSortable(mailboxes, 'fullAddress', 'asc', MAILBOX_SORT);
   const sort = { currentKey: sortKey, direction: sortDirection, onSort } as const;
-  const usedMb = mailboxes.reduce((n, m) => n + (m.usedMb ?? 0), 0);
-  const quotaMb = mailboxes.reduce((n, m) => n + (m.quotaMb ?? 0), 0);
-  const aliasCount = mailboxes.reduce((n, m) => n + (m.aliases?.length ?? 0), 0);
-  const forwards = mailboxes.filter((m) => (m.forwardingAddresses?.length ?? 0) > 0).length;
+  // The table lists every mailbox, the platform's postmaster@ intake included;
+  // the figures above it count the tenant's own, as the mailbox limit does.
+  const { tenant: own, platform } = splitPlatformMailboxes(mailboxes);
+  const usedMb = own.reduce((n, m) => n + (m.usedMb ?? 0), 0);
+  const quotaMb = own.reduce((n, m) => n + (m.quotaMb ?? 0), 0);
+  const aliasCount = own.reduce((n, m) => n + (m.aliases?.length ?? 0), 0);
+  const forwards = own.filter((m) => (m.forwardingAddresses?.length ?? 0) > 0).length;
   return (
     <Card
       title={(
         <div className="flex flex-wrap items-baseline gap-2.5">
           <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Mailboxes</h2>
-          <span className="text-[13px] text-gray-500 dark:text-gray-400">{mailboxes.length} mailboxes · {formatMb(usedMb)} of {formatMb(quotaMb)} used · {aliasCount} aliases · {forwards} forwarding</span>
+          <span className="text-[13px] text-gray-500 dark:text-gray-400">{own.length} mailboxes{platformNote(platform.length)} · {formatMb(usedMb)} of {formatMb(quotaMb)} used · {aliasCount} aliases · {forwards} forwarding</span>
         </div>
       )}
       actions={<TenantPanelLink tenantId={tenantId} to={tenantPanel.email('mailboxes')} label="Email → Mailboxes" variant="button">Add mailbox</TenantPanelLink>}
@@ -428,12 +432,13 @@ function MailboxesCard({ tenantId }: { readonly tenantId: string }) {
           <tbody>
             {sortedData.map((m) => {
               const sendOnly = m.mailboxType === 'send_only';
+              const platformOwned = m.platformManaged === true;
               const pct = m.quotaMb > 0 ? (m.usedMb / m.quotaMb) * 100 : null;
               return (
                 <tr key={m.id} className="border-b border-gray-100 align-top last:border-0 dark:border-gray-700" data-testid={`mailbox-${m.id}`}>
                   <td className="px-5 py-3">
                     <div className="font-medium text-gray-900 dark:text-gray-100">{m.fullAddress}</div>
-                    <div className="text-xs text-gray-500 dark:text-gray-400">{[m.displayName, sendOnly ? 'send-only' : 'mailbox'].filter(Boolean).join(' · ')}</div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400">{[m.displayName, platformOwned ? 'platform mailbox, not counted against the limit' : sendOnly ? 'send-only' : 'mailbox'].filter(Boolean).join(' · ')}</div>
                   </td>
                   <td className="px-5 py-3">
                     {sendOnly ? <span className="text-gray-500 dark:text-gray-400">Stores nothing</span> : (
@@ -458,7 +463,10 @@ function MailboxesCard({ tenantId }: { readonly tenantId: string }) {
                   <td className="px-5 py-3 text-gray-700 dark:text-gray-300">{m.autoReply ? (m.autoReplySubject ? `On: “${m.autoReplySubject}”` : 'On') : <span className="text-gray-500 dark:text-gray-400">Off</span>}</td>
                   <td className="px-5 py-3"><Chip tone={m.status === 'active' ? 'ok' : 'warn'} dot>{m.status}</Chip></td>
                   <td className="px-5 py-3 text-right">
-                    <TenantPanelLink tenantId={tenantId} to={tenantPanel.mailbox(m.emailDomainId, m.id)} label={`Email → Mailboxes → ${m.fullAddress}`} testId={`tp-mailbox-${m.id}`}>Manage</TenantPanelLink>
+                    {/* The tenant panel does not list the platform's mailboxes, so there is nothing there to manage. */}
+                    {platformOwned
+                      ? <span className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400" data-testid={`platform-mailbox-${m.id}`}>Run by the platform</span>
+                      : <TenantPanelLink tenantId={tenantId} to={tenantPanel.mailbox(m.emailDomainId, m.id)} label={`Email → Mailboxes → ${m.fullAddress}`} testId={`tp-mailbox-${m.id}`}>Manage</TenantPanelLink>}
                   </td>
                 </tr>
               );

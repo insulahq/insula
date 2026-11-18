@@ -34,6 +34,7 @@ import { tenantPanel } from './tenant-panel-paths';
 import { describeAuditEntry } from './audit-describe';
 import ApplicationsList from './ApplicationsList';
 import { bandwidthForecast } from './bandwidth-forecast';
+import { platformNote, splitPlatformMailboxes } from './platform-mailboxes';
 
 type TabKey = TabOf<'/tenants/:id'>;
 
@@ -518,7 +519,9 @@ function EmailSummaryCard({ tenantId, outboundSuspended }: { readonly tenantId: 
   const { data: mailboxesRes } = useMailboxes(tenantId);
   const { data: aliasesRes } = useEmailAliases(tenantId);
   const { data: jobsRes } = useImapSyncJobs(tenantId);
-  const mailboxes = mailboxesRes?.data ?? [];
+  // The tenant's own addresses, as the mailbox limit counts them: the
+  // platform's postmaster@ intake (and its abuse@/dmarc@ aliases) is left out.
+  const { tenant: mailboxes, platform } = splitPlatformMailboxes(mailboxesRes?.data ?? []);
   const aliasCount = mailboxes.reduce((n, m) => n + (m.aliases?.length ?? 0), 0);
   const forwardCount = mailboxes.filter((m) => (m.forwardingAddresses?.length ?? 0) > 0).length;
   const jobs = jobsRes?.data ?? [];
@@ -538,7 +541,7 @@ function EmailSummaryCard({ tenantId, outboundSuspended }: { readonly tenantId: 
         <KV rows={[
           ['Outbound', outboundSuspended ? <Chip key="o" tone="bad" dot>Suspended</Chip> : <Chip key="o" tone="ok" dot>Sending</Chip>],
           ['Domains', String(domainsRes?.data.length ?? 0)],
-          ['Addresses', `${mailboxes.length} mailboxes · ${aliasCount} aliases · ${forwardCount} forwarding · ${aliasesRes?.data.length ?? 0} lists`],
+          ['Addresses', `${mailboxes.length} mailboxes${platformNote(platform.length)} · ${aliasCount} aliases · ${forwardCount} forwarding · ${aliasesRes?.data.length ?? 0} lists`],
           ['Migrations', jobs.length === 0 ? 'None' : `${jobs.length} · ${running} running · ${failed} failed`],
         ]}
         />

@@ -12,6 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **The admin tenant page counted the platform's own mailboxes as the tenant's.** Each mail domain
+  has a postmaster@ mailbox that the platform creates and runs. It carries abuse@ and dmarc@ as
+  aliases, and some older domains also have their own dmarc@ mailbox. The mailbox limit has never
+  counted these, but the tenant page did. A tenant at its limit of 5 read "6 of 5 Mailboxes (120%)"
+  on the Limits tab, and the Overview and Email tabs overstated its mailboxes and aliases.
+
+  The Limits, Overview and Email tabs now count only the tenant's mailboxes, which is what the
+  limit counts, and say how many platform mailboxes they left out. The Email tab still lists
+  postmaster@, marked as a platform mailbox, with no tenant-panel *Manage* link, since the tenant
+  panel does not show it. The tenant's mailbox list in the API now says which mailboxes are the
+  platform's (`platformManaged`).
+
 ## [2026.11.12] - 2026-11-17
 
 ### Security
