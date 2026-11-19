@@ -98,7 +98,7 @@ describe('SLO_RULES — mail-server memory', () => {
   });
 
   it('divides by the limit of the same container instance, never by a zero limit', () => {
-    expect(rule.expr).toContain('/ on (id) (container_spec_memory_limit_bytes{namespace="mail",container="stalwart"} > 0)');
+    expect(rule.expr).toContain('/ on (id, pod) (container_spec_memory_limit_bytes{namespace="mail",container="stalwart"} > 0)');
   });
 });
 
@@ -144,6 +144,21 @@ describe('rules keep the labels that identify what is broken', () => {
         for (const label of rule.subjectLabels) {
           expect(grouped, `${rule.id}: ${fn} by (...) drops '${label}'`).toContain(label);
         }
+      }
+    },
+  );
+
+  // A one-to-one match keeps ONLY the labels in on (...), so a subject label
+  // missing there is gone before the outer `by (...)` can group on it, and the
+  // alert fires about `{}`. stalwart-memory-near-limit first matched `on (id)`
+  // and returned `{}` on DEV.
+  it.each(SLO_RULES.filter((r) => r.subjectLabels.length > 0 && /\bon\s*\(/.test(r.expr)).map((r) => [r.id, r] as const))(
+    '%s keeps its subject labels through every on (...) match',
+    (_id, rule) => {
+      expect(rule.expr).not.toMatch(/group_left|group_right/); // those keep labels differently; extend this check first
+      for (const [, labels] of rule.expr.matchAll(/\bon\s*\(([^)]*)\)/g)) {
+        const kept = labels.split(',').map((l) => l.trim());
+        for (const subject of rule.subjectLabels) expect(kept, `${rule.id}: on (${labels}) drops '${subject}'`).toContain(subject);
       }
     },
   );

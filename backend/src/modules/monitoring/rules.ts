@@ -598,15 +598,18 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
   // before it kills anything. Both series are kept for the Stalwart container
   // only (read-driven-relabel.yaml), so the rule is empty without mail.
   //
-  // `on (id)` pairs each container instance with its own limit: after a
+  // `on (id, pod)` pairs each container instance with its own limit: after a
   // restart the old instance's series linger until they go stale, and
-  // matching on the pod would then be many-to-many.
+  // matching on the pod alone would then be many-to-many. `pod` must be in
+  // the list too: a one-to-one match keeps only the labels it matches on, and
+  // without `pod` the `max by (pod)` would have nothing to group by and the
+  // alert could not name the pod (seen on DEV, where it returned `{}`).
   {
     id: STALWART_MEMORY_RULE_ID,
     name: 'Mail server memory near its limit',
     description: 'Stalwart\'s process memory has stayed above this share of its container memory limit. At the limit the kernel OOM-kills it, which drops every IMAP, POP3 and SMTP connection until it restarts. Its memory grows slowly over days, so this usually fires days ahead of a kill. Email → Settings shows the last 7 days. A restart at a quiet hour resets it; a higher limit in the Stalwart Deployment buys more time.',
     severity: 'warning',
-    expr: 'max by (pod) (container_memory_rss{namespace="mail",container="stalwart"} / on (id) (container_spec_memory_limit_bytes{namespace="mail",container="stalwart"} > 0)) > $T',
+    expr: 'max by (pod) (container_memory_rss{namespace="mail",container="stalwart"} / on (id, pod) (container_spec_memory_limit_bytes{namespace="mail",container="stalwart"} > 0)) > $T',
     subjectLabels: ['pod'],
     threshold: 0.85,
     forSeconds: 900,
