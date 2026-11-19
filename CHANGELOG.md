@@ -12,6 +12,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **The mail server's memory is now visible on Email → Settings.** A new card at the top shows
+  Stalwart's process memory against its limit and a graph of the last 7 days (the highest value in
+  each hour). It also shows the alert threshold and when Stalwart was last killed for running out of
+  memory. Disk cache is left out, because the kernel frees it before it kills anything.
+- **A warning alert before Stalwart runs out of memory.** The new rule *Mail server memory near its
+  limit* (`stalwart-memory-near-limit`) fires when Stalwart's process memory stays above 85 % of its
+  limit for 15 minutes. The threshold can be changed under Monitoring like any other rule. Stalwart's
+  memory grows slowly over days, so the alert usually comes days before a kill. The graph and the
+  alert need two new metrics, kept for the Stalwart container only. The metrics store starts keeping
+  them after its next daily restart, so the card reads "No samples yet" until then.
+
+### Changed
+
+- **Stalwart's memory limit is 3 GiB, up from 2 GiB.** In production, Stalwart reached the 2 GiB
+  limit after 10 days of uptime and was killed and restarted, which dropped every open mail
+  connection. Its memory grows over days, and the cause is not yet known. The higher limit gives
+  more time between restarts. The memory request is unchanged, so the pod schedules on the same
+  nodes as before.
+
 ### Fixed
 
 - **The admin tenant page counted the platform's own mailboxes as the tenant's.** Each mail domain

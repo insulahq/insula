@@ -183,6 +183,17 @@ per-message sha256 verification) established the facts this decision rests on.
   binary or drops perl fails there. Re-measure resident memory, arena count and
   `memory.events` after a release.
 
+- **The heap still grows over days.** With the launcher in place, production
+  Stalwart was OOM-killed at its 2Gi limit after 10 days of uptime: anon
+  1.80 GiB plus 158 MiB of socket buffers, no transparent huge pages, no
+  arena sprawl, and no job or traffic spike at the time. Earlier kills at the
+  1536Mi limit came 6-8 days apart. Which allocator grows (RocksDB's glibc heap
+  or Stalwart's own jemalloc caches) is not yet known. The limit is now 3Gi,
+  which buys time between restarts. The process memory is kept in vmsingle
+  (`container_memory_rss` and `container_spec_memory_limit_bytes`, Stalwart
+  container only), shown with a 7-day graph on Email → Settings, and the
+  `stalwart-memory-near-limit` rule warns at 85 % of the limit.
+
 ## References
 
 - Evaluation + bench harnesses: session artifacts 2026-06-05

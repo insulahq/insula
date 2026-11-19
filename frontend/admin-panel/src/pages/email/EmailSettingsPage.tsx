@@ -4,6 +4,7 @@ import MailSectionCard from '@/components/MailSectionCard';
 import MailSettingsTab from '@/components/mail-settings/MailSettingsTab';
 import WebmailSettingsTab from '@/components/mail-settings/WebmailSettingsTab';
 import MailboxBackupEngineSection from '@/components/mail-settings/MailboxBackupEngineSection';
+import MailServerMemoryCard from '@/components/mail-settings/MailServerMemoryCard';
 import StalwartAdminPanel from '@/components/StalwartAdminPanel';
 import { useTabParam } from '@/hooks/use-tab-param';
 import type { TabOf } from '@/routes/tabbed-pages';
@@ -18,6 +19,8 @@ type SettingsTab = TabOf<'/email/settings'>;
  * backup engine selector — plus a separate collapsible card embedding
  * the upstream Stalwart web-admin UI for everything the platform
  * doesn't surface natively (advanced filters, log inspection, etc).
+ * The mail server's memory sits on top: how close Stalwart runs to the
+ * limit it is OOM-killed at, and its last 7 days.
  */
 
 export default function EmailSettingsPage() {
@@ -25,7 +28,9 @@ export default function EmailSettingsPage() {
 
   return (
     <div className="space-y-6">
-      <EmailPageHeader subtitle="Mail-server hostname, webmail engine, mailbox-backup engine, Stalwart admin." />
+      <EmailPageHeader subtitle="Mail-server memory and hostname, webmail engine, mailbox-backup engine, Stalwart admin." />
+
+      <MailServerMemoryCard />
 
       <MailSectionCard
         icon={Settings}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SLO_RULES, EXCLUDED_SERVICES, ruleById, renderExpr, describeSubject, subjectKey } from './rules.js';
+import { SLO_RULES, EXCLUDED_SERVICES, STALWART_MEMORY_RULE_ID, ruleById, renderExpr, describeSubject, subjectKey } from './rules.js';
 
 describe('SLO_RULES — mail monitoring additions', () => {
   const MAIL_RULES = [
@@ -76,6 +76,29 @@ describe('SLO_RULES — mail monitoring additions', () => {
   it('keeps unique rule ids across the whole pack', () => {
     const ids = SLO_RULES.map((r) => r.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe('SLO_RULES — mail-server memory', () => {
+  const rule = ruleById(STALWART_MEMORY_RULE_ID)!;
+
+  it('warns at 85 % of the limit, sustained for 15 minutes, and names the pod', () => {
+    expect(rule).toBeDefined();
+    expect(rule.severity).toBe('warning');
+    expect(rule.threshold).toBe(0.85);
+    expect(rule.forSeconds).toBe(900);
+    expect(rule.unit).toBe('ratio');
+    expect(rule.subjectLabels).toEqual(['pod']);
+    expect(renderExpr(rule, undefined)).toMatch(/> 0\.85$/);
+  });
+
+  it('measures process memory (rss), not the working set that holds RocksDB\'s page cache', () => {
+    expect(rule.expr).toContain('container_memory_rss{namespace="mail",container="stalwart"}');
+    expect(rule.expr).not.toContain('working_set');
+  });
+
+  it('divides by the limit of the same container instance, never by a zero limit', () => {
+    expect(rule.expr).toContain('/ on (id) (container_spec_memory_limit_bytes{namespace="mail",container="stalwart"} > 0)');
   });
 });
 

@@ -801,7 +801,16 @@ spec:
               # for it on top of the heap. This is a ceiling, not a
               # reservation: the request stays small, so small nodes still
               # schedule the pod.
-              memory: 2Gi
+              #
+              # Raised 2Gi -> 3Gi after a production OOM kill at 2Gi: anon
+              # 1.80 GiB plus 158 MiB of socket buffers, after 10 days of
+              # uptime, with transparent huge pages already off and the
+              # glibc arenas capped (the stalwart-binary launcher). The heap
+              # grows slowly over days, so this buys time between restarts
+              # rather than fixing the growth. The `stalwart-memory-near-limit`
+              # alert and the memory card on Email → Settings show how close
+              # it runs.
+              memory: 3Gi
           startupProbe:
             # exec probe: Stalwart 0.16 management API restricts remote
             # connections by default. httpGet from the kubelet comes from
