@@ -102,8 +102,8 @@ components:
     name: Traefik (ingress / TLS termination / WAF plugin host)
     tier: "0"
     kind: chart
-    pinned: "42.3.1"
-    app_version: "v3.7.17"
+    pinned: "42.4.0"
+    app_version: "v3.7.18"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: traefik/traefik-helm-chart, advisories: traefik/traefik }
@@ -453,13 +453,13 @@ components:
     watch: { type: first_party }
     scan: trivy
     owner: platform
-    notes: First-party (alpine + frp 0.62.1, SHA-verified). Bridges private worker nodes across a trust boundary.
+    notes: First-party (alpine + frp 0.72.0, SHA-verified). Bridges private worker nodes across a trust boundary.
 
   - id: frp
     name: frp / frps (reverse-tunnel server + client binary)
     tier: "1"
     kind: image
-    pinned: "v0.71.1"
+    pinned: "v0.72.0"
     pin_source: k8s/base/platform-config.yaml
     pin_check: true
     repos: [fatedier/frps]
@@ -638,7 +638,7 @@ components:
     name: Rancher system-upgrade-controller (k3s upgrade Plans)
     tier: "1"
     kind: image
-    pinned: "v0.20.2"
+    pinned: "v0.21.0"
     pin_source: k8s/base/system-upgrade-controller/controller.yaml
     pin_check: true
     repos: [rancher/system-upgrade-controller]
@@ -765,7 +765,7 @@ components:
     name: Stakater Reloader (rollout on ConfigMap/Secret change)
     tier: "2"
     kind: image
-    pinned: "v1.4.23"
+    pinned: "v1.4.24"
     pin_source: k8s/base/reloader/reloader.yaml
     pin_check: true
     repos: [stakater/reloader]

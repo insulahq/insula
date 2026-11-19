@@ -83,6 +83,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   the manifests differs from the panels'. Dependabot bumps only the panels' Dockerfiles; the
   check's `--write` mode carries the bump to the pods. None of these pods serves HTTP/2, HTTP/3 or
   TLS, or uses `alias`, so the nginx flaws fixed in 1.31.9 did not reach them.
+- **Traefik 3.7.18 (chart 42.4.0), up from 3.7.17 (chart 42.3.1).** It fixes GHSA-cp28-5662-543f.
+  Traefik routed a path such as `/public/..;x/admin` before resolving it. Such a request therefore
+  missed a protected directory's sign-in. A backend that drops path parameters (Java servlet
+  containers, Spring) then resolved it to `/admin` and served the protected page. Traefik now
+  resolves these paths before routing. PHP, Node and static sites do not drop path parameters, so
+  only Java backends behind a protected directory were exposed. The release also fixes a ForwardAuth
+  NTLM flaw, a zstd decompression flaw and a BasicAuth MD5 cost flaw. None of those three reaches
+  this platform: the auth servers do not use NTLM, compression is gzip only, and passwords are
+  bcrypt. Its plugin interpreter moves to Yaegi 0.16.3, and both plugins (CrowdSec and ModSecurity)
+  load under it. Fresh installs get the new chart from `bootstrap.sh`. Existing clusters get it
+  from host migration `2026.11.13/0001`, which rolls Traefik one server at a time. It rolls back if
+  a pod fails to load its plugins. A stopping Traefik pod now keeps accepting requests for 5 seconds
+  after it is told to stop, the chart's new default, so each server's roll takes about 5 seconds
+  longer.
+- **system-upgrade-controller 0.21.0, Reloader 1.4.24 and frp 0.72.0.** These are dependency
+  security updates (golang.org/x/net, cel-go, OpenTelemetry) with no behaviour change here. Trivy's
+  fixable HIGH findings drop from 7 to 1 for system-upgrade-controller, from 2 to 0 for Reloader,
+  and from 9 to 2 for the tunnel server (frps). frp 0.72.0 also fixes a CPU busy loop after a
+  tunnel session closes, and a close that could hang on a stalled WebSocket write. The tunnel
+  server and the private-worker agent both move to it. An agent still on 0.71.1 keeps connecting:
+  the wire protocol is unchanged, and this was checked both ways. Each tenant's tunnel server
+  restarts once when the release rolls out, and agents reconnect on their own. The upgrade Plan
+  CRD is re-vendored from 0.21.0; only two descriptions changed.
 
 ## [2026.11.12] - 2026-11-17
 

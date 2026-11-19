@@ -1,5 +1,5 @@
-# VENDORED from rancher/system-upgrade-controller v0.20.2 — system-upgrade-controller.yaml
-# https://github.com/rancher/system-upgrade-controller/releases/download/v0.20.2/system-upgrade-controller.yaml
+# VENDORED from rancher/system-upgrade-controller v0.21.0 — system-upgrade-controller.yaml
+# https://github.com/rancher/system-upgrade-controller/releases/download/v0.21.0/system-upgrade-controller.yaml
 # Controller is INERT until a Plan CR exists; Plan creation is gated by
 # `platform-ops cluster upgrade` (never committed declaratively). The controller
 # itself runs non-root/drops-ALL-caps; only the per-node upgrade Jobs it spawns
@@ -278,7 +278,7 @@ spec:
         envFrom:
         - configMapRef:
             name: default-controller-env
-        image: rancher/system-upgrade-controller:v0.20.2
+        image: rancher/system-upgrade-controller:v0.21.0
         imagePullPolicy: IfNotPresent
         name: system-upgrade-controller
         securityContext:

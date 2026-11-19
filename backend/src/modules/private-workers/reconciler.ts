@@ -73,14 +73,14 @@ const DEFAULT_TUNNEL_ISSUER = 'letsencrypt-prod-http01';
 const FRPS_BIND_PORT = 7000;
 /**
  * The one path frpc dials over WebSocket: `FrpWebsocketPath` in frp's
- * pkg/util/net/websocket.go, fixed (not configurable) through v0.71.1.
+ * pkg/util/net/websocket.go, fixed (not configurable) through v0.72.0.
  */
 export const FRP_WEBSOCKET_PATH = '/~!frp';
 /** frps's status API — reached by the platform's connection poller only (connection-poller.ts). */
 export const FRPS_WEB_API_PORT = 7500;
 export const FRPS_WEB_API_USER = 'platform';
 const FRPS_CONFIG_HASH_ANNOTATION = 'insula.host/frps-config-sha256';
-const FRPS_IMAGE = process.env.PRIVATE_WORKER_FRPS_IMAGE ?? 'fatedier/frps:v0.71.1';
+const FRPS_IMAGE = process.env.PRIVATE_WORKER_FRPS_IMAGE ?? 'fatedier/frps:v0.72.0';
 
 // ─── Public surface ─────────────────────────────────────────────────────────
 
@@ -831,7 +831,7 @@ async function upsertTunnelIngress(
 ): Promise<void> {
   const name = `tunnel-${slug}`;
   const platformDomain = resolvePlatformDomain();
-  // Per-worker subdomain `<slug>.tunnels.${DOMAIN}`. frp v0.62 hardcodes
+  // Per-worker subdomain `<slug>.tunnels.${DOMAIN}`. frp (through v0.72.0) hardcodes
   // its WSS path to `/~!frp` so we cannot route by URL path — every
   // worker needs a distinct hostname. cert-manager issues a per-FQDN
   // certificate referenced by the IngressRoute's tls.secretName.
