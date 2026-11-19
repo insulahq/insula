@@ -170,7 +170,6 @@ export async function updateAdvancedSettings(
 
   const updateValues: Record<string, unknown> = {};
   if (input.custom_error_codes !== undefined) updateValues.customErrorCodes = input.custom_error_codes;
-  if (input.custom_error_path !== undefined) updateValues.customErrorPath = input.custom_error_path;
   if (input.additional_headers !== undefined) updateValues.additionalHeaders = input.additional_headers;
 
   // ── HSTS ──

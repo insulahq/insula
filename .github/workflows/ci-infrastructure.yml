@@ -78,6 +78,9 @@ on:
       # (test file alone) never re-ran the guard at all.
       - 'frontend/*/src/__tests__/**'
       - 'frontend/*/src/components/backups/**'
+      # ci-nginx-image-sync.sh takes the panels' nginx from their Dockerfiles. A
+      # Dependabot base-image PR touches only those, and must still run it.
+      - 'frontend/*/Dockerfile'
       - '.github/workflows/ci-infrastructure.yml'
   pull_request:
     branches: [development, main]
@@ -156,6 +159,9 @@ on:
       # (test file alone) never re-ran the guard at all.
       - 'frontend/*/src/__tests__/**'
       - 'frontend/*/src/components/backups/**'
+      # ci-nginx-image-sync.sh takes the panels' nginx from their Dockerfiles. A
+      # Dependabot base-image PR touches only those, and must still run it.
+      - 'frontend/*/Dockerfile'
       - '.github/workflows/ci-infrastructure.yml'
 
 # Least privilege (2026-07-28 security review): these workflows only read the
@@ -424,6 +430,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Verify no hostPath mounts /etc/insula, /var/lib/insula or their aliases
         run: ./scripts/ci-no-platform-root-hostpath.sh
+
+  nginx-image-sync:
+    name: nginx pods run the panels' nginx image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Every k8s nginx image is the panels' digest-pinned nginx
+        run: ./scripts/ci-nginx-image-sync.sh
+      - name: The guard catches drift and --write repairs it
+        run: ./scripts/test-ci-nginx-image-sync.sh
+
+  tenant-errors-pages:
+    name: Route error pages answer each code with its page
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: The error-page service in its own nginx image
+        run: ./scripts/test-tenant-errors-pages.sh
 
   mail-image-pin-check:
     name: Mail image pins agree (Stalwart + stalwart-cli)

@@ -42,14 +42,14 @@ check("imageName of another kind is ignored",
 cm = {"kind": "ConfigMap", "data": {
     "SYSTEM_UPGRADE_JOB_KUBECTL_IMAGE": "rancher/kubectl:v1.36.2",
     "SYSTEM_UPGRADE_JOB_KUBECTL_IMAGE_WINDOWS": "",
-    "private-worker-frps-image": "fatedier/frps:v0.71.1",
+    "private-worker-frps-image": "fatedier/frps:v0.72.0",
     "file-manager-image": "ghcr.io/insulahq/insula/file-manager:latest",
     "bare-image": "file-manager:latest",
     "templated-image": "${REGISTRY}/x:1",
     "SOME_SETTING": "rancher/kubectl:v1.36.2",
     "untagged-image": "nginx"}}
 check("ConfigMap *_IMAGE / -image values, upstream and tagged only",
-      sorted(cfg.images_in_doc(cm)) == ["fatedier/frps:v0.71.1", "rancher/kubectl:v1.36.2"])
+      sorted(cfg.images_in_doc(cm)) == ["fatedier/frps:v0.72.0", "rancher/kubectl:v1.36.2"])
 b64 = base64.b64encode(b"ghcr.io/cloudnative-pg/plugin-barman-cloud-sidecar:v0.15.1").decode()
 secret = {"kind": "Secret", "data": {"SIDECAR_IMAGE": b64[:30] + "\n" + b64[30:], "PASSWORD": b64},
           "stringData": {"OTHER_IMAGE": "busybox:1.37"}}

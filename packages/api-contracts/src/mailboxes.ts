@@ -93,6 +93,13 @@ export const mailboxResponseSchema = z.object({
   // them without a second fetch; optional so create/update responses and
   // older fixtures stay valid.
   aliases: z.array(z.string()).optional(),
+  // The platform's own report-intake mailbox on the tenant's domain
+  // (postmaster@, with abuse@ and dmarc@ as its aliases; a legacy dmarc@
+  // mailbox on older domains). The platform creates and runs it, and it does
+  // not count against the tenant's mailbox limit. Only operator lists return
+  // such rows; tenant lists leave them out. Optional so older fixtures stay
+  // valid.
+  platformManaged: z.boolean().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

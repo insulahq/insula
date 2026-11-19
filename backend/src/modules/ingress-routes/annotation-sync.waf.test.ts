@@ -14,7 +14,6 @@ const baseRoute: RouteSettingsLike = {
   wafAnomalyThreshold: 10,
   wafExcludedRules: null,
   customErrorCodes: null,
-  customErrorPath: null,
 };
 
 describe('buildMiddlewaresForRoute — WAF (ModSecurity-CRS shared sidecar)', () => {
@@ -152,9 +151,9 @@ describe('buildMiddlewaresForRoute — concurrent-connection cap (rateLimitConne
 });
 
 describe('buildMiddlewaresForRoute — custom error pages (customErrorCodes)', () => {
-  it('emits an errors Middleware pointing at the platform-system tenant-errors Service', () => {
+  it('emits an errors Middleware asking the platform-system tenant-errors Service for /{status}.html', () => {
     const { middlewares, referenceList } = buildMiddlewaresForRoute(
-      { ...baseRoute, customErrorCodes: '404,503', customErrorPath: '/errors/{status}.html' },
+      { ...baseRoute, customErrorCodes: '404,503' },
       'route-12345678',
       'tenant-ns',
     );
@@ -171,38 +170,33 @@ describe('buildMiddlewaresForRoute — custom error pages (customErrorCodes)', (
       port: 80,
       namespace: 'platform-system',
     });
-    expect(spec.errors.query).toBe('/errors/{status}.html');
+    // The service names its pages by code (k8s/base/tenant-errors/content/default.conf).
+    expect(spec.errors.query).toBe('/{status}.html');
     expect(referenceList).toContainEqual({ name: 'r-route-12-errors', namespace: 'tenant-ns' });
   });
 
-  it('does NOT emit the errors Middleware when customErrorPath is unset (avoids 500 from unresolvable backend)', () => {
+  it('drops stored entries the API would refuse today (defence against admission rejection)', () => {
     const { middlewares } = buildMiddlewaresForRoute(
-      { ...baseRoute, customErrorCodes: '500-599', customErrorPath: null },
-      'route-12345678',
-      'tenant-ns',
-    );
-    expect(middlewares.find((m) => m.metadata.name === 'r-route-12-errors')).toBeUndefined();
-  });
-
-  it('drops malformed status codes from customErrorCodes (defence against injection + admission rejection)', () => {
-    const { middlewares } = buildMiddlewaresForRoute(
-      {
-        ...baseRoute,
-        customErrorCodes: '404, not-a-code, 503-200, 500-599, 503',
-        customErrorPath: '/errors/{status}.html',
-      },
+      { ...baseRoute, customErrorCodes: '404, not-a-code, 503-200, 500-599, 200, 301-404, 503' },
       'route-12345678',
       'tenant-ns',
     );
     const mw = middlewares.find((m) => m.metadata.name === 'r-route-12-errors');
     expect(mw).toBeDefined();
     const spec = mw!.spec as { errors: { status: string[] } };
-    // "not-a-code" rejected by the regex.
-    // "503-200" rejected because low > high (would crash Traefik
-    //   admission webhook and take the whole IngressRoute down).
-    // "500-599" kept (valid range).
-    // "404" + "503" kept (single codes).
+    // "not-a-code" is not a code; "503-200" runs backwards and Traefik's
+    // admission would refuse it, taking the whole IngressRoute down; "200"
+    // and "301-404" would replace the site's own pages and redirects.
     expect(spec.errors.status).toEqual(['404', '500-599', '503']);
+  });
+
+  it('emits NO errors Middleware when no stored entry is usable', () => {
+    const { middlewares } = buildMiddlewaresForRoute(
+      { ...baseRoute, customErrorCodes: '200, oops' },
+      'route-12345678',
+      'tenant-ns',
+    );
+    expect(middlewares.find((m) => m.metadata.name.endsWith('-errors'))).toBeUndefined();
   });
 
   it('emits NO errors Middleware when customErrorCodes is null', () => {

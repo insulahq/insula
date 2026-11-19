@@ -166,6 +166,10 @@ updates:
   # Dependabot's docker ecosystem understands `image:tag@sha256:…` and bumps BOTH
   # halves, so this is the half of the control that keeps the pins fresh. Without
   # it the pinning above would be a slow-motion regression rather than a fix.
+  #
+  # The panels' nginx is also the image of the platform's nginx pods in k8s/,
+  # which this updater does not edit. Its panel bump fails Infrastructure CI
+  # until scripts/ci-nginx-image-sync.sh --write has carried it there.
   - package-ecosystem: docker
     directories:
       - "/backend"

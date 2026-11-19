@@ -89,8 +89,14 @@ data:
           # observed live on DEV: kernel OOM kills produced NO SystemOOM
           # event). id="/" = global kernel OOMs; per-namespace series feed
           # the system-container-oom SLO rule. One series per container.
+          # container_memory_rss / container_spec_memory_limit_bytes: the
+          # mail server's process memory against its limit (Email → Settings
+          # card + stalwart-memory-near-limit rule). Working set is the wrong
+          # signal there: RocksDB's page cache sits in it and keeps it near
+          # the limit even when the heap is small. read-driven-relabel.yaml
+          # keeps these for the Stalwart container only.
           - source_labels: [__name__]
-            regex: 'container_(memory_working_set_bytes|cpu_usage_seconds_total|network_(transmit|receive)_bytes_total|oom_events_total)|machine_memory_bytes|machine_cpu_cores'
+            regex: 'container_(memory_working_set_bytes|memory_rss|spec_memory_limit_bytes|cpu_usage_seconds_total|network_(transmit|receive)_bytes_total|oom_events_total)|machine_memory_bytes|machine_cpu_cores'
             action: keep
           # Drop the CNI plumbing. cAdvisor attributes every host interface to
           # the root cgroup (and to any hostNetwork pod), so one Calico veth per

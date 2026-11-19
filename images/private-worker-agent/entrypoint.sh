@@ -23,7 +23,7 @@
 # host.docker.internal:<remote_port> (works on Docker Desktop; on Linux
 # Docker, set the env explicitly).
 #
-# frp v0.62.x has no client-side WebSocket-path config — the client always
+# frp (through v0.72.0) has no client-side WebSocket-path config — the client always
 # dials /~!frp. The cluster-side NGINX rewrites /c/{slug}/ -> /~!frp; the
 # slug from the token blob is therefore informational here (logged for
 # operator clarity, not used in the rendered toml).

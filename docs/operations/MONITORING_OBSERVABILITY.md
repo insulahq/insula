@@ -73,7 +73,16 @@ scrape config. Relabel `replacement` fields must use `$1`, never `${1}`
   `docs/roadmap/SLI_SLO_DEFINITION.md`: availability burn rates,
   platform-surface latency, cert expiry (<14d), Longhorn headroom (80/90%), node memory
   (90/95%), CNPG up + replication lag, Flux reconcile errors,
-  scrape-target down, ACME order failures.
+  scrape-target down, ACME order failures, mail-server memory near its
+  limit (85%).
+- **Mail-server memory** (`stalwart-memory-near-limit`) reads Stalwart's
+  process memory, `container_memory_rss`, against
+  `container_spec_memory_limit_bytes`. The read-driven relabel keeps these
+  two families for the Stalwart container only. It does not read the working
+  set, because RocksDB's page cache is charged to the same container and keeps
+  the working set near the limit even when the heap is small. The same series
+  drive the memory card on Email → Settings
+  (`backend/src/modules/mail-admin/stalwart-memory.ts`).
 - A 60s evaluator (HA-deduped across the 3 platform-api replicas via a
   single-row DB lease claim) queries vmsingle; alert-state transitions
   persist to `alert_state` and notify admins through the standard

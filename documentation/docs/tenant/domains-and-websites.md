@@ -185,7 +185,13 @@ Click any route to open its detail page, which has these tabs:
   client certificates (mTLS) and
   [password-protected folders](protected-directories.md).
 - **Advanced** — custom error pages, extra response headers, and
-  [HSTS](#hsts-https-only-enforcement).
+  [HSTS](#hsts-https-only-enforcement). **Custom Error Pages** takes status
+  codes and ranges between 400 and 599, separated by commas (`404, 500-599`).
+  When your site answers with one of them, visitors see a page naming the
+  error (*404 Page not found*, *503 Service unavailable*, …) instead of your
+  site's own response, with the same status code. A request the WAF blocks, a
+  rate limit or the IP Allowlist refuses keeps its own answer. Leave the field
+  empty to show your site's own error pages.
 
 ### Require a sign-in (OIDC)
 

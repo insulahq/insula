@@ -7,6 +7,7 @@ import {
 import clsx from 'clsx';
 import {
   buildPathRegexFromEventUri,
+  errorStatusCodesProblem,
   isWafExclusionPathRequired,
   isWafExclusionScopeValidForRule,
   suggestWafExclusionScope,
@@ -1749,7 +1750,6 @@ function AdvancedTab({ tenantId, routeId, route }: {
 
   /* ── Custom Error Pages state ── */
   const [customErrorCodes, setCustomErrorCodes] = useState(route.customErrorCodes ?? '');
-  const [customErrorPath, setCustomErrorPath] = useState(route.customErrorPath ?? '');
   const [errorDirty, setErrorDirty] = useState(false);
   const [errorSaving, setErrorSaving] = useState(false);
   const [errorSaveError, setErrorSaveError] = useState<string | null>(null);
@@ -1816,15 +1816,17 @@ function AdvancedTab({ tenantId, routeId, route }: {
   };
 
   const headerError = validateHeaders();
+  // An empty field turns the pages off; anything else must be a valid list.
+  const errorCodesError = customErrorCodes.trim() ? errorStatusCodesProblem(customErrorCodes) : null;
 
   const handleSaveErrors = async (e: FormEvent) => {
     e.preventDefault();
+    if (errorCodesError) return;
     setErrorSaveError(null);
     setErrorSaving(true);
     try {
       await updateAdvanced.mutateAsync({
-        custom_error_codes: customErrorCodes || null,
-        custom_error_path: customErrorPath || null,
+        custom_error_codes: customErrorCodes.trim() || null,
       });
       setErrorDirty(false);
     } catch (err) {
@@ -1901,45 +1903,34 @@ function AdvancedTab({ tenantId, routeId, route }: {
           className="border-t border-gray-200 dark:border-gray-700 p-5 space-y-3"
           data-testid="error-pages-form"
         >
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
-            <label htmlFor="error-codes" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Error Codes
-            </label>
-            <input
-              id="error-codes"
-              type="text"
-              className={INPUT_CLASS + ' mt-1'}
-              placeholder="404, 500, 503"
-              value={customErrorCodes}
-              onChange={(e) => { setCustomErrorCodes(e.target.value); markErrorDirty(); }}
-              data-testid="error-codes-input"
-            />
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Comma-separated HTTP status codes to intercept. When these errors occur, NGINX serves the custom error page instead of the default.
-            </p>
-          </div>
-          <div>
-            <label htmlFor="error-pages-path" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-              Error Pages Path
-            </label>
-            <input
-              id="error-pages-path"
-              type="text"
-              className={INPUT_CLASS + ' mt-1'}
-              placeholder=".platform/errors/"
-              value={customErrorPath}
-              onChange={(e) => { setCustomErrorPath(e.target.value); markErrorDirty(); }}
-              data-testid="error-pages-path-input"
-            />
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Path within your file storage where custom error pages are stored. Create files like 404.html, 500.html in this directory.
-            </p>
-          </div>
+        <div>
+          <label htmlFor="error-codes" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            Error Codes
+          </label>
+          <input
+            id="error-codes"
+            type="text"
+            className={INPUT_CLASS + ' mt-1 sm:max-w-md'}
+            placeholder="404, 500-599"
+            value={customErrorCodes}
+            onChange={(e) => { setCustomErrorCodes(e.target.value); markErrorDirty(); }}
+            aria-invalid={errorCodesError ? true : undefined}
+            aria-describedby="error-codes-help"
+            data-testid="error-codes-input"
+          />
+          <p id="error-codes-help" className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Status codes and ranges between 400 and 599, separated by commas. When your site answers with one of
+            them, visitors see a page naming the error instead of your site&apos;s own response, with the same
+            status code. Leave empty to show your site&apos;s responses.
+          </p>
         </div>
-        <p className="text-xs text-gray-500 dark:text-gray-400">
-          Must be in your file storage. Pages are looked up as &lt;path&gt;/&lt;code&gt;.html.
-        </p>
+
+        {errorCodesError && (
+          <div className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400" data-testid="error-codes-validation-error">
+            <AlertCircle size={12} />
+            {errorCodesError}
+          </div>
+        )}
 
         {errorSaveError && (
           <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="error-pages-save-error">
@@ -1951,7 +1942,7 @@ function AdvancedTab({ tenantId, routeId, route }: {
         <div className="flex justify-end">
           <button
             type="submit"
-            disabled={!errorDirty || errorSaving}
+            disabled={!errorDirty || !!errorCodesError || errorSaving}
             className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
             data-testid="save-error-pages"
           >

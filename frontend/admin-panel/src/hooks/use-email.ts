@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { CreateImapSyncJobRequest, CreateLoginPasswordRequest, CreateLoginPasswordResult, LoginPassword } from '@insula/api-contracts';
+import type { CreateImapSyncJobRequest, CreateLoginPasswordRequest, CreateLoginPasswordResult, LoginPassword, MailboxResponse as MailboxContract } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 // ─── Email Domains ───
@@ -103,6 +103,8 @@ interface Mailbox {
   readonly forwardingAddresses?: readonly string[] | null;
   /** Enabled per-mailbox alias addresses (filled on list responses). */
   readonly aliases?: readonly string[];
+  /** The platform's intake mailbox (postmaster@ and the like), not counted against the limit. */
+  readonly platformManaged?: MailboxContract['platformManaged'];
   readonly autoReply: number;
   readonly autoReplySubject: string | null;
   readonly createdAt: string;

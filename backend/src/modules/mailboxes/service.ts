@@ -126,6 +126,9 @@ const mailboxColumns = {
   autoReplySubject: mailboxes.autoReplySubject,
   autoReplyBody: mailboxes.autoReplyBody,
   stalwartPrincipalId: mailboxes.stalwartPrincipalId,
+  // Lets an operator list tell the platform's intake mailbox apart from the
+  // tenant's own, which the mailbox limit counts (see limit.ts).
+  platformManaged: mailboxes.platformManaged,
   createdAt: mailboxes.createdAt,
   updatedAt: mailboxes.updatedAt,
 } as const;

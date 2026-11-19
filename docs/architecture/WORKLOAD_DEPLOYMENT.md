@@ -45,7 +45,7 @@ The catalog is a curated set of pre-built, tested runtime images. Each entry def
 | `dotnet-8` | mcr.microsoft.com/dotnet/aspnet:8.0 | Kestrel | .NET 8 | All | Active |
 | `bun-latest` | oven/bun:latest | (none) | Bun | All | Active |
 | `rust-stable` | rust:1.85-slim | (none) | Rust stable | All | Active |
-| `nginx` | nginx (Minimus hardened) | Nginx | Static only | All | Active |
+| `nginx` | nginx (official image, non-root) | Nginx | Static only | All | Active |
 | `apache` | httpd:2.4-alpine | Apache | Static only | All | Active |
 
 > The version field in the manifest (`version`, `supportedVersions`) drives which language version actually runs. WordPress is no longer a runtime — it is now an Application catalog entry with its own bundled wp-cli/database/cron components (see `wordpress/manifest.json`).

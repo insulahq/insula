@@ -24,8 +24,8 @@ permissions:
 
 env:
   PLUGIN_DIR: k8s/base/traefik/plugins/modsecurity
-  # The interpreter Traefik v3.7.17 embeds (its go.mod). Bump with the chart.
-  YAEGI_VERSION: v0.16.1
+  # The interpreter Traefik v3.7.18 embeds (its go.mod). Bump with the chart.
+  YAEGI_VERSION: v0.16.3
 
 jobs:
   go:

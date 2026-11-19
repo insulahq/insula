@@ -180,6 +180,9 @@ const PLATFORM_SURFACES = `service=~"(platform|mail)-.*",service!~"${EXCLUDED_SE
 // clears every burn-rate threshold there is. The floor below is per 5-minute
 // window and deliberately low — high enough to skip a genuinely idle cluster,
 // low enough that a real outage during quiet hours still fires.
+/** Read by the mail-server memory card, which draws the rule's threshold. */
+export const STALWART_MEMORY_RULE_ID = 'stalwart-memory-near-limit';
+
 export const SLO_RULES: ReadonlyArray<SloRule> = [
   // ── Node memory / kernel OOM ─────────────
   // Sourced from cadvisor's container_oom_events_total (cgroup
@@ -584,6 +587,33 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     subjectLabels: [],
     threshold: 0,
     forSeconds: 300,
+  },
+  // Stalwart's process memory against its own container limit. Its heap grows
+  // over days (production OOM kills came 6-10 days apart, ADR-046), and a kill
+  // drops every mail connection until it restarts.
+  //
+  // Reads the cgroup's anonymous memory (rss), not the working set: RocksDB's
+  // page cache is charged to the same cgroup and holds the working set near
+  // the limit even when the heap is small, and the kernel reclaims page cache
+  // before it kills anything. Both series are kept for the Stalwart container
+  // only (read-driven-relabel.yaml), so the rule is empty without mail.
+  //
+  // `on (id, pod)` pairs each container instance with its own limit: after a
+  // restart the old instance's series linger until they go stale, and
+  // matching on the pod alone would then be many-to-many. `pod` must be in
+  // the list too: a one-to-one match keeps only the labels it matches on, and
+  // without `pod` the `max by (pod)` would have nothing to group by and the
+  // alert could not name the pod (seen on DEV, where it returned `{}`).
+  {
+    id: STALWART_MEMORY_RULE_ID,
+    name: 'Mail server memory near its limit',
+    description: 'Stalwart\'s process memory has stayed above this share of its container memory limit. At the limit the kernel OOM-kills it, which drops every IMAP, POP3 and SMTP connection until it restarts. Its memory grows slowly over days, so this usually fires days ahead of a kill. Email → Settings shows the last 7 days. A restart at a quiet hour resets it; a higher limit in the Stalwart Deployment buys more time.',
+    severity: 'warning',
+    expr: 'max by (pod) (container_memory_rss{namespace="mail",container="stalwart"} / on (id, pod) (container_spec_memory_limit_bytes{namespace="mail",container="stalwart"} > 0)) > $T',
+    subjectLabels: ['pod'],
+    threshold: 0.85,
+    forSeconds: 900,
+    unit: 'ratio',
   },
   {
     id: 'mail-queue-backlog',

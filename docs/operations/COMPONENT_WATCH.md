@@ -52,6 +52,12 @@ Why each part exists — what happened without it:
   on the digest of the day it was pinned. The guard (§5) now checks the config
   and that every Dockerfile directory is covered — GitHub reports such errors
   only in the repo's Insights tab.
+- **Two copies of one pin drift.** The nginx pods (error pages, Roundcube's nginx)
+  named a floating tag while Dependabot kept the panels' digest fresh; they fell a
+  minor line behind, and each server ran whichever build it had pulled. They now
+  run the panels' exact image, and `scripts/ci-nginx-image-sync.sh` fails CI while
+  any nginx under k8s/ differs. After a panel bump, its `--write` carries the new
+  reference over.
 - **An image is scanned when it is built.** One nobody rebuilds keeps its CVEs;
   the weekly scan covers what production pins, and Alpine/Debian final stages
   upgrade their packages at build time.

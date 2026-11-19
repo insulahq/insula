@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { frpsOnlinePorts } from './connection-poller.js';
 import { buildFrpsToml, frpsConfigHash, frpsWebApiPassword } from './reconciler.js';
 
-// Verbatim `GET /api/proxy/tcp` answers from frps v0.71.1 (the image the
+// Verbatim `GET /api/proxy/tcp` answers from frps v0.72.0 (the image the
 // reconciler deploys), captured with a real frpc: connected, then stopped.
+// The answers are the same with a v0.71.1 frpc. Unlike v0.71.1, a v0.72.0
+// frps keeps the clientID of a proxy that went offline.
 const ONLINE = {
   proxies: [{
     name: 'immich-test',
@@ -17,7 +19,7 @@ const ONLINE = {
 };
 const OFFLINE = {
   proxies: [{
-    name: 'immich-test', conf: null, clientID: '', todayTrafficIn: 0, todayTrafficOut: 0, curConns: 0,
+    name: 'immich-test', conf: null, clientID: '6805846f18c0b08e', todayTrafficIn: 0, todayTrafficOut: 0, curConns: 0,
     lastStartTime: '10-28 20:55:36', lastCloseTime: '10-28 20:56:12', status: 'offline',
   }],
 };

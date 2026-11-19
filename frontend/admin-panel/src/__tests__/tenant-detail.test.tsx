@@ -318,6 +318,47 @@ describe('TenantDetail — Email', () => {
 });
 
 /**
+ * The platform's postmaster@ intake on each mail domain is listed to operators
+ * but is not the tenant's: the mailbox limit does not count it. A tenant at its
+ * limit of 5 read "6 of 5 Mailboxes (120%)" on the Limits tab.
+ */
+describe('TenantDetail — the platform’s mailboxes', () => {
+  const POSTMASTER = {
+    id: 'pm1', emailDomainId: 'ed1', tenantId: 'tenant-001', localPart: 'postmaster', fullAddress: 'postmaster@acme.com',
+    displayName: null, quotaMb: 50, usedMb: 40, status: 'active', mailboxType: 'mailbox', platformManaged: true,
+    aliases: ['abuse@acme.com', 'dmarc@acme.com'], forwardingAddresses: null, autoReply: 0, autoReplySubject: null, createdAt: '2026-01-10T00:00:00Z',
+  };
+  const withPostmaster: Handler = (path) => (path.endsWith('/tenants/tenant-001/mailboxes')
+    ? Promise.resolve({ data: [...MOCK_MAILBOXES.data, POSTMASTER] })
+    : undefined);
+  beforeEach(() => { vi.resetAllMocks(); setupMockApi(MOCK_CLIENT.data, withPostmaster); });
+
+  it('leaves them out of the mailbox count on the Limits tab', async () => {
+    renderTenantDetail('/tenants/tenant-001/limits');
+    const row = await screen.findByTestId('limit-mailboxes');
+    await waitFor(() => expect(row).toHaveTextContent('1 in use · 1 platform mailbox not counted'));
+    expect(row).toHaveTextContent('20%');
+    // Its 40 MB is not the tenant's largest mailbox either.
+    expect(screen.getByTestId('limit-mailboxSize')).toHaveTextContent('largest 512 MB');
+  });
+
+  it('lists them on the Email tab, marked and without a tenant-panel link, outside the counts', async () => {
+    renderTenantDetail('/tenants/tenant-001/email');
+    const row = await screen.findByTestId('mailbox-pm1');
+    expect(row).toHaveTextContent('platform mailbox, not counted against the limit');
+    expect(screen.getByTestId('platform-mailbox-pm1')).toHaveTextContent('Run by the platform');
+    expect(screen.queryByTestId('tp-mailbox-pm1')).toBeNull();
+    expect(screen.getByTestId('tp-mailbox-m1')).toBeInTheDocument();
+    expect(screen.getByTestId('mailboxes-card')).toHaveTextContent('1 mailboxes · 1 platform mailbox not counted · 512 MB of 2.0 GB used · 1 aliases · 1 forwarding');
+  });
+
+  it('leaves them and their abuse@/dmarc@ aliases out of the Overview’s addresses', async () => {
+    renderTenantDetail('/tenants/tenant-001');
+    await waitFor(() => expect(screen.getByTestId('email-summary-card')).toHaveTextContent('1 mailboxes · 1 platform mailbox not counted · 1 aliases · 1 forwarding'));
+  });
+});
+
+/**
  * Plan & limits. A limit shown on the plan must show the PLAN's value, and the
  * PATCH must carry only what changed: null for "back on the plan" or an empty
  * Custom box, a number — including 0 — otherwise.

@@ -69,8 +69,24 @@ describe('cAdvisor keep list', () => {
 
   it('does not open the floodgates', () => {
     for (const m of ['container_network_receive_packets_total', 'container_tasks_state',
-      'container_spec_memory_limit_bytes', 'go_goroutines']) {
+      'container_memory_cache', 'container_spec_cpu_quota', 'go_goroutines']) {
       expect(keep.test(m), m).toBe(false);
+    }
+  });
+
+  it('keeps the mail server\'s memory pair only because the read-driven relabel narrows it to one container', () => {
+    // These two pass the scrape for every container in the cluster. What keeps
+    // them from becoming a per-container flood is the drop pair in
+    // read-driven-relabel.yaml, which leaves only the Stalwart container (plus
+    // the node-level root cgroup). Widening the scrape keep is only safe with
+    // that narrowing in place.
+    const relabel = readFileSync(fileURLToPath(
+      new URL('../../../../k8s/base/monitoring/read-driven-relabel.yaml', import.meta.url),
+    ), 'utf8');
+    for (const m of ['container_memory_rss', 'container_spec_memory_limit_bytes']) {
+      expect(keep.test(m), m).toBe(true);
+      expect(relabel, m).toContain(`'${m}{id!="/",namespace!="mail"}'`);
+      expect(relabel, m).toContain(`'${m}{id!="/",namespace="mail",container!="stalwart"}'`);
     }
   });
 });

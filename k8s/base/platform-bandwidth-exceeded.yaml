@@ -35,7 +35,8 @@ spec:
           effect: NoSchedule
       containers:
         - name: nginx
-          image: nginx:1.30-alpine
+          # The panels' nginx image; scripts/ci-nginx-image-sync.sh keeps the two equal.
+          image: nginx:1.31-alpine@sha256:0563c36f94a6d3ec3584161b77859f740f7e20b4853f52c796a864ce6908e8ea
           ports:
             - containerPort: 80
               name: http
