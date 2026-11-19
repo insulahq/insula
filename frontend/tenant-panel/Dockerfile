@@ -52,7 +52,10 @@ COPY frontend/tenant-panel/src/ frontend/tenant-panel/src/
 COPY frontend/tenant-panel/public/ frontend/tenant-panel/public/
 RUN cd frontend/tenant-panel && npx vite build
 
-FROM nginx:1.30-alpine@sha256:3bc3836dc0be3b811f238210360bf8e7ca8a2d0effdae46160bf1f3578710051
+# nginx mainline (odd minor), the line tenants' static sites also run on.
+# Stable gets only critical fixes; nginx recommends mainline unless third-party
+# modules are loaded, and the panels load none.
+FROM nginx:1.31-alpine@sha256:0563c36f94a6d3ec3584161b77859f740f7e20b4853f52c796a864ce6908e8ea
 # Package fixes published after the base image was built (an image is only
 # rebuilt when its sources change): take them at build time.
 RUN apk upgrade --no-cache

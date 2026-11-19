@@ -282,7 +282,7 @@ components:
     scan: trivy+osv
     deps: [frontend/admin-panel/package.json]
     owner: platform
-    notes: First-party. Internet-facing login; XSS/supply-chain → super_admin session theft = platform-wide. React 19 / Vite 8 / nginx:1.30-alpine runtime.
+    notes: First-party. Internet-facing login; XSS/supply-chain → super_admin session theft = platform-wide. React 19 / Vite 8 / nginx:1.31-alpine runtime.
 
   - id: tenant-panel
     name: tenant-panel (React 19 SPA + nginx)
@@ -801,7 +801,7 @@ components:
     watch: { type: github_releases, repo: nginx/nginx, advisories: nginx/nginx, tag_regex: '^release-(\d+\.\d+\.\d+)$' }
     scan: trivy
     owner: platform
-    notes: Static-page nginx for suspended tenants + custom error pages. Also k8s-manifests/generator.ts's image for a catalog entry that names none. (The panels build on nginx:1.30-alpine, see base-images.)
+    notes: Static-page nginx for suspended tenants + custom error pages. Also k8s-manifests/generator.ts's image for a catalog entry that names none. (The panels build on nginx:1.31-alpine, see base-images.)
 
   # postgres-client-backup removed 2026-08-26: the legacy pg_dump
   # CronJob was retired with the target-activate path (its shim-era
@@ -905,7 +905,7 @@ components:
       FROM bases for first-party images, digest-pinned and kept fresh by Dependabot's
       docker updater; each image's build fails on an untracked fixable CRITICAL, and
       Alpine/Debian final stages upgrade their packages at build time: node:22-alpine,
-      node:22-slim, nginx:1.30-alpine, golang:1.26-alpine, alpine:3.24,
+      node:22-slim, nginx:1.31-alpine, golang:1.26-alpine, alpine:3.24,
       rust:1.95-bookworm, debian:trixie-slim, gcr.io/distroless/static,
       gcr.io/distroless/cc-debian12, busybox:1.37.
 
@@ -942,11 +942,11 @@ components:
     name: catalog/static-nginx (tenant static site runtime)
     tier: "C"
     kind: image
-    pinned: "nginx:1.30-alpine"
-    pin_source: catalog-images/static-nginx/Dockerfile
-    pin_check: true
+    pinned: "nginx:1.31-alpine"
+    pin_source: "insulahq/application-catalog: static-nginx/Dockerfile"
+    pin_check: false
     repos: ["ghcr.io/insulahq/application-catalog/static-nginx"]
-    watch: { type: github_releases, repo: nginx/nginx, advisories: nginx/nginx, tag_regex: '^release-(\d+\.\d*[02468]\.\d+)$' }
+    watch: { type: github_releases, repo: nginx/nginx, advisories: nginx/nginx, tag_regex: '^release-(\d+\.\d+\.\d+)$' }
     scan: trivy
     owner: catalog
     notes: >-
@@ -955,8 +955,10 @@ components:
       official nginx:1.31-alpine image, published as static-nginx:1.31 (catalog version
       1.31.x, catalog #31; on the official image since #30, when Minimus's registry
       stopped serving anonymous pulls). Deployments still on catalog version 1.31.2 run
-      the frozen static-nginx:1.31.2 until upgraded. The catalog-images/ copy here is the
-      older nginx:1.30-alpine variant.
+      the frozen static-nginx:1.31.2 until upgraded. The watch follows every nginx
+      release, mainline included, so a new line (1.33) shows as behind; patch releases
+      within 1.31 arrive with the catalog's weekly rebuild. The catalog-images/ copy in
+      this repo is an older nginx:1.30-alpine variant that nothing builds.
 
   - id: catalog-nginx-php84
     name: catalog/nginx-php84 (PHP-FPM 8.4 runtime)
