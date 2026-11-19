@@ -25,8 +25,14 @@ IMAGE="$(sed -nE 's/^[[:space:]]*image:[[:space:]]*([^[:space:]]+).*/\1/p' "$DIR
 [ -n "$IMAGE" ] || { echo "FAIL: no image in $DIR/deployment.yaml"; exit 1; }
 
 TMP="$(mktemp -d)"
-NAMES=()
-cleanup() { for n in "${NAMES[@]}"; do docker rm -f "$n" >/dev/null 2>&1; done; rm -rf "$TMP"; }
+# start() runs in a command substitution, a subshell, so it cannot record its
+# containers for the trap: they share this run's prefix instead ($$ is this
+# shell's PID in a subshell too).
+PREFIX="tenant-errors-test-$$-"
+cleanup() {
+  docker ps -aq --filter "name=^${PREFIX}" | xargs -r docker rm -f >/dev/null 2>&1
+  rm -rf "$TMP"
+}
 trap cleanup EXIT
 
 fails=0; checks=0
@@ -35,8 +41,7 @@ bad()  { checks=$((checks + 1)); fails=$((fails + 1)); echo "FAIL $*"; }
 
 # start <name> [branded-404-file] — a container with the service's files in place.
 start() {
-  local n="tenant-errors-test-$$-$1"
-  NAMES+=("$n")
+  local n="${PREFIX}$1"
   docker create --name "$n" "$IMAGE" >/dev/null || return 1
   docker cp "$DIR/content/default.conf" "$n:/etc/nginx/conf.d/default.conf" >/dev/null || return 1
   docker cp "$DIR/content/error.html" "$n:/usr/share/nginx/html/error.html" >/dev/null || return 1
