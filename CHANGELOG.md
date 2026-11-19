@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.13-rc.1] - 2026-11-19
+
 ### Added
 
 - **The mail server's memory is now visible on Email → Settings.** A new card at the top shows
