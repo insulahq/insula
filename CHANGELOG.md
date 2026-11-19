@@ -31,7 +31,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   limit after 10 days of uptime and was killed and restarted, which dropped every open mail
   connection. Its memory grows over days, and the cause is not yet known. The higher limit gives
   more time between restarts. The memory request is unchanged, so the pod schedules on the same
-  nodes as before.
+  nodes as before. The upgrade restarts the mail server once to apply the new limit: for about 30
+  to 90 seconds no mail is received or sent. Sending servers retry and mail clients reconnect.
 
 ### Fixed
 
