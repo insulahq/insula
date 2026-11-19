@@ -496,6 +496,15 @@ describe('listMailboxes', () => {
     expect(result).toHaveLength(2);
     expect(result[0]).not.toHaveProperty('passwordHash');
   });
+
+  it('selects platformManaged, so an operator list can leave the platform intake out of its counts', async () => {
+    selectResults = [[]];
+    const db = createMockDb();
+
+    await listMailboxes(db as never, 'c1', undefined, { includePlatformManaged: true });
+    const columns = (db as unknown as { select: ReturnType<typeof vi.fn> }).select.mock.calls[0]![0] as Record<string, unknown>;
+    expect(columns).toHaveProperty('platformManaged');
+  });
 });
 
 describe('getMailbox', () => {

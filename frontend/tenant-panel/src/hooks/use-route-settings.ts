@@ -109,7 +109,6 @@ export function useUpdateRouteAdvanced(tenantId: string | undefined, routeId: st
   return useMutation({
     mutationFn: (input: {
       readonly custom_error_codes?: string | null;
-      readonly custom_error_path?: string | null;
       readonly additional_headers?: Record<string, string> | null;
       // HSTS. Sent as a group from the HSTS section; the backend still
       // validates the preload contract against the merged row so a partial

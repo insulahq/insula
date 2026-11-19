@@ -1,0 +1,27 @@
+-- Drop the route's custom error page path.
+--
+-- ingress_routes.custom_error_path was the tenant panel's "Error Pages Path":
+-- the panel asked for a folder in the tenant's file storage holding 404.html,
+-- 500.html and so on. Nothing could serve those files. The path went to
+-- Traefik as the errors middleware's query against the platform's shared
+-- tenant-errors service, which cannot read tenant storage, so every
+-- intercepted code got that service's one "Service unavailable" page. The
+-- service now answers /{status}.html with a page for that code, the
+-- middleware always asks for it, and custom_error_codes alone turns it on.
+-- No production route had set either column.
+--
+-- Dropped in the SAME release that stopped reading it, by operator decision
+-- (not the expand/contract split of 0046/0150). The cost, accepted: during the
+-- upgrade the previous release's API pods still serve until the rollout
+-- replaces them, and they SELECT the column by name on every route read, so
+-- their route pages, route writes and route reconciles fail with 42703
+-- "column does not exist" for that window (minutes). The IngressRoutes and
+-- Middlewares already in the cluster are left as they are meanwhile.
+--
+-- ingress_routes is not in the tenant bundle config dump, so no
+-- RETIRED_BUNDLE_COLUMNS entry is needed.
+--
+-- IF EXISTS makes the statement replay-safe under the non-transactional
+-- runner.
+ALTER TABLE "ingress_routes"
+  DROP COLUMN IF EXISTS "custom_error_path";

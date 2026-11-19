@@ -61,7 +61,12 @@ COPY frontend/admin-panel/src/ frontend/admin-panel/src/
 COPY frontend/admin-panel/public/ frontend/admin-panel/public/
 RUN cd frontend/admin-panel && npx vite build
 
-FROM nginx:1.30-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949
+# nginx mainline (odd minor), the line tenants' static sites also run on.
+# Stable gets only critical fixes; nginx recommends mainline unless third-party
+# modules are loaded, and the panels load none.
+# The platform's other nginx pods (error pages, Roundcube) run this exact image:
+# after a bump, scripts/ci-nginx-image-sync.sh --write carries it to k8s/.
+FROM nginx:1.31-alpine@sha256:0563c36f94a6d3ec3584161b77859f740f7e20b4853f52c796a864ce6908e8ea
 # Package fixes published after the base image was built (an image is only
 # rebuilt when its sources change): take them at build time.
 RUN apk upgrade --no-cache

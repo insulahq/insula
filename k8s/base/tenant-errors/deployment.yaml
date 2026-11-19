@@ -1,12 +1,6 @@
-# NOTE: the page content + nginx config are NOT inlined here. They are
-# generated from the sibling directory by a configMapGenerator with the
-# name-suffix hash ON, so editing either file rolls this Deployment.
-#
-# Both files live in ONE ConfigMap that is mounted twice: the HTML at
-# /usr/share/nginx/html (re-read per request, so it was always fine) and the
-# nginx config at /etc/nginx/conf.d (read once at startup, so it was NOT).
-# Before a change to this ConfigMap therefore applied by halves —
-# the page updated while its server config silently did not.
+# NOTE: the pages and the nginx config are NOT inlined here. They are
+# generated from content/ by configMapGenerators with the name-suffix hash ON
+# (kustomization.yaml), so editing either rolls this Deployment.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -39,7 +33,8 @@ spec:
           effect: NoSchedule
       containers:
         - name: nginx
-          image: nginx:1.30-alpine
+          # The panels' nginx image; scripts/ci-nginx-image-sync.sh keeps the two equal.
+          image: nginx:1.31-alpine@sha256:0563c36f94a6d3ec3584161b77859f740f7e20b4853f52c796a864ce6908e8ea
           ports:
             - name: http
               containerPort: 80
@@ -63,16 +58,10 @@ spec:
       volumes:
         - name: content
           configMap:
-            name: tenant-errors-content
-            items:
-              - key: 500.html
-                path: 500.html
+            name: tenant-errors-pages
         - name: conf
           configMap:
-            name: tenant-errors-content
-            items:
-              - key: default.conf
-                path: default.conf
+            name: tenant-errors-conf
       # One replica per server, hard. Preferred anti-affinity put both on the
       # first server back after a full-cluster restart and on the only server
       # of a fresh install, and nothing moved them when the others came up.

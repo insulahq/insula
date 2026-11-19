@@ -12,6 +12,101 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **The mail server's memory is now visible on Email → Settings.** A new card at the top shows
+  Stalwart's process memory against its limit and a graph of the last 7 days (the highest value in
+  each hour). It also shows the alert threshold and when Stalwart was last killed for running out of
+  memory. Disk cache is left out, because the kernel frees it before it kills anything.
+- **A warning alert before Stalwart runs out of memory.** The new rule *Mail server memory near its
+  limit* (`stalwart-memory-near-limit`) fires when Stalwart's process memory stays above 85 % of its
+  limit for 15 minutes. The threshold can be changed under Monitoring like any other rule. Stalwart's
+  memory grows slowly over days, so the alert usually comes days before a kill. The graph and the
+  alert need two new metrics, kept for the Stalwart container only. The metrics store starts keeping
+  them after its next daily restart, so the card reads "No samples yet" until then.
+
+### Changed
+
+- **Stalwart's memory limit is 3 GiB, up from 2 GiB.** In production, Stalwart reached the 2 GiB
+  limit after 10 days of uptime and was killed and restarted, which dropped every open mail
+  connection. Its memory grows over days, and the cause is not yet known. The higher limit gives
+  more time between restarts. The memory request is unchanged, so the pod schedules on the same
+  nodes as before.
+
+### Fixed
+
+- **The admin tenant page counted the platform's own mailboxes as the tenant's.** Each mail domain
+  has a postmaster@ mailbox that the platform creates and runs. It carries abuse@ and dmarc@ as
+  aliases, and some older domains also have their own dmarc@ mailbox. The mailbox limit has never
+  counted these, but the tenant page did. A tenant at its limit of 5 read "6 of 5 Mailboxes (120%)"
+  on the Limits tab, and the Overview and Email tabs overstated its mailboxes and aliases.
+
+  The Limits, Overview and Email tabs now count only the tenant's mailboxes, which is what the
+  limit counts, and say how many platform mailboxes they left out. The Email tab still lists
+  postmaster@, marked as a platform mailbox, with no tenant-panel *Manage* link, since the tenant
+  panel does not show it. The tenant's mailbox list in the API now says which mailboxes are the
+  platform's (`platformManaged`).
+- **A route's custom error pages name the error.** With *Custom Error Pages* set on a route, every
+  intercepted code got the same "Service unavailable" page, a 404 included. The page now names the
+  code and what it means (404 Page not found, 403 Access denied, 503 Service unavailable, …) and
+  keeps the status code the site answered with. It follows the visitor's light or dark setting and
+  is never cached in place of the site. Only the site's own responses are replaced: a request the
+  WAF blocks, a rate limit or an IP allowlist keeps its own answer.
+
+  The panel also asked for an *Error Pages Path* with the tenant's own 404.html and 500.html, but
+  the platform's error service cannot read tenant files, so those pages were never shown. The path
+  field is gone and its database column is dropped (migration 0185); the codes alone turn the pages
+  on. Codes must now be status codes or ranges within 400–599. A lower code would have replaced
+  the site's own pages or redirects with an error page. No production route used custom error
+  pages. While the upgrade rolls out, the previous release's API pods fail route reads and writes
+  for a few minutes, because they still read the dropped column; the routes already in the
+  cluster keep working.
+
+  Operators can brand one code for every route by merging a page of that name (for example
+  `404.html`) into the new `tenant-errors-pages` ConfigMap from an overlay. A tenant's
+  redirect-only route whose redirect is missing now answers 503 with that page, not 200.
+
+### Security
+
+- **The admin and tenant panels run nginx 1.31.9, up from 1.30.6.** The new nginx releases fix
+  three CRITICAL vulnerabilities in nginx's HTTP/2 and HTTP/3 code. The panels serve plain HTTP/1.1
+  behind Traefik, so they were not exposed, but the image scan blocks every panel build that
+  carries them. The panels also move from nginx's stable branch (1.30) to its mainline (1.31), the
+  branch tenants' static sites already run on. Stable gets only critical fixes; mainline gets every
+  bug fix and two security fixes stable lacks. No 1.31 behaviour change touches the panels'
+  configuration. The newer base image also brings OpenSSL 3.5.9 and brotli 1.2.1.
+- **The error pages and Roundcube's nginx run the panels' nginx 1.31.9.** The tenant error pages,
+  the suspended and bandwidth-exceeded pages and Roundcube's nginx named a floating
+  `nginx:1.30-alpine` or `nginx:1.31-alpine` tag, so each server ran whichever build it had pulled
+  first. In production they ran 1.30.6 and 1.31.8 side by side. They now run the panels' image,
+  pinned by digest, and a new CI check (`scripts/ci-nginx-image-sync.sh`) fails when any nginx in
+  the manifests differs from the panels'. Dependabot bumps only the panels' Dockerfiles; the
+  check's `--write` mode carries the bump to the pods. None of these pods serves HTTP/2, HTTP/3 or
+  TLS, or uses `alias`, so the nginx flaws fixed in 1.31.9 did not reach them.
+- **Traefik 3.7.18 (chart 42.4.0), up from 3.7.17 (chart 42.3.1).** It fixes GHSA-cp28-5662-543f.
+  Traefik routed a path such as `/public/..;x/admin` before resolving it. Such a request therefore
+  missed a protected directory's sign-in. A backend that drops path parameters (Java servlet
+  containers, Spring) then resolved it to `/admin` and served the protected page. Traefik now
+  resolves these paths before routing. PHP, Node and static sites do not drop path parameters, so
+  only Java backends behind a protected directory were exposed. The release also fixes a ForwardAuth
+  NTLM flaw, a zstd decompression flaw and a BasicAuth MD5 cost flaw. None of those three reaches
+  this platform: the auth servers do not use NTLM, compression is gzip only, and passwords are
+  bcrypt. Its plugin interpreter moves to Yaegi 0.16.3, and both plugins (CrowdSec and ModSecurity)
+  load under it. Fresh installs get the new chart from `bootstrap.sh`. Existing clusters get it
+  from host migration `2026.11.13/0001`, which rolls Traefik one server at a time. It rolls back if
+  a pod fails to load its plugins. A stopping Traefik pod now keeps accepting requests for 5 seconds
+  after it is told to stop, the chart's new default, so each server's roll takes about 5 seconds
+  longer.
+- **system-upgrade-controller 0.21.0, Reloader 1.4.24 and frp 0.72.0.** These are dependency
+  security updates (golang.org/x/net, cel-go, OpenTelemetry) with no behaviour change here. Trivy's
+  fixable HIGH findings drop from 7 to 1 for system-upgrade-controller, from 2 to 0 for Reloader,
+  and from 9 to 2 for the tunnel server (frps). frp 0.72.0 also fixes a CPU busy loop after a
+  tunnel session closes, and a close that could hang on a stalled WebSocket write. The tunnel
+  server and the private-worker agent both move to it. An agent still on 0.71.1 keeps connecting:
+  the wire protocol is unchanged, and this was checked both ways. Each tenant's tunnel server
+  restarts once when the release rolls out, and agents reconnect on their own. The upgrade Plan
+  CRD is re-vendored from 0.21.0; only two descriptions changed.
+
 ## [2026.11.12] - 2026-11-17
 
 ### Security

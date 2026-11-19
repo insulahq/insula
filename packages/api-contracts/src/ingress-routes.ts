@@ -10,6 +10,54 @@ function isValidCidrList(value: string): boolean {
   return value.split(',').every((cidr) => cidrPattern.test(cidr.trim()));
 }
 
+// ─── Custom error pages ─────────────────────────────────────────────────────
+
+/** Comma-separated status codes and low-high ranges, e.g. "404, 500-599". */
+const ERROR_STATUS_ENTRY = /^(\d{3})(?:-(\d{3}))?$/;
+const ERROR_STATUS_MIN = 400;
+const ERROR_STATUS_MAX = 599;
+
+function errorStatusEntryProblem(entry: string): string | null {
+  const m = ERROR_STATUS_ENTRY.exec(entry);
+  if (!m) return `"${entry}" is not a status code or a range like 500-599.`;
+  const low = Number(m[1]);
+  const high = m[2] === undefined ? low : Number(m[2]);
+  if (low > high) return `The range ${entry} runs backwards.`;
+  // Below 400 the error page would replace the site's own pages and redirects.
+  if (low < ERROR_STATUS_MIN || high > ERROR_STATUS_MAX) {
+    return `${entry} is outside 400–599: only error responses can be replaced.`;
+  }
+  return null;
+}
+
+/**
+ * Why a route's custom error codes cannot be saved, or null when every entry
+ * is a code or a low-high range within 400–599.
+ */
+export function errorStatusCodesProblem(value: string): string | null {
+  const entries = value.split(',').map((s) => s.trim());
+  if (entries.every((e) => e === '')) return 'Enter at least one status code, or clear the field.';
+  for (const entry of entries) {
+    if (entry === '') return 'Remove the empty entry between the commas.';
+    const problem = errorStatusEntryProblem(entry);
+    if (problem) return problem;
+  }
+  return null;
+}
+
+/**
+ * The valid entries of a stored custom error code list, in Traefik's
+ * `errors.status` form. A value saved before the API validated it may hold
+ * entries Traefik would refuse (taking the route's whole reconcile down) or
+ * codes below 400; those are dropped.
+ */
+export function parseErrorStatusCodes(value: string): string[] {
+  return value
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== '' && errorStatusEntryProblem(s) === null);
+}
+
 // ─── Response ───────────────────────────────────────────────────────────────
 
 /** A route's WAF: off, detection only (logged, never blocked), or enforced. */
@@ -68,8 +116,8 @@ export const ingressRouteResponseSchema = z.object({
   hstsIncludeSubdomains: z.boolean(),
   hstsPreload: z.boolean(),
   // Advanced settings
+  /** Status codes answered with the platform's error page for that code; null = off. */
   customErrorCodes: z.string().nullable(),
-  customErrorPath: z.string().nullable(),
   additionalHeaders: z.record(z.string(), z.string()).nullable(),
   // Custom-deployment routing — null for catalog deployments
   servicePort: z.number().nullable(),
@@ -223,8 +271,16 @@ export const updateSecuritySettingsSchema = z.object({
 }).strict();
 
 export const updateAdvancedSettingsSchema = z.object({
-  custom_error_codes: z.string().max(255).nullable().optional(),
-  custom_error_path: z.string().max(255).nullable().optional(),
+  // A blank value clears the setting, as null does (it always read as off).
+  custom_error_codes: z.preprocess(
+    (val) => (typeof val === 'string' && val.trim() === '' ? null : val),
+    z.string().max(255)
+      .superRefine((val, ctx) => {
+        const problem = errorStatusCodesProblem(val);
+        if (problem) ctx.addIssue({ code: 'custom', message: problem });
+      })
+      .nullable(),
+  ).optional(),
   additional_headers: z.record(
     z.string().max(255).regex(/^[a-zA-Z0-9\-_]+$/, 'Header name must contain only alphanumeric characters, hyphens, and underscores'),
     z.string().max(4096).refine(

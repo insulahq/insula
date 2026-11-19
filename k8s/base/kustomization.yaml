@@ -77,7 +77,7 @@ resources:
   # to it. Workers only — control-plane uses the admin k3s.yaml.
   - host-config-reader/
   # system-upgrade-controller — no-SSH k3s/kernel/apt node upgrades via in-cluster
-  # Plan CRs (ADR-045 W12, vendored rancher SUC v0.20.2). INERT until a Plan
+  # Plan CRs (ADR-045 W12, vendored rancher SUC v0.21.0). INERT until a Plan
   # exists; Plans are created only at runtime by `platform-ops cluster upgrade`
   # (gated), never committed here. Controller runs non-root/drops-ALL-caps; only
   # the per-node upgrade Jobs it spawns are privileged. CI: ci-system-upgrade-check.sh.
@@ -153,8 +153,8 @@ resources:
   # Middleware's `modSecurityUrl` constant).
   - modsecurity-crs/
   # Tenant custom-error-pages backend. Referenced by per-route `errors`
-  # Middlewares (annotation-sync emits one per ingress_routes row that
-  # has both customErrorCodes AND customErrorPath set). Lives in
+  # Middlewares (annotation-sync emits one per ingress_routes row with
+  # customErrorCodes set). Lives in
   # platform-system so the cross-namespace ref pins explicitly to a
   # platform-managed Service — a tenant cannot hijack the error page
   # by creating their own `tenant-errors` Service.

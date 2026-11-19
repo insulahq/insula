@@ -20,6 +20,7 @@ import { useSystemInfo } from '@/hooks/use-system-info';
 import { useTenantMetrics } from '@/hooks/use-resource-metrics';
 import { useTenantBandwidth, useTenantMailUsage, useTenantSendLimitsLive } from '@/hooks/use-tenant-insights';
 import { useMailboxes } from '@/hooks/use-email';
+import { platformNote, splitPlatformMailboxes } from './platform-mailboxes';
 import { useAdminSubUsers } from '@/hooks/use-sub-users';
 import { useDeployments, useTenantApplicationUsage } from '@/hooks/use-deployments';
 import { useCpuMigrationPreview } from '@/hooks/use-cpu-migration';
@@ -66,7 +67,9 @@ export default function LimitsTab({ tenant, tenantId }: { readonly tenant: Tenan
   const live = liveRes?.data;
 
   const m = metricsRes?.data;
-  const mailboxes = mailboxesRes?.data ?? [];
+  // The tenant's own mailboxes only: the platform's postmaster@ intake on each
+  // mail domain is not counted by the limit (see platform-mailboxes.ts).
+  const { tenant: mailboxes, platform: platformMailboxes } = splitPlatformMailboxes(mailboxesRes?.data ?? []);
   const usage: Partial<Record<LimitId, Usage>> = {};
   // No CPU usage beside the limits: the only CPU limit left is the burst
   // ceiling, which is per application, and tenant-wide use is not comparable
@@ -74,7 +77,7 @@ export default function LimitsTab({ tenant, tenantId }: { readonly tenant: Tenan
   if (m?.memory?.inUse != null) usage.memory = { value: m.memory.inUse, text: `${m.memory.inUse.toFixed(2)} GB now` };
   if (m?.storage?.inUse != null) usage.storage = { value: Math.round(m.storage.inUse * 10) / 10, text: `${m.storage.inUse.toFixed(1)} GB used` };
   if (bwRes?.data) usage.bandwidth = { value: Math.round(bwRes.data.usedGb * 10) / 10, text: `${bwRes.data.usedGb.toFixed(1)} GB this cycle` };
-  if (mailboxesRes) usage.mailboxes = { value: mailboxes.length, text: `${mailboxes.length} in use` };
+  if (mailboxesRes) usage.mailboxes = { value: mailboxes.length, text: `${mailboxes.length} in use${platformNote(platformMailboxes.length)}` };
   if (mailboxes.length > 0) {
     const largest = Math.max(...mailboxes.map((x) => x.usedMb));
     usage.mailboxSize = { value: largest, text: `largest ${largest} MB` };

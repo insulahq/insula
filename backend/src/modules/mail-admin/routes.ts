@@ -34,6 +34,7 @@ import { rotateAdminPasswordViaJmap } from './rotate-jmap.js';
 import { rotateWebmailMasterPassword } from './rotate-webmail-master.js';
 import { readStalwartMasterUser, MASTER_SENTINEL_DOMAIN } from './stalwart-master-user.js';
 import { getMailPvcStorage } from './mail-pvc.js';
+import { readMailServerMemory } from './stalwart-memory.js';
 import { getMailNodeStorage } from './mail-node-storage.js';
 import { mailCapacityReader } from './health-capacity.js';
 import { mailOutboundReader } from './health-outbound.js';
@@ -564,6 +565,27 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
   // ci-no-longhorn: ignore
+
+  // ─── Mail-server memory (Email → Settings card) ──────────────────
+  // Stalwart's process memory, its container limit and the last 7 days,
+  // from vmsingle (stalwart-memory.ts). Read-only, no credentials, so the
+  // route-wide admin/support gate applies.
+  app.get('/admin/mail/server/memory', async () => {
+    const cfg = app.config as Record<string, unknown>;
+    try {
+      const { createK8sClients } = await import('../../modules/k8s-provisioner/k8s-client.js');
+      const { core } = createK8sClients(cfg.KUBECONFIG_PATH as string | undefined);
+      const result = await readMailServerMemory({ db: app.db, core, logger: app.log });
+      return success(result);
+    } catch (err) {
+      app.log.warn({ err }, 'mail-admin: mail-server memory read failed');
+      throw new ApiError(
+        'MAIL_SERVER_MEMORY_UNAVAILABLE',
+        'Could not read the mail server\'s memory from the metrics store — see server logs',
+        503,
+      );
+    }
+  });
 
   // ─── Per-mail-node storage cards ────────────────────────────────
   // Returns one entry per mail-relevant node (active + placement

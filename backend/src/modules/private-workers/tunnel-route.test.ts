@@ -56,9 +56,9 @@ describe('frp\'s WebSocket path', () => {
 
   it('is the path of the frp version both ends run', () => {
     expect(FRP_WEBSOCKET_PATH).toBe('/~!frp');
-    // Checked against v0.71.1. Bumping frp? Re-read FrpWebsocketPath in the
+    // Checked against v0.72.0. Bumping frp? Re-read FrpWebsocketPath in the
     // new tag, then move these two pins and this test together.
-    expect(repo('images/private-worker-agent/Dockerfile')).toMatch(/^ARG FRP_VERSION=0\.71\.1$/m);
-    expect(repo('k8s/base/platform-config.yaml')).toContain('private-worker-frps-image: "fatedier/frps:v0.71.1"');
+    expect(repo('images/private-worker-agent/Dockerfile')).toMatch(/^ARG FRP_VERSION=0\.72\.0$/m);
+    expect(repo('k8s/base/platform-config.yaml')).toContain('private-worker-frps-image: "fatedier/frps:v0.72.0"');
   });
 });
