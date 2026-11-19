@@ -92,6 +92,15 @@ SMTP Relay**, and use the per-relay **Test** action to confirm it works.
 **Email → Settings** holds the platform-side mail configuration, in three
 sub-tabs, plus an embedded Stalwart admin panel.
 
+At the top, **Mail server memory** shows Stalwart's process memory against
+its limit and a graph of the last 7 days (the highest value in each hour),
+with the alert threshold and when Stalwart was last killed for running out of
+memory. Disk cache is left out: the kernel frees it before it kills anything.
+The alert *Mail server memory near its limit* fires when the memory stays
+above the threshold (85 % by default, changeable under Monitoring) for 15
+minutes. Stalwart's memory grows slowly over days, so it usually fires days
+before a kill.
+
 - **Server** — the **SMTP/IMAP hostname** Stalwart advertises (it drives
   connection banners and the outbound EHLO, and must be a valid FQDN). The
   page warns you that changing it has knock-on effects: the new hostname
