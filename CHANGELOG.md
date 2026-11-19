@@ -56,6 +56,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   branch tenants' static sites already run on. Stable gets only critical fixes; mainline gets every
   bug fix and two security fixes stable lacks. No 1.31 behaviour change touches the panels'
   configuration. The newer base image also brings OpenSSL 3.5.9 and brotli 1.2.1.
+- **The error pages and Roundcube's nginx run the panels' nginx 1.31.9.** The tenant error pages,
+  the suspended and bandwidth-exceeded pages and Roundcube's nginx named a floating
+  `nginx:1.30-alpine` or `nginx:1.31-alpine` tag, so each server ran whichever build it had pulled
+  first. In production they ran 1.30.6 and 1.31.8 side by side. They now run the panels' image,
+  pinned by digest, and a new CI check (`scripts/ci-nginx-image-sync.sh`) fails when any nginx in
+  the manifests differs from the panels'. Dependabot bumps only the panels' Dockerfiles; the
+  check's `--write` mode carries the bump to the pods. None of these pods serves HTTP/2, HTTP/3 or
+  TLS, or uses `alias`, so the nginx flaws fixed in 1.31.9 did not reach them.
 
 ## [2026.11.12] - 2026-11-17
 

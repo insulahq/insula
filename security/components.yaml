@@ -791,7 +791,7 @@ components:
       the DaemonSet (SMTP + IMAP, PROXY v2 client address in Stalwart's log).
 
   - id: nginx-standalone
-    name: nginx (suspended-tenant + error pages)
+    name: nginx (error pages + Roundcube's nginx)
     tier: "2"
     kind: image
     pinned: "1.31-alpine"
@@ -801,7 +801,13 @@ components:
     watch: { type: github_releases, repo: nginx/nginx, advisories: nginx/nginx, tag_regex: '^release-(\d+\.\d+\.\d+)$' }
     scan: trivy
     owner: platform
-    notes: Static-page nginx for suspended tenants + custom error pages. Also k8s-manifests/generator.ts's image for a catalog entry that names none. (The panels build on nginx:1.31-alpine, see base-images.)
+    notes: >-
+      The nginx pods: the suspended, bandwidth-exceeded and custom error pages, and
+      Roundcube's nginx. They run the panels' exact image (nginx:1.31-alpine by
+      digest, see base-images), so Dependabot's panel bump moves them too:
+      scripts/ci-nginx-image-sync.sh fails CI while any k8s nginx differs, and its
+      --write carries the bump over. Also k8s-manifests/generator.ts's image for a
+      catalog entry that names none (a tenant workload, tag only, not in the guard).
 
   # postgres-client-backup removed 2026-08-26: the legacy pg_dump
   # CronJob was retired with the target-activate path (its shim-era
