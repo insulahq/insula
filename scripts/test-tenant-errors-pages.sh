@@ -47,7 +47,7 @@ start() {
   docker cp "$DIR/content/error.html" "$n:/usr/share/nginx/html/error.html" >/dev/null || return 1
   [ -z "${2:-}" ] || docker cp "$2" "$n:/usr/share/nginx/html/404.html" >/dev/null || return 1
   docker start "$n" >/dev/null || return 1
-  local i; for i in $(seq 1 20); do
+  for _ in $(seq 1 20); do
     docker exec "$n" sh -c 'printf "GET /healthz HTTP/1.0\r\n\r\n" | nc 127.0.0.1 80' 2>/dev/null | grep -q '^HTTP/1.1 200' && break
     sleep 0.5
   done
