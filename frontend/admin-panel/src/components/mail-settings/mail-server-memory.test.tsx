@@ -75,12 +75,24 @@ describe('chartSegments', () => {
     const segs = chartSegments(points([GiB, 2 * GiB, null, GiB]), 3 * GiB);
     expect(segs).toHaveLength(2);
     expect(segs[0].split(' ')).toHaveLength(2);
-    expect(segs[1].split(' ')).toHaveLength(1);
+  });
+
+  it('draws a lone hour as a short tick, since a one-point line draws nothing', () => {
+    const segs = chartSegments(points([null, GiB, null]), 3 * GiB);
+    expect(segs).toHaveLength(1);
+    const [a, b] = segs[0].split(' ').map((pt) => pt.split(',').map(Number));
+    expect(a[1]).toBe(b[1]);
+    expect(b[0] - a[0]).toBeGreaterThan(0);
+  });
+
+  it('keeps the tick of the newest hour inside the chart', () => {
+    const [seg] = chartSegments(points([null, GiB]), 3 * GiB);
+    expect(Math.max(...seg.split(' ').map((pt) => Number(pt.split(',')[0])))).toBeLessThanOrEqual(600);
   });
 
   it('scales to the limit: a value at the limit touches the top edge', () => {
     const [seg] = chartSegments(points([3 * GiB]), 3 * GiB);
-    expect(Number(seg.split(',')[1])).toBeCloseTo(1, 1);
+    expect(Number(seg.split(' ')[0].split(',')[1])).toBeCloseTo(1, 1);
   });
 });
 

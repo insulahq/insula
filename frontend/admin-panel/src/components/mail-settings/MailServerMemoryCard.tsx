@@ -62,22 +62,37 @@ function ratioOf(bytes: number | null, limit: number | null): number | null {
   return bytes !== null && limit !== null && limit > 0 ? bytes / limit : null;
 }
 
-/** Polylines for the measured runs; an unmeasured hour breaks the line. */
+/** Half the width of the tick drawn for an hour with no measured neighbour. */
+const TICK_HALF = 3;
+
+/**
+ * Polylines for the measured runs; an unmeasured hour breaks the line. A run
+ * of one hour (the first hour after metrics start, or an hour between gaps)
+ * would be a one-point polyline, which draws nothing, so it becomes a short
+ * horizontal tick at its value.
+ */
 export function chartSegments(points: ReadonlyArray<MailServerMemoryPoint>, ceiling: number): string[] {
   const n = points.length;
   const segments: string[] = [];
-  let run: string[] = [];
+  let run: Array<readonly [number, number]> = [];
+  const flush = () => {
+    if (run.length === 1) {
+      const [x, y] = run[0];
+      run = [[Math.max(0, x - TICK_HALF), y], [Math.min(CHART_W, x + TICK_HALF), y]];
+    }
+    if (run.length > 0) segments.push(run.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' '));
+    run = [];
+  };
   points.forEach((p, i) => {
     if (p.bytes === null) {
-      if (run.length > 0) segments.push(run.join(' '));
-      run = [];
+      flush();
       return;
     }
     const x = (i / Math.max(1, n - 1)) * CHART_W;
     const y = CHART_H - Math.min(1, p.bytes / ceiling) * (CHART_H - 2) - 1;
-    run.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+    run.push([x, y]);
   });
-  if (run.length > 0) segments.push(run.join(' '));
+  flush();
   return segments;
 }
 
