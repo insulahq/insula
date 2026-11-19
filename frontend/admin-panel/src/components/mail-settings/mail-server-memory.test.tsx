@@ -85,9 +85,18 @@ describe('chartSegments', () => {
     expect(b[0] - a[0]).toBeGreaterThan(0);
   });
 
-  it('keeps the tick of the newest hour inside the chart', () => {
-    const [seg] = chartSegments(points([null, GiB]), 3 * GiB);
-    expect(Math.max(...seg.split(' ').map((pt) => Number(pt.split(',')[0])))).toBeLessThanOrEqual(600);
+  it('keeps the tick of the newest hour inside the chart at its full width', () => {
+    const tickWidth = (seg: string) => {
+      const xs = seg.split(' ').map((pt) => Number(pt.split(',')[0]));
+      return { min: Math.min(...xs), max: Math.max(...xs) };
+    };
+    const right = tickWidth(chartSegments(points([null, GiB]), 3 * GiB)[0]);
+    const middle = tickWidth(chartSegments(points([null, GiB, null]), 3 * GiB)[0]);
+    const left = tickWidth(chartSegments(points([GiB, null]), 3 * GiB)[0]);
+    expect(right.max).toBe(600);
+    expect(left.min).toBe(0);
+    expect(right.max - right.min).toBe(middle.max - middle.min);
+    expect(left.max - left.min).toBe(middle.max - middle.min);
   });
 
   it('scales to the limit: a value at the limit touches the top edge', () => {

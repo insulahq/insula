@@ -62,8 +62,8 @@ function ratioOf(bytes: number | null, limit: number | null): number | null {
   return bytes !== null && limit !== null && limit > 0 ? bytes / limit : null;
 }
 
-/** Half the width of the tick drawn for an hour with no measured neighbour. */
-const TICK_HALF = 3;
+/** Width of the tick drawn for an hour with no measured neighbour, in chart units. */
+const TICK_W = 10;
 
 /**
  * Polylines for the measured runs; an unmeasured hour breaks the line. A run
@@ -77,8 +77,11 @@ export function chartSegments(points: ReadonlyArray<MailServerMemoryPoint>, ceil
   let run: Array<readonly [number, number]> = [];
   const flush = () => {
     if (run.length === 1) {
+      // Centred on the hour, shifted inward at an edge so it keeps its full
+      // width: the newest hour always sits on the right edge.
       const [x, y] = run[0];
-      run = [[Math.max(0, x - TICK_HALF), y], [Math.min(CHART_W, x + TICK_HALF), y]];
+      const x0 = Math.min(Math.max(0, x - TICK_W / 2), CHART_W - TICK_W);
+      run = [[x0, y], [x0 + TICK_W, y]];
     }
     if (run.length > 0) segments.push(run.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' '));
     run = [];
