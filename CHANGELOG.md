@@ -47,6 +47,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   panel does not show it. The tenant's mailbox list in the API now says which mailboxes are the
   platform's (`platformManaged`).
 
+### Security
+
+- **The admin and tenant panels run nginx 1.30.7, up from 1.30.6.** nginx 1.30.7 fixes three
+  CRITICAL vulnerabilities in its HTTP/2 and HTTP/3 code. The panels serve plain HTTP/1.1 behind
+  Traefik, so they were not exposed, but the image scan blocks every panel build that carries them.
+  The newer base image also brings OpenSSL 3.5.9 and brotli 1.2.1.
+
 ## [2026.11.12] - 2026-11-17
 
 ### Security

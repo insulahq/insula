@@ -282,7 +282,7 @@ components:
     scan: trivy+osv
     deps: [frontend/admin-panel/package.json]
     owner: platform
-    notes: First-party. Internet-facing login; XSS/supply-chain → super_admin session theft = platform-wide. React 19 / Vite 8 / nginx:1.27-alpine runtime.
+    notes: First-party. Internet-facing login; XSS/supply-chain → super_admin session theft = platform-wide. React 19 / Vite 8 / nginx:1.30-alpine runtime.
 
   - id: tenant-panel
     name: tenant-panel (React 19 SPA + nginx)

@@ -52,7 +52,7 @@ COPY frontend/tenant-panel/src/ frontend/tenant-panel/src/
 COPY frontend/tenant-panel/public/ frontend/tenant-panel/public/
 RUN cd frontend/tenant-panel && npx vite build
 
-FROM nginx:1.30-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949
+FROM nginx:1.30-alpine@sha256:3bc3836dc0be3b811f238210360bf8e7ca8a2d0effdae46160bf1f3578710051
 # Package fixes published after the base image was built (an image is only
 # rebuilt when its sources change): take them at build time.
 RUN apk upgrade --no-cache
