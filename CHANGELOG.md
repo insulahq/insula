@@ -31,8 +31,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   limit after 10 days of uptime and was killed and restarted, which dropped every open mail
   connection. Its memory grows over days, and the cause is not yet known. The higher limit gives
   more time between restarts. The memory request is unchanged, so the pod schedules on the same
-  nodes as before. The upgrade restarts the mail server once to apply the new limit: for about 30
-  to 90 seconds no mail is received or sent. Sending servers retry and mail clients reconnect.
+  nodes as before. The upgrade restarts the mail server once to apply the new limit, and no mail
+  is received or sent until it is back. The Upgrades page estimates 30 to 90 seconds; it took about
+  6 seconds on lab staging. Sending servers retry and mail clients reconnect.
 
 ### Fixed
 
@@ -94,8 +95,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   this platform: the auth servers do not use NTLM, compression is gzip only, and passwords are
   bcrypt. Its plugin interpreter moves to Yaegi 0.16.3, and both plugins (CrowdSec and ModSecurity)
   load under it. Fresh installs get the new chart from `bootstrap.sh`. Existing clusters get it
-  from host migration `2026.11.13/0001`, which rolls Traefik one server at a time. It rolls back if
-  a pod fails to load its plugins. A stopping Traefik pod now keeps accepting requests for 5 seconds
+  from host migration `2026.11.13/0001`, which rolls Traefik one server at a time. While a
+  server's Traefik restarts, that server's address stops answering for a few seconds: 4 to 7
+  seconds per server on lab staging. The migration rolls back if a pod fails to load its plugins. A stopping Traefik pod now keeps accepting requests for 5 seconds
   after it is told to stop, the chart's new default, so each server's roll takes about 5 seconds
   longer.
 - **system-upgrade-controller 0.21.0, Reloader 1.4.24 and frp 0.72.0.** These are dependency
