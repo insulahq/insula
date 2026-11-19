@@ -23,6 +23,7 @@
  */
 
 import { eq, and } from 'drizzle-orm';
+import { parseErrorStatusCodes } from '@insula/api-contracts';
 import {
   ingressRoutes,
   routeProtectedDirs,
@@ -212,7 +213,6 @@ export interface RouteSettingsLike {
   hstsIncludeSubdomains?: number;
   hstsPreload?: number;
   customErrorCodes: string | null;
-  customErrorPath: string | null;
   additionalHeaders?: Record<string, string> | null;
 }
 
@@ -452,40 +452,17 @@ export function buildMiddlewaresForRoute(
   // Restores the nginx `custom-http-errors` + default-backend behaviour
   // dropped by the Phase-2 rewrite.
   //
-  // Behaviour mapping:
-  //   * customErrorCodes (CSV like "404,503") → status[]
-  //   * customErrorPath  (URL path string)    → query (path on backend)
-  //
-  // IMPORTANT: this Middleware is emitted ONLY when BOTH columns are
-  // set. customErrorCodes alone is insufficient — Traefik would then
-  // point the route at a Service that doesn't exist, which surfaces
-  // every blocked-upstream 4xx/5xx as a Traefik 500 to the end user.
-  //
-  // The errors backend is the platform-shared `tenant-errors` Service
-  // in the `platform-system` namespace (k8s/base/tenant-errors/) —
-  // explicit cross-namespace reference is required so that a tenant
-  // who happens to deploy their own `tenant-errors` Service into their
-  // namespace cannot hijack the platform-managed error pages with
-  // attacker-controlled content. The reconciler sets
-  // serviceNamespace='platform-system' on every emitted errors
-  // Middleware to make this guarantee explicit. Per-tenant errors
-  // backends (sourceful tenant content) are out of scope for this
-  // phase.
-  if (route.customErrorCodes && route.customErrorPath) {
-    // Two-stage filter: regex shape (3-digit code, optionally a 3-digit
-    // range) AND for ranges, low <= high. The second check stops
-    // operators submitting `503-200` which would parse but get rejected
-    // by Traefik's admission webhook at apply time, taking the entire
-    // IngressRoute reconcile down with it.
-    const status = route.customErrorCodes
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => /^\d{3}(-\d{3})?$/.test(s))
-      .filter((s) => {
-        const m = s.match(/^(\d{3})-(\d{3})$/);
-        if (!m) return true;
-        return Number(m[1]) <= Number(m[2]);
-      });
+  // The page comes from the platform-shared `tenant-errors` Service in
+  // `platform-system` (k8s/base/tenant-errors/), asked for
+  // /{status}.html: it answers each code with its own page, and Traefik
+  // keeps the original status on the response. The cross-namespace
+  // reference is explicit so that a tenant who deploys their own
+  // `tenant-errors` Service into their namespace cannot hijack the
+  // platform-managed error pages with attacker-controlled content.
+  // Pages from the tenant's own site are not offered: that service cannot
+  // read tenant storage, and a site that is down cannot serve its own 503.
+  if (route.customErrorCodes) {
+    const status = parseErrorStatusCodes(route.customErrorCodes);
     if (status.length > 0) {
       const name = middlewareName(routeId, 'errors');
       middlewares.push(buildMiddleware({
@@ -496,7 +473,7 @@ export function buildMiddlewaresForRoute(
           serviceName: 'tenant-errors',
           serviceNamespace: 'platform-system',
           servicePort: 80,
-          query: route.customErrorPath ?? undefined,
+          query: '/{status}.html',
         }),
         labels: {
           'hosting-platform/route-id': routeId,

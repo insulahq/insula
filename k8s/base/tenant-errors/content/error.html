@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{{code}} {{title}}</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="robots" content="noindex" />
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; color: #0f172a;
+           display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1rem;
+           box-sizing: border-box; }
+    .card { max-width: 560px; padding: 2.5rem; background: #ffffff; border-radius: 12px;
+            border: 1px solid #e2e8f0; text-align: center; }
+    .code { margin: 0; font-size: 3rem; font-weight: 700; color: #2563eb; line-height: 1; }
+    h1 { margin: 1rem 0 .5rem; font-size: 1.5rem; }
+    p { margin: .5rem 0; line-height: 1.55; color: #475569; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #0f172a; color: #e2e8f0; }
+      .card { background: #1e293b; border-color: #334155; }
+      .code { color: #60a5fa; }
+      p { color: #cbd5e1; }
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <p class="code">{{code}}</p>
+    <h1>{{title}}</h1>
+    <p>{{message}}</p>
+  </main>
+</body>
+</html>

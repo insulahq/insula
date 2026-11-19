@@ -14,7 +14,6 @@ const baseRoute: RouteSettingsLike = {
   wafAnomalyThreshold: 10,
   wafExcludedRules: null,
   customErrorCodes: null,
-  customErrorPath: null,
 };
 
 const ROUTE_ID = 'route-12345678';

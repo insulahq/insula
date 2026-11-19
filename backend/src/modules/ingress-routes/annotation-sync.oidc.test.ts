@@ -35,7 +35,7 @@ function route(over: Record<string, unknown> = {}) {
   return {
     id: ROUTE_ID, hostname: 'example.test', wwwRedirect: 'add-www', path: null, forceHttps: 0, redirectUrl: null,
     ipAllowlist: null, rateLimitRps: null, rateLimitConnections: null, rateLimitBurstMultiplier: null, wafEnabled: 0,
-    wafOwaspCrs: 0, wafAnomalyThreshold: 10, wafExcludedRules: null, customErrorCodes: null, customErrorPath: null,
+    wafOwaspCrs: 0, wafAnomalyThreshold: 10, wafExcludedRules: null, customErrorCodes: null,
     additionalHeaders: null, status: 'active', ...over,
   };
 }

@@ -46,6 +46,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   postmaster@, marked as a platform mailbox, with no tenant-panel *Manage* link, since the tenant
   panel does not show it. The tenant's mailbox list in the API now says which mailboxes are the
   platform's (`platformManaged`).
+- **A route's custom error pages name the error.** With *Custom Error Pages* set on a route, every
+  intercepted code got the same "Service unavailable" page, a 404 included. The page now names the
+  code and what it means (404 Page not found, 403 Access denied, 503 Service unavailable, …) and
+  keeps the status code the site answered with. It follows the visitor's light or dark setting and
+  is never cached in place of the site.
+
+  The panel also asked for an *Error Pages Path* with the tenant's own 404.html and 500.html, but
+  the platform's error service cannot read tenant files, so those pages were never shown. The path
+  field is gone and its database column is dropped (migration 0185); the codes alone turn the pages
+  on. Codes must now be status codes or ranges within 400–599. A lower code would have replaced
+  the site's own pages or redirects with an error page. No production route used custom error
+  pages. While the upgrade rolls out, the previous release's API pods fail route reads and writes
+  for a few minutes, because they still read the dropped column; the routes already in the
+  cluster keep working.
+
+  Operators can brand one code for every route by merging a page of that name (for example
+  `404.html`) into the new `tenant-errors-pages` ConfigMap from an overlay. A tenant's
+  redirect-only route whose redirect is missing now answers 503 with that page, not 200.
 
 ### Security
 

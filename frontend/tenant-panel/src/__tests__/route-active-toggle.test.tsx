@@ -38,7 +38,7 @@ const BASE_ROUTE = {
   rateLimitRps: null, rateLimitConnections: null, rateLimitBurstMultiplier: null,
   wafEnabled: false, wafMode: 'off', wafDetectionOnly: false, wafOwaspCrs: false, wafAnomalyThreshold: 10, wafExcludedRules: null,
   hstsEnabled: false, hstsMaxAge: 0, hstsIncludeSubdomains: false, hstsPreload: false,
-  customErrorCodes: null, customErrorPath: null, additionalHeaders: null, servicePort: null, siteFolder: null, appRoot: null,
+  customErrorCodes: null, additionalHeaders: null, servicePort: null, siteFolder: null, appRoot: null,
   createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
 };
 

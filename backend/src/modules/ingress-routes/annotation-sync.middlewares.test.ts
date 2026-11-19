@@ -39,7 +39,6 @@ const baseRoute: RouteSettingsLike = {
   wafAnomalyThreshold: 10,
   wafExcludedRules: null,
   customErrorCodes: null,
-  customErrorPath: null,
 };
 
 const ROUTE_ID = '01020304-0506-0708-090a-0b0c0d0e0f10';
@@ -332,7 +331,7 @@ describe('buildMiddlewaresForRoute — reference ordering', () => {
     // annotation-sync.ts:buildMiddlewaresForRoute, which is the order
     // they execute in Traefik's middleware chain. WAF runs BEFORE the
     // custom-errors backend so a CRS-blocked request is rendered via
-    // the tenant-errors backend (the operator's branded 403/500 page)
+    // the tenant-errors backend (the platform's page for that code)
     // instead of Traefik's default response.
     const { referenceList } = buildMiddlewaresForRoute(
       {
@@ -345,7 +344,6 @@ describe('buildMiddlewaresForRoute — reference ordering', () => {
         redirectUrl: 'https://new.example.com',
         wafEnabled: 1,
         customErrorCodes: '404',
-        customErrorPath: '/errors/404.html',
         wwwRedirect: 'add-www',
       },
       ROUTE_ID,

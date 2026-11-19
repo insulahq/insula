@@ -441,6 +441,14 @@ jobs:
       - name: The guard catches drift and --write repairs it
         run: ./scripts/test-ci-nginx-image-sync.sh
 
+  tenant-errors-pages:
+    name: Route error pages answer each code with its page
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: The error-page service in its own nginx image
+        run: ./scripts/test-tenant-errors-pages.sh
+
   mail-image-pin-check:
     name: Mail image pins agree (Stalwart + stalwart-cli)
     runs-on: ubuntu-latest
