@@ -329,10 +329,14 @@ describe('buildMiddlewaresForRoute — reference ordering', () => {
   it('emits settings middlewares in the implementation order (forceHttps → ipallow → rateLimit → inflight → headers → redirect → WAF → errors → wwwredir)', () => {
     // Order matches the source-code sequence in
     // annotation-sync.ts:buildMiddlewaresForRoute, which is the order
-    // they execute in Traefik's middleware chain. WAF runs BEFORE the
-    // custom-errors backend so a CRS-blocked request is rendered via
-    // the tenant-errors backend (the platform's page for that code)
-    // instead of Traefik's default response.
+    // they execute in Traefik's middleware chain. errors comes after the
+    // WAF, so it wraps only the backend: a page the SITE answers with is
+    // replaced by the platform's page for that code, while a WAF block
+    // (or a rate-limit or IP refusal) answers before it and keeps its own
+    // response — seen on lab DEV, where a CRS-blocked request kept the
+    // plugin's "403 Forbidden" with 403 in the route's codes. Moving errors
+    // first would also swallow a protected directory's 401 and its
+    // WWW-Authenticate header.
     const { referenceList } = buildMiddlewaresForRoute(
       {
         ...baseRoute,

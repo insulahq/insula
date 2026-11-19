@@ -50,7 +50,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   intercepted code got the same "Service unavailable" page, a 404 included. The page now names the
   code and what it means (404 Page not found, 403 Access denied, 503 Service unavailable, …) and
   keeps the status code the site answered with. It follows the visitor's light or dark setting and
-  is never cached in place of the site.
+  is never cached in place of the site. Only the site's own responses are replaced: a request the
+  WAF blocks, a rate limit or an IP allowlist keeps its own answer.
 
   The panel also asked for an *Error Pages Path* with the tenant's own 404.html and 500.html, but
   the platform's error service cannot read tenant files, so those pages were never shown. The path
