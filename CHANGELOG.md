@@ -12,6 +12,33 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **Longhorn no longer makes throwaway copies of single-copy volumes when a node drops out.**
+  Longhorn's replica auto-balance counts a volume's copies on Ready nodes only. When the node
+  holding a volume's only copy was NotReady, even for a few seconds, it found no copy and started
+  one on another node at once; the 10-minute wait for a lost copy does not apply to auto-balance.
+  Once the node was back, it built that copy from the original and then deleted it. In production
+  a 4-second NotReady of one server copied every single-copy volume on it: two full copies of one
+  tenant's 18 GB volume over 14 minutes, and copies of a platform database volume. With one copy
+  there is nothing to balance, so the platform now sets auto-balance to *disabled* on every Longhorn
+  volume with one copy (Local-tier tenants, mail and platform volumes on the local tier) and marks
+  it. A marked volume that has more than one copy again, such as a tenant moved to the HA tier, goes
+  back to the cluster setting. A value set by hand is left alone. Existing volumes are changed
+  within a minute of the upgrade; nothing restarts and no data moves.
+
+### Fixed
+
+- **"Not on its primary node" was sent about tenants that were on their primary node.** When Longhorn
+  built an extra copy of a tenant's data on another node while the tenant ran and kept its data on
+  its own node, the copy counted as the tenant's data being elsewhere. After ten minutes the
+  notification asked the operator to move the tenant back, and Longhorn deleted the copy shortly
+  afterwards anyway. Such a copy is now left out of where the tenant's data is and sends nothing.
+  The Placement card names its node in a blue note instead. The same applied to Auto tenants,
+  which were reported as "its data being copied there". A move back to the primary node now reads
+  "data still on X, being copied to Y" instead of naming the node the data is leaving as where it
+  goes.
+
 ## [2026.11.13] - 2026-11-19
 
 ### Added

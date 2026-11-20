@@ -23,6 +23,8 @@ export interface StoredPlacement {
   readonly dataNodes: readonly string[];
   readonly actualNodes: readonly string[];
   readonly reasons: readonly string[];
+  /** Nodes where Longhorn is building a spare copy it will delete (compute.ts spareCopies). */
+  readonly spareCopyNodes: readonly string[];
   readonly misplacedSince: Date | null;
   readonly notifiedAt: Date | null;
   readonly checkedAt: Date;
@@ -53,6 +55,7 @@ function toStoredPlacement(r: PlacementRow): StoredPlacement {
     dataNodes: r.dataNodes,
     actualNodes: r.actualNodes,
     reasons: r.reasons,
+    spareCopyNodes: r.spareCopyNodes,
     misplacedSince: r.misplacedSince,
     notifiedAt: r.notifiedAt,
     checkedAt: r.checkedAt,
@@ -107,6 +110,7 @@ export async function savePlacementStates(
       dataNodes: [...o.dataNodes],
       actualNodes: [...o.actualNodes],
       reasons: [...o.reasons],
+      spareCopyNodes: [...o.spareCopyNodes],
       misplacedSince: o.status === 'misplaced' ? now : null,
       notifiedAt: null,
       checkedAt: now,
@@ -121,6 +125,7 @@ export async function savePlacementStates(
         dataNodes: sql`excluded.data_nodes`,
         actualNodes: sql`excluded.actual_nodes`,
         reasons: sql`excluded.reasons`,
+        spareCopyNodes: sql`excluded.spare_copy_nodes`,
         misplacedSince: sql`CASE WHEN excluded.status <> 'misplaced' THEN NULL
           WHEN ${tenantPlacementState.status} = 'misplaced'
             THEN COALESCE(${tenantPlacementState.misplacedSince}, excluded.misplaced_since)

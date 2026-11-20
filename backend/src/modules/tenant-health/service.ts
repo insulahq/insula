@@ -79,6 +79,14 @@ export interface ReplicaFact {
    * runs and takes writes, and holds the data only once the rebuild is done.
    */
   readonly rebuilding: boolean;
+  /**
+   * The replica's mode in its volume's engine: `RW` a full copy, `WO` being
+   * rebuilt, `ERR` in error, `none` when the engine does not list it — a
+   * replica Longhorn created and has not started rebuilding, or any replica
+   * of a detached volume (no engine runs). Absent when the engines were not
+   * read, which proves nothing either way.
+   */
+  readonly engineMode?: 'RW' | 'WO' | 'ERR' | 'none';
 }
 
 export interface VolumeFact {
@@ -133,6 +141,16 @@ export interface VolumeFact {
    * absent where a caller did not read them.
    */
   readonly scheduling?: RefusedVolume;
+  /**
+   * `spec.numberOfReplicas`, `spec.replicaAutoBalance` and whether the
+   * platform set the latter (tenant-placement/auto-balance.ts). Absent where
+   * a caller did not read them.
+   */
+  readonly autoBalance?: {
+    readonly replicas: number | null;
+    readonly mode: string | null;
+    readonly setByPlatform: boolean;
+  };
 }
 
 /** One entry of a Longhorn object's `status.conditions`. */

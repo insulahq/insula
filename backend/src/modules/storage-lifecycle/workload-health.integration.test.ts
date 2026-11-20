@@ -33,6 +33,7 @@ describe.skipIf(!url)('workload-health grace gate (real Postgres)', () => {
     await pool.query('CREATE TABLE tenants (id varchar(36) PRIMARY KEY)');
     await pool.query(migration('0135_tenant_workload_health_episodes.sql'));
     await pool.query(migration('0141_tenant_placement.sql'));
+    await pool.query(migration('0186_tenant_placement_spare_copies.sql'));
     db = drizzle(pool, { schema }) as unknown as Database;
   });
 
