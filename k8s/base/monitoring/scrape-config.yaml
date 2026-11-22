@@ -10,6 +10,21 @@
 # In relabel `replacement` fields ALWAYS write `$1`, NEVER `${1}` —
 # `${1}` is eaten/crashed by envsubst (ci-flux-envsubst-check.sh guards
 # the class), while a bare `$1` passes through untouched.
+#
+# ─── role: pod jobs keep ONE target per pod ──────────────────────────
+# Pod discovery yields a target per declared container port (plus one per
+# container that declares none). Each pod job therefore KEEPS the port its
+# metrics are on, rather than rewriting every target's address to that
+# port: rewriting turned a three-port pod into three identical targets, and
+# vmsingle logged "skipping duplicate scrape target" for each one on every
+# discovery pass. That was every line of its log, which then held only a few
+# minutes, so the scrape error behind a "Scrape target down" was never
+# there to read. The kept port must be declared in the pod spec, or the
+# job finds no target and its `up` series disappears instead of reading 0.
+# Every component scraped here declares its metrics port (Traefik, cert-
+# manager, Longhorn, Flux, CNPG and CoreDNS upstream; platform-api in
+# backend-deployment.yaml). backend/src/modules/monitoring/scrape-targets.test.ts
+# holds each pod job to this.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -214,10 +229,9 @@ data:
           - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
             regex: traefik
             action: keep
-          - source_labels: [__address__]
-            regex: '([^:]+)(?::\d+)?'
-            replacement: '$1:9100'
-            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            regex: '9100'
+            action: keep
           - source_labels: [__meta_kubernetes_pod_node_name]
             target_label: node
         metric_relabel_configs:
@@ -291,10 +305,9 @@ data:
           - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
             regex: controller
             action: keep
-          - source_labels: [__address__]
-            regex: '([^:]+)(?::\d+)?'
-            replacement: '$1:9402'
-            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            regex: '9402'
+            action: keep
         metric_relabel_configs:
           # Go runtime histograms — see the traefik job. certmanager_* (the
           # expiry/readiness metrics this job exists for) is untouched.
@@ -322,10 +335,9 @@ data:
           - source_labels: [__meta_kubernetes_pod_label_app]
             regex: longhorn-manager
             action: keep
-          - source_labels: [__address__]
-            regex: '([^:]+)(?::\d+)?'
-            replacement: '$1:9500'
-            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            regex: '9500'
+            action: keep
           - source_labels: [__meta_kubernetes_pod_node_name]
             target_label: node
         metric_relabel_configs:
@@ -368,10 +380,9 @@ data:
           - source_labels: [__meta_kubernetes_pod_label_app]
             regex: (source|kustomize|helm|notification)-controller
             action: keep
-          - source_labels: [__address__]
-            regex: '([^:]+)(?::\d+)?'
-            replacement: '$1:8080'
-            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            regex: '8080'
+            action: keep
           - source_labels: [__meta_kubernetes_pod_label_app]
             target_label: controller
         metric_relabel_configs:
@@ -410,10 +421,9 @@ data:
           - source_labels: [__meta_kubernetes_pod_label_cnpg_io_cluster]
             regex: .+
             action: keep
-          - source_labels: [__address__]
-            regex: '([^:]+)(?::\d+)?'
-            replacement: '$1:9187'
-            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            regex: '9187'
+            action: keep
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
         metric_relabel_configs:
@@ -443,10 +453,9 @@ data:
           - source_labels: [__meta_kubernetes_pod_label_app]
             regex: platform-api
             action: keep
-          - source_labels: [__address__]
-            regex: '([^:]+)(?::\d+)?'
-            replacement: '$1:9090'
-            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            regex: '9090'
+            action: keep
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
         metric_relabel_configs:
@@ -477,10 +486,9 @@ data:
           - source_labels: [__meta_kubernetes_pod_label_k8s_app]
             regex: kube-dns
             action: keep
-          - source_labels: [__address__]
-            regex: '([^:]+)(?::\d+)?'
-            replacement: '$1:9153'
-            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            regex: '9153'
+            action: keep
         metric_relabel_configs:
           # Go runtime histograms — see the traefik job. CoreDNS's own
           # coredns_dns_request_duration_seconds histogram is a different

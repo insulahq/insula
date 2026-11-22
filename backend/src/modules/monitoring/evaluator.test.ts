@@ -330,6 +330,95 @@ describe('monitoring evaluator', () => {
   });
 });
 
+describe('monitoring evaluator — a target that misses a scrape and recovers before its alert fires', () => {
+  // Production: the database primary's exporter missed one scrape during a
+  // 20 s network drop, and "system-db instance down" (5 min) plus "Scrape
+  // target down" (10 min) fired on that very tick. Its one earlier miss, 27 h
+  // before, had left both "for" timers running: a subject that never fired has
+  // no alert_state row, and only stored rows were ever visited to clear one.
+  const MIN = 60_000;
+  const t0 = new Date('2026-11-20T21:14:00Z');
+  const at = (m: number) => new Date(t0.getTime() + m * MIN);
+  const TARGET = { __name__: 'up', job: 'cnpg', instance: '10.42.0.5:9187', pod: 'system-db-3' };
+  /** `up <= 0` and `up{job="cnpg"} <= 0` both return the target while it is down. */
+  const scrape = (down: boolean) => ({
+    baseUrl: 'http://vm',
+    fetchFn: vi.fn(async (url: string | URL) => {
+      const hit = down && /query=up(\{job="cnpg"\})? <=/.test(decodeURIComponent(String(url)));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: 'success',
+          data: { resultType: 'vector', result: hit ? [{ metric: TARGET, value: [1, '0'] }] : [] },
+        }),
+      } as unknown as Response;
+    }) as never,
+  });
+  const UP_RULES = ['cnpg-down', 'scrape-target-down'];
+  const firedFor = () => notifyFiringSpy.mock.calls.map((c) => c[1].ruleId).filter((id) => UP_RULES.includes(id));
+
+  it('waits the full hold again on its next miss, instead of firing at once', async () => {
+    const db = dbStub();
+    await evaluateOnce(db as never, logger, scrape(true), at(0));
+    await evaluateOnce(db as never, logger, scrape(false), at(1));
+    expect([...db._rows.values()].filter((r) => UP_RULES.includes(String(r.ruleId)))).toHaveLength(0);
+
+    // 27 hours later, one more missed scrape.
+    await evaluateOnce(db as never, logger, scrape(true), at(27 * 60));
+    await evaluateOnce(db as never, logger, scrape(false), at(27 * 60 + 1));
+    expect(firedFor()).toEqual([]);
+    expect(notifyResolvedSpy).not.toHaveBeenCalled();
+  });
+
+  it('still fires once the target stays down for the hold', async () => {
+    const db = dbStub();
+    await evaluateOnce(db as never, logger, scrape(true), at(0));
+    await evaluateOnce(db as never, logger, scrape(false), at(1));
+    for (const m of [60, 61, 64, 65]) await evaluateOnce(db as never, logger, scrape(true), at(m));
+    expect(firedFor()).toEqual(['cnpg-down']); // 5 min since 60, scrape-target-down still holds
+    for (const m of [66, 70]) await evaluateOnce(db as never, logger, scrape(true), at(m));
+    expect(firedFor()).toEqual(['cnpg-down', 'scrape-target-down']);
+  });
+
+  it('keeps timing a target that stays down while another one recovers', async () => {
+    const db = dbStub();
+    const OTHER = { ...TARGET, instance: '10.42.0.6:9187', pod: 'system-db-2' };
+    const down = (...targets: Array<Record<string, string>>) => ({
+      baseUrl: 'http://vm',
+      fetchFn: vi.fn(async (url: string | URL) => {
+        const hit = /query=up\{job="cnpg"\} <=/.test(decodeURIComponent(String(url)));
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: 'success',
+            data: { resultType: 'vector', result: hit ? targets.map((metric) => ({ metric, value: [1, '0'] })) : [] },
+          }),
+        } as unknown as Response;
+      }) as never,
+    });
+    await evaluateOnce(db as never, logger, down(TARGET, OTHER), at(0));
+    for (const m of [1, 3]) await evaluateOnce(db as never, logger, down(TARGET), at(m));
+    expect(firedFor()).toEqual([]);
+    await evaluateOnce(db as never, logger, down(TARGET), at(5));
+    expect(notifyFiringSpy.mock.calls.map((c) => c[1].subjectLabels?.pod)).toEqual(['system-db-3']);
+  });
+
+  it('starts over after the rule was disabled and enabled again', async () => {
+    const enabled = dbStub();
+    await evaluateOnce(enabled as never, logger, scrape(true), at(0));
+    const disabled = dbStub({ overrides: [
+      { ruleId: 'cnpg-down', enabled: false, threshold: null },
+      { ruleId: 'scrape-target-down', enabled: false, threshold: null },
+    ] });
+    await evaluateOnce(disabled as never, logger, scrape(true), at(1));
+    // Enabled again a day later, while the target happens to miss one scrape.
+    await evaluateOnce(enabled as never, logger, scrape(true), at(24 * 60));
+    expect(firedFor()).toEqual([]);
+  });
+});
+
 describe('monitoring evaluator — nodes that are still joining', () => {
   // Operator requirement: a bootstrapping node must not page. node-health
   // already honours the 30-minute join grace; the SLO rules keyed by node

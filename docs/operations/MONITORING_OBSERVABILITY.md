@@ -56,7 +56,13 @@ scrape config. Relabel `replacement` fields must use `$1`, never `${1}`
 ## Adding a scrape job
 
 1. Add the job to `k8s/base/monitoring/scrape-config.yaml` (pod-role SD +
-   label `keep` + `__address__` port rewrite — copy an existing job).
+   label `keep` + a `keep` on `__meta_kubernetes_pod_container_port_number`
+   for the metrics port — copy an existing job). Do not rewrite
+   `__address__` to the port: pod discovery yields a target per declared
+   container port, so a rewrite scrapes the same pod once per port and
+   vmsingle logs "skipping duplicate scrape target" for every extra one.
+   The port must be declared in the pod spec, or the job finds no target at
+   all. `scrape-targets.test.ts` checks every pod job.
 2. If the target namespace has a default-deny ingress netpol, add an
    allow for `namespaceSelector kubernetes.io/metadata.name: monitoring`
    scoped to the metrics port only (example: the :9187 rule in

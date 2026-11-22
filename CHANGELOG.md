@@ -38,6 +38,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   which were reported as "its data being copied there". A move back to the primary node now reads
   "data still on X, being copied to Y" instead of naming the node the data is leaving as where it
   goes.
+- **SLO alerts fired on a single missed scrape instead of waiting their hold time.** Each alert
+  waits a set time (5 minutes for "system-db instance down", 10 for "Scrape target down") before
+  it fires. A target that went down and came back before that time, and had never fired before,
+  left its timer running, so its next brief miss, even a day later, fired the alert at once. In
+  production a database exporter missed one scrape during a 20-second network drop, and both
+  alerts fired and resolved a minute later. The timer now resets as soon as the target is back.
+  This applied to every alert that names a target, node or certificate.
+- **vmsingle's log was nothing but "skipping duplicate scrape target".** Each scrape job listed
+  every pod once per declared container port and pointed all of them at the metrics port, so
+  vmsingle dropped the copies and logged an error for each one, every 30 seconds. On production
+  that was every line in the log, which then held only a few minutes, so the error behind a
+  failed scrape was gone before anyone could read it. Each job now keeps only the pod's metrics
+  port; the scraped targets and their series are unchanged.
 
 ## [2026.11.13] - 2026-11-19
 
