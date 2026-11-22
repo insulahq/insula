@@ -29,6 +29,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **A server could be reported down and never reported back.** The "server back online" notice
+  depended on one database record of the outage, written when the server was announced down. That
+  record can be lost when the server that went down also held the platform database's primary. In
+  production it was lost twice in one outage. One platform-api pod could not write it while the
+  database failed over. Another pod's write reached the old primary, and was discarded when that
+  primary rejoined as a replica. The "down" email went out and no "back" email followed. The pod
+  that sends the "down" notice now keeps the outage in memory until it ends. It writes the record
+  again if it goes missing, and sends the all-clear itself when no record is left. The all-clear
+  uses the same notice key, so it still goes out once. A "down" notice that failed while the
+  database was away is now sent again on the next check, if the server is still down. That failure
+  also used to look like success: when the notification service could not read the database, it
+  reported "nobody to notify" instead of an error, so nothing retried it.
 - **"Not on its primary node" was sent about tenants that were on their primary node.** When Longhorn
   built an extra copy of a tenant's data on another node while the tenant ran and kept its data on
   its own node, the copy counted as the tenant's data being elsewhere. After ten minutes the

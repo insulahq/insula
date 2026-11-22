@@ -21,6 +21,7 @@ import { isDbAvailable, runMigrations, closeTestDb, getTestDb } from '../../test
 import { nodeHealthState } from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { markShutdownAnnounced, recordWentDown } from './fast-down-watch.js';
+import { reopenOutage } from './back-online.js';
 import { reconcileNodeHealth } from './scheduler.js';
 
 const dbAvailable = await isDbAvailable();
@@ -125,6 +126,28 @@ describe.skipIf(!dbAvailable)('shutdown-announced flag (integration)', () => {
     // A later tick that sees it Ready clears it: that outage is over.
     await reconcileNodeHealth(db(), cluster, at(10));
     expect(await downSince()).toBeNull();
+  });
+
+  it('restores a moment that went missing while the node is down, and never overwrites one on record', async () => {
+    const downSince = async () => (await db().select({ v: nodeHealthState.downSince })
+      .from(nodeHealthState).where(eq(nodeHealthState.nodeName, 'node-2')))[0]?.v;
+    const spec: Spec = { status: 'True', bootId: 'b1' };
+    const cluster = k8s(spec);
+    await reconcileNodeHealth(db(), cluster, at(0));
+
+    // The record the fast watch wrote is gone (production: rewound away with
+    // the old primary). The watch writes it again from what it remembers.
+    await reopenOutage(db(), 'node-2', at(1));
+    expect(await downSince()).toEqual(at(1));
+
+    // A start already on record — from another pod or the reconciler — stays.
+    await reopenOutage(db(), 'node-2', at(3));
+    expect(await downSince()).toEqual(at(1));
+
+    // And the reconciler, seeing the node down, keeps the restored one.
+    Object.assign(spec, { status: 'Unknown', since: at(2) });
+    await reconcileNodeHealth(db(), cluster, at(5));
+    expect(await downSince()).toEqual(at(1));
   });
 
   it('records nothing for a node the reconciler has not seen yet, or with no bootID', async () => {

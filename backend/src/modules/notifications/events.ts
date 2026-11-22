@@ -78,6 +78,20 @@ function toldSomeone(result: EmitResult | null): boolean {
   return (result?.perChannelStatuses ?? []).some((s) => s.status === 'sent' || s.status === 'queued');
 }
 
+/**
+ * What one notice came to. `failed`: the dispatch itself threw — most often
+ * the platform database being away — so nobody knows whether anyone was due a
+ * copy, and sending it again under the same dedupe key is safe. `not-told`: it
+ * ran, and nobody was due one (already told under the key, muted, nobody
+ * subscribed).
+ */
+export type NoticeOutcome = 'told' | 'not-told' | 'failed';
+
+function noticeOutcome(result: EmitResult | null): NoticeOutcome {
+  if (result === null) return 'failed';
+  return toldSomeone(result) ? 'told' : 'not-told';
+}
+
 // ──────────────────────────────────────────────────────────────────
 // Mailbox limit reached — DELIBERATELY NOT A NOTIFICATION
 // ──────────────────────────────────────────────────────────────────
@@ -931,8 +945,8 @@ export async function notifyAdminNodeDown(
   db: Database,
   payload: AdminNodeDownPayload,
   dedupeKey?: string,
-): Promise<void> {
-  await dispatchSafe(db, 'admin.node_down', { kind: 'admin' }, payload, undefined, { dedupeKey });
+): Promise<NoticeOutcome> {
+  return noticeOutcome(await dispatchSafe(db, 'admin.node_down', { kind: 'admin' }, payload, undefined, { dedupeKey }));
 }
 
 export interface AdminNodeShuttingDownPayload {
@@ -970,8 +984,8 @@ export async function notifyAdminNodeShuttingDown(
   db: Database,
   payload: AdminNodeShuttingDownPayload,
   dedupeKey?: string,
-): Promise<void> {
-  await dispatchSafe(db, 'admin.node_rebooting', { kind: 'admin' }, payload, undefined, { dedupeKey });
+): Promise<NoticeOutcome> {
+  return noticeOutcome(await dispatchSafe(db, 'admin.node_rebooting', { kind: 'admin' }, payload, undefined, { dedupeKey }));
 }
 
 export interface AdminNodeStartupCompletePayload {
@@ -1016,8 +1030,8 @@ export async function notifyAdminNodeBackOnline(
   db: Database,
   payload: AdminNodeBackOnlinePayload,
   dedupeKey?: string,
-): Promise<void> {
-  await dispatchSafe(db, 'admin.node_back_online', { kind: 'admin' }, payload, undefined, { dedupeKey });
+): Promise<NoticeOutcome> {
+  return noticeOutcome(await dispatchSafe(db, 'admin.node_back_online', { kind: 'admin' }, payload, undefined, { dedupeKey }));
 }
 
 export interface AdminNodeJoinedPayload {

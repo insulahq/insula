@@ -36,6 +36,7 @@ import {
 // dispatcher had NO logger at all, which is why a globally muted notification
 // system would otherwise be invisible.
 import { mailLogger } from '../../../shared/mail-logger.js';
+import { ApiError } from '../../../shared/errors.js';
 import { resolveRecipients, type RecipientScope } from '../recipients.js';
 import { getCategory } from '../categories/service.js';
 import { getActiveTemplate } from '../templates/service.js';
@@ -375,9 +376,15 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
   let category: NotificationCategoryResponse;
   try {
     category = await getCategory(db, opts.categoryId);
-  } catch {
-    // Unknown category — drop silently (logged elsewhere if needed).
-    return { eventId, deliveryCount: 0, perChannelStatuses: [] };
+  } catch (err) {
+    // Unknown category — drop silently (logged elsewhere if needed). Anything
+    // else is the database not answering, and must not read as "nobody to
+    // tell": a node-down notice sent while the platform database failed over
+    // came back as an empty, successful dispatch, so nothing sent it again.
+    if (err instanceof ApiError && err.code === 'CATEGORY_NOT_FOUND') {
+      return { eventId, deliveryCount: 0, perChannelStatuses: [] };
+    }
+    throw err;
   }
   if (!category.isActive) {
     return { eventId, deliveryCount: 0, perChannelStatuses: [] };

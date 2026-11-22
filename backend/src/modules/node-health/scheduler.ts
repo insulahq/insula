@@ -28,7 +28,6 @@ import { nodeHealthState, notifications, systemSettings, users } from '../../db/
 import {
   notifyAdminNodeDown,
   notifyAdminNodeShuttingDown,
-  notifyAdminNodeBackOnline,
   notifyAdminNodeStartupComplete,
 } from '../notifications/events.js';
 import {
@@ -40,7 +39,7 @@ import {
   type PrevBootState,
 } from './boot-events.js';
 import { nodeDownDedupeKey } from './fast-down-watch.js';
-import { backOnlinePayload, claimOutageEnd, endedOnSameBoot, nodeBackDedupeKey, type SameBootReturn } from './back-online.js';
+import { claimOutageEnd, endedOnSameBoot, sendClaimedReturn, type SameBootReturn } from './back-online.js';
 import { recordMemoryEvents } from './memory-events.js';
 import { readOomWitnesses } from './oom-witness.js';
 import {
@@ -423,7 +422,7 @@ export async function reconcileNodeHealth(
 
   // ── 5a'. All-clear for same-boot returns this tick claimed ──
   for (const r of backOnline) {
-    await notifyAdminNodeBackOnline(db, backOnlinePayload(r), nodeBackDedupeKey(r.nodeName, r.bootId, r.downSince));
+    await sendClaimedReturn(db, r);
   }
 
   // ── 5b. Dispatch the shutdown / startup lifecycle notifications ──
