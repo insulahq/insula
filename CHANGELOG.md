@@ -41,6 +41,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   database was away is now sent again on the next check, if the server is still down. That failure
   also used to look like success: when the notification service could not read the database, it
   reported "nobody to notify" instead of an error, so nothing retried it.
+- **A platform database primary cut off from the other servers kept taking writes for minutes, and
+  those writes were lost.** In HA mode the replicas copy the primary asynchronously. When the
+  primary loses the network, the others promote a replica, and whatever the old primary committed
+  after its replicas lost contact is thrown away when it rejoins. What stops it sooner is CNPG's
+  liveness probe: once the primary can reach neither the Kubernetes API nor another instance, three
+  failed probes restart it, and it starts Postgres again only once it can rejoin. The platform ran
+  that probe every 60 seconds instead of CNPG's 10, to save health checks. The third failed probe
+  never came: on a server cut off from the others, k3s itself exits 30 to 60 seconds in, and with
+  it the kubelet that runs the probe. In production a cut-off primary took writes for about 140
+  seconds. On staging it stayed primary for the whole four-minute cut, and every write it confirmed
+  after the cut was lost. The probe is back at 10 seconds (the readiness probe too). On staging
+  the same cut then stopped the primary 30 seconds in, and Postgres was down at 45 seconds, half a
+  minute before a replica took over.
+  The upgrade restarts the platform database once to apply it, and the upgrade review lists it. A
+  single-instance database restarts too, though CNPG runs the isolation check only with replicas.
 - **"Not on its primary node" was sent about tenants that were on their primary node.** When Longhorn
   built an extra copy of a tenant's data on another node while the tenant ran and kept its data on
   its own node, the copy counted as the tenant's data being elsewhere. After ten minutes the
