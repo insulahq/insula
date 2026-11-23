@@ -89,7 +89,7 @@ components:
     name: Calico CNI (network policy + WireGuard)
     tier: "0"
     kind: binary
-    pinned: "v3.33.0"
+    pinned: "v3.33.1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: projectcalico/calico, advisories: projectcalico/calico }
@@ -235,7 +235,21 @@ components:
     pinned: "v1.8.1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
-    watch: { type: github_releases, repo: maxlerebourg/crowdsec-bouncer-traefik-plugin, advisories: maxlerebourg/crowdsec-bouncer-traefik-plugin }
+    watch:
+      type: github_releases
+      repo: maxlerebourg/crowdsec-bouncer-traefik-plugin
+      advisories: maxlerebourg/crowdsec-bouncer-traefik-plugin
+      hold:
+        below: "1.8.2"
+        reason: >-
+          v1.8.2 reads X-Forwarded-For only when the TCP peer is in the crowdsec
+          Middleware's forwardedHeadersTrustedIPs (pkg/ip/ip.go), a static private-range
+          list, while Traefik's own trust follows the cluster's trusted proxy ranges. On
+          an install that trusts a public proxy (a CDN, a cloud load balancer), CrowdSec
+          would then check the proxy's address and stop applying bans to the clients
+          behind it. Its fix (an XFF spoof) is not reachable here: Traefik drops
+          X-Forwarded-* from untrusted peers first. Lift once the Middleware's list
+          follows the cluster's trusted proxy ranges.
     scan: manual
     owner: platform
     notes: Yaegi plugin loaded into Traefik. CROWDSEC_PLUGIN_VERSION. A Traefik Helm value, so existing clusters move with a Traefik values host migration (2026.10.23/0004).
@@ -598,7 +612,10 @@ components:
     pin_source: backend/src/modules/deployment-network-access/reconciler.ts
     pin_check: true
     repos: [openziti/ziti-edge-tunnel]
-    watch: { type: docker_hub, repo: openziti/ziti-edge-tunnel }
+    # GitHub releases, not Docker Hub: the image is tagged for prereleases too
+    # (1.22.x on Docker Hub are GitHub prereleases; its `latest` is 1.20.0), and
+    # only the release stream skips them.
+    watch: { type: github_releases, repo: openziti/ziti-tunnel-sdk-c, advisories: openziti/ziti-tunnel-sdk-c }
     scan: trivy
     owner: platform
     notes: Third-party. Opt-in per-deployment network access sidecar.
@@ -638,7 +655,7 @@ components:
     name: Rancher system-upgrade-controller (k3s upgrade Plans)
     tier: "1"
     kind: image
-    pinned: "v0.21.0"
+    pinned: "v0.21.1"
     pin_source: k8s/base/system-upgrade-controller/controller.yaml
     pin_check: true
     repos: [rancher/system-upgrade-controller]
@@ -689,8 +706,8 @@ components:
     name: CNPG Barman Cloud plugin (Postgres backups)
     tier: "1"
     kind: image
-    pinned: "v0.15.1"
-    pin_source: k8s/base/cnpg-system/plugin-barman-cloud-v0.15.1.yaml
+    pinned: "v0.16.0"
+    pin_source: k8s/base/cnpg-system/plugin-barman-cloud-v0.16.0.yaml
     pin_check: true
     repos: [cloudnative-pg/plugin-barman-cloud, cloudnative-pg/plugin-barman-cloud-sidecar]
     watch: { type: github_releases, repo: cloudnative-pg/plugin-barman-cloud, advisories: cloudnative-pg/plugin-barman-cloud }

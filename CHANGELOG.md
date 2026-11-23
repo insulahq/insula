@@ -79,6 +79,34 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   failed scrape was gone before anyone could read it. Each job now keeps only the pod's metrics
   port; the scraped targets and their series are unchanged.
 
+### Security
+
+- **Calico 3.33.1 (tigera-operator 1.44.1), up from 3.33.0.** It moves to Go 1.27.4 and
+  golang.org/x/net 0.62, which fix standard-library flaws in net/http, HTTP/2, crypto/tls and
+  x509. Its calico-node image no longer carries the CRITICAL ca-certificates finding
+  (CVE-2026-114406) that the CVE ledger had waived; in a local Trivy scan its fixable HIGH findings
+  drop from 19 to 1. Two IPAM fixes come with it. A stale CNI retry now fails instead of taking a
+  running pod's address. kube-controllers now frees the address of every finished pod, not only
+  evicted ones. The CRDs add length limits to fields the platform does not write. Fresh installs
+  get it from `bootstrap.sh`. Existing clusters get it from host migration `2026.11.14/0001`, the
+  same procedure as `2026.10.17/0007`: the operator rolls calico-node one server at a time.
+- **The Postgres backup plugin moves to barman-cloud 0.16.0, up from 0.15.1.** The sidecar it runs
+  in every platform database pod no longer carries the CRITICAL certifi finding
+  (GHSA-6q48-6c7w-9gw2) that the CVE ledger had waived. It also has newer grpc, cryptography and
+  boto3, and pip is gone from it. Three behaviour changes apply to the platform:
+  - A WAL restore tracks the end of the WAL per timeline. A file missing on the parent timeline
+    could end the restore of the child timeline too, so an instance restored from a snapshot
+    could skip valid WAL of its new timeline and replay the parent's instead.
+  - A base backup that recorded an error no longer counts. A restore skips it, and the earliest
+    restorable point no longer starts at it.
+  - Both plugin replicas answer the database operator. The platform already ran them that way.
+  The plugin needs CloudNativePG 1.30 or later; the platform runs 1.30.1. Its ObjectStore resource
+  now accepts zstd for base backups, but the platform keeps gzip.
+- **system-upgrade-controller 0.21.1, up from 0.21.0.** It is built with Go 1.26.11, a security
+  release. It also fixes a node whose `kubernetes.io/hostname` label differs from its name: such a
+  node's upgrade Job was deleted as out of turn, and the k3s upgrade never finished. The CRD is
+  unchanged.
+
 ## [2026.11.13] - 2026-11-19
 
 ### Added
