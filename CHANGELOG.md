@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.14] - 2026-11-23
+
 ### Changed
 
 - **Longhorn no longer makes throwaway copies of single-copy volumes when a node drops out.**
