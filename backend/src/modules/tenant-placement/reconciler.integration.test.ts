@@ -32,6 +32,7 @@ const { readPinRepairState } = await import('./pin-repair.js');
 // Postgres. Every table lives in this file's own schema, never the database's own.
 const url = process.env.PLACEMENT_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
 const MIGRATION = fileURLToPath(new URL('../../db/migrations/0141_tenant_placement.sql', import.meta.url));
+const SPARE_COPIES = fileURLToPath(new URL('../../db/migrations/0186_tenant_placement_spare_copies.sql', import.meta.url));
 const SALVAGE = '2026-10-02T05:09:29Z';
 
 const tenantFact = (id: string, name: string, over: Partial<TenantFact> = {}): TenantFact => ({
@@ -78,7 +79,11 @@ function fakeK8s() {
       status: { observedGeneration: 4, replicas: 1, updatedReplicas: 1, availableReplicas: 1 },
     })),
   };
-  return { k8s: { apps } as never, patches };
+  const volumePatches: Array<{ name: string; body: unknown }> = [];
+  const custom = {
+    patchNamespacedCustomObject: vi.fn(async (req: { name: string; body: unknown }) => { volumePatches.push(req); return {}; }),
+  };
+  return { k8s: { apps, custom } as never, patches, volumePatches };
 }
 
 describe.skipIf(!url)('placement reconciler tick (real Postgres)', () => {
@@ -96,6 +101,7 @@ describe.skipIf(!url)('placement reconciler tick (real Postgres)', () => {
     await pool.query(`CREATE TABLE platform_settings (setting_key varchar(100) PRIMARY KEY, setting_value text NOT NULL,
       updated_at timestamp NOT NULL DEFAULT now())`);
     await pool.query(readFileSync(MIGRATION, 'utf8'));
+    await pool.query(readFileSync(SPARE_COPIES, 'utf8'));
     db = drizzle(pool, { schema }) as unknown as Database;
   });
 
@@ -193,5 +199,20 @@ describe.skipIf(!url)('placement reconciler tick (real Postgres)', () => {
     const r2 = await tick('2026-10-02T06:10:30Z', incidentFacts(), again.k8s, true);
     expect(r2.repairStarted).toBe(false);
     expect(again.patches).toEqual([]);
+  });
+  it('turns auto-balance off on single-copy volumes from a good volume read, and never from a failed one', async () => {
+    const single = { replicas: 1, mode: 'ignored', setByPlatform: false };
+    const facts = incidentFacts({
+      volumes: incidentFacts().volumes.map((v, i) => ({ ...v, autoBalance: i === 2 ? { replicas: 2, mode: 'ignored', setByPlatform: false } : single })),
+    });
+    const fake = fakeK8s();
+    const r = await tick('2026-10-02T05:10:30Z', facts, fake.k8s);
+    expect(r.autoBalanceChanged).toBe(2);
+    expect(fake.volumePatches.map((p) => p.name)).toEqual(facts.volumes.slice(0, 2).map((v) => v.volumeName));
+
+    const failedRead = fakeK8s();
+    const r2 = await tick('2026-10-02T05:11:30Z', { ...facts, readError: 'longhorn volumes: timeout' }, failedRead.k8s);
+    expect(r2.autoBalanceChanged).toBe(0);
+    expect(failedRead.volumePatches).toEqual([]);
   });
 });

@@ -98,6 +98,7 @@ describe.skipIf(!url)('workload-health — a quota refusal (real Postgres)', () 
       created_at timestamptz NOT NULL DEFAULT now())`);
     await pool.query(migration('0135_tenant_workload_health_episodes.sql'));
     await pool.query(migration('0141_tenant_placement.sql'));
+    await pool.query(migration('0186_tenant_placement_spare_copies.sql'));
     db = drizzle(pool, { schema }) as unknown as Database;
   });
 

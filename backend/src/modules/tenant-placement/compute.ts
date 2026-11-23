@@ -48,6 +48,11 @@ export interface TenantPlacementObservation {
   readonly actualNodes: readonly string[];
   /** Human reasons for `misplaced`, e.g. "running on node-b". Empty otherwise. */
   readonly reasons: readonly string[];
+  /**
+   * Nodes where Longhorn is building a spare copy it will delete (spareCopies
+   * below). Left out of `dataNodes` and of the verdict; shown, not alarmed.
+   */
+  readonly spareCopyNodes: readonly string[];
 }
 
 /**
@@ -87,6 +92,42 @@ function tenantVolumes(tenant: TenantFact, volumes: readonly VolumeFact[]): Volu
   return volumes.filter((v) => v.namespace === tenant.namespace && !v.pvcRefLostAt);
 }
 
+/**
+ * Longhorn's spare copies of a Local-tier tenant's volumes: copies it is
+ * building on another node — or has created there and not started — while the
+ * tenant runs on one node, its volume is attached there and its engine holds
+ * a full copy there.
+ *
+ * That is not the tenant's data moving. When the node drops out for a few
+ * seconds, Longhorn takes the copy on it for lost and starts another
+ * elsewhere at once; once the node is back it builds that copy from the one
+ * it never lost, keeps one copy — the local one, by data locality — and
+ * deletes the spare. In production a 4-second NotReady cost two full copies
+ * of an 18 GB volume, built and deleted over 14 minutes, and the alert sent
+ * meanwhile told the operator to move a tenant that was where it belonged.
+ *
+ * `home` is the primary node, or for Auto the one node it all runs on. Needs
+ * the engines' mode map: with no `engineMode` read, nothing is a spare and
+ * the copy is reported as before. Pure.
+ */
+function spareCopies(
+  vols: readonly VolumeFact[],
+  replicas: readonly ReplicaFact[],
+  primary: string | null,
+  running: readonly string[],
+): ReplicaFact[] {
+  const home = primary ?? running[0] ?? null;
+  if (!home || running.length !== 1 || running[0] !== home) return [];
+  const spares: ReplicaFact[] = [];
+  for (const v of vols) {
+    if (!v.attached || v.attachedNode !== home) continue;
+    const copies = replicas.filter((r) => r.volumeName === v.volumeName && !r.failed);
+    if (!copies.some((r) => r.nodeId === home && r.engineMode === 'RW')) continue;
+    spares.push(...copies.filter((r) => r.nodeId !== home && (r.engineMode === 'WO' || r.engineMode === 'none')));
+  }
+  return spares;
+}
+
 export function observeTenantPlacement(
   tenant: TenantFact,
   input: {
@@ -107,10 +148,12 @@ export function observeTenantPlacement(
       .map((p) => p.nodeName),
   );
   const attachedNodes = uniqSorted(vols.filter((v) => v.attached).map((v) => v.attachedNode));
-  const dataNodes = uniqSorted(
-    input.replicas.filter((r) => volNames.has(r.volumeName) && !r.failed).map((r) => r.nodeId),
-  );
   const running = uniqSorted([...workloadNodes, ...attachedNodes]);
+  const spares = tenant.storageTier === 'local' ? spareCopies(vols, input.replicas, tenant.pinnedNode, running) : [];
+  const replicas = spares.length > 0 ? input.replicas.filter((r) => !spares.includes(r)) : input.replicas;
+  const dataNodes = uniqSorted(
+    replicas.filter((r) => volNames.has(r.volumeName) && !r.failed).map((r) => r.nodeId),
+  );
   const actualNodes = running.length > 0 ? running : dataNodes;
 
   const base = {
@@ -122,11 +165,12 @@ export function observeTenantPlacement(
     attachedNodes,
     dataNodes,
     actualNodes,
+    spareCopyNodes: uniqSorted(spares.map((r) => r.nodeId)),
   };
 
   const primary = tenant.pinnedNode;
   if (!primary) {
-    const split = tenant.storageTier === 'local' ? autoSplitReason(vols, input.replicas, running, attachedNodes, dataNodes, refusals) : null;
+    const split = tenant.storageTier === 'local' ? autoSplitReason(vols, replicas, running, attachedNodes, dataNodes, refusals) : null;
     return split ? { ...base, status: 'misplaced', reasons: [split] } : { ...base, status: 'unpinned', reasons: [] };
   }
 
@@ -149,13 +193,19 @@ export function observeTenantPlacement(
       // volume with nothing usable there yet: a volume whose data is already
       // local can fail to schedule something else entirely.
       const copyTarget = attachedNodes.length > 0 ? attachedNodes : [primary];
-      const hasCopyThere = (volumeName: string): boolean => input.replicas.some((r) => r.volumeName === volumeName
+      const hasCopyThere = (volumeName: string): boolean => replicas.some((r) => r.volumeName === volumeName
         && !r.failed && r.nodeId !== null && copyTarget.includes(r.nodeId));
       const blocked = uniqSorted(vols.filter((v) => !hasCopyThere(v.volumeName)).map((v) => refusalOf(v, copyTarget, refusals)));
+      // The copy being built is the primary's when its engine says so: the
+      // data is coming back (a move to the primary), not leaving.
+      const fillingPrimary = replicas.some((r) => volNames.has(r.volumeName) && r.nodeId === primary
+        && !r.failed && r.engineMode === 'WO');
       reasons.push(dataNodes.includes(primary)
         // Both: a replica is being built elsewhere — data locality is moving
         // the volume to where a pod runs. Still not where it belongs.
-        ? `data being copied to ${formatNodes(offData)}`
+        ? fillingPrimary
+          ? `data still on ${formatNodes(offData)}, being copied to ${primary}`
+          : `data being copied to ${formatNodes(offData)}`
         : blocked.length > 0
           ? `data on ${formatNodes(offData)}; ${COPY_BLOCKED_MARK} ${formatNodes(copyTarget)}: ${blocked.join('; ')}`
           : `data on ${formatNodes(offData)}`);
@@ -203,7 +253,7 @@ export function computePlacements(
 ): TenantPlacementObservation[] {
   return facts.tenants.map((tenant) => {
     const observed = observeTenantPlacement(tenant, facts, refusals);
-    return facts.readError ? { ...observed, status: 'unknown', reasons: [] } : observed;
+    return facts.readError ? { ...observed, status: 'unknown', reasons: [], spareCopyNodes: [] } : observed;
   });
 }
 

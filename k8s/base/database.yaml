@@ -228,20 +228,30 @@ spec:
       # No CPU limit — high-priority platform postgres.
       memory: 512Mi
 
-  # Slow the instance-manager probes from CNPG defaults (10s) to 60s.
-  # Each probe runs `pg_isready` against the local socket — a free
-  # operation on a healthy DB but, on a low-traffic single-tenant
-  # install, 10s adds up to ~8 600 invocations per pod per day. 60s
-  # reduces this to ~1 440 with no observable failure-detection
-  # impact (failover still triggers on actual crash via the operator's
-  # event watch — the periodic probe is a backstop, not a primary
-  # signal). startup keeps the default 5s so first-boot detection
-  # stays snappy.
+  # CNPG's own 10 s. The liveness probe is what stops a primary that is cut
+  # off from the API server and from every other instance (its isolation
+  # check): replication is asynchronous, so every commit it accepts after the
+  # replicas lose its stream is discarded by pg_rewind when it rejoins. Its
+  # primary lease does not stop it — a lease it cannot read is "unverifiable",
+  # and CNPG leaves the fencing to this probe — and after the restart the
+  # instance manager starts Postgres only once it can read the Cluster again.
+  # The probe has to fence it early. On a server cut off from the others,
+  # k3s exits after its etcd loses quorum, taking the kubelet with it, and
+  # nothing probes until the network is back: measured on staging, 30 s into
+  # the cut on one server, 61 s on another.
+  # At 60 s the third failure never came, and the cut-off primary stayed
+  # primary until the network returned (production: ~140 s; staging: the
+  # whole 4-min cut). At 10 s it got its stop signal 29.6 s in, 0.8 s before that
+  # server's k3s exited, and Postgres was down at 44.7 s (smart shutdown below).
+  # Readiness goes back with it: it was slowed only to run pg_isready less
+  # often, which costs nothing worth saving. Both are written out rather than
+  # dropped: Flux merges this Cluster (ssa: merge), so a field left out of the
+  # manifest keeps its live value.
   probes:
     liveness:
-      periodSeconds: 60
+      periodSeconds: 10
     readiness:
-      periodSeconds: 60
+      periodSeconds: 10
 
   # Every planned restart (an operator update, a spec change, Apply HA) stops
   # Postgres with a CHECKPOINT and a SMART shutdown first: open sessions may keep

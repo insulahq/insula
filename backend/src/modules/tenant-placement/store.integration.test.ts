@@ -26,11 +26,12 @@ import {
 // Postgres. Every table lives in this file's own schema, never the database's own.
 const url = process.env.PLACEMENT_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
 const MIGRATION = fileURLToPath(new URL('../../db/migrations/0141_tenant_placement.sql', import.meta.url));
+const SPARE_COPIES = fileURLToPath(new URL('../../db/migrations/0186_tenant_placement_spare_copies.sql', import.meta.url));
 
 const obs = (over: Partial<TenantPlacementObservation> = {}): TenantPlacementObservation => ({
   tenantId: 't1', tenantName: 'Acme', status: 'placed', primaryNode: 'node-a', storageTier: 'local',
   workloadNodes: ['node-a'], attachedNodes: ['node-a'], dataNodes: ['node-a'], actualNodes: ['node-a'], reasons: [],
-  ...over,
+  spareCopyNodes: [], ...over,
 });
 const misplaced = obs({
   status: 'misplaced', workloadNodes: ['node-b'], attachedNodes: ['node-b'], dataNodes: ['node-b'],
@@ -50,8 +51,10 @@ describe.skipIf(!url)('tenant placement store (real Postgres)', () => {
     await pool.query('DROP TABLE IF EXISTS tenant_storage_failovers, tenant_placement_state, tenants CASCADE');
     await pool.query('CREATE TABLE tenants (id varchar(36) PRIMARY KEY)');
     await pool.query(readFileSync(MIGRATION, 'utf8'));
+    await pool.query(readFileSync(SPARE_COPIES, 'utf8'));
     // Replay-safe, as the migration header promises.
     await pool.query(readFileSync(MIGRATION, 'utf8'));
+    await pool.query(readFileSync(SPARE_COPIES, 'utf8'));
     db = drizzle(pool, { schema }) as unknown as Database;
   });
 
@@ -79,6 +82,18 @@ describe.skipIf(!url)('tenant placement store (real Postgres)', () => {
     row = await getPlacement(db, 't1');
     expect(row?.status).toBe('placed');
     expect(row?.misplacedSince).toBeNull();
+  });
+
+  it('keeps where Longhorn builds a spare copy while it does, on a placed tenant, and clears it after', async () => {
+    await savePlacementStates(db, [obs({ spareCopyNodes: ['node-b', 'node-c'] })], at('2026-10-02T05:10:00Z'));
+    let row = await getPlacement(db, 't1');
+    expect(row?.status).toBe('placed');
+    expect(row?.spareCopyNodes).toEqual(['node-b', 'node-c']);
+    expect(row?.misplacedSince).toBeNull();
+
+    await savePlacementStates(db, [obs()], at('2026-10-02T05:30:00Z'));
+    row = await getPlacement(db, 't1');
+    expect(row?.spareCopyNodes).toEqual([]);
   });
 
   it('never lets an incomplete read overwrite known facts', async () => {

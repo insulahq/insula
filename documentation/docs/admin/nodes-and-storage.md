@@ -178,6 +178,16 @@ volume (all replicas failed, the volume remounted and the workloads restarted)
 raises a **Tenant storage failover** notification at once. Several tenants hit
 by the same event arrive as one notification.
 
+A copy that Longhorn builds on another node while the tenant runs and keeps
+its data on one node is not counted as the tenant being elsewhere. Longhorn
+makes such a copy when a node drops out of the cluster for a moment, and
+deletes it once it is built. The *Placement* card names the node in a blue
+note, and no notification is sent. To stop Longhorn making these copies at
+all, the platform turns Longhorn's replica auto-balance off on every volume
+that has one copy, and back to the cluster setting when a volume has more
+than one copy again. Volumes with more than one copy (the HA tier) keep it,
+so their copies still spread when a server joins.
+
 ## What lives elsewhere in Cluster
 
 The other Cluster pages are operator-facing: **Cluster Policies** (HA mode

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AlertTriangle, CheckCircle2, HelpCircle, Loader2, MoveRight, Pin } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Copy, HelpCircle, Loader2, MoveRight, Pin } from 'lucide-react';
 import type { TenantPlacement, TenantStorageFailover } from '@insula/api-contracts';
 import { useTenantPlacement } from '@/hooks/use-tenant-placement';
 import { useMigrateTenantToWorker } from '@/hooks/use-tenant-migration';
@@ -66,6 +66,8 @@ export default function PlacementStatusPanel({ tenantId }: { readonly tenantId: 
     <div className="mt-5 border-t border-gray-100 pt-4 dark:border-gray-700" data-testid="placement-status">
       <PlacementSummary placement={placement} />
 
+      {placement && <SpareCopyNote placement={placement} />}
+
       {placement?.status === 'misplaced' && (
         <MisplacedBanner
           placement={placement}
@@ -120,6 +122,31 @@ function PlacementSummary({ placement }: { readonly placement: TenantPlacement |
         </dd>
       </div>
     </dl>
+  );
+}
+
+/**
+ * Longhorn building a copy of the tenant's data that it will delete again
+ * (tenant-placement/compute.ts spareCopies): not a misplacement, so no red
+ * banner and no alert — but the "Data on" line no longer names that node, and
+ * the operator watching the node's disk and network should see why.
+ */
+export function SpareCopyNote({ placement }: { readonly placement: TenantPlacement }) {
+  const spares = placement.spareCopyNodes ?? [];
+  if (spares.length === 0) return null;
+  const home = placement.actualNodes;
+  return (
+    <p
+      className="mt-3 flex items-start gap-2 rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-900 dark:border-sky-500/40 dark:bg-sky-950/40 dark:text-sky-200"
+      data-testid="placement-spare-copy"
+    >
+      <Copy size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+      <span>
+        Longhorn is building an extra copy of this tenant&apos;s data on <NodeList names={spares} /> and
+        deletes it once it is built. The tenant runs and keeps its data on <Nodes names={home} />, where it
+        belongs. This follows a node dropping out of the cluster for a moment; nothing to do.
+      </span>
+    </p>
   );
 }
 

@@ -156,6 +156,28 @@ describe('PlacementStatusPanel (tenant detail)', () => {
       .toHaveTextContent('2026-10-02 05:09 UTC — volume tenant-acme-storage salvaged and remounted; node-a → node-b');
   });
 
+  it('says Longhorn is building a spare copy — in blue, no banner, no ways out — and not otherwise', () => {
+    withPlacement(full(summary({ primaryNode: 'node-d', actualNodes: ['node-d'] }), { spareCopyNodes: ['node-a', 'node-b'] }));
+    const { unmount } = render(<PlacementStatusPanel tenantId="t1" />);
+    const note = screen.getByTestId('placement-spare-copy');
+    expect(note).toHaveTextContent('Longhorn is building an extra copy of this tenant\'s data on node-a, node-b and deletes it once it is built.');
+    expect(note).toHaveTextContent('The tenant runs and keeps its data on node-d, where it belongs.');
+    expect(note).toHaveTextContent('nothing to do');
+    expect(note.className).toMatch(/dark:bg-sky-950/);
+    expect(screen.queryByTestId('placement-misplaced-banner')).toBeNull();
+    expect(screen.queryByTestId('placement-move-back')).toBeNull();
+    unmount();
+
+    // Placed with none, and an API older than the field: no note.
+    withPlacement(full(summary(), { spareCopyNodes: [] }));
+    const second = render(<PlacementStatusPanel tenantId="t1" />);
+    expect(screen.queryByTestId('placement-spare-copy')).toBeNull();
+    second.unmount();
+    withPlacement(full(summary()));
+    render(<PlacementStatusPanel tenantId="t1" />);
+    expect(screen.queryByTestId('placement-spare-copy')).toBeNull();
+  });
+
   it('says it has not been observed yet rather than implying all is well', () => {
     withPlacement(null);
     render(<PlacementStatusPanel tenantId="t1" />);

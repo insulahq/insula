@@ -183,3 +183,49 @@ describe('node list fallback to the persisted inventory', () => {
     expect(facts.readError).toBeTruthy();
   });
 });
+
+describe('Longhorn engine modes and auto-balance on the facts', () => {
+  const lhK8s = (engines: (() => Promise<unknown>) | null) => ({
+    ...okK8s(),
+    custom: {
+      listNamespacedCustomObject: async ({ plural }: { plural: string }) => {
+        if (plural === 'replicas') {
+          return {
+            items: ['r-full', 'r-build', 'r-new'].map((name, i) => ({
+              metadata: { name }, spec: { volumeName: 'pvc-1', nodeID: `n${i + 1}` }, status: { currentState: 'running' },
+            })),
+          };
+        }
+        if (plural === 'volumes') {
+          return {
+            items: [{
+              metadata: { name: 'pvc-1', annotations: { 'insula.host/replica-auto-balance': 'off-single-copy' } },
+              spec: { numberOfReplicas: 1, replicaAutoBalance: 'disabled' },
+              status: { state: 'attached', currentNodeID: 'n1', kubernetesStatus: { namespace: 'tenant-acme', pvcName: 'data' } },
+            }],
+          };
+        }
+        if (plural === 'engines') {
+          if (!engines) return { items: [{ status: { replicaModeMap: { 'r-full': 'RW', 'r-build': 'WO' } } }] };
+          return engines();
+        }
+        return { items: [] };
+      },
+    },
+  }) as unknown as Parameters<typeof collectFacts>[1];
+
+  it("gives each replica its engine mode — 'none' when the engine does not list it", async () => {
+    const facts = await collectFacts(liveDb(), lhK8s(null));
+    expect(facts.replicas.map((r) => [r.nodeId, r.engineMode, r.rebuilding])).toEqual([
+      ['n1', 'RW', false], ['n2', 'WO', true], ['n3', 'none', false],
+    ]);
+    expect(facts.volumes[0]!.autoBalance).toEqual({ replicas: 1, mode: 'disabled', setByPlatform: true });
+  });
+
+  it('leaves the mode unknown when the engines could not be read, without failing the read', async () => {
+    const facts = await collectFacts(liveDb(), lhK8s(async () => { throw new Error('timeout'); }));
+    expect(facts.replicas.map((r) => r.engineMode)).toEqual([undefined, undefined, undefined]);
+    expect(facts.replicas.every((r) => !r.rebuilding)).toBe(true);
+    expect(facts.readError ?? null).toBeNull();
+  });
+});

@@ -138,6 +138,21 @@ function timerKey(ruleId: string, subjectKeyValue: string): string {
   return `${ruleId}\u0000${subjectKeyValue}`;
 }
 
+/**
+ * Drops the timers of a rule's subjects that are not violated this tick. The
+ * recovery pass only visits stored rows, and a subject that recovered before
+ * it ever fired has none, so its timer would otherwise keep running: the next
+ * single missed scrape of that target, a day later, fired at once. A failed
+ * query clears nothing: the subjects' state is unknown, not healthy, and
+ * monitoring-unreachable covers a vmsingle that stays away.
+ */
+function clearRecoveredTimers(ruleId: string, violated: ReadonlyMap<string, unknown>): void {
+  const prefix = timerKey(ruleId, '');
+  for (const timer of violationSince.keys()) {
+    if (timer.startsWith(prefix) && !violated.has(timer.slice(prefix.length))) violationSince.delete(timer);
+  }
+}
+
 async function applyRuleState(
   db: Database,
   input: TransitionInput,
@@ -316,7 +331,12 @@ export async function evaluateOnce(
 
   for (const rule of SLO_RULES) {
     const ov = overrideById.get(rule.id);
-    if (ov && !ov.enabled) continue;
+    if (ov && !ov.enabled) {
+      // A disabled rule sees nothing, so nothing it was timing can count once
+      // it is enabled again.
+      clearRecoveredTimers(rule.id, new Map());
+      continue;
+    }
     const expr = renderExpr(rule, ov?.threshold ?? null, await excludedFor(rule));
     try {
       const samples = await queryInstant(expr, vmOpts);
@@ -382,6 +402,7 @@ export async function evaluateOnce(
           subject: { key: row.subjectKey, labels, label: describeSubject(rule, labels) },
         }, log);
       }
+      clearRecoveredTimers(rule.id, firingNow);
     } catch (err) {
       anyQueryFailed = true;
       log.warn(`monitoring: query failed for ${rule.id}:`, err instanceof Error ? err.message : String(err));

@@ -64,6 +64,8 @@ const {
   notifyAdminBackupFailed,
   notifyAdminBackupTargetUnreachable,
   notifyAdminNodeDown,
+  notifyAdminNodeShuttingDown,
+  notifyAdminNodeBackOnline,
   notifyAdminSecurityHardeningDrift,
   notifyTenantScheduledTaskFailure,
   notifyMailboxQuotaThreshold,
@@ -345,11 +347,24 @@ describe('notification events', () => {
       expect(quota.externalRecipientsOptedIn).toBeFalsy();
     });
 
-    it('swallows dispatcher errors (legacy contract: never throw)', async () => {
+    it('swallows dispatcher errors (legacy contract: never throw), and says the notice failed', async () => {
       emitEventMock.mockRejectedValueOnce(new Error('boom'));
       await expect(
         notifyAdminNodeDown({} as never, { nodeName: 'staging1' }),
-      ).resolves.toBeUndefined();
+      ).resolves.toBe('failed');
+    });
+
+    it('node notices say whether anyone was told, so a failed one can be sent again', async () => {
+      const result = (status: string) =>
+        ({ eventId: 'e1', deliveryCount: 1, perChannelStatuses: [{ userId: 'u1', channel: 'email', status }] });
+      emitEventMock.mockResolvedValueOnce(result('queued'));
+      await expect(notifyAdminNodeDown({} as never, { nodeName: 'node-4' }, 'k')).resolves.toBe('told');
+      emitEventMock.mockResolvedValueOnce(result('skipped'));
+      await expect(notifyAdminNodeShuttingDown({} as never, { nodeName: 'node-4' }, 'k')).resolves.toBe('not-told');
+      emitEventMock.mockResolvedValueOnce({ eventId: 'e1', deliveryCount: 0, perChannelStatuses: [] });
+      await expect(notifyAdminNodeBackOnline({} as never, {
+        nodeName: 'node-4', downtimeText: '2m 43s', downAtText: '17:53 UTC', backAtText: '17:56 UTC', bootNote: '',
+      }, 'k')).resolves.toBe('not-told');
     });
   });
 });

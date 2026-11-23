@@ -9,9 +9,12 @@
  *   2. persist each tenant's placement (placed / misplaced / unpinned);
  *   3. notify tenants that have stayed off their primary node for
  *      MISPLACED_NOTIFY_AFTER_MS, once per misplacement episode;
- *   4. start the one-shot pin repair, if it has not run on this cluster.
+ *   4. start the one-shot pin repair, if it has not run on this cluster;
+ *   5. release data relocations whose copy is done;
+ *   6. keep Longhorn's replica auto-balance off on volumes with one copy
+ *      (auto-balance.ts) — every volume, the platform's own too.
  *
- * Read-only towards the cluster except for step 4. Never moves a tenant.
+ * Read-only towards the cluster except for steps 4 to 6. Never moves a tenant.
  */
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -23,6 +26,7 @@ import { collectFacts, type CollectedFacts } from '../tenant-health/collect.js';
 import { notifyAdminTenantMisplaced, notifyAdminTenantStorageFailover } from '../notifications/events.js';
 import { computePlacements, observeStorageFailovers, type TenantPlacementObservation } from './compute.js';
 import { readCopyRefusalContext, type CopyRefusalContext } from './copy-refusal.js';
+import { applyAutoBalanceChanges, autoBalanceChanges } from './auto-balance.js';
 import { failoverMessage, misplacedMessage, type NamedFailover, type NamedPlacement } from './messages.js';
 import {
   claimMisplacedNotifications, loadPlacementStates, recordStorageFailovers, savePlacementStates,
@@ -67,6 +71,7 @@ export interface PlacementTickResult {
   readonly misplacedNotified: number;
   readonly repairStarted: boolean;
   readonly relocationsReleased: number;
+  readonly autoBalanceChanged: number;
 }
 
 let repairRunning = false;
@@ -149,6 +154,20 @@ export async function runPlacementTick(deps: PlacementDeps): Promise<PlacementTi
         return 0;
       });
 
+  // 6. Auto-balance off on single-copy volumes, judged from this tick's
+  //    volume read — never from a failed one, which lists no volumes.
+  const autoBalanceChanged = volumesReadOk(facts)
+    ? await applyAutoBalanceChanges(deps.k8s, autoBalanceChanges(facts.volumes))
+      .then(({ applied, failed }) => {
+        for (const c of applied) {
+          log.info(`[tenant-placement] replica auto-balance of ${c.volumeName} set to ${c.mode}`
+            + (c.mode === 'disabled' ? ' (one copy)' : ' (more than one copy again)'));
+        }
+        for (const f of failed) log.warn(`[tenant-placement] could not set replica auto-balance of ${f.volumeName}: ${f.error}`);
+        return applied.length;
+      })
+    : 0;
+
   return {
     placements,
     newFailovers: inserted.length,
@@ -156,6 +175,7 @@ export async function runPlacementTick(deps: PlacementDeps): Promise<PlacementTi
     misplacedNotified: claimed.length,
     repairStarted,
     relocationsReleased,
+    autoBalanceChanged,
   };
 }
 
