@@ -35,6 +35,13 @@ export const tenantPlacementSchema = tenantPlacementSummarySchema.extend({
   attachedNodes: z.array(z.string()),
   /** Nodes holding a usable replica of its volumes. */
   dataNodes: z.array(z.string()),
+  /**
+   * Nodes where Longhorn is building a spare copy of its data that it will
+   * delete once built: the tenant runs and keeps its data on one node, and
+   * Longhorn briefly lost sight of that copy (its node dropped out for a
+   * moment). Not a misplacement. Absent from an API older than this field.
+   */
+  spareCopyNodes: z.array(z.string()).optional(),
 });
 export type TenantPlacement = z.infer<typeof tenantPlacementSchema>;
 

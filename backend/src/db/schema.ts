@@ -3792,6 +3792,8 @@ export const tenantPlacementState = pgTable('tenant_placement_state', {
   dataNodes: text('data_nodes').array().notNull().default([]),
   actualNodes: text('actual_nodes').array().notNull().default([]),
   reasons: text('reasons').array().notNull().default([]),
+  // Migration 0186: nodes where Longhorn builds a spare copy it will delete.
+  spareCopyNodes: text('spare_copy_nodes').array().notNull().default([]),
   misplacedSince: timestamp('misplaced_since', { withTimezone: true }),
   notifiedAt: timestamp('notified_at', { withTimezone: true }),
   checkedAt: timestamp('checked_at', { withTimezone: true }).notNull().defaultNow(),

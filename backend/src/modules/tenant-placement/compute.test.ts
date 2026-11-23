@@ -267,3 +267,111 @@ describe('observeStorageFailovers', () => {
     }]);
   });
 });
+
+describe("observeTenantPlacement — Longhorn's spare copies", () => {
+  // Everything on node-a; Longhorn builds (WO) or has created (none) a copy elsewhere.
+  const onA = { pods: [pod('node-a')], volumes: [vol()] };
+
+  it('is placed, the spare kept apart, when a copy is being built elsewhere (the production case)', () => {
+    // A 4-second NotReady of node-a: two copies started elsewhere, one rebuilding, one waiting.
+    const p = observeTenantPlacement(tenant(), {
+      ...onA,
+      replicas: [rep('node-a', { engineMode: 'RW' }), rep('node-b', { engineMode: 'WO', rebuilding: true }), rep('node-c', { engineMode: 'none' })],
+    });
+    expect(p.status).toBe('placed');
+    expect(p.reasons).toEqual([]);
+    expect(p.dataNodes).toEqual(['node-a']);
+    expect(p.spareCopyNodes).toEqual(['node-b', 'node-c']);
+  });
+
+  it('reports the copy as before when the engines were not read: nothing proves it a spare', () => {
+    const p = observeTenantPlacement(tenant(), { ...onA, replicas: [rep('node-a'), rep('node-b')] });
+    expect(p.status).toBe('misplaced');
+    expect(p.reasons).toEqual(['data being copied to node-b']);
+    expect(p.spareCopyNodes).toEqual([]);
+  });
+
+  it('reports a FULL copy elsewhere: Longhorn keeping it is not a spare it will delete', () => {
+    const p = observeTenantPlacement(tenant(), {
+      ...onA, replicas: [rep('node-a', { engineMode: 'RW' }), rep('node-b', { engineMode: 'RW' })],
+    });
+    expect(p.status).toBe('misplaced');
+    expect(p.spareCopyNodes).toEqual([]);
+  });
+
+  it('is no spare while the primary holds no full copy, or a pod runs elsewhere', () => {
+    const notFullHere = observeTenantPlacement(tenant(), {
+      ...onA, replicas: [rep('node-a', { engineMode: 'none' }), rep('node-b', { engineMode: 'WO' })],
+    });
+    expect(notFullHere.status).toBe('misplaced');
+    expect(notFullHere.spareCopyNodes).toEqual([]);
+
+    // Data locality following a pod on node-b: a real move, still reported.
+    const podAway = observeTenantPlacement(tenant(), {
+      pods: [pod('node-b')], volumes: [vol({ attachedNode: 'node-b' })],
+      replicas: [rep('node-a', { engineMode: 'RW' }), rep('node-b', { engineMode: 'WO' })],
+    });
+    expect(podAway.status).toBe('misplaced');
+    expect(podAway.reasons).toEqual(['running on node-b', 'data being copied to node-b']);
+    expect(podAway.spareCopyNodes).toEqual([]);
+  });
+
+  it('says the data is coming back when the copy being built is the primary one', () => {
+    // A move back to node-a: attached there, its copy rebuilding from node-b.
+    const p = observeTenantPlacement(tenant(), {
+      ...onA, replicas: [rep('node-a', { engineMode: 'WO' }), rep('node-b', { engineMode: 'RW' })],
+    });
+    expect(p.status).toBe('misplaced');
+    expect(p.reasons).toEqual(['data still on node-b, being copied to node-a']);
+  });
+
+  it('keeps a spare apart on Auto too, instead of "its data being copied there"', () => {
+    const p = observeTenantPlacement(tenant({ pinnedNode: null }), {
+      pods: [pod('node-c')], volumes: [vol({ attachedNode: 'node-c' })],
+      replicas: [rep('node-c', { engineMode: 'RW' }), rep('node-a', { engineMode: 'WO' })],
+    });
+    expect(p.status).toBe('unpinned');
+    expect(p.dataNodes).toEqual(['node-c']);
+    expect(p.spareCopyNodes).toEqual(['node-a']);
+  });
+
+  it('leaves the HA tier and a stopped tenant to their own rules', () => {
+    const ha = observeTenantPlacement(tenant({ storageTier: 'ha' }), {
+      ...onA, replicas: [rep('node-a', { engineMode: 'RW' }), rep('node-b', { engineMode: 'WO' })],
+    });
+    expect(ha.spareCopyNodes).toEqual([]);
+    expect(ha.dataNodes).toEqual(['node-a', 'node-b']);
+
+    const stopped = observeTenantPlacement(tenant(), {
+      pods: [], volumes: [vol({ attached: false, attachedNode: null })],
+      replicas: [rep('node-a', { running: false, engineMode: 'none' }), rep('node-b', { running: false, engineMode: 'none' })],
+    });
+    expect(stopped.spareCopyNodes).toEqual([]);
+    expect(stopped.status).toBe('misplaced');
+  });
+
+  it('judges each volume on its own: a second, detached volume with data elsewhere is still reported', () => {
+    const p = observeTenantPlacement(tenant(), {
+      pods: [pod('node-a')],
+      volumes: [vol(), vol({ volumeName: 'pvc-2', pvcName: `${NS}-db`, attached: false, attachedNode: null })],
+      replicas: [
+        rep('node-a', { engineMode: 'RW' }), rep('node-b', { engineMode: 'WO' }),
+        rep('node-c', { volumeName: 'pvc-2', running: false, engineMode: 'none' }),
+      ],
+    });
+    expect(p.spareCopyNodes).toEqual(['node-b']);
+    expect(p.dataNodes).toEqual(['node-a', 'node-c']);
+    expect(p.status).toBe('misplaced');
+    expect(p.reasons).toEqual(['data being copied to node-c']);
+  });
+
+  it('names no spare on a tenant whose cluster read was incomplete', () => {
+    const [p] = computePlacements({
+      tenants: [tenant()], pods: onA.pods, volumes: onA.volumes,
+      replicas: [rep('node-a', { engineMode: 'RW' }), rep('node-b', { engineMode: 'WO' })],
+      readError: 'longhorn replicas: timeout',
+    });
+    expect(p!.status).toBe('unknown');
+    expect(p!.spareCopyNodes).toEqual([]);
+  });
+});

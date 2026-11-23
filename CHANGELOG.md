@@ -12,6 +12,101 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **Longhorn no longer makes throwaway copies of single-copy volumes when a node drops out.**
+  Longhorn's replica auto-balance counts a volume's copies on Ready nodes only. When the node
+  holding a volume's only copy was NotReady, even for a few seconds, it found no copy and started
+  one on another node at once; the 10-minute wait for a lost copy does not apply to auto-balance.
+  Once the node was back, it built that copy from the original and then deleted it. In production
+  a 4-second NotReady of one server copied every single-copy volume on it: two full copies of one
+  tenant's 18 GB volume over 14 minutes, and copies of a platform database volume. With one copy
+  there is nothing to balance, so the platform now sets auto-balance to *disabled* on every Longhorn
+  volume with one copy (Local-tier tenants, mail and platform volumes on the local tier) and marks
+  it. A marked volume that has more than one copy again, such as a tenant moved to the HA tier, goes
+  back to the cluster setting. A value set by hand is left alone. Existing volumes are changed
+  within a minute of the upgrade; nothing restarts and no data moves.
+
+### Fixed
+
+- **A server could be reported down and never reported back.** The "server back online" notice
+  depended on one database record of the outage, written when the server was announced down. That
+  record can be lost when the server that went down also held the platform database's primary. In
+  production it was lost twice in one outage. One platform-api pod could not write it while the
+  database failed over. Another pod's write reached the old primary, and was discarded when that
+  primary rejoined as a replica. The "down" email went out and no "back" email followed. The pod
+  that sends the "down" notice now keeps the outage in memory until it ends. It writes the record
+  again if it goes missing, and sends the all-clear itself when no record is left. The all-clear
+  uses the same notice key, so it still goes out once. A "down" notice that failed while the
+  database was away is now sent again on the next check, if the server is still down. That failure
+  also used to look like success: when the notification service could not read the database, it
+  reported "nobody to notify" instead of an error, so nothing retried it.
+- **A platform database primary cut off from the other servers kept taking writes for minutes, and
+  those writes were lost.** In HA mode the replicas copy the primary asynchronously. When the
+  primary loses the network, the others promote a replica, and whatever the old primary committed
+  after its replicas lost contact is thrown away when it rejoins. What stops it sooner is CNPG's
+  liveness probe: once the primary can reach neither the Kubernetes API nor another instance, three
+  failed probes restart it, and it starts Postgres again only once it can rejoin. The platform ran
+  that probe every 60 seconds instead of CNPG's 10, to save health checks. The third failed probe
+  never came: on a server cut off from the others, k3s itself exits 30 to 60 seconds in, and with
+  it the kubelet that runs the probe. In production a cut-off primary took writes for about 140
+  seconds. On staging it stayed primary for the whole four-minute cut, and every write it confirmed
+  after the cut was lost. The probe is back at 10 seconds (the readiness probe too). On staging
+  the same cut then stopped the primary 30 seconds in, and Postgres was down at 45 seconds, half a
+  minute before a replica took over.
+  The upgrade restarts the platform database once to apply it, and the upgrade review lists it. A
+  single-instance database restarts too, though CNPG runs the isolation check only with replicas.
+- **"Not on its primary node" was sent about tenants that were on their primary node.** When Longhorn
+  built an extra copy of a tenant's data on another node while the tenant ran and kept its data on
+  its own node, the copy counted as the tenant's data being elsewhere. After ten minutes the
+  notification asked the operator to move the tenant back, and Longhorn deleted the copy shortly
+  afterwards anyway. Such a copy is now left out of where the tenant's data is and sends nothing.
+  The Placement card names its node in a blue note instead. The same applied to Auto tenants,
+  which were reported as "its data being copied there". A move back to the primary node now reads
+  "data still on X, being copied to Y" instead of naming the node the data is leaving as where it
+  goes.
+- **SLO alerts fired on a single missed scrape instead of waiting their hold time.** Each alert
+  waits a set time (5 minutes for "system-db instance down", 10 for "Scrape target down") before
+  it fires. A target that went down and came back before that time, and had never fired before,
+  left its timer running, so its next brief miss, even a day later, fired the alert at once. In
+  production a database exporter missed one scrape during a 20-second network drop, and both
+  alerts fired and resolved a minute later. The timer now resets as soon as the target is back.
+  This applied to every alert that names a target, node or certificate.
+- **vmsingle's log was nothing but "skipping duplicate scrape target".** Each scrape job listed
+  every pod once per declared container port and pointed all of them at the metrics port, so
+  vmsingle dropped the copies and logged an error for each one, every 30 seconds. On production
+  that was every line in the log, which then held only a few minutes, so the error behind a
+  failed scrape was gone before anyone could read it. Each job now keeps only the pod's metrics
+  port; the scraped targets and their series are unchanged.
+
+### Security
+
+- **Calico 3.33.1 (tigera-operator 1.44.1), up from 3.33.0.** It moves to Go 1.27.4 and
+  golang.org/x/net 0.62, which fix standard-library flaws in net/http, HTTP/2, crypto/tls and
+  x509. Its calico-node image no longer carries the CRITICAL ca-certificates finding
+  (CVE-2026-114406) that the CVE ledger had waived; in a local Trivy scan its fixable HIGH findings
+  drop from 19 to 1. Two IPAM fixes come with it. A stale CNI retry now fails instead of taking a
+  running pod's address. kube-controllers now frees the address of every finished pod, not only
+  evicted ones. The CRDs add length limits to fields the platform does not write. Fresh installs
+  get it from `bootstrap.sh`. Existing clusters get it from host migration `2026.11.14/0001`, the
+  same procedure as `2026.10.17/0007`: the operator rolls calico-node one server at a time.
+- **The Postgres backup plugin moves to barman-cloud 0.16.0, up from 0.15.1.** The sidecar it runs
+  in every platform database pod no longer carries the CRITICAL certifi finding
+  (GHSA-6q48-6c7w-9gw2) that the CVE ledger had waived. It also has newer grpc, cryptography and
+  boto3, and pip is gone from it. Three behaviour changes apply to the platform:
+  - A WAL restore tracks the end of the WAL per timeline. A file missing on the parent timeline
+    could end the restore of the child timeline too, so an instance restored from a snapshot
+    could skip valid WAL of its new timeline and replay the parent's instead.
+  - A base backup that recorded an error no longer counts. A restore skips it, and the earliest
+    restorable point no longer starts at it.
+  - Both plugin replicas answer the database operator. The platform already ran them that way.
+  The plugin needs CloudNativePG 1.30 or later; the platform runs 1.30.1. Its ObjectStore resource
+  now accepts zstd for base backups, but the platform keeps gzip.
+- **system-upgrade-controller 0.21.1, up from 0.21.0.** It is built with Go 1.26.11, a security
+  release. It also fixes a node whose `kubernetes.io/hostname` label differs from its name: such a
+  node's upgrade Job was deleted as out of turn, and the k3s upgrade never finished. The CRD is
+  unchanged.
+
 ## [2026.11.13] - 2026-11-19
 
 ### Added

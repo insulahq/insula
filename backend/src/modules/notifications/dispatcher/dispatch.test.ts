@@ -43,6 +43,7 @@ const enqueueDeliveryMock = vi.fn().mockResolvedValue('job-id');
 vi.mock('../queue/enqueue.js', () => ({ enqueueDelivery: enqueueDeliveryMock }));
 
 const { emitEvent, hasRecipient } = await import('./dispatch.js');
+const { ApiError } = await import('../../../shared/errors.js');
 
 type Db = Parameters<typeof emitEvent>[0];
 
@@ -148,7 +149,7 @@ const baseTemplate = {
 
 describe('emitEvent', () => {
   it('no-ops when category is unknown', async () => {
-    getCategoryMock.mockRejectedValue(new Error('not found'));
+    getCategoryMock.mockRejectedValue(new ApiError('CATEGORY_NOT_FOUND', "Notification category 'unknown' not found", 404));
     const r = await emitEvent(mockDb(), {
       categoryId: 'unknown',
       scope: { kind: 'tenant', tenantId: 't1' },
@@ -156,6 +157,15 @@ describe('emitEvent', () => {
     });
     expect(r.deliveryCount).toBe(0);
     expect(r.perChannelStatuses.length).toBe(0);
+  });
+
+  it('throws when the category cannot be read — a database away is not "nobody to tell"', async () => {
+    getCategoryMock.mockRejectedValue(new Error('Connection terminated due to connection timeout'));
+    await expect(emitEvent(mockDb(), {
+      categoryId: 'admin.node_down',
+      scope: { kind: 'admin' },
+      variables: {},
+    })).rejects.toThrow('connection timeout');
   });
 
   it('no-ops when category is inactive', async () => {

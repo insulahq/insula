@@ -31,6 +31,11 @@
  *   - it sends the all-clear when an announced node is Ready again on the same
  *     boot (back-online.ts). Only the reconciler sent one before, and an
  *     outage shorter than its 5-minute tick got a "down" and nothing after.
+ *   - the pod whose going-down notice reached someone remembers the outage
+ *     until it ends (announced-outages.ts), so neither notice depends on one
+ *     database write surviving: a notice whose dispatch failed is sent again,
+ *     a record that went missing is written again, and the all-clear goes out
+ *     even when no record is left to claim.
  *   - it never announces a node inside its join grace window (join-grace.ts).
  *     A bootstrapping node is NotReady by definition; it was announced as
  *     "down" on its very first sighting. The node is kept OUT of the
@@ -42,15 +47,24 @@ import type { Database } from '../../db/index.js';
 import { nodeHealthState } from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { safeTick } from '../../shared/safe-tick.js';
-import { notifyAdminNodeDown, notifyAdminNodeShuttingDown } from '../notifications/events.js';
+import { notifyAdminNodeDown, notifyAdminNodeShuttingDown, type NoticeOutcome } from '../notifications/events.js';
 import { kubeletReportsShutdown, wentDownAt } from './boot-events.js';
 import {
   announceSameBootReturn,
+  announceUnrecordedReturn,
   endedOnSameBoot,
   readOpenOutages,
+  reopenOutage,
   type LiveNodeState,
+  type OpenOutage,
   type SameBootReturn,
 } from './back-online.js';
+import {
+  afterResend,
+  planAnnouncedOutages,
+  rememberAnnouncement,
+  type AnnouncedOutage,
+} from './announced-outages.js';
 import {
   describeSuppression,
   joinGraceIndex,
@@ -240,21 +254,23 @@ export function liveNodeStates(items: ReadonlyArray<RawNode>): Map<string, LiveN
  * Send the all-clear for every outage on record that has ended on its own
  * boot. The reconciler does the same on its tick; whichever sees the return
  * first claims it (back-online.ts claimOutageEnd), so a one-minute outage that
- * falls between two reconciler ticks still gets its "back" notice.
+ * falls between two reconciler ticks still gets its "back" notice. Returns the
+ * nodes this pod closed.
  */
 async function announceReturns(
   deps: FastDownWatchDeps,
   items: ReadonlyArray<RawNode>,
+  open: ReadonlyArray<OpenOutage>,
   now: Date,
-  log: NonNullable<FastDownWatchDeps['logger']> | Console,
-): Promise<void> {
-  const open = await readOpenOutages(deps.db);
-  if (open.length === 0) return;
+  log: WatchLog,
+): Promise<ReadonlySet<string>> {
+  const closed = new Set<string>();
+  if (open.length === 0) return closed;
   const live = liveNodeStates(items);
   const returns = open
     .map((o) => endedOnSameBoot(o, live.get(o.nodeName)))
     .filter((r): r is SameBootReturn => r !== null);
-  if (returns.length === 0) return;
+  if (returns.length === 0) return closed;
 
   // A node inside its join window was never announced down, so it gets no
   // all-clear either. The reconciler clears such a row on its next tick.
@@ -268,10 +284,75 @@ async function announceReturns(
   for (const r of returns) {
     if (joining.has(r.nodeName)) continue;
     if (await announceSameBootReturn(deps.db, r)) {
+      closed.add(r.nodeName);
       log.info(`[node-down-watch] ${r.nodeName} is Ready again on the same boot — all-clear sent`);
     }
   }
+  return closed;
 }
+
+/**
+ * The going-down notice for one announcement — "shutting down" when the kubelet
+ * reported a graceful shutdown, "down" otherwise.
+ */
+async function sendGoingDownNotice(
+  db: Database,
+  a: Pick<AnnouncedOutage, 'nodeName' | 'bootId' | 'shuttingDown'>,
+  key: string,
+  log: WatchLog,
+): Promise<NoticeOutcome> {
+  const failed = (err: unknown): NoticeOutcome => {
+    log.warn('[node-down-watch] notify failed:', (err as Error).message);
+    return 'failed';
+  };
+  if (!a.shuttingDown) return notifyAdminNodeDown(db, { nodeName: a.nodeName }, key).catch(failed);
+  const outcome = await notifyAdminNodeShuttingDown(db, { nodeName: a.nodeName }, key).catch(failed);
+  await markShutdownAnnounced(db, a.nodeName, a.bootId)
+    .catch((err) => log.warn('[node-down-watch] could not record the shutdown notice:', (err as Error).message));
+  return outcome;
+}
+
+/**
+ * Follow the outages this pod announced (announced-outages.ts): send a failed
+ * going-down notice again, restore a record that went missing, and send the
+ * all-clear for a return nobody is left to claim.
+ */
+async function followAnnouncedOutages(
+  db: Database,
+  remembered: ReadonlyMap<string, AnnouncedOutage>,
+  items: ReadonlyArray<RawNode>,
+  open: ReadonlyArray<OpenOutage> | null,
+  closedHere: ReadonlySet<string>,
+  log: WatchLog,
+): Promise<ReadonlyMap<string, AnnouncedOutage>> {
+  if (remembered.size === 0) return remembered;
+  const step = planAnnouncedOutages(
+    remembered, liveNodeStates(items), open && new Set(open.map((o) => o.nodeName)), closedHere);
+  const next = new Map(step.next);
+  for (const o of step.resend) {
+    log.warn(`[node-down-watch] ${o.nodeName}: sending its going-down notice again — the last attempt failed`);
+    const resent = afterResend(o, await sendGoingDownNotice(db, o, o.downKey, log));
+    next.set(o.nodeName, { ...resent, backUnrecorded: false });
+  }
+  for (const o of step.restore) {
+    await reopenOutage(db, o.nodeName, o.downAt)
+      .catch((err) => log.warn('[node-down-watch] could not restore when it went down:', (err as Error).message));
+  }
+  for (const { outage, back } of step.allClear) {
+    const outcome = await announceUnrecordedReturn(db, back)
+      .catch((err): NoticeOutcome => {
+        log.warn('[node-down-watch] all-clear failed:', (err as Error).message);
+        return 'failed';
+      });
+    if (outcome === 'failed') next.set(outage.nodeName, outage);
+    if (outcome === 'told') {
+      log.info(`[node-down-watch] ${back.nodeName} is Ready again on the same boot — all-clear sent (its outage was no longer on record)`);
+    }
+  }
+  return next;
+}
+
+type WatchLog = NonNullable<FastDownWatchDeps['logger']> | Console;
 
 export interface FastDownWatchDeps {
   readonly db: Database;
@@ -286,6 +367,8 @@ export function startFastNodeDownWatch(deps: FastDownWatchDeps): { stop: () => v
   let seenNotReady: ReadonlySet<string> | null = null;
   // Suppressed nodes already logged, so a 30-minute join logs once, not 60x.
   let loggedSuppressed: ReadonlySet<string> = new Set();
+  // The outages this pod announced, until each is over (announced-outages.ts).
+  let announced: ReadonlyMap<string, AnnouncedOutage> = new Map();
   let timer: NodeJS.Timeout | null = null;
 
   const tick = async (): Promise<void> => {
@@ -305,25 +388,30 @@ export function startFastNodeDownWatch(deps: FastDownWatchDeps): { stop: () => v
     }
     loggedSuppressed = new Set(plan.suppressed);
 
+    let announcedNow: ReadonlyMap<string, AnnouncedOutage> = new Map();
     for (const a of describeAnnouncements(items, plan.announce, now)) {
       await recordWentDown(deps.db, a.nodeName, a.downAt)
         .catch((err) => log.warn('[node-down-watch] could not record when it went down:', (err as Error).message));
       const key = nodeDownDedupeKey(a.nodeName, a.bootId, new Date());
-      if (a.shuttingDown) {
-        log.warn(`[node-down-watch] ${a.nodeName} is shutting down (kubelet reported a graceful shutdown)`);
-        await notifyAdminNodeShuttingDown(deps.db, { nodeName: a.nodeName }, key)
-          .catch((err) => log.warn('[node-down-watch] notify failed:', (err as Error).message));
-        await markShutdownAnnounced(deps.db, a.nodeName, a.bootId)
-          .catch((err) => log.warn('[node-down-watch] could not record the shutdown notice:', (err as Error).message));
-      } else {
-        log.warn(`[node-down-watch] ${a.nodeName} went NotReady`);
-        await notifyAdminNodeDown(deps.db, { nodeName: a.nodeName }, key)
-          .catch((err) => log.warn('[node-down-watch] notify failed:', (err as Error).message));
-      }
+      log.warn(a.shuttingDown
+        ? `[node-down-watch] ${a.nodeName} is shutting down (kubelet reported a graceful shutdown)`
+        : `[node-down-watch] ${a.nodeName} went NotReady`);
+      const outcome = await sendGoingDownNotice(deps.db, a, key, log);
+      announcedNow = rememberAnnouncement(announcedNow, { ...a, downKey: key }, outcome);
     }
 
-    await announceReturns(deps, items, now, log)
-      .catch((err) => log.warn('[node-down-watch] all-clear check failed:', (err as Error).message));
+    const allClearFailed = (err: unknown) => {
+      log.warn('[node-down-watch] all-clear check failed:', (err as Error).message);
+    };
+    const open = await readOpenOutages(deps.db).catch((err) => { allClearFailed(err); return null; });
+    const closedHere = open
+      ? await announceReturns(deps, items, open, now, log)
+        .catch((err) => { allClearFailed(err); return new Set<string>(); })
+      : new Set<string>();
+    // This tick's announcements are followed from the next tick on: a notice
+    // that just failed is not sent again within the same second.
+    const followed = await followAnnouncedOutages(deps.db, announced, items, open, closedHere, log);
+    announced = new Map([...followed, ...announcedNow]);
   };
 
   const initial = setTimeout(() => {

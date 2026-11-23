@@ -575,7 +575,8 @@ function buildObjectStoreSpec(clusterId: string): Record<string, unknown> {
       // RFC named zstd but the upstream CRD has NOT shipped zstd
       // support yet (validation error: "Unsupported value: zstd").
       // gzip is the best balance of compatibility + ratio in v0.12.0.
-      // Surfaced during staging E2E round-trip test.
+      // Surfaced during staging E2E round-trip test. Later releases accept
+      // zstd for WAL, and v0.16.0 for base backups too; gzip stays on both.
       // maxParallel: 2 (was 8). plugin-barman-cloud spawns ONE Python
       // subprocess per concurrent WAL-archive call; each subprocess
       // sits at ~80Mi RSS just from CPython + boto3 imports before

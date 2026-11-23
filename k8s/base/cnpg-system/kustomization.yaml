@@ -5,8 +5,8 @@
 # DaemonSet. The shim translates S3 → operator-selected upstream
 # (S3 / SFTP / CIFS / NFS) per the SYSTEM-class target binding.
 #
-# Manifest is vendored verbatim from upstream v0.15.1:
-#   https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/v0.15.1/manifest.yaml
+# Manifest is vendored verbatim from upstream v0.16.0:
+#   https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/v0.16.0/manifest.yaml
 #
 # Upgrade procedure:
 #   1. Fetch the new release's manifest.yaml
@@ -23,7 +23,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - plugin-barman-cloud-v0.15.1.yaml
+  - plugin-barman-cloud-v0.16.0.yaml
 
 # HA shape for the plugin Deployment. See patch-barman-cloud-ha.yaml for the
 # full rationale (drill: a single-replica plugin wedged all CNPG
@@ -48,11 +48,13 @@ patches:
     patch: |-
       - op: remove
         path: /spec/replicas
-  # Both replicas SERVE (no leader election). Upstream registers the CNPG-I
-  # gRPC server as a leader-only runnable, so with --leader-elect the second
-  # replica was a standby that never opened :9090: permanently 0/1 Ready and a
-  # readiness-probe Warning every 10 s, while adding nothing until a ~15 s
-  # lease takeover. Everything the plugin runs is safe on two replicas at
+  # Both replicas SERVE (no leader election). Up to v0.15.x upstream registered
+  # the CNPG-I gRPC server as a leader-only runnable, so with --leader-elect the
+  # second replica was a standby that never opened :9090: permanently 0/1 Ready
+  # and a readiness-probe Warning every 10 s, while adding nothing until a ~15 s
+  # lease takeover. v0.16.0 serves gRPC on every replica and elects a leader
+  # only for the ObjectStore controller; keeping election off leaves that
+  # controller on both replicas, as before. Everything the plugin runs is safe on two replicas at
   # once — the gRPC hooks answer the CNPG operator's requests, and the one
   # controller (ObjectStore → Role rules) converges to the same desired state —
   # so both serve, both are Ready, and losing one node loses nothing: the
@@ -82,7 +84,7 @@ patches:
 # every Tier-1 bundle Secret) and escalate via role manipulation.
 #
 # This is upstream's default RBAC. We accept it as a known risk in
-# v0.15.1 (unchanged since v0.13.0) because:
+# v0.16.0 (unchanged since v0.13.0) because:
 #   - The plugin Deployment runs only one workload (the barman-cloud
 #     plugin server). The image is pinned by digest in the vendored
 #     manifest; tampering requires either a new release pull-through

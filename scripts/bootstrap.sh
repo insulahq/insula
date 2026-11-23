@@ -333,7 +333,7 @@ K3S_FRESH_INSTALL=false
 # system-upgrade-controller compatibility check. Existing clusters take this pin
 # through the upgrade run's opt-in Kubernetes step (ADR-064 §8), not a host-migration.
 K3S_VERSION="v1.36.6+k3s1"
-CALICO_VERSION="v3.33.0"
+CALICO_VERSION="v3.33.1"
 
 # Pod CIDR — passed to k3s as --cluster-cidr and used in the firewall
 # allow-list so pods can reach the host's control-plane ports via

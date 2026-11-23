@@ -18,10 +18,10 @@
  *
  * Pure apart from the two small DB helpers at the bottom.
  */
-import { and, eq, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { nodeHealthState } from '../../db/schema.js';
-import { notifyAdminNodeBackOnline } from '../notifications/events.js';
+import { notifyAdminNodeBackOnline, type NoticeOutcome } from '../notifications/events.js';
 import { formatDowntime } from './boot-events.js';
 
 /** An outage on record: a `node_health_state` row with `down_since` set. */
@@ -129,9 +129,41 @@ export async function claimOutageEnd(db: Database, nodeName: string, downSince: 
   return rows.length > 0;
 }
 
+/**
+ * Put an outage back on record: its start into an empty field only, so a start
+ * already there, whoever wrote it, is kept. Used to give back a claim whose
+ * all-clear could not be sent, and by the fast watch for a record that went
+ * missing while the node was still down (announced-outages.ts).
+ */
+export async function reopenOutage(db: Database, nodeName: string, downSince: Date): Promise<void> {
+  await db.update(nodeHealthState)
+    .set({ downSince })
+    .where(and(eq(nodeHealthState.nodeName, nodeName), isNull(nodeHealthState.downSince)));
+}
+
 /** Claim the return and, when this caller won it, send the all-clear. */
 export async function announceSameBootReturn(db: Database, r: SameBootReturn): Promise<boolean> {
   if (!(await claimOutageEnd(db, r.nodeName, r.downSince))) return false;
-  await notifyAdminNodeBackOnline(db, backOnlinePayload(r), nodeBackDedupeKey(r.nodeName, r.bootId, r.downSince));
-  return true;
+  return sendClaimedReturn(db, r);
+}
+
+/**
+ * Send the all-clear for a return this caller claimed. A send that failed gives
+ * the claim back, so the next tick, here or in another detector, tries again —
+ * the claim had already cleared the record, and nothing else would. Says
+ * whether it went out.
+ */
+export async function sendClaimedReturn(db: Database, r: SameBootReturn): Promise<boolean> {
+  if ((await announceUnrecordedReturn(db, r)) !== 'failed') return true;
+  await reopenOutage(db, r.nodeName, r.downSince).catch(() => undefined);
+  return false;
+}
+
+/**
+ * Send the all-clear without a record to claim — for an outage whose record
+ * was lost while it lasted (announced-outages.ts). Same key as the claim path,
+ * so a return another detector already reported is skipped as a duplicate.
+ */
+export async function announceUnrecordedReturn(db: Database, r: SameBootReturn): Promise<NoticeOutcome> {
+  return notifyAdminNodeBackOnline(db, backOnlinePayload(r), nodeBackDedupeKey(r.nodeName, r.bootId, r.downSince));
 }

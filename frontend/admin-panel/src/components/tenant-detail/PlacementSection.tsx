@@ -16,7 +16,7 @@ import { Database, Loader2, Pin, Rocket, Save } from 'lucide-react';
 import clsx from 'clsx';
 import type { Tenant } from '@/types/api';
 import MigrateResultNote from '@/components/tenants/MigrateResultNote';
-import { MisplacedBanner, FailoverList, type PendingAction } from '@/components/tenants/PlacementStatusPanel';
+import { MisplacedBanner, FailoverList, SpareCopyNote, type PendingAction } from '@/components/tenants/PlacementStatusPanel';
 import { useUpdateTenant } from '@/hooks/use-tenants';
 import { useClusterNodes } from '@/hooks/use-cluster-nodes';
 import { useWorkerUsageSummary } from '@/hooks/use-worker-usage';
@@ -104,6 +104,8 @@ export default function PlacementSection({ tenant, tenantId }: { readonly tenant
         {!isLoading && (!placement || placement.status === 'unknown') && (
           <p className="text-xs text-gray-500 dark:text-gray-400">Where this tenant runs has not been observed yet.</p>
         )}
+
+        {placement && <SpareCopyNote placement={placement} />}
 
         {misplaced && placement && (
           <MisplacedBanner

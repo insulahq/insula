@@ -20,6 +20,7 @@ import {
   type LonghornCondition, type NodeFact, type PodFact, type ReplicaFact, type TenantFact, type VolumeFact,
 } from './service.js';
 import { refusedVolumeOf } from '../tenant-placement/copy-refusal.js';
+import { AUTO_BALANCE_ANNOTATION, AUTO_BALANCE_SINGLE_COPY } from '../tenant-placement/auto-balance.js';
 
 const NODE_ROLE_LABEL = 'insula.host/node-role';
 const INGRESS_MODE_LABEL = 'insula.host/ingress-mode';
@@ -74,34 +75,43 @@ interface LhEngine {
 }
 
 /**
- * The replicas Longhorn is rebuilding: write-only in their engine's mode map.
- * Not under `guard`: without it the impact only loses which node a rebuild
- * is for, and a failed read must not mark every tenant's state unknown.
+ * Every replica's mode in its engine's mode map (RW / WO / ERR), or null when
+ * the engines could not be read. Not under `guard`: without it the impact
+ * only loses which node a rebuild is for, and a failed read must not mark
+ * every tenant's state unknown.
  */
-async function rebuildingReplicaNames(k8s: K8sClients): Promise<ReadonlySet<string>> {
+async function engineReplicaModes(k8s: K8sClients): Promise<ReadonlyMap<string, string> | null> {
   try {
     const resp = await k8s.custom.listNamespacedCustomObject({
       group: 'longhorn.io', version: 'v1beta2',
       namespace: 'longhorn-system', plural: 'engines',
     } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as { items?: LhEngine[] };
-    const names = new Set<string>();
+    const modes = new Map<string, string>();
     for (const e of resp.items ?? []) {
-      for (const [replica, mode] of Object.entries(e.status?.replicaModeMap ?? {})) {
-        if (mode === 'WO') names.add(replica);
-      }
+      for (const [replica, mode] of Object.entries(e.status?.replicaModeMap ?? {})) modes.set(replica, mode);
     }
-    return names;
+    return modes;
   } catch (err) {
     console.warn(`[tenant-health] longhorn engines read failed; rebuilds are not attributed to a node: ${(err as Error).message}`);
-    return new Set();
+    return null;
   }
 }
+
+/** A replica's mode as ReplicaFact.engineMode; undefined when the engines were not read. Pure. */
+export function engineModeOf(modes: ReadonlyMap<string, string> | null, replicaName: string): ReplicaFact['engineMode'] {
+  if (!modes) return undefined;
+  const mode = modes.get(replicaName);
+  return mode === 'RW' || mode === 'WO' || mode === 'ERR' ? mode : 'none';
+}
 interface LhVolume {
-  metadata?: { name?: string };
+  metadata?: { name?: string; annotations?: Record<string, string> | null };
   spec?: {
     size?: string | number;
     nodeSelector?: string[] | null;
     diskSelector?: string[] | null;
+    numberOfReplicas?: number;
+    /** ignored (the cluster setting) | disabled | least-effort | best-effort */
+    replicaAutoBalance?: string;
   };
   status?: {
     actualSize?: string | number;
@@ -198,7 +208,7 @@ export async function collectFacts(
     }
   };
 
-  const [nodeResp, podResp, replicaResp, volumeResp, rebuilding] = await Promise.all([
+  const [nodeResp, podResp, replicaResp, volumeResp, engineModes] = await Promise.all([
     guard('nodes', () => k8s.core.listNode() as Promise<{ items?: RawNode[] }>, { items: [] }),
     guard(
       'pods',
@@ -222,7 +232,7 @@ export async function collectFacts(
       } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]) as Promise<{ items?: LhVolume[] }>,
       { items: [] },
     ),
-    rebuildingReplicaNames(k8s),
+    engineReplicaModes(k8s),
   ]);
 
   // The DB reads below are guarded exactly like the cluster reads above, because
@@ -372,7 +382,8 @@ export async function collectFacts(
     // required".
     running: r.status?.currentState === 'running',
     failed: !!r.spec?.failedAt || r.status?.currentState === 'error',
-    rebuilding: rebuilding.has(r.metadata?.name ?? ''),
+    rebuilding: engineModeOf(engineModes, r.metadata?.name ?? '') === 'WO',
+    engineMode: engineModeOf(engineModes, r.metadata?.name ?? ''),
   })).filter((r) => r.volumeName !== '');
 
   const volumes: VolumeFact[] = (volumeResp.items ?? []).map((v) => ({
@@ -389,6 +400,11 @@ export async function collectFacts(
     remountRequestedAt: v.status?.remountRequestedAt || null,
     scheduleFailure: scheduleFailureOf(v.status?.conditions),
     scheduling: refusedVolumeOf(v),
+    autoBalance: {
+      replicas: typeof v.spec?.numberOfReplicas === 'number' ? v.spec.numberOfReplicas : null,
+      mode: v.spec?.replicaAutoBalance || null,
+      setByPlatform: v.metadata?.annotations?.[AUTO_BALANCE_ANNOTATION] === AUTO_BALANCE_SINGLE_COPY,
+    },
   })).filter((v) => v.volumeName !== '');
 
   const tenantFacts: TenantFact[] = tenantRows

@@ -24,6 +24,7 @@ export function presentPlacement(p: StoredPlacement): TenantPlacement {
     workloadNodes: [...p.workloadNodes],
     attachedNodes: [...p.attachedNodes],
     dataNodes: [...p.dataNodes],
+    spareCopyNodes: [...p.spareCopyNodes],
   };
 }
 
