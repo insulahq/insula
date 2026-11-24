@@ -243,10 +243,16 @@ spec:
   # primary until the network returned (production: ~140 s; staging: the
   # whole 4-min cut). At 10 s it got its stop signal 29.6 s in, 0.8 s before that
   # server's k3s exited, and Postgres was down at 44.7 s (smart shutdown below).
-  # Readiness goes back with it: it was slowed only to run pg_isready less
-  # often, which costs nothing worth saving. Both are written out rather than
-  # dropped: Flux merges this Cluster (ssa: merge), so a field left out of the
-  # manifest keeps its live value.
+  # The check is stricter than "cut off": with the API server unreachable the
+  # probe passes only if EVERY instance answers on :8000
+  # (allow-cnpg-operator-to-postgres, network-policies.yaml). So a healthy
+  # primary is restarted too when its API connection stalls while one other
+  # instance is unreachable, e.g. a connection that runs through the server
+  # whose network dropped. That costs a failover and loses nothing.
+  # Readiness goes back to 10 s with liveness: it was slowed only to run
+  # pg_isready less often, which costs nothing worth saving. Both are written
+  # out rather than dropped: Flux merges this Cluster (ssa: merge), so a field
+  # left out of the manifest keeps its live value.
   probes:
     liveness:
       periodSeconds: 10

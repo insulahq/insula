@@ -12,6 +12,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **The platform database primary was restarted whenever its connection to the Kubernetes API
+  stalled for 30 seconds, even with every replica reachable.** When a primary cannot reach the API,
+  CNPG's liveness probe keeps it running only if every database instance answers on its status
+  port. The platform's network policy opened that port to the CNPG operator alone, so the
+  instances could never reach each other there and the check never passed. Every primary logged
+  "Instance connectivity error" on each probe. Since 2026.11.14 runs the probe every 10 seconds,
+  three failed probes, 30 seconds of API outage, were enough to restart the primary and fail over.
+  This includes an API outage on a cluster whose servers can all reach each other. The instances
+  can now reach each other's status port. The endpoints there that act (backup, partial WAL
+  archive, binary update) still require the operator's client certificate. On lab staging, with
+  three instances and only the primary's API access cut: before the fix the primary was restarted
+  32 seconds in and a replica took over; after it, the primary stayed up for the whole 150-second
+  cut. A primary cut off from the API and from the other instances is still stopped 30 seconds in,
+  as before.
+  This does not prevent every such restart. CNPG wants *every* instance to answer, so when one
+  server's network drops and the primary's API connection runs through that server, the primary is
+  still restarted, with nothing lost. That happened in production. Applying the policy restarts
+  nothing.
+
 ## [2026.11.14] - 2026-11-23
 
 ### Changed
