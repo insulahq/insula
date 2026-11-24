@@ -80,7 +80,7 @@ spec:
   # (mail-pg-2 created → 2 min later "Scaling down — removing
   # mail-pg-2" → repeat forever).
 
-  # PostgreSQL 18.6 on Debian 13 (Trixie), on CNPG's IMMUTABLE build tag
+  # PostgreSQL 18.7 on Debian 13 (Trixie), on CNPG's IMMUTABLE build tag
   # (<minor>-<build>-minimal-trixie): the rolling `18.x-minimal-trixie` tag
   # moves weekly, so with IfNotPresent each node ran whichever build it pulled
   # first, and no scan saw the one a pod was actually on. A changed imageName
@@ -93,7 +93,7 @@ spec:
   # `system-*` images are deprecated as of CNPG 1.27 — never use.
   # `standard-trixie` is the upgrade path if pgvector / PGAudit /
   # failover-slots are needed in the future.
-  imageName: ghcr.io/cloudnative-pg/postgresql:18.6-202610260820-minimal-trixie
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.7-202611160820-minimal-trixie
 
   # archive_timeout is deliberately NOT pinned here.
   #

@@ -33,6 +33,43 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   still restarted, with nothing lost. That happened in production. Applying the policy restarts
   nothing.
 
+### Security
+
+- **The platform database moves to PostgreSQL 18.7, up from 18.6.** 18.7 fixes 52 CVEs. Most of
+  them let any role that can log in run code as the database server, through use-after-free, type
+  confusion or buffer-overflow bugs. The platform database has logins for Roundcube and CrowdSec,
+  not only for the platform itself, and Roundcube faces the internet, so these apply. The image is
+  CNPG's immutable build `18.7-202611160820-minimal-trixie`; in a local Trivy scan its fixable HIGH
+  findings drop from 59 to 56, with no CRITICAL in either. None of the release's post-upgrade
+  reindex cases applies to the platform's schema (no `bpchar`, trigram, GIN or partitioned
+  indexes). Changing the image restarts every database instance once, after the operator update
+  below: the platform database restarts twice during this upgrade.
+- **The CloudNativePG operator moves to 1.30.2 (chart 0.29.2), up from 1.30.1.** It updates
+  golang.org/x/net for seven Go advisories. Among its fixes: the operator no longer retries an
+  error answer from an instance as if it were a network error, which made each step of a
+  switchover wait about 1.6 seconds; the instance manager no longer waits forever on a frozen
+  Postgres; a Backup can no longer start twice. The operator now needs `delete` on leases, which
+  its chart grants. Fresh installs get it from `bootstrap.sh`, existing clusters from host
+  migration `2026.11.15/0002`. As with every operator update, each database instance restarts once
+  to load the new instance manager.
+- **Traefik 3.7.19 (chart 42.4.1), up from 3.7.18.** It updates golang.org/x/crypto, quic-go
+  (HTTP/3) and klauspost/compress (the Compress middleware), each for security fixes. The chart's
+  two template fixes touch settings the platform does not use: rendered with the platform's values,
+  the two chart versions differ only in the image and the version labels. The plugin interpreter
+  is unchanged (Yaegi 0.16.3), and the ModSecurity plugin's live test passes 12 of 12 inside
+  3.7.19. Existing clusters get it from host migration `2026.11.15/0001`, the same procedure as
+  `2026.11.13/0001`: Traefik rolls one server at a time.
+- **The Plesk migration tools image no longer carries two CRITICAL MariaDB CVEs.** Its MariaDB
+  client was 11.8.6, with CVE-2026-44172 (an escaping flaw with the big5 character set) and
+  CVE-2026-49261. The image is rebuilt on the current Debian 13 base and now ships 11.8.9; in a
+  local Trivy scan its fixable findings drop from 8 CRITICAL and 108 HIGH to none.
+- **Four CRITICAL nginx CVEs in the WAF sidecar are recorded as not reachable.** The sidecar's
+  image ships nginx 1.30.6, whose fixes for a mail-proxy use-after-free, an HTTP/3 use-after-free
+  and two HTTP/2 flaws are in 1.30.7. The sidecar has no mail or HTTP/3 listener. Nothing outside
+  the platform's own pods reaches its HTTP/2: Traefik's WAF plugin sends every request to it over
+  HTTP/1.1, and tenant pods cannot connect to it. The image build with 1.30.7 is still in its
+  7-day soak, so the CVE ledger records the four as not affected until the next release takes it.
+
 ## [2026.11.14] - 2026-11-23
 
 ### Changed
