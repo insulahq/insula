@@ -102,8 +102,8 @@ components:
     name: Traefik (ingress / TLS termination / WAF plugin host)
     tier: "0"
     kind: chart
-    pinned: "42.4.0"
-    app_version: "v3.7.18"
+    pinned: "42.4.1"
+    app_version: "v3.7.19"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: traefik/traefik-helm-chart, advisories: traefik/traefik }
@@ -127,8 +127,8 @@ components:
     name: CloudNativePG operator (platform Postgres lifecycle)
     tier: "0"
     kind: chart
-    pinned: "0.29.1"
-    app_version: "v1.30.1"
+    pinned: "0.29.2"
+    app_version: "v1.30.2"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: cloudnative-pg/cloudnative-pg, advisories: cloudnative-pg/cloudnative-pg, version_repo: cloudnative-pg/charts, tag_regex: '^cloudnative-pg-v(\d+\.\d+\.\d+)$' }
@@ -140,7 +140,7 @@ components:
     name: PostgreSQL (platform DB — CNPG-managed)
     tier: "0"
     kind: image
-    pinned: "18.6-202610260820-minimal-trixie"
+    pinned: "18.7-202611160820-minimal-trixie"
     pin_source: k8s/base/database.yaml
     pin_check: true
     repos: [cloudnative-pg/postgresql]

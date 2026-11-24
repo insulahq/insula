@@ -62,7 +62,7 @@ NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")
 RC_WINDOW_STABLES = 5
 
 # PostgreSQL 18's `context = 'postmaster'` settings — the ones a change of which needs a
-# restart. Read from PostgreSQL 18.6 itself:
+# restart. Read from PostgreSQL 18.6 and 18.7 themselves (the same 69):
 #   select name from pg_settings where context = 'postmaster' order by name;
 # Every other parameter is reloaded (CNPG signals the instances) without a restart.
 RESTART_PARAMETERS = frozenset("""
