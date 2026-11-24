@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.15-rc.1] - 2026-11-24
+
 ### Fixed
 
 - **The platform database primary was restarted whenever its connection to the Kubernetes API
