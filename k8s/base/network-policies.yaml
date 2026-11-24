@@ -273,7 +273,8 @@ spec:
 # ever existed; PDB event "NoPods" because operator couldn't tell
 # whether existing instances were ready before creating new ones.
 # 9187 is the metrics-exporter sidecar (PodMonitor scrape source);
-# 5432 is replication for streaming standbys to follow the primary.
+# 5432 is replication for streaming standbys to follow the primary;
+# instances also reach each other on 8000 for the isolation check.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -310,7 +311,8 @@ spec:
     # vmsingle (monitoring ns) scrapes the postgres-exporter directly
     # on 9187 (ADR-051 — PodMonitor CRD intentionally unused, no
     # prometheus-operator). Scoped to 9187 ONLY: the instance-manager
-    # status port 8000 stays cnpg-system-exclusive.
+    # status port 8000 is open to the operator and to the instances
+    # themselves (below), never to other namespaces.
     - from:
         - namespaceSelector:
             matchLabels:
@@ -318,10 +320,22 @@ spec:
       ports:
         - protocol: TCP
           port: 9187   # postgres-exporter metrics (vmsingle scrape)
-    # Streaming replication: standby instances connect to the
-    # primary on 5432. Both peer rule sides use Exists so any
-    # cnpg-managed pod can replicate from any other cnpg-managed
-    # pod in this namespace (covers temp PITR clusters too).
+    # Instance → instance. Both peer rule sides use Exists so any
+    # cnpg-managed pod can reach any other cnpg-managed pod in this
+    # namespace (covers temp PITR clusters too).
+    # 5432: standby instances stream from the primary.
+    # 8000: the primary's liveness probe. When the primary cannot reach
+    # the API server, its isolation check GETs /failsafe on every
+    # instance and the probe fails unless all of them answer (CNPG
+    # probes/pinger.go). Without this port the check could never pass:
+    # every primary logged "Instance connectivity error" on each probe,
+    # and an API outage of three probes (CNPG's default threshold; 30 s
+    # at the period in database.yaml) restarted the primary even with
+    # every replica reachable. The endpoints that act (backup,
+    # pg_controldata, partial WAL archive, binary update) still need the
+    # operator's client certificate; a peer reaches only the
+    # unauthenticated ones: status, the health/readiness/startup probes
+    # and /failsafe.
     - from:
         - podSelector:
             matchExpressions:
@@ -330,6 +344,8 @@ spec:
       ports:
         - protocol: TCP
           port: 5432
+        - protocol: TCP
+          port: 8000
 ---
 # Allow Traefik → cm-acme-http-solver pods on port 8089.
 #

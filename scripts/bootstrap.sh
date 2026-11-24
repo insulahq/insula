@@ -526,8 +526,8 @@ LONGHORN_VERSION="v1.13.0"               # V1 engine only (no V2/SPDK). 1.13 add
 # unpinned drift is how the ssa-policy surprise class happens).
 # Existing clusters: host-migration 2026.11.3/0002.
 FLUX_VERSION="2.10.0"
-# Existing clusters: host-migration 2026.11.13/0001.
-TRAEFIK_CHART_VERSION="42.4.0"           # app v3.7.18; verify: helm search repo traefik/traefik
+# Existing clusters: host-migration 2026.11.15/0001.
+TRAEFIK_CHART_VERSION="42.4.1"           # app v3.7.19; verify: helm search repo traefik/traefik
 
 # ─── Remote installer script integrity ──────────
 # k3s, Helm and Flux are installed by piping an upstream shell script into a
@@ -714,7 +714,7 @@ CORAZA_PLUGIN_MODULE=""
 CORAZA_PLUGIN_VERSION=""
 CERT_MANAGER_CHART_VERSION="v1.21.3"     # Go 1.26.10 (x509 eMudhra distrust) + certificates/status key-copy fix; existing clusters: host-migration 2026.10.23/0002. v1.21: ARI + security hardening. The v1.21 chart drops the default tokenrequest RBAC — safe here: our ClusterIssuers are ACME http01/dns01 only (no serviceAccountRef/ambient). Prior: v1.20.3 fixed GHSA-8rvj-mm4h-c258 (ACME solver priv-esc)
 SEALED_SECRETS_CHART_VERSION="2.22.0"    # controller v0.41.2: restores hand-edited owned Secrets (#2073), hot-reloads sealing keys (#2034); existing clusters: host-migration 2026.11.3/0001
-CNPG_CHART_VERSION="0.29.1"              # CloudNative-PG operator v1.30.1 (latest stable; PG 14-18). Bumped from 0.28.3/v1.29.1: 1.30.0 fixes the barman-cloud WAL-archiver plugin-roll deadlock on the HA switchover path (cnpg#11032/#11059) but does NOT fix the single-instance (instances:1) system-db wedge — that CNPG limitation is reported upstream + tracked separately (node-pin / HA). So this is version hygiene + a partial mitigation, not the wedge fix.
+CNPG_CHART_VERSION="0.29.2"              # CloudNative-PG operator v1.30.2 (latest stable; PG 15-18); existing clusters: host-migration 2026.11.15/0002. Bumped from 0.28.3/v1.29.1: 1.30.0 fixes the barman-cloud WAL-archiver plugin-roll deadlock on the HA switchover path (cnpg#11032/#11059) but does NOT fix the single-instance (instances:1) system-db wedge — that CNPG limitation is reported upstream + tracked separately (node-pin / HA). So this is version hygiene + a partial mitigation, not the wedge fix.
 SKIP_CNPG=false                          # --skip-cnpg flag sets this
 ACME_EMAIL=""
 # --acme-server: point cert-manager at a custom ACME directory (test CA like Pebble, or
