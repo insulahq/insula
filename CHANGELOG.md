@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.11.15-rc.1] - 2026-11-24
-
 ### Fixed
 
 - **The platform database primary was restarted whenever its connection to the Kubernetes API
@@ -45,7 +43,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   findings drop from 59 to 56, with no CRITICAL in either. None of the release's post-upgrade
   reindex cases applies to the platform's schema (no `bpchar`, trigram, GIN or partitioned
   indexes). Changing the image restarts every database instance once, after the operator update
-  below: the platform database restarts twice during this upgrade.
+  below: the platform database restarts twice during this upgrade. On lab staging (three servers,
+  three instances) the upgrade from 2026.11.14 took five and a half minutes. Each restart took the
+  two replicas first, then the primary in place, without a failover; from the primary's stop
+  signal to Ready took about 34 seconds each time, the first 15 of them a smart shutdown in which
+  open sessions keep working and new connections are refused. After the upgrade a forced WAL
+  switch was archived within 2 seconds.
 - **The CloudNativePG operator moves to 1.30.2 (chart 0.29.2), up from 1.30.1.** It updates
   golang.org/x/net for seven Go advisories. Among its fixes: the operator no longer retries an
   error answer from an instance as if it were a network error, which made each step of a
@@ -60,7 +63,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   the two chart versions differ only in the image and the version labels. The plugin interpreter
   is unchanged (Yaegi 0.16.3), and the ModSecurity plugin's live test passes 12 of 12 inside
   3.7.19. Existing clusters get it from host migration `2026.11.15/0001`, the same procedure as
-  `2026.11.13/0001`: Traefik rolls one server at a time.
+  `2026.11.13/0001`: Traefik rolls one server at a time. On lab staging the roll took about 45
+  seconds, and each server's ingress failed requests for 2 to 6 seconds in turn, ending with about
+  2 seconds of 404 from the new pod before it loaded its routes. A probe of each server's ingress,
+  the API's health check and SMTP every 2 seconds through the whole upgrade failed 8 of 721
+  times, all during that roll. The API's health check does not use the database, so the probe
+  does not show the database restarts above.
 - **The Plesk migration tools image no longer carries two CRITICAL MariaDB CVEs.** Its MariaDB
   client was 11.8.6, with CVE-2026-44172 (an escaping flaw with the big5 character set) and
   CVE-2026-49261. The image is rebuilt on the current Debian 13 base and now ships 11.8.9; in a
