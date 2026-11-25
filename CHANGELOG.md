@@ -12,6 +12,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **A CloudNativePG operator update no longer restarts the platform database.** Until now every
+  operator update restarted each database instance once, to load the new instance manager (the
+  process in each database pod that runs Postgres). The operator now uses CloudNativePG's in-place
+  updates (`ENABLE_INSTANCE_MANAGER_INPLACE_UPDATES`): it sends its own instance manager to each
+  pod, which checks it and swaps itself in, while Postgres and its connections keep running.
+  Fresh installs get the setting from `bootstrap.sh`, existing clusters from host migration
+  `2026.11.16/0001`, which restarts only the operator itself. On lab staging, the operator was
+  moved from 1.30.2 to 1.30.1 and back, the second step by the unchanged 2026.11.15 update
+  procedure. This was done with three database instances and again with one. Each time, every
+  instance had the new instance manager within two seconds of the new operator starting, and the
+  swap took half a second. Through the migration and the operator changes, a new database
+  connection every second, a session held open throughout, and an API request that reads the
+  database every second all kept working: 1,070 database samples and 1,039 API requests, none
+  failed. The database pods, the Postgres processes, the replicas' streaming sessions and the
+  API's pooled connections were the same before and after. WAL archiving went on working. Before
+  this change, the same update on one instance stopped the database for about 30 to 50 seconds.
+  Two kinds of change still restart the database: a new
+  PostgreSQL image, and an operator update that also changes how the database pods are built.
+  `upgrade-cnpg.sh` now passes the same settings as `bootstrap.sh`. Before, it dropped this
+  setting and the operator's reconcile limit (3) whenever it ran.
+
 ## [2026.11.15] - 2026-11-25
 
 ### Fixed

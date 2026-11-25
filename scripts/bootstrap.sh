@@ -7413,8 +7413,10 @@ install_cnpg() {
   # WHY upgrade-aware: bumping CNPG_CHART_VERSION alone wasn't
   # picked up by re-running bootstrap; the previous skip-if-deployment
   # -exists short-circuit prevented the upgrade. A bump now triggers
-  # a controlled operator roll (which in turn triggers a CNPG-managed
-  # rolling switchover on existing Cluster CRs — by design).
+  # a controlled operator roll; the new operator then updates the
+  # instance manager inside each running Postgres pod (in-place
+  # updates, below) and restarts no instance unless it also changes
+  # the instance pod spec.
   local helm_json
   helm_json=$(helm_cmd list -n cnpg-system -o json 2>/dev/null || echo "[]")
   local current_chart_ver=""
@@ -7437,7 +7439,7 @@ install_cnpg() {
 
   if [[ -n "$current_chart_ver" ]]; then
     log "Upgrading CloudNative-PG operator: chart ${current_chart_ver} (${current_status:-unknown}) → ${CNPG_CHART_VERSION}."
-    log "  Existing Cluster CRs will undergo a rolling switchover (operator-managed)."
+    log "  Existing Cluster CRs get the new instance manager in place; Postgres keeps running unless the instance pod spec changes."
   else
     log "Installing CloudNative-PG operator (passive — no Cluster CR applied)..."
   fi
@@ -7445,6 +7447,12 @@ install_cnpg() {
   # maxConcurrentReconciles=3 (default 10): we never run more than
   # ~5 Cluster CRs (system-db + future per-tenant); 3 workers is
   # plenty and saves ~50 Mi resident in the operator pod.
+  # ENABLE_INSTANCE_MANAGER_INPLACE_UPDATES: an operator update swaps the
+  # instance manager inside the running Postgres pods instead of
+  # restarting every instance (existing clusters: host-migration
+  # 2026.11.16/0001). --set-string because ConfigMap data must be a
+  # string: --set renders an unquoted bool, and the API server refuses
+  # to create the ConfigMap.
   # See cnpg/cloudnative-pg chart values.yaml for full list.
   helm_cmd upgrade --install cnpg cnpg/cloudnative-pg \
     --namespace cnpg-system \
@@ -7452,6 +7460,7 @@ install_cnpg() {
     --version "${CNPG_CHART_VERSION}" \
     --set monitoring.podMonitorEnabled=false \
     --set maxConcurrentReconciles=3 \
+    --set-string config.data.ENABLE_INSTANCE_MANAGER_INPLACE_UPDATES=true \
     --wait \
     --timeout 600s
 

@@ -17,9 +17,11 @@
 #   - helm repo add + update
 #   - detect installed chart version; no-op if already at target
 #   - helm upgrade --install with --wait (10min timeout — CRD migration
-#     + rolling switchover on managed Cluster CRs takes time)
-#   - existing CNPG Cluster CRs undergo a primary switchover (operator-
-#     managed, normally ≤30s downtime per cluster). Plan accordingly.
+#     + operator roll)
+#   - existing CNPG Cluster CRs get the new instance manager in place
+#     (ENABLE_INSTANCE_MANAGER_INPLACE_UPDATES): Postgres keeps running,
+#     unless the new operator also changes the instance pod spec, which
+#     rolls the instances (replicas first, then the primary).
 #
 # Pinned version MUST match scripts/bootstrap.sh:CNPG_CHART_VERSION.
 # When bumping, edit BOTH files in the same commit.
@@ -109,18 +111,22 @@ fi
 
 if [[ -n "$current" ]]; then
   log "Upgrading: chart ${current} (${status:-unknown}) → ${CNPG_CHART_VERSION} (operator v1.30.2)."
-  log "  Existing Cluster CRs will undergo a rolling switchover."
+  log "  Existing Cluster CRs get the new instance manager in place; Postgres keeps running unless the instance pod spec changes."
   cluster_count=$(kctl get cluster.postgresql.cnpg.io -A --no-headers 2>/dev/null | wc -l)
   log "  Affected clusters: ${cluster_count}"
 else
   log "Fresh install: chart ${CNPG_CHART_VERSION}."
 fi
 
+# The same values as bootstrap.sh install_cnpg: this call resets the release to
+# exactly these, so a value missing here is dropped from the running operator.
 helm_cmd upgrade --install cnpg cnpg/cloudnative-pg \
   --namespace cnpg-system \
   --create-namespace \
   --version "${CNPG_CHART_VERSION}" \
   --set monitoring.podMonitorEnabled=false \
+  --set maxConcurrentReconciles=3 \
+  --set-string config.data.ENABLE_INSTANCE_MANAGER_INPLACE_UPDATES=true \
   --wait \
   --timeout 600s
 
