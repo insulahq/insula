@@ -35,6 +35,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `upgrade-cnpg.sh` now passes the same settings as `bootstrap.sh`. Before, it dropped this
   setting and the operator's reconcile limit (3) whenever it ran.
 
+### Fixed
+
+- **The nightly backup no longer gets a tenant's file manager killed for memory on a volume with
+  many files, and a cut-short SQLite dump is no longer reported as complete.** To find SQLite
+  files, the backup searched the whole volume inside the file manager with busybox `find`, which
+  reads every file's metadata. The kernel caches that metadata and counts it against the file
+  manager's 256 MiB limit; a later write to the volume cannot free that cache, so the kernel
+  killed the file manager instead. On production, a volume with 481,000 files filled 239 MB of
+  the limit, and the file manager was killed while dumping the third of 21 SQLite files. On lab
+  DEV, busybox `find` over 300,000 files charged 116 MiB. The backup then listed the two dumps
+  that had finished and silently left out the other 19. Now the file manager image ships GNU
+  `find`, which only reads directories here. The backup announces every SQLite file before
+  dumping any, so a file whose dump is cut short is reported as failed, with the exit code. A
+  partial dump never takes the final name and is removed before the files snapshot. The search
+  and the dumps are bounded in time, and a dump that would push the volume past 90% is skipped
+  and reported. The dump also hardens what runs as root over files the tenant controls: the dump
+  directory must be a plain directory on the volume, and the script enters it before writing.
+  Temporary files are created in one exclusive open, never through a planted symlink. Paths
+  containing a newline are skipped. A database with a pending rollback journal is skipped
+  instead of replayed. Databases without a write-ahead log are opened read-only. Two paths that
+  flatten to the same name no longer overwrite each other's dump.
+
 ## [2026.11.15] - 2026-11-25
 
 ### Fixed

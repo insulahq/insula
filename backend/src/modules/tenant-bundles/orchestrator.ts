@@ -54,7 +54,7 @@ import {
   deletePredumpsFromPvc,
   type PreDumpDeploymentResult,
 } from './components/database-predump-orchestration.js';
-import { runSqliteCapture } from './components/sqlite-predump.js';
+import { removePartialSqliteDumps, runSqliteCapture } from './components/sqlite-predump.js';
 import { leaseBundleFileManager, predumpsNeedCleanup } from './components/bundle-file-manager.js';
 import { acquireFileManagerLease, type FileManagerLease } from '../file-manager/lease.js';
 import { recordResticSnapshot, recordResticRunFailed } from './repo-state.js';
@@ -292,7 +292,7 @@ export async function runBundle(
   let dbPredumpResults: ReadonlyArray<PreDumpDeploymentResult> = [];
   // SQLite files discovered + logically dumped on the PVC (not a catalog DB
   // deployment). Folded into the database-dump summary as an 'sqlite' entry.
-  let sqliteDump: Awaited<ReturnType<typeof runSqliteCapture>> = null;
+  let sqliteDump: Awaited<ReturnType<typeof runSqliteCapture>>['entry'] = null;
 
   const tasks: Array<Promise<void>> = [];
 
@@ -344,16 +344,32 @@ export async function runBundle(
           // bundle (the raw SQLite file is still captured by the files snapshot).
           fmLease = await leaseBundleFileManager(deps.k8s, namespace, bundleId, acquireFileManagerLease);
           if (fmLease) {
+            let sqliteInterrupted = false;
             try {
-              sqliteDump = await runSqliteCapture({
+              const capture = await runSqliteCapture({
                 namespace,
                 fmPod: fmLease.podName,
                 backupId: bundleId,
                 kubeconfigPath: deps.kubeconfigPath,
               });
+              sqliteDump = capture.entry;
+              sqliteInterrupted = capture.interrupted;
             } catch (err) {
               // eslint-disable-next-line no-console
               console.warn(`[bundle ${bundleId}] sqlite pre-dump error: ${(err as Error).message}`);
+            }
+            // A capture cut short can leave a partial dump behind; remove it
+            // before the files snapshot takes it. A kill restarts the file
+            // manager in place, so the lease is asked for its pod on every
+            // attempt. Never throws.
+            if (sqliteInterrupted) {
+              const lease = fmLease;
+              await removePartialSqliteDumps({
+                namespace,
+                podFor: () => lease.currentPod(),
+                backupId: bundleId,
+                kubeconfigPath: deps.kubeconfigPath,
+              });
             }
             // Nothing on the PVC to clean up after the capture → hand the file
             // manager back now instead of holding it through the capture.

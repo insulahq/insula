@@ -23,8 +23,15 @@ FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf
 # rebuilt when its sources change): take them at build time.
 # setpriv runs unzip/tar/zip/cp/git as www-data so what they create is
 # www-data's (server.mjs, "Ownership of what the file manager creates").
+# findutils replaces busybox find: GNU find matches -type/-name on the file
+# type the directory listing carries, where busybox lstat()s every entry and
+# the inode cache it fills is charged to this container's memory limit. The
+# backup's SQLite discovery walks the whole volume; on a tenant with 481k files
+# that cache filled 239 MB of the 256 MiB limit, and a dump write to the
+# volume, which cannot reclaim it, got the file manager OOM-killed.
 RUN apk upgrade --no-cache \
- && apk add --no-cache git tar zip unzip sqlite openssh-sftp-server openssh-client rsync setpriv
+ && apk add --no-cache git tar zip unzip sqlite openssh-sftp-server openssh-client rsync setpriv findutils \
+ && find --version | grep -q 'GNU findutils'
 COPY --from=chroot-builder /build/sftp-serve /usr/local/bin/sftp-serve
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/sftp-serve
