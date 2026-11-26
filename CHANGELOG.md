@@ -110,7 +110,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     …) are cleared and `pg_hba.conf` rules trusting the network disabled. The platform's own
     sessions pin `search_path` and, from 17, turn event triggers off.
   - **MongoDB:** users holding root-like roles keep read/write on every database and lose the
-    rest. Root's password is replaced, once, by one only the platform knows.
+    rest. Root's password is replaced, once, by one only the platform knows — **the instance
+    restarts once for it**, so its own reset at every start keeps the new one.
 
   A reconciler converts existing instances after the upgrade and checks every instance every
   ten minutes (a full check hourly; the ticks between only prove the logins still work), four
