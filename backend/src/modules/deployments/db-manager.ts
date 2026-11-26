@@ -95,6 +95,16 @@ export function refuseReservedAccount(ctx: Pick<DbManagerContext, 'rootUsername'
   }
 }
 
+/**
+ * The engines' own databases a tenant may not export either (they hold the
+ * server's accounts). PostgreSQL's `postgres` is a plain database and may
+ * hold tenant data, so it exports.
+ */
+export function refuseSystemDatabaseExport(engine: string, name: string): void {
+  if (engine === 'postgresql' && name.toLowerCase() === 'postgres') return;
+  refuseReservedDatabaseName(engine, name);
+}
+
 export function refuseReservedDatabaseName(engine: string, name: string): void {
   if ((RESERVED_DATABASES[engine] ?? []).includes(name.toLowerCase())) {
     throw new ApiError('RESERVED_DATABASE_NAME', `"${name}" is the database server's own database and cannot be created or granted`, 400, { name });
@@ -1513,6 +1523,8 @@ export async function createDatabase(ctx: DbManagerContext, name: string): Promi
 export async function dropDatabase(ctx: DbManagerContext, name: string): Promise<void> {
   // Dropping names an EXISTING database (`2024-old` included); creating stays strict.
   validateDatabaseName(name);
+  // Dropped as root: `mysql` takes the server's accounts with it.
+  refuseReservedDatabaseName(ctx.engine, name);
   if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
     return mysqlDropDatabase(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, name,
@@ -2618,6 +2630,12 @@ export async function importMongoArchiveFromPvcFile(
   ctx: DbManagerContext,
   filePath: string,
   deploymentSubPath: string,
+  /**
+   * `as`: restore as this account (the tenant administrator), unprivileged in
+   * the pod and never into admin/config/local — an archive is the tenant's
+   * data, and one carrying admin.system.users would replace the accounts.
+   */
+  opts: { readonly as?: DbLogin } = {},
 ): Promise<ImportResult> {
   validatePvcFilePath(filePath);
   if (ctx.engine !== 'mongodb') {
@@ -2641,14 +2659,27 @@ export async function importMongoArchiveFromPvcFile(
       ['cp', fmSrcPath, fmDestPath]);
 
     const inPodPath = `${dataRoot}/${tempName}`;
-    // The password on stdin (the tool prompts for it), never in argv.
-    const authArgs = ctx.rootPassword ? `-u ${shellEscape(ctx.rootUsername)} --authenticationDatabase admin` : '';
     let result: { stdout: string; stderr: string };
     try {
-      const argv = ['sh', '-c', `mongorestore ${authArgs} --archive=${shellEscape(inPodPath)} --gzip --drop`];
-      result = ctx.rootPassword
-        ? await execInPodWithStdin(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, argv, `${ctx.rootPassword}\n`)
-        : await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, argv);
+      if (opts.as) {
+        // The archive is read by root (the data directory is the server's),
+        // the restore runs as nobody, its password in a file only nobody reads
+        // — the first stdin line, as a JSON (= YAML) string; never argv.
+        const exclude = "--nsExclude='admin.*' --nsExclude='config.*' --nsExclude='local.*'";
+        const script = 'set -e; d=$(mktemp -d); trap \'rm -rf "$d"\' EXIT; IFS= read -r line; umask 077; '
+          + 'printf \'password: %s\\n\' "$line" > "$d/c.yaml"; chown -R nobody "$d"; '
+          + `cat ${shellEscape(inPodPath)} | ${UNPRIVILEGED_SH} mongorestore --config="$d/c.yaml" -u ${shellEscape(opts.as.username)} `
+          + `--authenticationDatabase admin ${exclude} --archive --gzip --drop`;
+        result = await execInPodWithStdin(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+          ['sh', '-c', script], `${JSON.stringify(opts.as.password)}\n`);
+      } else {
+        // The password on stdin (the tool prompts for it), never in argv.
+        const authArgs = ctx.rootPassword ? `-u ${shellEscape(ctx.rootUsername)} --authenticationDatabase admin` : '';
+        const argv = ['sh', '-c', `mongorestore ${authArgs} --archive=${shellEscape(inPodPath)} --gzip --drop`];
+        result = ctx.rootPassword
+          ? await execInPodWithStdin(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, argv, `${ctx.rootPassword}\n`)
+          : await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, argv);
+      }
     } finally {
       // Best-effort cleanup of the temp copy inside the DB mount.
       await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,

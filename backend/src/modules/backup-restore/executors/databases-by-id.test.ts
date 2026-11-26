@@ -310,9 +310,9 @@ describe('restoreDatabasesForDeployments', () => {
     const summary = await restoreDatabasesForDeployments([dep('d1', 'mongo-a', 'mongodb')], BUNDLE_ID, deps);
     expect(importSql).not.toHaveBeenCalled();
     expect(importMongoArchive).toHaveBeenCalledTimes(1);
-    // (ctx, filePath, deploymentSubPath) — no db-name arg for mongo.
+    // (ctx, filePath, deploymentSubPath, deploymentId) — no db-name arg for mongo.
     expect(importMongoArchive).toHaveBeenCalledWith(
-      { pod: 'db-0' }, `database/mongodb/mongo-a/predump-appdb${MONGO_SUFFIX}`, 'database/mongodb/mongo-a',
+      { pod: 'db-0' }, `database/mongodb/mongo-a/predump-appdb${MONGO_SUFFIX}`, 'database/mongodb/mongo-a', 'd1',
     );
     expect(summary.totalImported).toBe(1);
     expect(summary.deployments[0]!.status).toBe('imported');

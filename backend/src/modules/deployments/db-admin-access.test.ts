@@ -222,6 +222,9 @@ describe('isLoginRefusal', () => {
     'FATAL: role "x" does not exist',
     'MongoServerError: Authentication failed.',
     'no pg_hba.conf entry for host',
+    'ERROR 3118 (HY000): Access denied for user \'root\'@\'localhost\'. Account is locked.',
+    'FATAL: role "x" is not permitted to log in',
+    'FATAL: pg_hba.conf rejects connection for host "[local]", user "x", database "postgres"',
   ])('%s is a refusal', (m) => expect(isLoginRefusal(m)).toBe(true));
 
   it.each([
@@ -244,6 +247,8 @@ describe('a step that fails part-way', () => {
     expect(r.mode).toBe('password');
     expect(r.changed).toEqual(expect.arrayContaining([expect.stringMatching(/socket only/)]));
     expect(r.detail).toMatch(/^a step failed, the next check tries again: .*Unknown error/);
+    // the part-way result says so: the tenant administrator is not shown as ready on it
+    expect(r.partial).toBe(true);
     // root@'%' is still there: the hardening pass must not take root for the platform's alone
     expect(state.others).toContain("'root'@'%'");
     expect(state.lockedOut).toBe(false);

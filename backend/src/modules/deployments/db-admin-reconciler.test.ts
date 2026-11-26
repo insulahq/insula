@@ -15,6 +15,15 @@ vi.mock('./tenant-admin-store.js', () => ({
   tenantAdminReady: vi.fn(),
   markTenantAdminReady: vi.fn(),
 }));
+/** The lease as a replica sees it: one run per job at a time, the rest refused. */
+const leaseRunning = new Set<string>();
+vi.mock('../../shared/scheduler-lease.js', () => ({
+  withSchedulerLease: vi.fn(async (_db: unknown, job: string, _ttl: number, fn: () => Promise<unknown>) => {
+    if (leaseRunning.has(job)) return { ran: false };
+    leaseRunning.add(job);
+    try { return { ran: true, value: await fn() }; } finally { leaseRunning.delete(job); }
+  }),
+}));
 vi.mock('./mongo-hardening.js', () => ({ rotateRoot: vi.fn(), rootLogsInWith: vi.fn() }));
 vi.mock('../notifications/events.js', () => ({
   notifyAdminTenantDatabaseAccessLost: vi.fn(async () => true),
@@ -25,14 +34,16 @@ import { ApiError } from '../../shared/errors.js';
 import { databaseAdminState } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { encrypt } from '../oidc/crypto.js';
-import { buildDbContext, type DbManagerContext } from './db-manager.js';
+import { withSchedulerLease } from '../../shared/scheduler-lease.js';
+import { buildDbContext, execInDbPod, type DbManagerContext } from './db-manager.js';
+import type { DbCommandRunner } from './db-exec.js';
 import { adminLoginWorks, DbUnreachableError, ensureDatabaseAdminAccess } from './db-admin-access.js';
 import { redeployWithCurrentConfig } from './service.js';
 import { chooseTenantAdminUsername, ensureTenantAdmin, tenantAdminLogsIn } from './tenant-admin.js';
 import { loadTenantAdminAccount, markTenantAdminReady, recordFirstTenantAdminAccount, tenantAdminReady } from './tenant-admin-store.js';
 import { rootLogsInWith, rotateRoot } from './mongo-hardening.js';
 import { notifyAdminTenantDatabaseAccessLost, notifyAdminTenantDatabaseAccessRestored } from '../notifications/events.js';
-import { incidentReason } from './db-admin-state.js';
+import { incidentReason, STALE_ROW_MS, STUCK_ALERT_AFTER_MS } from './db-admin-state.js';
 import {
   HARDEN_INTERVAL_MS, LOCKOUT_ALERT_AFTER_MS, ON_DEMAND_MIN_INTERVAL_MS, SHAPE_INTERVAL_MS, UNREACHABLE_ALERT_AFTER_MS,
   incidentTransition, listManagedDatabases, reconcileDatabaseAdmin, reconcileDatabaseAdminFor, reconcileInstance, stateValuesFor,
@@ -98,7 +109,7 @@ describe('stateValuesFor', () => {
 
     it('keeps whether it alerted while unreachable (as while locked)', () => {
       const down = { ...stateValuesFor(out('unreachable'), undefined, NOW), alertedAt: at('2026-01-02T12:30:00Z'), rootSecretCipher: null } as StateRow;
-      expect(stateValuesFor(out('unreachable'), down, at('2026-01-02T13:00:00Z')).alertedAt).toEqual(at('2026-01-02T12:30:00Z'));
+      expect(stateValuesFor(out('unreachable'), down, at('2026-01-02T12:20:00Z')).alertedAt).toEqual(at('2026-01-02T12:30:00Z'));
     });
 
     it('with nothing to keep ends up recorded as unreachable, its clock started', () => {
@@ -241,6 +252,109 @@ describe('incidentTransition', () => {
   });
 });
 
+describe('stateValuesFor — stale rows, stuck set-up, the hardening retry, capped text', () => {
+  const t0 = at('2026-01-02T10:00:00Z');
+  const rowAt = (checked: Date, over: Partial<StateRow> = {}): StateRow => ({
+    ...stateValuesFor(out('socket'), undefined, checked), lockedSince: checked, unreachableSince: checked, stuckSince: checked, alertedAt: checked, rootSecretCipher: null, ...over,
+  }) as StateRow;
+
+  it('a row nobody checked for over 30 minutes (the instance was stopped) starts its incident clocks again', () => {
+    const stale = rowAt(new Date(t0.getTime() - STALE_ROW_MS - 1));
+    expect(stateValuesFor(out('locked'), stale, t0)).toMatchObject({ lockedSince: t0, alertedAt: null });
+    expect(stateValuesFor(out('unreachable'), stale, t0)).toMatchObject({ unreachableSince: t0, alertedAt: null });
+    expect(stateValuesFor(out('socket', [], undefined, { stuck: true }), stale, t0)).toMatchObject({ stuckSince: t0, alertedAt: null });
+  });
+
+  it('exactly 30 minutes is not stale, and what the row knew is kept', () => {
+    const fresh = rowAt(new Date(t0.getTime() - STALE_ROW_MS));
+    expect(stateValuesFor(out('locked'), fresh, t0)).toMatchObject({ lockedSince: fresh.lockedSince, alertedAt: fresh.alertedAt });
+  });
+
+  it('staleness does not cost the first-conversion time or the hardening record', () => {
+    const stale = rowAt(new Date(t0.getTime() - 10 * STALE_ROW_MS), { hardenedAt: at('2026-01-01T00:00:00Z'), hardenedPod: 'p', convertedAt: at('2025-12-01T00:00:00Z') });
+    expect(stateValuesFor(out('unreachable'), stale, t0)).toMatchObject({ hardenedPod: 'p', convertedAt: at('2025-12-01T00:00:00Z') });
+  });
+
+  describe('stuckSince', () => {
+    const base = rowAt(new Date(t0.getTime() - 60_000), { lockedSince: null, unreachableSince: null, stuckSince: null, alertedAt: null });
+    it('starts with a stuck check and is kept by the next', () => {
+      const first = { ...stateValuesFor(out('socket', [], undefined, { full: true, stuck: true }), base, t0), rootSecretCipher: null } as StateRow;
+      expect(first.stuckSince).toEqual(t0);
+      const later = stateValuesFor(out('socket', [], undefined, { full: true, stuck: true }), first, new Date(t0.getTime() + 60_000));
+      expect(later.stuckSince).toEqual(t0);
+    });
+    it('a full check that is not stuck ends it', () => {
+      const stuck = { ...base, stuckSince: t0 } as StateRow;
+      expect(stateValuesFor(out('socket', [], undefined, { full: true, hardened: true }), stuck, new Date(t0.getTime() + 60_000)).stuckSince).toBeNull();
+    });
+    it('a quick check says nothing about the set-up: it keeps it', () => {
+      const stuck = { ...base, stuckSince: t0 } as StateRow;
+      expect(stateValuesFor(out('socket'), stuck, new Date(t0.getTime() + 60_000)).stuckSince).toEqual(t0);
+    });
+    it('keeps whether it alerted while stuck, and drops it when the incident ends', () => {
+      const stuck = { ...base, stuckSince: t0, alertedAt: t0 } as StateRow;
+      const now = new Date(t0.getTime() + 60_000);
+      expect(stateValuesFor(out('socket', [], undefined, { full: true, stuck: true }), stuck, now).alertedAt).toEqual(t0);
+      expect(stateValuesFor(out('socket', [], undefined, { full: true, hardened: true }), stuck, now).alertedAt).toBeNull();
+    });
+  });
+
+  describe('hardenTriedAt', () => {
+    const base = rowAt(new Date(t0.getTime() - 60_000), { lockedSince: null, unreachableSince: null, stuckSince: null, alertedAt: null, hardenTriedAt: at('2026-01-02T09:30:00Z') });
+    it('is stamped by a pass that did not finish', () => {
+      expect(stateValuesFor(out('socket', [], undefined, { full: true, hardenTried: true }), base, t0).hardenTriedAt).toEqual(t0);
+    });
+    it('is cleared by a pass that finished', () => {
+      expect(stateValuesFor(out('socket', [], undefined, { full: true, hardened: true, pod: 'p' }), base, t0).hardenTriedAt).toBeNull();
+    });
+    it('is kept by a check that did not harden', () => {
+      expect(stateValuesFor(out('socket', [], undefined, { full: true }), base, t0).hardenTriedAt).toEqual(base.hardenTriedAt);
+    });
+  });
+
+  it('caps the detail (tenant-influenced client text) at 1000 characters, in both branches', () => {
+    const long = 'x'.repeat(5000);
+    expect(stateValuesFor(out('locked', [], long), undefined, t0).detail).toHaveLength(1000);
+    const prev = { ...rowAt(new Date(t0.getTime() - 1000)), rootSecretCipher: null } as StateRow;
+    expect(stateValuesFor(out('unreachable', [], long), prev, t0).detail).toHaveLength(1000);
+    expect(stateValuesFor(out('locked', [], 'short'), undefined, t0).detail).toBe('short');
+  });
+});
+
+describe('incidentTransition — a set-up that does not finish', () => {
+  const since = at('2026-01-02T00:00:00Z');
+  const stuckRow = (over: Partial<StateRow> = {}): StateRow => ({
+    ...stateValuesFor(out('socket', [], undefined, { full: true, stuck: true }), undefined, since), rootSecretCipher: null, ...over,
+  }) as StateRow;
+  const after = (over: Partial<ReturnType<typeof stateValuesFor>> = {}) => ({ ...stuckRow(), ...over });
+
+  it('is announced after six hours, not before', () => {
+    expect(incidentTransition('socket', stuckRow(), after(), new Date(since.getTime() + STUCK_ALERT_AFTER_MS - 1))).toBe('none');
+    expect(incidentTransition('socket', stuckRow(), after(), new Date(since.getTime() + STUCK_ALERT_AFTER_MS))).toBe('announce-lost');
+    expect(STUCK_ALERT_AFTER_MS).toBe(6 * 3600_000);
+  });
+
+  it('once', () => {
+    const alerted = after({ alertedAt: since });
+    expect(incidentTransition('socket', stuckRow({ alertedAt: since }), alerted, new Date(since.getTime() + 2 * STUCK_ALERT_AFTER_MS))).toBe('none');
+  });
+
+  it('its recovery is announced after an alerted incident', () => {
+    const done = stateValuesFor(out('socket', [], undefined, { full: true, hardened: true }), { ...stuckRow({ alertedAt: since }) }, new Date(since.getTime() + STUCK_ALERT_AFTER_MS + 1000));
+    expect(incidentTransition('socket', stuckRow({ alertedAt: since }), done, new Date(since.getTime() + STUCK_ALERT_AFTER_MS + 1000))).toBe('announce-restored');
+  });
+
+  it('its reason says the tenant has no SQL Manager', () => {
+    expect(incidentReason(after({ detail: 'the hardening pass did not finish' }))).toBe('set-up has not finished for six hours, its tenant has no SQL Manager — the hardening pass did not finish');
+  });
+
+  it('the reason follows the clocks: a lockout, a silence, else the set-up', () => {
+    const t = at('2026-01-02T00:00:00Z');
+    expect(incidentReason({ ...after(), lockedSince: t, detail: 'd' })).toBe('login refused — d');
+    expect(incidentReason({ ...after(), mode: 'socket', unreachableSince: t, stuckSince: null, detail: 'd' })).toBe('no answer for over an hour — d');
+  });
+});
+
 describe('incidentReason', () => {
   it('says why, for the notification\'s list item', () => {
     expect(incidentReason(stateValuesFor(out('locked', [], 'root refuses both'), undefined, NOW))).toBe('login refused — root refuses both');
@@ -258,7 +372,7 @@ function fakeDb(o: { prev?: Array<Partial<StateRow>>; managed?: unknown[]; failU
   const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
   const chain = (rows: unknown[]) => { const c: Record<string, unknown> = {}; c.from = () => c; c.innerJoin = () => c; c.where = async () => rows; return c; };
   const db = {
-    select: () => ({ from: (t: unknown) => (t === databaseAdminState ? { where: async () => o.prev ?? [] } : chain(o.managed ?? [])) }),
+    select: () => ({ from: (t: unknown) => (t === databaseAdminState ? { where: async () => o.prev ?? [] } : chain(o.managed ?? [{ id: 'dep-1' }])) }),
     insert: (table: unknown) => ({
       values: (values: Record<string, unknown>) => ({
         onConflictDoUpdate: async (c: { set: Record<string, unknown> }) => {
@@ -293,8 +407,8 @@ function dbCtx(over: Partial<DbManagerContext> = {}): DbManagerContext {
 
 function prevRow(over: Partial<StateRow> = {}): StateRow {
   return {
-    deploymentId: 'dep-1', tenantId: 'ten-1', engine: 'mariadb', mode: 'socket', detail: null, lastChanges: null, checkedAt: at('2026-01-02T11:00:00Z'),
-    convertedAt: at('2026-01-01T00:00:00Z'), lockedSince: null, unreachableSince: null, alertedAt: null, shapedAt: null, hardenedAt: null, hardenedPod: null,
+    deploymentId: 'dep-1', tenantId: 'ten-1', engine: 'mariadb', mode: 'socket', detail: null, lastChanges: null, checkedAt: at('2026-01-02T11:55:00Z'),
+    convertedAt: at('2026-01-01T00:00:00Z'), lockedSince: null, unreachableSince: null, stuckSince: null, alertedAt: null, shapedAt: null, hardenTriedAt: null, hardenedAt: null, hardenedPod: null,
     rootSecretCipher: null, rootRotatedAt: null, ...over,
   } as StateRow;
 }
@@ -341,6 +455,15 @@ describe('reconcileInstance', () => {
     vi.mocked(buildDbContext).mockResolvedValue(dbCtx({ engine: 'mongodb', rootPassword: '' }));
     expect(await reconcileInstance(deps(fakeDb().db), mdFor({ engine: 'mongodb' }))).toMatchObject({ mode: 'open', changes: [] });
     expect(ensureDatabaseAdminAccess).not.toHaveBeenCalled();
+  });
+
+  it('without an injected runner every command runs under `timeout 300` in the pod', async () => {
+    vi.mocked(execInDbPod).mockResolvedValue({ stdout: '', stderr: '' });
+    let given: DbCommandRunner | undefined;
+    vi.mocked(ensureDatabaseAdminAccess).mockImplementation(async (_c, _o, r) => { given = r; return { mode: 'socket', changed: [] }; });
+    await reconcileInstance({ ...deps(fakeDb().db), run: undefined }, mdFor());
+    await given!(dbCtx(), ['mariadb', '-e', 'SELECT 1'], 'in');
+    expect(execInDbPod).toHaveBeenCalledWith(expect.anything(), ['timeout', '300', 'mariadb', '-e', 'SELECT 1'], 'in');
   });
 
   it('a database that never answered is unreachable, not locked, and keeps what was done before it', async () => {
@@ -409,7 +532,41 @@ describe('reconcileInstance', () => {
     expect(ensureTenantAdmin).toHaveBeenCalledWith(expect.anything(), ACCOUNT, { harden: false }, run);
   });
 
+  describe('a hardening pass that keeps failing', () => {
+    const failing = () => vi.mocked(ensureTenantAdmin).mockResolvedValue({ changes: [], problems: ['narrowing accounts: boom'] });
+
+    it('is a stuck outcome, remembered as tried', async () => {
+      failing();
+      const o = await reconcileInstance(deps(fakeDb().db), mdFor());
+      expect(o).toMatchObject({ hardened: false, hardenTried: true, stuck: true });
+    });
+
+    it('is not tried again within the hour, and stays stuck while it was', async () => {
+      const prev = prevRow({ hardenedAt: null, hardenTriedAt: new Date(NOW.getTime() - 30 * 60_000), stuckSince: new Date(NOW.getTime() - 3600_000), detail: 'earlier problem' });
+      const o = await reconcileInstance(deps(fakeDb().db), mdFor(), prev);
+      expect(ensureTenantAdmin).toHaveBeenCalledWith(expect.anything(), ACCOUNT, { harden: false }, run);
+      expect(o).toMatchObject({ hardened: false, hardenTried: false, stuck: true, detail: 'earlier problem' });
+    });
+
+    it('is tried again after an hour', async () => {
+      const prev = prevRow({ hardenedAt: null, hardenTriedAt: new Date(NOW.getTime() - SHAPE_INTERVAL_MS) });
+      await reconcileInstance(deps(fakeDb().db), mdFor(), prev);
+      expect(ensureTenantAdmin).toHaveBeenCalledWith(expect.anything(), ACCOUNT, { harden: true }, run);
+    });
+
+    it('a finished pass is not stuck', async () => {
+      const o = await reconcileInstance(deps(fakeDb().db), mdFor());
+      expect(o).toMatchObject({ hardened: true, stuck: false, hardenTried: false });
+    });
+  });
+
   describe('the panel shows the account once it is set up and hardened', () => {
+    it('a part-way access failure (partial) does not mark it ready on the password login', async () => {
+      vi.mocked(ensureDatabaseAdminAccess).mockResolvedValue({ mode: 'password', changed: [], detail: 'a step failed', partial: true });
+      await reconcileInstance(deps(fakeDb().db), mdFor(), prevRow());
+      expect(markTenantAdminReady).not.toHaveBeenCalled();
+    });
+
     it('a completed hardening pass marks it ready', async () => {
       await reconcileInstance(deps(fakeDb().db), mdFor());
       expect(markTenantAdminReady).toHaveBeenCalledWith(expect.anything(), 'dep-1', NOW);
@@ -420,7 +577,7 @@ describe('reconcileInstance', () => {
       const o = await reconcileInstance(deps(fakeDb().db), mdFor());
       expect(markTenantAdminReady).not.toHaveBeenCalled();
       expect(o.hardened).toBe(false);
-      expect(o.detail).toBe('the hardening pass did not finish, the next check tries again: narrowing accounts: ERROR 1045; objects that ran as root: boom');
+      expect(o.detail).toBe('the hardening pass did not finish, it is tried again within the hour: narrowing accounts: ERROR 1045; objects that ran as root: boom');
     });
 
     it('a check that did not harden (not due) leaves it as it was', async () => {
@@ -447,10 +604,12 @@ describe('reconcileInstance', () => {
       expect(ensureDatabaseAdminAccess).not.toHaveBeenCalled();
     });
 
-    it('a failure is reported, not thrown', async () => {
+    it('a failure is reported, not thrown — and the row keeps its mounts, so the next check tries again', async () => {
       vi.mocked(redeployWithCurrentConfig).mockRejectedValueOnce(new Error('apiserver down'));
-      const o = await reconcileInstance(deps(fakeDb().db), mdFor({ extraMountCount: 1 }));
+      const f = fakeDb();
+      const o = await reconcileInstance(deps(f.db), mdFor({ extraMountCount: 1 }));
       expect(o).toMatchObject({ mode: 'unreachable', detail: 'its extra mounts could not be removed: apiserver down' });
+      expect(f.updates).toEqual([]);
     });
 
     it('an app stack\'s mounts are the tenant\'s own and are left alone', async () => {
@@ -570,6 +729,25 @@ describe('reconcileInstance', () => {
       expect(f.upserts[0]!.set).toEqual({ rootSecretCipher: f.upserts[0]!.values.rootSecretCipher });
       // the configuration now carries it
       expect(f.updates).toHaveLength(1);
+    });
+
+    it('a rotation that was cut off is retried with the SAME new password it kept before', async () => {
+      const pending = 'kept-before-the-cut';
+      const f = fakeDb();
+      const prev = prevRow({ engine: 'mongodb', mode: 'restricted', rootSecretCipher: encrypt(pending, KEY) });
+      vi.mocked(rotateRoot).mockImplementation(async (_x, next) => { expect(next).toBe(pending); return true; });
+      const o = await reconcileInstance(deps(f.db), mongo(), prev);
+      expect(o.rotated).toBe(true);
+      expect(rotateRoot).toHaveBeenCalledTimes(1);
+      expect(f.upserts[0]!.values.rootSecretCipher).toBe(prev.rootSecretCipher);
+      expect(vi.mocked(ensureTenantAdmin).mock.calls[0]![0].rootPassword).toBe(pending);
+    });
+
+    it('a kept password that is already the configured one is not reused: a fresh one is made', async () => {
+      const prev = prevRow({ engine: 'mongodb', mode: 'restricted', rootSecretCipher: encrypt('tenant-knew-this', KEY) });
+      vi.mocked(rootLogsInWith).mockResolvedValue(true);
+      await reconcileInstance(deps(fakeDb().db), mongo(), prev);
+      expect(vi.mocked(rotateRoot).mock.calls[0]![1]).toBe('fresh-platform-secret');
     });
 
     it('a rotation whose proof fails is retried next time, and the rest goes on with the old password', async () => {
@@ -724,17 +902,34 @@ describe('reconcileDatabaseAdmin', () => {
     expect(f.upserts.map((u) => u.values.deploymentId)).toEqual(['dep-2']);
   });
 
-  it('a second pass over the same instance while one is running shares its result', async () => {
+  it('a second pass over an instance another run holds the lease for skips it: nothing is checked or recorded for it', async () => {
     let release: (() => void) | undefined;
     vi.mocked(buildDbContext).mockImplementation(() => new Promise((resolve) => { release = () => resolve(dbCtx()); }));
     const f = fakeDb();
     const a = reconcileDatabaseAdmin(deps(f.db), [mdN(7)]);
-    const b = reconcileDatabaseAdmin(deps(f.db), [mdN(7)]);
     await vi.waitFor(() => expect(release).toBeDefined());
+    const b = await reconcileDatabaseAdmin(deps(f.db), [mdN(7)]);
+    expect(b).toEqual({ checked: 1, changed: 0, locked: 0, unreachable: 0 });
     release!();
-    await Promise.all([a, b]);
+    await a;
     expect(buildDbContext).toHaveBeenCalledTimes(1);
     expect(ensureDatabaseAdminAccess).toHaveBeenCalledTimes(1);
+    expect(f.upserts).toHaveLength(1);
+  });
+
+  it('each instance runs under its own lease, long enough for the time limit, released when done', async () => {
+    await reconcileDatabaseAdmin(deps(fakeDb().db), [mdN(9)]);
+    expect(withSchedulerLease).toHaveBeenCalledWith(expect.anything(), 'database-admin:dep-9', 2 * 5 * 60 * 1000, expect.any(Function),
+      { release: true, maxHoldMs: Infinity, startupRetry: false });
+  });
+
+  it('an instance whose lease is held elsewhere is not recorded and not counted as unreachable', async () => {
+    vi.mocked(withSchedulerLease).mockResolvedValueOnce({ ran: false });
+    const f = fakeDb();
+    const r = await reconcileDatabaseAdmin(deps(f.db), [mdN(1)]);
+    expect(r).toEqual({ checked: 1, changed: 0, locked: 0, unreachable: 0 });
+    expect(f.upserts).toEqual([]);
+    expect(ensureDatabaseAdminAccess).not.toHaveBeenCalled();
   });
 
   it('a pass after the first has finished checks again', async () => {
@@ -842,7 +1037,7 @@ describe('reconcileDatabaseAdmin — unreachable incidents, concurrency, limits'
     }
   });
 
-  it('the instance given up on can be checked again at once (its slot is freed)', async () => {
+  it('the instance given up on keeps its lease while its run is still pending: no second run starts beside it', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       vi.mocked(buildDbContext).mockImplementationOnce(() => new Promise<DbManagerContext>(() => {}));
@@ -850,8 +1045,9 @@ describe('reconcileDatabaseAdmin — unreachable incidents, concurrency, limits'
       const first = reconcileDatabaseAdmin(deps(f.db), [mdFor({ deploymentId: 'hang-3' })]);
       await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
       await first;
-      await reconcileDatabaseAdmin(deps(f.db), [mdFor({ deploymentId: 'hang-3' })]);
-      expect(buildDbContext).toHaveBeenCalledTimes(2);
+      const again = await reconcileDatabaseAdmin(deps(f.db), [mdFor({ deploymentId: 'hang-3' })]);
+      expect(again.unreachable).toBe(0);
+      expect(buildDbContext).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
@@ -945,6 +1141,7 @@ describe('reconcileDatabaseAdminFor', () => {
     const f = fakeDb({ managed: [managedRow('od-6')] });
     const running = reconcileDatabaseAdmin(deps(f.db), [{ ...mdFor(), deploymentId: 'od-6' }]);
     await vi.waitFor(() => expect(release).toBeDefined());
+    // the lease is held: the on-demand run finds nothing to do
     await reconcileDatabaseAdminFor(deps(f.db, { now: at0(0) }), 'od-6');
     release!();
     await running;

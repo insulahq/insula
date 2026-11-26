@@ -166,6 +166,10 @@ export function narrowingStatements(account: string, grants: readonly ParsedGran
   if (grants.every(isSafe)) return [];
   const add: string[] = [];
   const remove: string[] = [];
+  // Global grant options last, once: on MySQL a REVOKE GRANT OPTION ON *.*
+  // before the revoke of dynamic privileges (BACKUP_ADMIN, …) leaves those in
+  // place for good, and the later revoke takes only their grant option.
+  let globalGrantOption = false;
   const grantOn = (privs: readonly string[], patterns: readonly string[]): void => {
     if (privs.length === 0) return;
     for (const p of patterns) add.push(`GRANT ${privs.join(', ')} ON ${mysqlIdent(p)}.* TO ${account}`);
@@ -184,8 +188,8 @@ export function narrowingStatements(account: string, grants: readonly ParsedGran
         // database — and in the ones created later (the prefix).
         grantOn(g.privileges.filter((p) => DATABASE_PRIVILEGES.has(p)), [PREFIX_PATTERN, ...tenantDatabases.map(grantPattern)]);
         const unsafe = g.privileges.filter((p) => !HARMLESS_GLOBAL.has(p));
-        if (g.grantOption) remove.push(`REVOKE GRANT OPTION ON *.* FROM ${account}`);
         if (unsafe.length > 0) remove.push(`REVOKE ${unsafe.join(', ')} ON *.* FROM ${account}`);
+        if (g.grantOption) globalGrantOption = true;
         break;
       }
       case 'database': {
@@ -211,7 +215,7 @@ export function narrowingStatements(account: string, grants: readonly ParsedGran
         ];
     }
   }
-  return [...add, ...remove];
+  return [...add, ...remove, ...(globalGrantOption ? [`REVOKE GRANT OPTION ON *.* FROM ${account}`] : [])];
 }
 
 interface Account { readonly user: string; readonly host: string | null }
@@ -245,8 +249,20 @@ async function showGrants(x: Exec, account: Account): Promise<ParsedGrant[]> {
 }
 
 /**
+ * One account keeps only its reach into tenant databases — run on the tenant
+ * administrator at every full check: nothing must have widened it (a routine
+ * left behind running as root could GRANT it anything). Returns what changed.
+ */
+export async function narrowAccount(x: Exec, user: string, host: string): Promise<string[]> {
+  const statements = narrowingStatements(accountSql(user, host), await showGrants(x, { user, host }), await listTenantDatabases(x));
+  if (statements.length === 0) return [];
+  await sh(x, mysqlRootScript(x.ctx, `${statements.join(';\n')};\n`));
+  return [`narrowed ${user}@${host} back to its tenant databases (it had been granted more)`];
+}
+
+/**
  * Every account but the server's own and `skip` (the tenant administrator,
- * which tenant-admin.ts shapes itself) keeps only its reach into tenant
+ * which narrowAccount keeps in shape) keeps only its reach into tenant
  * databases. Returns what changed.
  */
 export async function narrowAccounts(x: Exec, skip: ReadonlySet<string>): Promise<string[]> {
@@ -338,7 +354,7 @@ export async function ensureAllDatabasesAccounts(x: Exec): Promise<string[]> {
 
 // ─── Objects that run as root ───────────────────────────────────────────────
 
-type ObjectKind = 'PROCEDURE' | 'FUNCTION' | 'TRIGGER' | 'VIEW' | 'EVENT';
+type ObjectKind = 'PROCEDURE' | 'FUNCTION' | 'TRIGGER' | 'VIEW' | 'EVENT' | 'PACKAGE' | 'PACKAGE BODY';
 
 interface DefinedObject {
   readonly kind: ObjectKind;
@@ -488,11 +504,26 @@ async function rootObjectsInSystemSchemas(x: Exec): Promise<DefinedObject[]> {
   });
 }
 
+/** MariaDB (Oracle mode) packages defined by a server account: not re-created, dropped — bodies first. */
+async function rootDefinedPackages(x: Exec): Promise<DefinedObject[]> {
+  if (x.ctx.engine !== 'mariadb') return [];
+  const out = await sh(x, mysqlRoot(x.ctx,
+    `SELECT ROUTINE_TYPE, ${hx('ROUTINE_SCHEMA')}, ${hx('ROUTINE_NAME')} FROM information_schema.ROUTINES`
+    + ` WHERE ${PRIVILEGED_DEFINER} AND ROUTINE_TYPE IN ('PACKAGE', 'PACKAGE BODY') ORDER BY ROUTINE_TYPE = 'PACKAGE'`));
+  return outputLines(out).map((l) => {
+    const [kind, sc, n] = l.split('\t');
+    return { kind: kind as ObjectKind, schema: fromHexColumn(sc), name: fromHexColumn(n) };
+  });
+}
+
 /** Every object running as root (or a server account) runs as `admin` instead. Returns what changed. */
 export async function adoptRootDefinedObjects(x: Exec, admin: string): Promise<string[]> {
   const changed: string[] = [];
   for (const o of await rootObjectsInSystemSchemas(x)) {
     changed.push(await dropObject(x, o, 'sat in the server\'s own schema'));
+  }
+  for (const o of await rootDefinedPackages(x)) {
+    changed.push(await dropObject(x, o, 'is a package, which the platform does not re-create'));
   }
   for (const o of await rootDefinedObjects(x)) {
     if (o.kind === 'EVENT') {

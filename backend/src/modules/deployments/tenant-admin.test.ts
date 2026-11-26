@@ -138,7 +138,9 @@ describe('MariaDB / MySQL', () => {
   it('without harden the other accounts and the root-defined objects are left alone', async () => {
     const r = recorder([[/^SELECT COUNT/, '1'], [/^SELECT \(SELECT COUNT/, '1\tY']]);
     await ensureTenantAdmin(ctx('mariadb'), account, { harden: false }, r.run);
-    expect(r.texts.some((t) => t.startsWith('SHOW GRANTS') || t.includes('information_schema.ROUTINES'))).toBe(false);
+    // only the administrator's own grants are read: nothing widened it since the last check
+    expect(r.texts.filter((t) => t.startsWith('SHOW GRANTS'))).toEqual(['SHOW GRANTS FOR `dbadmin`@`%`']);
+    expect(r.texts.some((t) => t.includes('information_schema.ROUTINES'))).toBe(false);
   });
 
   it('with harden the account comes first (its own login never waits on hardening), then other accounts are narrowed, then root-defined objects adopted', async () => {
@@ -153,6 +155,24 @@ describe('MariaDB / MySQL', () => {
     expect(adopt).toBeGreaterThan(narrowed);
   });
 
+  it('the administrator\'s own grants are checked at every check, before its grants are topped up', async () => {
+    const r = recorder([[/^SELECT COUNT/, '1'], [/^SELECT \(SELECT COUNT/, '1\tY']]);
+    await ensureTenantAdmin(ctx('mariadb'), account, { harden: false }, r.run);
+    const show = r.texts.indexOf('SHOW GRANTS FOR `dbadmin`@`%`');
+    expect(show).toBeGreaterThanOrEqual(0);
+    expect(show).toBeLessThan(r.texts.findIndex((t) => t.startsWith('SELECT (SELECT COUNT')));
+  });
+
+  it('widened grants on the administrator are taken back and reported', async () => {
+    const r = recorder([
+      [/^SELECT COUNT/, '1'], [/^SELECT \(SELECT COUNT/, '1\tY'],
+      [/^SHOW GRANTS FOR `dbadmin`@`%`/, 'GRANT SELECT, SUPER ON *.* TO `dbadmin`@`%`\n'],
+    ]);
+    const result = await ensureTenantAdmin(ctx('mariadb'), account, { harden: false }, r.run);
+    expect(result.changes).toContain('narrowed dbadmin@% back to its tenant databases (it had been granted more)');
+    expect(r.scripts.join('\n')).toContain('REVOKE SELECT, SUPER ON *.* FROM `dbadmin`@`%`');
+  });
+
   it('the tenant administrator itself is never narrowed', async () => {
     const r = recorder([
       [/^SELECT COUNT/, '1'], [/^SELECT \(SELECT COUNT/, '1\tY'],
@@ -160,7 +180,8 @@ describe('MariaDB / MySQL', () => {
     ]);
     await ensureTenantAdmin(ctx('mysql'), account, { harden: true }, r.run);
     const asked = r.texts.filter((t) => t.startsWith('SHOW GRANTS'));
-    expect(asked).toEqual(['SHOW GRANTS FOR `other`@`%`']);
+    // narrowAccount reads the administrator's own (it is kept in shape every check); narrowAccounts skips it
+    expect(asked).toEqual(['SHOW GRANTS FOR `dbadmin`@`%`', 'SHOW GRANTS FOR `other`@`%`']);
   });
 
   it('a failing hardening step is a problem, not a failure: the account is up, the other steps still run', async () => {
@@ -220,8 +241,8 @@ describe('MariaDB / MySQL', () => {
 
 describe('PostgreSQL', () => {
   const account = { username: 'dbadmin', password: 'pw-2' };
-  const dbRows = (rows: Array<[string, string, boolean]>): string => rows.map(([n, o, su]) => `${hex(n)},${hex(o)},${su}`).join('\n');
-  const world = (opts: { exists?: boolean; dbs: Array<[string, string, boolean]>; apps?: string[] }): Array<[RegExp, string]> => [
+  const dbRows = (rows: Array<[string, string, boolean] | [string, string, boolean, boolean]>): string => rows.map(([n, o, su, conn]) => `${hex(n)},${hex(o)},${su},${conn ?? true}`).join('\n');
+  const world = (opts: { exists?: boolean; dbs: Array<[string, string, boolean] | [string, string, boolean, boolean]>; apps?: string[] }): Array<[RegExp, string]> => [
     [/^SELECT COUNT\(\*\) FROM pg_catalog\.pg_roles WHERE rolname = 'dbadmin'/, opts.exists ? '1' : '0'],
     [/FROM pg_catalog\.pg_database d JOIN/, dbRows(opts.dbs)],
     [/r\.rolcanlogin/, (opts.apps ?? []).map(hex).join('\n')],
@@ -272,6 +293,57 @@ describe('PostgreSQL', () => {
     expect(hardenedIn(daily)).toEqual(['postgres', 'template1', 'shop']);
     // never handed to the tenant, even in the pass
     expect(daily.texts.filter((t) => t.startsWith('ALTER DATABASE'))).toEqual(['ALTER DATABASE "shop" OWNER TO "dbadmin"']);
+  });
+
+  describe('a database that refuses connections (template0)', () => {
+    const dbs: Array<[string, string, boolean, boolean]> = [['postgres', 'postgres', true, true], ['template0', 'postgres', true, false]];
+
+    it('is left alone in the frequent check', async () => {
+      const r = recorder(world({ dbs }));
+      await ensureTenantAdmin(ctx('postgresql'), account, { harden: false }, r.run);
+      expect(r.texts.some((t) => t.includes('template0'))).toBe(false);
+    });
+
+    it('is opened for the hardening pass, hardened for the administrator (the superuser owns it), and closed again', async () => {
+      const r = recorder(world({ dbs }));
+      await ensureTenantAdmin(ctx('postgresql', 'postgres'), account, { harden: true }, r.run);
+      const open = r.texts.indexOf('ALTER DATABASE "template0" ALLOW_CONNECTIONS true');
+      const pass = r.calls.findIndex((c) => c.database === 'template0' && c.text.startsWith('DO $insula_'));
+      const close = r.texts.indexOf('ALTER DATABASE "template0" ALLOW_CONNECTIONS false');
+      expect(open).toBeGreaterThanOrEqual(0);
+      expect(pass).toBeGreaterThan(open);
+      expect(close).toBeGreaterThan(pass);
+      expect(r.calls[pass]!.text).toContain(Buffer.from('dbadmin').toString('hex'));
+      // never handed over: it is the server's own
+      expect(r.texts.some((t) => t === 'ALTER DATABASE "template0" OWNER TO "dbadmin"')).toBe(false);
+    });
+
+    it('a failure is a problem, and the database is closed again', async () => {
+      const r = recorder(world({ dbs }), (c) => c.database === 'template0' && c.text.startsWith('DO $insula_'));
+      const result = await ensureTenantAdmin(ctx('postgresql'), account, { harden: true }, r.run);
+      expect(result.problems).toEqual([expect.stringMatching(/^database template0: /)]);
+      expect(r.texts.at(-1)).not.toBe('ALTER DATABASE "template0" ALLOW_CONNECTIONS true');
+      expect(r.texts).toContain('ALTER DATABASE "template0" ALLOW_CONNECTIONS false');
+    });
+  });
+
+  describe('templates', () => {
+    it('other than the server\'s own are switched off in the hardening pass, and only there', async () => {
+      const w = [...world({ dbs: [] }), [/datistemplate/, hex('copyme')] as [RegExp, string]];
+      const daily = recorder(w);
+      const result = await ensureTenantAdmin(ctx('postgresql'), account, { harden: true }, daily.run);
+      expect(daily.texts).toContain('ALTER DATABASE "copyme" IS_TEMPLATE false');
+      expect(result.changes).toContain('copyme is no longer a template (any role with CREATEDB could copy it)');
+      const frequent = recorder(w);
+      await ensureTenantAdmin(ctx('postgresql'), account, { harden: false }, frequent.run);
+      expect(frequent.texts.some((t) => t.includes('datistemplate'))).toBe(false);
+    });
+
+    it('a failure is a problem, not a failure of the account', async () => {
+      const r = recorder(world({ dbs: [] }), (c) => c.text.includes('datistemplate'));
+      const result = await ensureTenantAdmin(ctx('postgresql'), account, { harden: true }, r.run);
+      expect(result.problems).toEqual([expect.stringMatching(/^templates: /)]);
+    });
   });
 
   it('the cluster-wide pass runs before any database is touched, and only when asked', async () => {

@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DbExecError, type DbManagerContext } from './db-manager.js';
 import type { DbCommandRunner } from './db-exec.js';
 import {
-  accountSql, adoptRootDefinedObjects, allDatabasesGrants, ensureAllDatabasesAccounts, grantPattern, narrowAccounts, narrowingStatements,
+  accountSql, adoptRootDefinedObjects, allDatabasesGrants, ensureAllDatabasesAccounts, grantPattern, narrowAccount, narrowAccounts, narrowingStatements,
   parseGrant, patternMatches, PREFIX_PATTERN, withDefiner,
 } from './mysql-hardening.js';
 
@@ -170,8 +170,8 @@ describe('narrowingStatements', () => {
       "GRANT SELECT, INSERT ON `shop`.* TO 'evil'@'%'",
       "GRANT SELECT, INSERT ON `my\\_app`.* TO 'evil'@'%'",
       "GRANT SELECT, INSERT ON `mydb`.* TO 'evil'@'%'",
-      "REVOKE GRANT OPTION ON *.* FROM 'evil'@'%'",
       "REVOKE SELECT, INSERT, FILE, CREATE USER ON *.* FROM 'evil'@'%'",
+      "REVOKE GRANT OPTION ON *.* FROM 'evil'@'%'",
     ]);
   });
 
@@ -187,6 +187,16 @@ describe('narrowingStatements', () => {
   it('GRANT OPTION alone is not safe: only the option is revoked', () => {
     expect(narrow(['GRANT USAGE ON *.* TO `evil`@`%` WITH GRANT OPTION'])).toEqual(["REVOKE GRANT OPTION ON *.* FROM 'evil'@'%'"]);
     expect(narrow(['GRANT PROCESS ON *.* TO `evil`@`%` WITH GRANT OPTION'])).toEqual(["REVOKE GRANT OPTION ON *.* FROM 'evil'@'%'"]);
+  });
+
+  it('the global GRANT OPTION is revoked once, after everything else', () => {
+    const out = narrow([
+      'GRANT USAGE ON *.* TO `evil`@`%` WITH GRANT OPTION',
+      'GRANT SELECT ON *.* TO `evil`@`%` WITH GRANT OPTION',
+      'GRANT PROXY ON `root`@`localhost` TO `evil`@`%`',
+    ], ['shop']);
+    expect(out.filter((st) => st === "REVOKE GRANT OPTION ON *.* FROM 'evil'@'%'")).toHaveLength(1);
+    expect(out.at(-1)).toBe("REVOKE GRANT OPTION ON *.* FROM 'evil'@'%'");
   });
 
   it('MySQL dynamic privileges are revoked (they are not database privileges), nothing granted in their place', () => {
@@ -646,6 +656,7 @@ describe('adoptRootDefinedObjects', () => {
   interface Objects {
     objects?: string[];
     systemObjects?: string[];
+    packages?: string[];
     triggers?: Array<[schema: string, name: string, table: string, root: boolean]>;
     create?: Record<string, string>;
     grants?: string;
@@ -656,6 +667,7 @@ describe('adoptRootDefinedObjects', () => {
   function server(o: Objects) {
     let scriptsSeen = 0;
     return fake(({ text, stdin }) => {
+      if (text.includes("ROUTINE_TYPE IN ('PACKAGE', 'PACKAGE BODY')")) return (o.packages ?? []).join('\n');
       // root's objects in the server's own schemas are asked first
       if (text.includes("FROM information_schema.ROUTINES WHERE SUBSTRING_INDEX(DEFINER, '@', 1) = 'root'")) return (o.systemObjects ?? []).join('\n');
       if (text.includes('FROM information_schema.ROUTINES')) return (o.objects ?? []).join('\n');
@@ -822,7 +834,7 @@ describe('adoptRootDefinedObjects', () => {
   it('the listing looks past the server schemas and at every server account as definer', async () => {
     const s = server({});
     await adoptRootDefinedObjects({ ctx: ctx('mariadb'), run: s.run }, ADMIN);
-    const listing = s.calls.find((c) => c.text.includes("ROUTINES WHERE SUBSTRING_INDEX(DEFINER, '@', 1) IN"))!.text;
+    const listing = s.calls.find((c) => c.text.includes("ROUTINES WHERE SUBSTRING_INDEX(DEFINER, '@', 1) IN") && c.text.includes("ROUTINE_TYPE IN ('PROCEDURE', 'FUNCTION')"))!.text;
     expect(listing).toContain("IN ('root', 'mariadb.sys', 'mysql.sys', 'mysql.session', 'mysql.infoschema')");
     expect(listing).toContain("NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')");
   });
@@ -873,3 +885,60 @@ describe('adoptRootDefinedObjects', () => {
     });
   });
 });
+
+describe('MariaDB packages defined by a server account', () => {
+  const world = (packages: string[]) => fake(({ text }) => (text.includes("ROUTINE_TYPE IN ('PACKAGE', 'PACKAGE BODY')") ? packages.join('\n') : undefined));
+
+  beforeEach(() => { vi.spyOn(console, 'warn').mockImplementation(() => {}); });
+
+  it('are dropped, the bodies before the packages', async () => {
+    const s = world([`PACKAGE BODY\t${X('shop')}\t${X('pk')}`, `PACKAGE\t${X('shop')}\t${X('pk')}`]);
+    const changed = await adoptRootDefinedObjects({ ctx: ctx('mariadb'), run: s.run }, '`dbadmin`@`%`');
+    expect(s.calls.map((c) => c.text).filter((t) => t.startsWith('DROP'))).toEqual([
+      'DROP PACKAGE BODY IF EXISTS `shop`.`pk`',
+      'DROP PACKAGE IF EXISTS `shop`.`pk`',
+    ]);
+    expect(changed).toEqual([
+      'removed the package body shop.pk: it ran as root and is a package, which the platform does not re-create (its definition is in the platform log)',
+      'removed the package shop.pk: it ran as root and is a package, which the platform does not re-create (its definition is in the platform log)',
+    ]);
+    const query = s.calls.find((c) => c.text.includes("'PACKAGE BODY'"))!.text;
+    expect(query).toContain("ORDER BY ROUTINE_TYPE = 'PACKAGE'");
+  });
+
+  it('are not looked for on MySQL, which has none', async () => {
+    const s = world([]);
+    await adoptRootDefinedObjects({ ctx: ctx('mysql'), run: s.run }, '`dbadmin`@`%`');
+    expect(s.calls.some((c) => c.text.includes("'PACKAGE BODY'"))).toBe(false);
+  });
+
+  it('GRANT lines naming a package are read as object grants in their schema', () => {
+    expect(parseGrant('GRANT EXECUTE ON PACKAGE BODY `mysql`.`pk` TO `u`@`%`')).toMatchObject({ kind: 'object', schema: 'mysql' });
+  });
+});
+
+describe('narrowAccount — the tenant administrator, kept in shape at every check', () => {
+  const grantsOf = (lines: string) => fake(({ text }) => {
+    if (text.includes('information_schema.SCHEMATA')) return SCHEMATA;
+    if (text.startsWith('SHOW GRANTS FOR ')) return lines;
+    return undefined;
+  });
+
+  it('does nothing while the account holds only tenant databases and PROCESS', async () => {
+    const s = grantsOf('GRANT PROCESS ON *.* TO `dbadmin`@`%`\nGRANT ALL PRIVILEGES ON `db\\_%`.* TO `dbadmin`@`%`\nGRANT ALL PRIVILEGES ON `shop`.* TO `dbadmin`@`%`\n');
+    expect(await narrowAccount({ ctx: ctx('mariadb'), run: s.run }, 'dbadmin', '%')).toEqual([]);
+    expect(s.scripts).toEqual([]);
+    expect(s.calls.map((c) => c.text)).toContain('SHOW GRANTS FOR `dbadmin`@`%`');
+  });
+
+  it('takes back what it was granted beyond that (a routine left running as root could have)', async () => {
+    const s = grantsOf('GRANT SELECT, FILE ON *.* TO `dbadmin`@`%` WITH GRANT OPTION\nGRANT SELECT ON `mysql`.`user` TO `dbadmin`@`%`\n');
+    const changed = await narrowAccount({ ctx: ctx('mariadb'), run: s.run }, 'dbadmin', '%');
+    expect(changed).toEqual(['narrowed dbadmin@% back to its tenant databases (it had been granted more)']);
+    expect(s.scripts[0]).toContain('REVOKE GRANT OPTION ON *.* FROM `dbadmin`@`%`');
+    expect(s.scripts[0]).toContain('REVOKE SELECT, FILE ON *.* FROM `dbadmin`@`%`');
+    expect(s.scripts[0]).toContain('REVOKE SELECT ON `mysql`.`user` FROM `dbadmin`@`%`');
+    expect(s.scripts[0]!.indexOf('GRANT SELECT ON `shop`')).toBeLessThan(s.scripts[0]!.indexOf('REVOKE'));
+  });
+});
+

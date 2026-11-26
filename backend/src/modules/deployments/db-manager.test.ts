@@ -36,6 +36,7 @@ import {
   importSql,
   exportDatabaseToPvc,
   dropDatabase,
+  refuseSystemDatabaseExport,
 } from './db-manager.js';
 
 function createMockK8s(pods: Array<{ name: string; phase: string }>): K8sClients {
@@ -570,7 +571,30 @@ describe('db-manager', () => {
     );
   });
 
+  describe('refuseSystemDatabaseExport', () => {
+    it.each([['mariadb', 'mysql'], ['mysql', 'Performance_Schema'], ['postgresql', 'template1'], ['postgresql', 'template0'], ['mongodb', 'admin'], ['mongodb', 'config']])(
+      'refuses %s / %s', (engine, name) => {
+        expect(() => refuseSystemDatabaseExport(engine, name)).toThrow(expect.objectContaining({ code: 'RESERVED_DATABASE_NAME' }));
+      });
+
+    it('PostgreSQL\'s postgres is a plain database that may hold tenant data: it exports', () => {
+      expect(() => refuseSystemDatabaseExport('postgresql', 'postgres')).not.toThrow();
+      expect(() => refuseSystemDatabaseExport('postgresql', 'POSTGRES')).not.toThrow();
+    });
+
+    it('ordinary names pass', () => {
+      expect(() => refuseSystemDatabaseExport('mariadb', 'shop')).not.toThrow();
+    });
+  });
+
   describe('reserved accounts and databases elsewhere', () => {
+    it.each([['mariadb', 'mysql'], ['postgresql', 'postgres'], ['mongodb', 'admin']] as const)('dropDatabase refuses the server\'s own database (%s / %s)', async (engine, name) => {
+      setupExecSuccess('');
+      const c = { kubeconfigPath: undefined, namespace: 'ns', podName: 'pod', containerName: 'c', engine, rootPassword: 'pw', rootUsername: 'root' };
+      await expect(dropDatabase(c, name)).rejects.toMatchObject({ code: 'RESERVED_DATABASE_NAME' });
+      expect(mockExecFn).not.toHaveBeenCalled();
+    });
+
     const base = { kubeconfigPath: undefined, namespace: 'ns', podName: 'pod', containerName: 'c', rootPassword: 'pw' };
 
     it.each([

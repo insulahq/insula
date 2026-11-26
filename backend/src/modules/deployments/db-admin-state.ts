@@ -18,6 +18,10 @@ export const HARDEN_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const LOCKOUT_ALERT_AFTER_MS = 5 * 60 * 1000;
 /** A database that has not answered for this long is announced too: nothing manages it meanwhile. */
 export const UNREACHABLE_ALERT_AFTER_MS = 60 * 60 * 1000;
+/** A set-up (hardening pass) that has kept failing this long is announced: the tenant has no SQL Manager meanwhile. */
+export const STUCK_ALERT_AFTER_MS = 6 * 60 * 60 * 1000;
+/** Clocks of a row not checked for this long (a stopped instance) start again: its old incident is over. */
+export const STALE_ROW_MS = 3 * 10 * 60 * 1000;
 /** On-demand runs for one instance (the credentials view re-reads while its account is set up): at most this often. */
 export const ON_DEMAND_MIN_INTERVAL_MS = 30 * 1000;
 
@@ -60,6 +64,10 @@ export interface InstanceOutcome {
   readonly full?: boolean;
   /** The hardening pass ran to the end, without a failed step. */
   readonly hardened?: boolean;
+  /** The set-up has not finished: a pass failed now, or one failed earlier and waits for its retry. */
+  readonly stuck?: boolean;
+  /** A hardening pass ran this time and did not finish. */
+  readonly hardenTried?: boolean;
   /** The pod the check ran in. */
   readonly pod?: string;
   /** MongoDB root's password was replaced this run. */
@@ -72,32 +80,42 @@ export interface InstanceOutcome {
  * lockout keeps the incident's start and whether it alerted; anything else
  * ends both.
  */
-export function stateValuesFor(o: InstanceOutcome, prev: StateRow | undefined, now: Date): StateValues {
+export function stateValuesFor(o: InstanceOutcome, prevRow: StateRow | undefined, now: Date): StateValues {
+  // A row nobody checked for a while (the instance was stopped): what it says
+  // about an incident is old news, and its clocks start again.
+  const prev = prevRow && now.getTime() - prevRow.checkedAt.getTime() > STALE_ROW_MS
+    ? { ...prevRow, lockedSince: null, unreachableSince: null, stuckSince: null, alertedAt: null }
+    : prevRow;
   if (o.mode === 'unreachable' && prev) {
     const kept: Partial<StateRow> = { ...prev };
     delete kept.rootSecretCipher;
     return {
       ...(kept as StateValues),
       checkedAt: now,
-      detail: o.detail ?? prev.detail,
+      detail: o.detail ? o.detail.slice(0, 1000) : prev.detail,
       unreachableSince: prev.unreachableSince ?? now,
     };
   }
   const locked = o.mode === 'locked';
   const unreachable = o.mode === 'unreachable';
+  // A quick check proves the logins and says nothing about the set-up: it keeps what was known.
+  const stuckSince = o.stuck ? (prev?.stuckSince ?? now) : o.full ? null : (prev?.stuckSince ?? null);
   return {
     deploymentId: o.md.deploymentId,
     tenantId: o.md.tenantId,
     engine: o.md.engine,
     mode: o.mode,
-    detail: o.detail ?? null,
+    // Tenant-influenced text (a client's error): capped for the row, the log and the alert.
+    detail: o.detail ? o.detail.slice(0, 1000) : null,
     lastChanges: o.changes.length > 0 ? o.changes.join('; ') : (prev?.lastChanges ?? null),
     checkedAt: now,
     convertedAt: prev?.convertedAt ?? (TARGET_MODES.has(o.mode) ? now : null),
     lockedSince: locked ? (prev?.lockedSince ?? now) : null,
     unreachableSince: unreachable ? now : null,
-    alertedAt: locked || unreachable ? (prev?.alertedAt ?? null) : null,
+    stuckSince,
+    alertedAt: locked || unreachable || stuckSince ? (prev?.alertedAt ?? null) : null,
     shapedAt: o.full ? now : (prev?.shapedAt ?? null),
+    hardenTriedAt: o.hardenTried ? now : o.hardened ? null : (prev?.hardenTriedAt ?? null),
     hardenedAt: o.hardened ? now : (prev?.hardenedAt ?? null),
     hardenedPod: o.hardened ? (o.pod ?? null) : (prev?.hardenedPod ?? null),
     rootRotatedAt: o.rotated ? now : (prev?.rootRotatedAt ?? null),
@@ -119,7 +137,10 @@ export function incidentTransition(
   if (mode === 'unreachable' && after.unreachableSince) {
     return now.getTime() - after.unreachableSince.getTime() >= UNREACHABLE_ALERT_AFTER_MS ? 'announce-lost' : 'none';
   }
-  if ((LOGGED_IN_MODES.has(mode) || mode === 'open') && before?.alertedAt && (before.lockedSince || before.unreachableSince)) {
+  if (after.stuckSince) {
+    return now.getTime() - after.stuckSince.getTime() >= STUCK_ALERT_AFTER_MS ? 'announce-lost' : 'none';
+  }
+  if ((LOGGED_IN_MODES.has(mode) || mode === 'open') && before?.alertedAt && (before.lockedSince || before.unreachableSince || before.stuckSince)) {
     return 'announce-restored';
   }
   return 'none';
@@ -128,7 +149,7 @@ export function incidentTransition(
 /** Why the instance is in an incident, for the notification's list item. */
 export function incidentReason(row: StateValues): string {
   // The row keeps the last known mode while unreachable: the clocks say which incident it is.
-  return row.unreachableSince && !row.lockedSince
-    ? `no answer for over an hour — ${row.detail ?? 'no detail'}`
-    : `login refused — ${row.detail ?? 'no detail'}`;
+  if (row.lockedSince) return `login refused — ${row.detail ?? 'no detail'}`;
+  if (row.unreachableSince) return `no answer for over an hour — ${row.detail ?? 'no detail'}`;
+  return `set-up has not finished for six hours, its tenant has no SQL Manager — ${row.detail ?? 'no detail'}`;
 }

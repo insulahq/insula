@@ -22,7 +22,7 @@ import { fileManagerRequest } from '../file-manager/service.js';
 import { getFileManagerImage } from '../file-manager/image.js';
 import { catalogEntryIdsIn, stripPlatformOnlyConfigDeep } from './platform-only-config.js';
 import { databaseAdminMode, reconcileDatabaseAdminFor } from './db-admin-reconciler.js';
-import { ensureTenantAdmin, setTenantAdminPassword } from './tenant-admin.js';
+import { ensureTenantAdmin, setTenantAdminPassword, tenantAdminLogsIn } from './tenant-admin.js';
 import { loadTenantAdminAccount, newTenantAdminPassword, saveTenantAdminAccount, tenantAdminReady } from './tenant-admin-store.js';
 import { describeTermination, isReplacedPodRecord } from '../../lib/container-termination.js';
 
@@ -87,6 +87,9 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     return row?.type === 'database';
   };
 
+  /** When the console last set an instance's administrator back to its password. */
+  const lastSelfHeal = new Map<string, number>();
+
   /** Roles that see the tenant administrator's password: it reaches every database of the instance. */
   const ADMIN_ACCOUNT_ROLES: ReadonlySet<string> = new Set(['super_admin', 'admin', 'support', 'tenant_admin']);
 
@@ -106,7 +109,8 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   /** The database refused the login itself (not a privilege), e.g. after the password was changed in SQL. */
   const loginRefused = (error: string, username: string): boolean =>
     /ERROR 1045 \(28000\)/.test(error) && error.includes(`'${username}'@`)
-    || /Authentication failed/i.test(error);
+    || /Authentication failed/i.test(error)
+    || error.includes(`password authentication failed for user "${username}"`);
 
   // Lazy-init K8s tenants (null if no kubeconfig available)
   const getK8s = () => {
@@ -814,7 +818,11 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       // its privileges decide what the SQL can reach (tenant-admin.ts).
       const login = await tenantSqlLogin(id, ctx);
       let result = await dbManager.executeQuery(ctx, body.database, body.query, { as: login });
-      if (result.error && loginRefused(result.error, login.username) && await isStandaloneDatabase(id)) {
+      // The error text is the tenant's to write (SIGNAL, throw): a real login
+      // probe decides, at most every 30 s per instance.
+      if (result.error && loginRefused(result.error, login.username) && await isStandaloneDatabase(id)
+        && Date.now() - (lastSelfHeal.get(id) ?? 0) >= 30_000 && !(await tenantAdminLogsIn(ctx, login))) {
+        lastSelfHeal.set(id, Date.now());
         // The password was changed in SQL: set it back to the panel's and try once more.
         try {
           await ensureTenantAdmin(ctx, login, { harden: false });
@@ -936,6 +944,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     // The database name is any name the engine holds (`it's/db` included), so
     // it never reaches the PVC path raw — same charset as the backup predumps.
     const fileName = `${database.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100)}-export-${Date.now()}.sql`;
+    dbManager.refuseSystemDatabaseExport(ctx.engine, database);
     const result = await dbManager.exportDatabaseToPvc(ctx, database, fileName, deploymentSubPath);
 
     return success({

@@ -160,6 +160,8 @@ export interface DatabasesRestoreDeps<Ctx> {
     ctx: Ctx,
     filePath: string,
     deploymentSubPath: string,
+    /** The deployment restored into: picks the login the restore runs as. */
+    deploymentId?: string,
   ) => Promise<{ readonly success: boolean; readonly error?: string }>;
 }
 
@@ -343,7 +345,7 @@ export async function restoreDatabasesForDeployments<Ctx>(
           skipped.push(`mongo dump '${sanitizedDb}' in ${dep.deploymentName} skipped — mongorestore path unavailable in this executor`);
           continue;
         }
-        const res = await deps.importMongoArchive(ctx, p, dirName(p));
+        const res = await deps.importMongoArchive(ctx, p, dirName(p), dep.deploymentId);
         if (res.success) imported.push(sanitizedDb);
         else failed.push({ database: sanitizedDb, error: res.error ?? 'mongorestore failed' });
         continue;
@@ -466,6 +468,21 @@ export async function execDatabasesByIdItem(args: {
   const k8s: K8sClients = createK8sClients(kubeconfigPath);
 
   const encryptionKey = ((app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined) ?? process.env.PLATFORM_ENCRYPTION_KEY;
+  const NOT_READY = 'the database administrator account is still being set up — run the restore again in a few minutes';
+  /**
+   * The login a restore runs as: a standalone instance's tenant
+   * administrator, and nothing else — not set up yet means not now, never
+   * root (the dump's code would run with the platform's privileges). An app
+   * stack's database restores as its own root, which the tenant holds.
+   */
+  const restoreLogin = async (deploymentId: string | undefined): Promise<{ username: string; password: string } | null | 'not-ready'> => {
+    if (!deploymentId) return null;
+    const [row] = await app.db.select({ type: catalogEntries.type }).from(deployments)
+      .innerJoin(catalogEntries, eq(catalogEntries.id, deployments.catalogEntryId)).where(eq(deployments.id, deploymentId));
+    if (row?.type !== 'database') return null;
+    if (!encryptionKey || !(await tenantAdminReady(app.db, deploymentId))) return 'not-ready';
+    return (await loadTenantAdminAccount(app.db, deploymentId, encryptionKey)) ?? 'not-ready';
+  };
   const deps: DatabasesRestoreDeps<DbManagerContext> = {
     buildDbContext: (dep) => buildDbContext(
       k8s,
@@ -482,14 +499,15 @@ export async function execDatabasesByIdItem(args: {
     // its functions, constraints and definers would run with the platform's
     // privileges. An app stack's database has none and restores as before.
     importSql: async (ctx, database, filePath, deploymentSubPath, deploymentId) => {
-      const as = encryptionKey && deploymentId && await tenantAdminReady(app.db, deploymentId)
-        ? await loadTenantAdminAccount(app.db, deploymentId, encryptionKey)
-        : null;
-      const result = await importSqlFromPvcFile(ctx, database, '', filePath, deploymentSubPath, as ? { as } : {});
+      const login = await restoreLogin(deploymentId);
+      if (login === 'not-ready') return { success: false, error: NOT_READY };
+      const result = await importSqlFromPvcFile(ctx, database, '', filePath, deploymentSubPath, login ? { as: login } : {});
       return { success: result.success, error: result.error };
     },
-    importMongoArchive: async (ctx, filePath, deploymentSubPath) => {
-      const result = await importMongoArchiveFromPvcFile(ctx, filePath, deploymentSubPath);
+    importMongoArchive: async (ctx, filePath, deploymentSubPath, deploymentId) => {
+      const login = await restoreLogin(deploymentId);
+      if (login === 'not-ready') return { success: false, error: NOT_READY };
+      const result = await importMongoArchiveFromPvcFile(ctx, filePath, deploymentSubPath, login ? { as: login } : {});
       return { success: result.success, error: result.error };
     },
   };

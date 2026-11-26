@@ -827,7 +827,7 @@ export const deployments = pgTable('deployments', {
 
 /**
  * How the platform reaches each tenant database instance's administrator
- * account, and the lockout incident (migration 0188, db-admin-access.ts).
+ * account, and the lockout incident (migration 0189, db-admin-access.ts).
  */
 export const databaseAdminState = pgTable('database_admin_state', {
   deploymentId: varchar('deployment_id', { length: 36 })
@@ -855,6 +855,10 @@ export const databaseAdminState = pgTable('database_admin_state', {
   shapedAt: timestamp('shaped_at', { withTimezone: true }),
   /** Since when the instance has not answered (an incident once it lasts an hour). */
   unreachableSince: timestamp('unreachable_since', { withTimezone: true }),
+  /** Since when its set-up (the hardening pass) keeps failing — the tenant administrator stays hidden meanwhile. */
+  stuckSince: timestamp('stuck_since', { withTimezone: true }),
+  /** The last try of a hardening pass that did not finish: tried again hourly. */
+  hardenTriedAt: timestamp('harden_tried_at', { withTimezone: true }),
   /** MongoDB: the root password the platform set (encrypted), kept to put a configuration that lost it right. */
   rootSecretCipher: text('root_secret_cipher'),
   /** MongoDB: when root's password was replaced by one only the platform knows. */
@@ -865,7 +869,7 @@ export const databaseAdminState = pgTable('database_admin_state', {
 
 /**
  * The tenant's administrator account on each database instance (migration
- * 0188, tenant-admin.ts). The password is AES-256-GCM-encrypted with
+ * 0189, tenant-admin.ts). The password is AES-256-GCM-encrypted with
  * PLATFORM_ENCRYPTION_KEY; only the credentials view decrypts it.
  */
 export const databaseAdminAccounts = pgTable('database_admin_accounts', {

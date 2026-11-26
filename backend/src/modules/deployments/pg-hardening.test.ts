@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { DbExecError, type DbManagerContext } from './db-manager.js';
 import type { DbCommandRunner } from './db-exec.js';
-import { connectableDatabases, databaseHardeningSql, hardenPostgresCluster, hardenPostgresDatabase } from './pg-hardening.js';
+import { clearTenantTemplates, connectableDatabases, databaseHardeningSql, hardenClosedDatabase, hardenPostgresCluster, hardenPostgresDatabase } from './pg-hardening.js';
 
 const hex = (s: string): string => Buffer.from(s).toString('hex');
 
@@ -71,10 +71,13 @@ describe('databaseHardeningSql', () => {
     expect(sql).toContain("pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true)");
   });
 
-  it('quotes the owner as a string literal', () => {
-    expect(sql).toContain("target text := 'dbadmin';");
-    expect(databaseHardeningSql("o'brien", TAG)).toContain("target text := 'o''brien';");
-    expect(databaseHardeningSql('a"b', TAG)).toContain(`target text := 'a"b';`);
+  it('embeds the owner as hex, decoded by the server: no character of a name is ever SQL text', () => {
+    const target = (owner: string): string => `target text := pg_catalog.convert_from(pg_catalog.decode('${Buffer.from(owner, 'utf8').toString('hex')}', 'hex'), 'UTF8');`;
+    expect(sql).toContain(target('dbadmin'));
+    expect(databaseHardeningSql("o'brien", TAG)).toContain(target("o'brien"));
+    expect(databaseHardeningSql('a"b\\$$\n', TAG)).toContain(target('a"b\\$$\n'));
+    expect(databaseHardeningSql('ünï 🚀', TAG)).toContain(target('ünï 🚀'));
+    expect(databaseHardeningSql("x'; DROP ROLE y; --", TAG)).not.toContain('DROP ROLE');
   });
 
   it('hands objects to the owner through %I, never by pasting the name into a statement', () => {
@@ -154,16 +157,20 @@ describe('hardenPostgresDatabase', () => {
 describe('connectableDatabases', () => {
   it('reads name, owner and whether the superuser owns it, hex-encoded', async () => {
     const s = fake(() => [
-      `${hex('postgres')},${hex('postgres')},true`,
-      `${hex('my,db')},${hex('tenant')},false`,
-      `${hex('sh\nop')},${hex('postgres')},true`,
+      `${hex('postgres')},${hex('postgres')},true,true`,
+      `${hex('my,db')},${hex('tenant')},false,true`,
+      `${hex('sh\nop')},${hex('postgres')},true,true`,
+      `${hex('template0')},${hex('postgres')},true,false`,
     ].join('\n'));
     expect(await connectableDatabases({ ctx: ctx(), run: s.run })).toEqual([
-      { name: 'postgres', owner: 'postgres', superuserOwned: true },
-      { name: 'my,db', owner: 'tenant', superuserOwned: false },
-      { name: 'sh\nop', owner: 'postgres', superuserOwned: true },
+      { name: 'postgres', owner: 'postgres', superuserOwned: true, allowsConnections: true },
+      { name: 'my,db', owner: 'tenant', superuserOwned: false, allowsConnections: true },
+      { name: 'sh\nop', owner: 'postgres', superuserOwned: true, allowsConnections: true },
+      { name: 'template0', owner: 'postgres', superuserOwned: true, allowsConnections: false },
     ]);
-    expect(s.sqls[0]).toContain('d.datallowconn');
+    // every database, not only those that accept connections: a template is copied without connecting
+    expect(s.sqls[0]).toContain('d.datallowconn::text');
+    expect(s.sqls[0]).not.toContain('WHERE d.datallowconn');
   });
 });
 
@@ -316,9 +323,9 @@ describe('hardenPostgresCluster', () => {
     it('a rule trusting the network is commented out in the file it came from (inside the data directory), then reloaded', async () => {
       const s = server({ hba: [`7,${hex(`${DATA}/pg_hba.conf`)}`] });
       const changed = await hardenPostgresCluster({ ctx: ctx(), run: s.run });
-      expect(changed).toEqual(['pg_hba: disabled a rule that trusted the network (pg_hba.conf line 7)']);
+      expect(changed).toEqual(['pg_hba: disabled a rule that let the network in without a password (pg_hba.conf line 7)']);
       const sed = s.calls.find((c) => c.argv[0] === 'sed')!;
-      expect(sed.argv).toEqual(['sed', '-i', '7s/^/# disabled by the platform (trusted the network): /', `${DATA}/pg_hba.conf`]);
+      expect(sed.argv).toEqual(['sed', '-i', '7s/^/# disabled by the platform (no password asked over the network): /', `${DATA}/pg_hba.conf`]);
       expect(s.sqls.at(-1)).toBe('SELECT pg_catalog.pg_reload_conf()');
     });
 
@@ -336,12 +343,13 @@ describe('hardenPostgresCluster', () => {
       expect(s.calls.concat(t.calls).some((c) => c.argv[0] === 'sed')).toBe(false);
     });
 
-    it('only loopback trust is spared: the rule query excludes 127.0.0.1/::1 host rules and local sockets', async () => {
+    it('every non-local rule that asks for no password is closed — trust, but also peer, ident, gss… — and only loopback trust is spared', async () => {
       const s = server({});
       await hardenPostgresCluster({ ctx: ctx(), run: s.run });
       const q = s.sqls.find((x) => x.includes('pg_hba_file_rules'))!;
-      expect(q).toContain("type <> 'local' AND auth_method = 'trust'");
-      expect(q).toContain("'127.0.0.1', '::1'");
+      expect(q).toContain("type <> 'local'");
+      expect(q).toContain("auth_method NOT IN ('scram-sha-256', 'md5', 'password', 'reject')");
+      expect(q).toContain("auth_method = 'trust' AND coalesce(address, '') IN ('127.0.0.1', '::1')");
       expect(q).toContain('file_name'); // 16+
       const old = server({ version: '140010' });
       await hardenPostgresCluster({ ctx: ctx(), run: old.run });
@@ -354,5 +362,48 @@ describe('hardenPostgresCluster', () => {
     await hardenPostgresCluster({ ctx: ctx(), run: s.run });
     expect(s.sqls[0]).toContain('rolname <> current_user');
     expect(s.sqls[0]).toContain("rolname !~ '^pg_'");
+  });
+});
+
+describe('hardenClosedDatabase', () => {
+  it('opens the database for the pass and closes it again, in that order', async () => {
+    const s = fake(() => '');
+    await hardenClosedDatabase({ ctx: ctx(), run: s.run }, 'template0', 'dbadmin');
+    expect(s.sqls[0]).toBe('ALTER DATABASE "template0" ALLOW_CONNECTIONS true');
+    expect(s.calls[1]!.sql).toMatch(/^DO \$insula_/);
+    expect(s.calls[1]!.database).toBe("dbname='template0'");
+    expect(s.sqls.at(-1)).toBe('ALTER DATABASE "template0" ALLOW_CONNECTIONS false');
+    expect(s.calls).toHaveLength(3);
+  });
+
+  it('closes it again when the pass fails, and the failure still reaches the caller', async () => {
+    const s = fake(({ sql }) => (sql.startsWith('DO ') ? new DbExecError('ERROR: boom') : undefined));
+    await expect(hardenClosedDatabase({ ctx: ctx(), run: s.run }, 'tpl"x', 'o')).rejects.toThrow('boom');
+    expect(s.sqls.at(-1)).toBe('ALTER DATABASE "tpl""x" ALLOW_CONNECTIONS false');
+  });
+
+  it('does not run the pass on a database it could not open', async () => {
+    const s = fake(({ sql }) => (sql.endsWith('ALLOW_CONNECTIONS true') ? new DbExecError('ERROR: permission denied') : undefined));
+    await expect(hardenClosedDatabase({ ctx: ctx(), run: s.run }, 'tpl', 'o')).rejects.toThrow('permission denied');
+    expect(s.sqls).toHaveLength(1);
+  });
+});
+
+describe('clearTenantTemplates', () => {
+  it('turns off every template but the server\'s own', async () => {
+    const s = fake(() => [hex('mytemplate'), hex('we"ird')].join('\n'));
+    const changed = await clearTenantTemplates({ ctx: ctx(), run: s.run });
+    expect(s.sqls[0]).toContain("datistemplate AND datname NOT IN ('template0', 'template1')");
+    expect(s.sqls.slice(1)).toEqual(['ALTER DATABASE "mytemplate" IS_TEMPLATE false', 'ALTER DATABASE "we""ird" IS_TEMPLATE false']);
+    expect(changed).toEqual([
+      'mytemplate is no longer a template (any role with CREATEDB could copy it)',
+      'we"ird is no longer a template (any role with CREATEDB could copy it)',
+    ]);
+  });
+
+  it('changes nothing when there is none', async () => {
+    const s = fake(() => '');
+    expect(await clearTenantTemplates({ ctx: ctx(), run: s.run })).toEqual([]);
+    expect(s.sqls).toHaveLength(1);
   });
 });

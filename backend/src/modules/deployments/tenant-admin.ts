@@ -37,9 +37,9 @@ import {
 } from './db-exec.js';
 import { SELF_SERVICE_DB_PREFIX, TENANT_ADMIN_USERNAMES } from './db-account-names.js';
 import {
-  adoptRootDefinedObjects, allDatabasesGrants, ensureAllDatabasesAccounts, listTenantDatabases, narrowAccounts, PREFIX_PATTERN,
+  adoptRootDefinedObjects, allDatabasesGrants, ensureAllDatabasesAccounts, listTenantDatabases, narrowAccount, narrowAccounts, PREFIX_PATTERN,
 } from './mysql-hardening.js';
-import { connectableDatabases, hardenPostgresCluster, hardenPostgresDatabase } from './pg-hardening.js';
+import { clearTenantTemplates, connectableDatabases, hardenClosedDatabase, hardenPostgresCluster, hardenPostgresDatabase } from './pg-hardening.js';
 import { demotePrivilegedUsers } from './mongo-hardening.js';
 
 export { SELF_SERVICE_DB_PREFIX, TENANT_ADMIN_USERNAMES };
@@ -137,6 +137,8 @@ async function ensureMysqlTenantAdmin(x: Exec, account: TenantAdminAccount, opts
     await sh(x, mysqlRootScript(ctx, `ALTER USER ${acct} IDENTIFIED BY ${mysqlString(account.password)};\n`));
     changed.push(`set ${account.username}'s password back to the one in the panel`);
   }
+  // Nothing it was granted since may stay (narrowed first: PROCESS comes back below).
+  changed.push(...(await narrowAccount(x, account.username, '%')));
   if (!(await adminGrantsInPlace(x, account.username))) {
     const grants = [...allDatabasesGrants(acct, await listTenantDatabases(x)), `GRANT PROCESS ON *.* TO ${acct}`];
     await sh(x, mysqlRootScript(ctx, `${grants.join(';\n')};\n`));
@@ -193,12 +195,21 @@ async function ensurePostgresTenantAdmin(x: Exec, account: TenantAdminAccount, o
       changed.push(`${account.username} has its attributes back`);
     }
   }
-  if (opts.harden) changed.push(...(await step(problems, 'cluster', () => hardenPostgresCluster(x))));
+  if (opts.harden) {
+    changed.push(...(await step(problems, 'cluster', () => hardenPostgresCluster(x))));
+    changed.push(...(await step(problems, 'templates', () => clearTenantTemplates(x))));
+  }
 
   for (const d of await connectableDatabases(x)) {
     // template1 is copied by every CREATE DATABASE, which fails while anyone
-    // is connected to it: only in the daily pass.
-    if (d.name === 'template1' && !opts.harden) continue;
+    // is connected to it: only in the daily pass. So is a database that
+    // refuses connections (template0), opened for the pass only.
+    if ((d.name === 'template1' || !d.allowsConnections) && !opts.harden) continue;
+    if (!d.allowsConnections) {
+      const target = d.owner === ctx.rootUsername ? account.username : d.owner;
+      changed.push(...(await step(problems, `database ${d.name}`, () => hardenClosedDatabase(x, d.name, target))));
+      continue;
+    }
     let owner = d.owner;
     if (d.superuserOwned && !PG_SERVER_DATABASES.has(d.name)) {
       await sh(x, pgSuperuser(ctx, `ALTER DATABASE ${pgIdent(d.name)} OWNER TO ${role}`));

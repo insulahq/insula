@@ -63,6 +63,8 @@ export interface AdminAccessResult {
   readonly changed: readonly string[];
   /** Why the mode is `password` or `locked`. */
   readonly detail?: string;
+  /** A step failed part-way: the mode is where it stopped, not where this instance settles. */
+  readonly partial?: boolean;
 }
 
 export interface AdminAccessOptions {
@@ -86,7 +88,7 @@ export class DbUnreachableError extends Error {}
 
 /** A login the database itself refused (as opposed to one it never got to judge). */
 export function isLoginRefusal(error: string): boolean {
-  return /ERROR (1045|1698) \(28000\)|Access denied for user|Authentication failed|password authentication failed|role "[^"]*" does not exist|no pg_hba\.conf entry/i.test(error);
+  return /ERROR (1045|1698|3118) \(|Access denied for user|Authentication failed|password authentication failed|role "[^"]*" does not exist|is not permitted to log in|no pg_hba\.conf entry|pg_hba\.conf rejects connection/i.test(error);
 }
 
 function clientFor(ctx: DbManagerContext): string {
@@ -270,7 +272,7 @@ export async function ensureDatabaseAdminAccess(
     if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
       if ((await tryRun(x, socketRoot(ctx, 'SELECT 1'))).ok
         || (ctx.rootPassword && (await tryRun(x, passwordRoot(ctx, 'SELECT 1'))).ok)) {
-        return { mode: 'password', changed, detail: `a step failed, the next check tries again: ${err.message}` };
+        return { mode: 'password', changed, detail: `a step failed, the next check tries again: ${err.message}`, partial: true };
       }
     }
     if (!isLoginRefusal(err.message)) throw new DbUnreachableError(err.message);

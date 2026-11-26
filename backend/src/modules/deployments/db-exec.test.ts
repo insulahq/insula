@@ -118,6 +118,13 @@ describe('pgSuperuser', () => {
     expect(PG_SAFE_SESSION_SH).not.toContain('statement_timeout');
   });
 
+  it('every session pins the string-literal rules the platform\'s quoting relies on', () => {
+    for (const sh of [PG_SAFE_SESSION_SH, PG_RECONCILER_SESSION_SH]) {
+      expect(sh).toContain('standard_conforming_strings=on');
+      expect(sh).toContain('backslash_quote=safe_encoding');
+    }
+  });
+
   it('the pinned session pins search_path and turns event triggers off from 17', () => {
     expect(PG_SAFE_SESSION_SH).toContain('search_path=pg_catalog,pg_temp');
     expect(PG_SAFE_SESSION_SH).toContain('event_triggers=off');

@@ -60,6 +60,11 @@ export type { DatabaseAdminStateMode, InstanceOutcome, ManagedDatabase } from '.
 const CONCURRENCY = 4;
 /** One instance gets this long; a hung exec must not hold up every other tenant. */
 const INSTANCE_TIME_LIMIT_MS = 5 * 60 * 1000;
+/** Each command in the pod is killed after this (coreutils `timeout`): a hung one must end, not linger. */
+const COMMAND_TIME_LIMIT_S = 300;
+
+/** execInDbPod, each command under `timeout`. */
+const runWithTimeLimit: DbCommandRunner = (ctx, argv, stdin) => execInDbPod(ctx, ['timeout', String(COMMAND_TIME_LIMIT_S), ...argv], stdin);
 
 const ENGINES: ReadonlySet<string> = new Set(['mariadb', 'mysql', 'postgresql', 'mongodb']);
 
@@ -128,10 +133,15 @@ async function recoverMongoRoot(deps: ReconcileDeps, md: ManagedDatabase, ctx: D
   return { ...ctx, rootPassword: secret };
 }
 
-/** Replace the password the tenant knew. The new one is kept BEFORE it is set, so a failure in between never loses it. */
-async function rotateMongoRoot(deps: ReconcileDeps, md: ManagedDatabase, ctx: DbManagerContext, run: DbCommandRunner): Promise<DbManagerContext | null> {
-  const next = newTenantAdminPassword();
-  const rootSecretCipher = encrypt(next, deps.encryptionKey);
+/**
+ * Replace the password the tenant knew. The new one is kept BEFORE it is set,
+ * so a failure in between never loses it — and a candidate kept by an earlier
+ * try that did not finish is the one set again, never replaced by another.
+ */
+async function rotateMongoRoot(deps: ReconcileDeps, md: ManagedDatabase, ctx: DbManagerContext, prev: StateRow | undefined, run: DbCommandRunner): Promise<DbManagerContext | null> {
+  const pending = prev?.rootSecretCipher ? decrypt(prev.rootSecretCipher, deps.encryptionKey) : null;
+  const next = pending && pending !== ctx.rootPassword ? pending : newTenantAdminPassword();
+  const rootSecretCipher = next === pending ? prev!.rootSecretCipher! : encrypt(next, deps.encryptionKey);
   await deps.db.insert(databaseAdminState)
     .values({ deploymentId: md.deploymentId, tenantId: md.tenantId, engine: md.engine, mode: 'restricted', rootSecretCipher })
     .onConflictDoUpdate({ target: databaseAdminState.deploymentId, set: { rootSecretCipher } });
@@ -166,8 +176,11 @@ async function quickCheck(deps: ReconcileDeps, md: ManagedDatabase, ctx: DbManag
  * restarts once.
  */
 async function dropExtraMounts(deps: ReconcileDeps, md: ManagedDatabase): Promise<InstanceOutcome> {
-  const [dep] = await deps.db.update(deployments).set({ extraMounts: null }).where(eq(deployments.id, md.deploymentId)).returning();
+  // The redeploy first (a database instance's render leaves extra mounts out
+  // already), the row after: a redeploy that fails is tried again next time.
+  const [dep] = await deps.db.select().from(deployments).where(eq(deployments.id, md.deploymentId));
   if (dep) await redeployWithCurrentConfig(deps.db, dep, deps.k8s);
+  await deps.db.update(deployments).set({ extraMounts: null }).where(eq(deployments.id, md.deploymentId));
   return {
     md, mode: 'unreachable', changes: ['removed its extra mounts and restarted it once (a database instance takes none)'],
     detail: 'restarted without its extra mounts',
@@ -176,7 +189,7 @@ async function dropExtraMounts(deps: ReconcileDeps, md: ManagedDatabase): Promis
 
 /** One instance. Never throws for the instance's own failures. */
 export async function reconcileInstance(deps: ReconcileDeps, md: ManagedDatabase, prev?: StateRow): Promise<InstanceOutcome> {
-  const run = deps.run ?? execInDbPod;
+  const run = deps.run ?? runWithTimeLimit;
   const now = (deps.now ?? (() => new Date()))();
   if (md.standalone && md.extraMountCount > 0) {
     try {
@@ -216,7 +229,7 @@ export async function reconcileInstance(deps: ReconcileDeps, md: ManagedDatabase
   let detail = access.detail;
   try {
     if (md.engine === 'mongodb' && access.mode === 'restricted' && !prev?.rootRotatedAt) {
-      const next = await rotateMongoRoot(deps, md, ctx, run);
+      const next = await rotateMongoRoot(deps, md, ctx, prev, run);
       if (next) {
         ctx = next;
         rotated = true;
@@ -225,8 +238,10 @@ export async function reconcileInstance(deps: ReconcileDeps, md: ManagedDatabase
     }
     // Only where root is the platform's alone; and again in a new pod, which
     // may be a restore of an older data directory.
-    const harden = TARGET_MODES.has(access.mode) && (!prev?.hardenedAt || prev.hardenedPod !== ctx.podName
-      || now.getTime() - prev.hardenedAt.getTime() >= HARDEN_INTERVAL_MS);
+    const due = !prev?.hardenedAt || prev.hardenedPod !== ctx.podName || now.getTime() - prev.hardenedAt.getTime() >= HARDEN_INTERVAL_MS;
+    // A pass that did not finish is tried again hourly, not on every tick.
+    const retryWait = prev?.hardenTriedAt ? now.getTime() - prev.hardenTriedAt.getTime() < SHAPE_INTERVAL_MS : false;
+    const harden = TARGET_MODES.has(access.mode) && due && !retryWait;
     let account = await loadTenantAdminAccount(deps.db, md.deploymentId, deps.encryptionKey);
     if (!account) {
       // Recorded BEFORE it is created, so a crash in between leaves a known
@@ -237,11 +252,14 @@ export async function reconcileInstance(deps: ReconcileDeps, md: ManagedDatabase
     const result = await ensureTenantAdmin(ctx, account, { harden }, run);
     changes.push(...result.changes);
     const hardened = harden && result.problems.length === 0;
-    if (result.problems.length > 0) detail = `the hardening pass did not finish, the next check tries again: ${result.problems.join('; ')}`;
-    // Shown once it exists AND what a tenant could have left is gone (or
-    // root is not the platform's alone anyway: password mode).
-    if (hardened || !TARGET_MODES.has(access.mode)) await markTenantAdminReady(deps.db, md.deploymentId, now);
-    return { ...base, detail, hardened, rotated };
+    const stuck = (harden && result.problems.length > 0) || (retryWait && Boolean(prev?.stuckSince));
+    if (harden && result.problems.length > 0) detail = `the hardening pass did not finish, it is tried again within the hour: ${result.problems.join('; ')}`;
+    else if (stuck) detail = prev?.detail ?? undefined;
+    // Shown once it exists AND what a tenant could have left is gone — or
+    // root is not the platform's alone anyway (settled on the password
+    // login: the socket does not work in this pod).
+    if (hardened || (!TARGET_MODES.has(access.mode) && !access.partial)) await markTenantAdminReady(deps.db, md.deploymentId, now);
+    return { ...base, detail, hardened, stuck, hardenTried: harden && result.problems.length > 0, rotated };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { ...base, detail: `the tenant administrator account could not be set up: ${msg}`, rotated };
@@ -267,21 +285,31 @@ export interface TickResult {
   readonly unreachable: number;
 }
 
-/** Per process: one run per instance at a time — the scheduler and the credentials view share it. */
-const inFlight = new Map<string, Promise<InstanceOutcome>>();
-
-function reconcileOnce(deps: ReconcileDeps, md: ManagedDatabase, prev: StateRow | undefined): Promise<InstanceOutcome> {
-  const running = inFlight.get(md.deploymentId);
-  if (running) return running;
+/**
+ * One run per instance at a time, across replicas: a run lock per instance
+ * (scheduler-lease.ts, released when the run ends — never given up early, so
+ * a run past the time limit still holds it until its commands end, which
+ * `timeout` bounds). Past the limit the caller gets an outcome now and moves
+ * on. Null: another run holds the instance; nothing to record.
+ */
+async function reconcileOnce(deps: ReconcileDeps, md: ManagedDatabase, prev: StateRow | undefined): Promise<InstanceOutcome | null> {
   let timer: NodeJS.Timeout | undefined;
-  const limit = new Promise<InstanceOutcome>((resolve) => {
-    timer = setTimeout(() => resolve({ md, mode: 'unreachable', changes: [], detail: `the check took longer than ${INSTANCE_TIME_LIMIT_MS / 60000} minutes` }), INSTANCE_TIME_LIMIT_MS);
+  const limit = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), INSTANCE_TIME_LIMIT_MS);
     timer.unref?.();
   });
-  const p = Promise.race([reconcileInstance(deps, md, prev), limit])
-    .finally(() => { clearTimeout(timer); inFlight.delete(md.deploymentId); });
-  inFlight.set(md.deploymentId, p);
-  return p;
+  const leased = withSchedulerLease(deps.db, `database-admin:${md.deploymentId}`, 2 * INSTANCE_TIME_LIMIT_MS,
+    () => reconcileInstance(deps, md, prev), { release: true, maxHoldMs: Infinity, startupRetry: false });
+  try {
+    const first = await Promise.race([leased, limit]);
+    if (first === 'timeout') {
+      leased.catch(() => undefined);
+      return { md, mode: 'unreachable', changes: [], detail: `the check took longer than ${INSTANCE_TIME_LIMIT_MS / 60000} minutes` };
+    }
+    return first.ran ? first.value : null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Run `work` over `items`, `n` at a time. */
@@ -313,6 +341,7 @@ export async function reconcileDatabaseAdmin(deps: ReconcileDeps, only?: Readonl
     try {
       const before = prev.get(md.deploymentId);
       const o = await reconcileOnce(deps, md, before);
+      if (!o) return;
       const row = await recordOutcome(deps.db, o, before, now());
       const label = `${md.tenantName}/${md.deploymentName} (${md.engine})`;
       if (o.changes.length > 0) {
@@ -377,7 +406,7 @@ const lastOnDemand = new Map<string, number>();
 /** Handle one deployment now (a new instance came up; its account is awaited). Never throws; at most every 30 s. */
 export async function reconcileDatabaseAdminFor(deps: ReconcileDeps, deploymentId: string): Promise<void> {
   const nowMs = (deps.now ?? (() => new Date()))().getTime();
-  if (inFlight.has(deploymentId) || nowMs - (lastOnDemand.get(deploymentId) ?? 0) < ON_DEMAND_MIN_INTERVAL_MS) return;
+  if (nowMs - (lastOnDemand.get(deploymentId) ?? 0) < ON_DEMAND_MIN_INTERVAL_MS) return;
   if (lastOnDemand.size > 1000) {
     for (const [id, at] of lastOnDemand) if (nowMs - at >= ON_DEMAND_MIN_INTERVAL_MS) lastOnDemand.delete(id);
   }

@@ -2362,7 +2362,12 @@ that instance is reachable this way, and the platform notices (the login is
 reported lost; Repair restores it — on PostgreSQL by putting the platform's
 local rules ahead of whatever pg_hba.conf says), but the platform's login is
 only as safe as those files. (Extra mounts into a database container, the
-other way to put tenant files in it, are refused and removed.)
+other way to put tenant files in it, are refused and removed.) Two things the
+"reported lost" net does not catch: an edit that adds a second way in rather
+than locking the platform out (a pg_hba rule the hardening pass has not seen
+yet — it runs daily and in every new pod), and the platform's own root-run
+file operations in a data directory (`cp`/`rm`/`cat`/`>` of import and dump
+files), which follow a symlink the tenant planted there.
 
 **To do:** the file manager's HTTP API and `sftp-serve` treat a database data
 directory as platform-only, like `.platform`: no read, write, rename, delete or
@@ -2371,7 +2376,9 @@ directory that contains one; archive extraction checks each entry's
 destination. Detect one by its marker files (`PG_VERSION`; `mysql/` with
 `ibdata1` or `aria_log_control`; `WiredTiger`) on the real path, so custom
 storage paths and stack components are covered without a list to keep in step.
-The platform's own operations (imports, pre-dumps) use the internal bypass. A
+The platform's own operations (imports, pre-dumps) use the internal bypass; its
+root-run file operations in a data directory refuse symlinks (`O_NOFOLLOW`
+semantics: `cp --no-dereference`, a pre-check with `[ ! -L ]`). A
 tenant-visible change: database folders leave the file manager — the panel's
 copy already says raw files are not a backup.
 

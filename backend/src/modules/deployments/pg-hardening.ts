@@ -167,13 +167,18 @@ async function clearFileSettings(x: Exec): Promise<string[]> {
   return changed;
 }
 
-/** pg_hba rules trusting anything but the pod's own loopback, commented out. */
+/**
+ * Network rules that do not ask for a password — trust, and ident, cert,
+ * ldap, pam and the like, which never ask the password-less superuser for one
+ * — commented out; the pod's own loopback keeps the image's trust.
+ */
 async function closeTrustedNetworkRules(x: Exec): Promise<string[]> {
   const v16 = (await serverVersionNum(x)) >= 160000;
   const file = v16 ? 'file_name' : "pg_catalog.current_setting('hba_file')";
   const out = await sh(x, pgSuperuser(x.ctx,
-    `SELECT line_number || ',' || ${hex(file)} FROM pg_catalog.pg_hba_file_rules WHERE type <> 'local' AND auth_method = 'trust'`
-    + " AND NOT (coalesce(address, '') IN ('127.0.0.1', '::1') AND coalesce(netmask, '') IN ('255.255.255.255', 'ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff'))"));
+    `SELECT line_number || ',' || ${hex(file)} FROM pg_catalog.pg_hba_file_rules WHERE type <> 'local'`
+    + " AND auth_method NOT IN ('scram-sha-256', 'md5', 'password', 'reject')"
+    + " AND NOT (auth_method = 'trust' AND coalesce(address, '') IN ('127.0.0.1', '::1') AND coalesce(netmask, '') IN ('255.255.255.255', 'ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff'))"));
   const changed: string[] = [];
   const dataDir = (await sh(x, pgSuperuser(x.ctx, 'SHOW data_directory'))).trim();
   for (const line of outputLines(out)) {
@@ -181,23 +186,53 @@ async function closeTrustedNetworkRules(x: Exec): Promise<string[]> {
     const path = fromHex(f);
     // Only the server's own files: never edit a path somewhere else in the pod.
     if (!/^\d+$/.test(n) || !dataDir.startsWith('/') || !path.startsWith(`${dataDir}/`) || path.includes('/../')) continue;
-    await sh(x, ['sed', '-i', `${n}s/^/# disabled by the platform (trusted the network): /`, path]);
-    changed.push(`pg_hba: disabled a rule that trusted the network (${path.split('/').pop()} line ${n})`);
+    await sh(x, ['sed', '-i', `${n}s/^/# disabled by the platform (no password asked over the network): /`, path]);
+    changed.push(`pg_hba: disabled a rule that let the network in without a password (${path.split('/').pop()} line ${n})`);
   }
   return changed;
 }
 
 /** Databases the platform's superuser can connect to: every tenant database, postgres and template1. */
-export interface ConnectableDatabase { readonly name: string; readonly owner: string; readonly superuserOwned: boolean }
+export interface ConnectableDatabase {
+  readonly name: string;
+  readonly owner: string;
+  readonly superuserOwned: boolean;
+  /** datallowconn: off for template0, and for whatever else was set so. */
+  readonly allowsConnections: boolean;
+}
 
+/** Every database — including those refusing connections (template0): a template can be copied without connecting to it. */
 export async function connectableDatabases(x: Exec): Promise<ConnectableDatabase[]> {
   const out = await sh(x, pgSuperuser(x.ctx,
-    `SELECT ${hex('d.datname')} || ',' || ${hex('o.rolname')} || ',' || (o.rolname = current_user)::text`
-    + ' FROM pg_catalog.pg_database d JOIN pg_catalog.pg_roles o ON o.oid = d.datdba WHERE d.datallowconn'));
+    `SELECT ${hex('d.datname')} || ',' || ${hex('o.rolname')} || ',' || (o.rolname = current_user)::text || ',' || d.datallowconn::text`
+    + ' FROM pg_catalog.pg_database d JOIN pg_catalog.pg_roles o ON o.oid = d.datdba'));
   return outputLines(out).map((l) => {
-    const [n, o, owned] = l.split(',');
-    return { name: fromHex(n), owner: fromHex(o), superuserOwned: owned === 'true' };
+    const [n, o, owned, conn] = l.split(',');
+    return { name: fromHex(n), owner: fromHex(o), superuserOwned: owned === 'true', allowsConnections: conn === 'true' };
   });
+}
+
+/**
+ * Harden a database that refuses connections: allowed for the pass, then
+ * refused again. Only CREATEDB is needed to copy a template, and a template
+ * nobody can connect to is one nobody checks — what the superuser left in it
+ * would come back in every copy.
+ */
+export async function hardenClosedDatabase(x: Exec, database: string, owner: string): Promise<string[]> {
+  await sh(x, pgSuperuser(x.ctx, `ALTER DATABASE ${pgIdent(database)} ALLOW_CONNECTIONS true`));
+  try {
+    return await hardenPostgresDatabase(x, database, owner);
+  } finally {
+    await sh(x, pgSuperuser(x.ctx, `ALTER DATABASE ${pgIdent(database)} ALLOW_CONNECTIONS false`));
+  }
+}
+
+/** Templates other than the server's own: no longer copyable by CREATEDB alone. Returns what changed. */
+export async function clearTenantTemplates(x: Exec): Promise<string[]> {
+  const names = outputLines(await sh(x, pgSuperuser(x.ctx,
+    `SELECT ${hex('datname')} FROM pg_catalog.pg_database WHERE datistemplate AND datname NOT IN ('template0', 'template1')`))).map(fromHex);
+  for (const n of names) await sh(x, pgSuperuser(x.ctx, `ALTER DATABASE ${pgIdent(n)} IS_TEMPLATE false`));
+  return names.map((n) => `${n} is no longer a template (any role with CREATEDB could copy it)`);
 }
 
 /**
@@ -207,7 +242,8 @@ export async function connectableDatabases(x: Exec): Promise<ConnectableDatabase
  */
 export function databaseHardeningSql(owner: string, tag = randomDollarTag(owner)): string {
   if (owner.includes(tag)) throw new Error('the dollar-quote tag occurs in the owner name');
-  const to = pgString(owner);
+  // As hex: no quoting rule — and no session setting that changes one — applies.
+  const to = `pg_catalog.convert_from(pg_catalog.decode('${Buffer.from(owner, 'utf8').toString('hex')}', 'hex'), 'UTF8')`;
   const ext = (cls: string, oid: string): string =>
     `EXISTS (SELECT 1 FROM pg_catalog.pg_depend d WHERE d.classid = '${cls}'::pg_catalog.regclass AND d.objid = ${oid} AND d.deptype = 'e')`;
   const tenantSchema = (n: string): string => `${n}.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast') AND ${n}.nspname !~ '^pg_'`;
