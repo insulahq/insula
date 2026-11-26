@@ -146,7 +146,16 @@ if [[ -n "$MONGO" && "$MONGO" != null ]]; then
     # Feed the JS via STDIN (kubectl exec -i → mongosh reads a script from
     # stdin) rather than --eval, so single quotes in the JS don't collide with
     # the sh -c '…' wrapper.
-    gsh(){ ssh_node "kubectl -n $NS exec -i '$GPOD' -c '$GCON' -- sh -c 'exec mongosh --quiet -u \"\$MONGO_INITDB_ROOT_USERNAME\" -p \"\$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin'" <<<"$1" 2>/dev/null; }
+    # As the tenant administrator from the credentials view: root's password is
+    # the platform's alone (replaced at conversion), so the pod's env copy goes stale.
+    GUSER=""; GPW=""
+    for i in $(seq 1 30); do
+      parse "$(api GET "/tenants/$TENANT_ID/deployments/$GDEP/credentials" "" "$TOKEN")"
+      [[ "$(printf '%s' "$BODY"|jq -r '.data.adminAccountStatus')" == ready ]] && break; sleep 5
+    done
+    GUSER=$(printf '%s' "$BODY"|jq -r '.data.adminAccount.username // empty'); GPW=$(printf '%s' "$BODY"|jq -r '.data.adminAccount.password // empty')
+    [[ -n "$GUSER" ]] && ok "mongodb tenant administrator ready" || no "mongodb tenant administrator not ready"
+    gsh(){ ssh_node "kubectl -n $NS exec -i '$GPOD' -c '$GCON' -- env GU='$GUSER' GP='$GPW' sh -c 'exec mongosh --quiet -u \"\$GU\" -p \"\$GP\" --authenticationDatabase admin'" <<<"$1" 2>/dev/null; }
     for i in $(seq 1 30); do gsh 'db.adminCommand("ping").ok' | grep -q 1 && break; sleep 5; done
     gsh "var a=[];for(var i=1;i<=$MONGO_DOCS;i++)a.push({_id:i});db.getSiblingDB('drdata').t.drop();db.getSiblingDB('drdata').t.insertMany(a);" >/dev/null
     GOT=$(gsh "print(db.getSiblingDB('drdata').t.countDocuments())" | tr -cd '0-9')
@@ -238,14 +247,11 @@ sleep 3
 [[ -n "$MONGO_ON" ]] && { g=$(gsh "print(db.getSiblingDB('drdata').t.countDocuments())"|tr -cd '0-9'); [[ "$g" == "$MONGO_DOCS" ]] && ok "mongo drdata.t restored to $MONGO_DOCS docs" || no "mongo not restored ($g)"; }
 
 # ── 8. password coherence on reconcile (nit A) ────────────────────────────────
-cyn "8. nit A: DR reconcile arms + runs the root-password reset init container"
-# Drift the on-disk root@% password (the host a tenant APP matches over TCP) so
-# it differs from the config-captured one — a mixed/rotated restore leaves the
-# datadir's grant tables disagreeing with `config`. (root@localhost is left
-# alone: it uses unix_socket auth in the mariadb image, so a socket check can't
-# observe a password drift — the reset init container's presence + clean run is
-# the reliable, meaningful proof that the coherence fix is armed.)
-mdb "ALTER USER IF EXISTS 'root'@'%' IDENTIFIED BY 'RotatedPw123'; FLUSH PRIVILEGES;" >/dev/null 2>&1 && ok "drifted on-disk root@% password" || sk "could not drift root@% (no such grant?)"
+cyn "8. nit A: DR reconcile arms + runs the administrator reset init container"
+# Plant what an old or foreign datadir carries: a network root with a password
+# the platform never knew. The reset must remove it and leave root@localhost
+# logging in by socket only (deployments/db-admin-access.ts).
+mdb "CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY 'RotatedPw123'; GRANT ALL ON *.* TO 'root'@'%'; FLUSH PRIVILEGES;" >/dev/null 2>&1 && ok "planted a password root@% (an old datadir's shape)" || sk "could not plant root@%"
 # Recover with reconcile (config-only, no re-provision) → arms the reset init
 # container to re-stamp the config password onto the reused datadir.
 parse "$(api POST "/admin/dr/tenants/$TENANT_ID/recover" "{\"bundleId\":\"$BID\",\"components\":[\"config\"],\"reconcile\":true,\"provision\":false}" "$TOKEN")"
@@ -261,8 +267,12 @@ done
 kx "-n $NS get pod $MPOD -o jsonpath='{.spec.initContainers[*].name}'" 2>/dev/null | grep -q reset-root-password \
   && ok "reset-root-password init container armed on reconcile redeploy" || no "reset init container NOT armed on reconcile"
 RC=$(kx "-n $NS get pod $MPOD -o jsonpath=\"{.status.initContainerStatuses[?(@.name=='reset-root-password')].state.terminated.exitCode}\"" 2>/dev/null | tr -d '[:space:]')
-[[ "$RC" == 0 ]] && ok "reset init container ran + re-stamped config pw (exit 0)" || no "reset init container did not complete cleanly (exitCode=${RC:-none})"
+[[ "$RC" == 0 ]] && ok "reset init container ran cleanly (exit 0)" || no "reset init container did not complete cleanly (exitCode=${RC:-none})"
 mdb "SELECT 1" >/dev/null 2>&1 && ok "maria healthy + queryable after reconcile" || no "maria not queryable after reconcile"
+[[ "$(mdb "SELECT COUNT(*) FROM mysql.user WHERE User='root' AND Host<>'localhost'" 2>/dev/null|tr -d '[:space:]')" == 0 ]] \
+  && ok "the planted root@% is gone (root reachable from inside the pod only)" || no "a network root account survived the reset"
+[[ "$(mdb "SELECT JSON_VALUE(Priv, '$.plugin') FROM mysql.global_priv WHERE User='root' AND Host='localhost'" 2>/dev/null|tr -d '[:space:]')" == unix_socket ]] \
+  && ok "root@localhost logs in by socket only" || no "root@localhost is not socket-only after the reset"
 
 # ── 9. files-paths datadir restore on a LIVE tenant quiesces + crash-recovers (Q2) ──
 cyn "9. Q2: files-paths restore of the maria DATADIR (live tenant) must quiesce + heal, not crash"

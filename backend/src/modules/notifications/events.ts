@@ -923,6 +923,34 @@ export async function notifyAdminTenantWorkloadsRecovered(
   return dispatchReporting(db, 'admin.tenant_workloads_recovered', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+export interface AdminTenantDatabaseAccessPayload {
+  readonly count: string;
+  /** "Tenant — instance (engine): what failed", one per instance. Rendered as a list. */
+  readonly tenantList: readonly string[];
+}
+/**
+ * The platform lost its administrator login to tenant database instances
+ * (db-admin-reconciler.ts). True when it reached someone — the caller records
+ * the alert, and owes a "restored" notice, only then.
+ */
+export async function notifyAdminTenantDatabaseAccessLost(
+  db: Database,
+  payload: AdminTenantDatabaseAccessPayload,
+  dedupeKey: string,
+): Promise<boolean> {
+  const res = await dispatchReporting(db, 'admin.tenant_database_access_lost', { kind: 'admin' }, payload, undefined, { dedupeKey });
+  return res.ok;
+}
+
+/** Closes a "login lost" alert. Sent only for an incident that alerted. */
+export async function notifyAdminTenantDatabaseAccessRestored(
+  db: Database,
+  payload: AdminTenantDatabaseAccessPayload,
+  dedupeKey: string,
+): Promise<void> {
+  await dispatchReporting(db, 'admin.tenant_database_access_restored', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface TenantWorkloadsRecoveredPayload {
   /** What is running again. Rendered as a list. */
   readonly workloads: readonly string[];

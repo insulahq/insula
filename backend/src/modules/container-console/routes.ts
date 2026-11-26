@@ -12,6 +12,9 @@ import {
 } from '../../middleware/auth.js';
 import * as deploymentService from '../deployments/service.js';
 import { initialTerminalSize, parseTerminalShell, parseTerminalSize, terminalCommand } from './terminal-shell.js';
+import { DATABASE_TERMINAL_ROLES, databaseComponentNames } from './database-components.js';
+import { catalogEntries } from '../../db/schema.js';
+import { eq } from 'drizzle-orm';
 import {
   fetchPods,
   listDeploymentComponents,
@@ -383,10 +386,25 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
 
         const pods = await fetchPods(k8sTenants, namespace, deployment.name);
         const components = listDeploymentComponents(pods);
+        const [entry] = deployment.catalogEntryId
+          ? await app.db.select({ type: catalogEntries.type, code: catalogEntries.code, components: catalogEntries.components })
+            .from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId))
+          : [];
+        const dbComponents = databaseComponentNames(entry);
+        const staff = DATABASE_TERMINAL_ROLES.has(user.role);
 
         const target = componentName
           ? components.find((c) => c.name === componentName)
-          : components[0];
+          : components.find((c) => staff || !dbComponents.has(c.name));
+
+        if (target && !staff && dbComponents.has(target.name)) {
+          socket.send(JSON.stringify({
+            type: 'error',
+            message: 'The database container has no terminal: its administrator login belongs to the platform. Use the SQL Manager.',
+          }));
+          socket.close(4403, 'Forbidden');
+          return;
+        }
 
         if (!target) {
           socket.send(JSON.stringify({ type: 'error', message: 'No running pod found for component' }));

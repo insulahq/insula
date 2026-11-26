@@ -1024,6 +1024,32 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'legitimate_interest',
   },
   {
+    id: 'admin.tenant_database_access_lost',
+    cls: 'incident',
+    reportsOn: 'database',
+    displayName: 'Platform lost its login to a tenant database',
+    description: 'The platform can no longer log in as administrator to a tenant database instance, so the '
+      + 'SQL Manager, its logical backups and restores fail there. Repair database access on the instance '
+      + '(it restarts the database once) restores the login.',
+    audience: 'admin',
+    defaultSeverity: 'critical',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
+    id: 'admin.tenant_database_access_restored',
+    cls: 'record',
+    reportsOn: 'database',
+    displayName: 'Platform login to a tenant database restored',
+    description: 'The platform can log in as administrator to a tenant database instance again, after an alert that it could not.',
+    audience: 'admin',
+    defaultSeverity: 'info',
+    defaultChannels: ALL_NOTIFICATION_CHANNELS,
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
     id: 'admin.mail_event',
     cls: 'action',
     reportsOn: 'mail',

@@ -2514,6 +2514,24 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         });
         app.addHook('onClose', () => backupHealthStop());
 
+        // Tenant database logins: the platform's administrator login (socket-only
+        // root, trust, pod-local Mongo root) and the tenant's own administrator
+        // account, converted once and kept in shape every ten minutes
+        // (deployments/db-admin-reconciler.ts).
+        const encryptionKeyForDbAdmin = app.config?.PLATFORM_ENCRYPTION_KEY ?? process.env.PLATFORM_ENCRYPTION_KEY;
+        if (encryptionKeyForDbAdmin) {
+          const { startDatabaseAdminScheduler } = await import('./modules/deployments/db-admin-reconciler.js');
+          const databaseAdminStop = startDatabaseAdminScheduler({
+            db: app.db,
+            k8s: k8sForImapsync,
+            kubeconfigPath: (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined,
+            encryptionKey: encryptionKeyForDbAdmin,
+          });
+          app.addHook('onClose', () => databaseAdminStop());
+        } else {
+          app.log.warn('[database-admin] PLATFORM_ENCRYPTION_KEY unset — tenant database logins are not reconciled');
+        }
+
         // Private workers: which are connected, from each tenant's frps status
         // API (nothing else reports it), after a startup reconcile that brings
         // existing frps pods onto this release's spec.

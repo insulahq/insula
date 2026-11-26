@@ -136,6 +136,31 @@ describe('executeCronJob — deployment jobs', () => {
       expect(t.exec).not.toHaveBeenCalled();
     });
 
+    it('when the deployment is a database instance (its OS root is the platform\'s administrator login)', async () => {
+      const t = transport();
+      const result = await executeCronJob(
+        mockDb([{ ...RUNNING_DEPLOYMENT, entryCode: 'mariadb-11', entryType: 'database' }]),
+        makeJob(),
+        { transport: t },
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.output).toContain('does not run cron commands');
+      expect(t.listPods).not.toHaveBeenCalled();
+      expect(t.exec).not.toHaveBeenCalled();
+    });
+
+    it('but an application whose catalog type is not database still runs', async () => {
+      const t = transport();
+      const result = await executeCronJob(
+        mockDb([{ ...RUNNING_DEPLOYMENT, entryType: 'application' }]),
+        makeJob(),
+        { transport: t },
+      );
+      expect(result.status).toBe('success');
+      expect(t.exec).toHaveBeenCalled();
+    });
+
     it('when no pod is running', async () => {
       const t = transport({ listPods: vi.fn().mockResolvedValue([pod({ phase: 'Pending' })]) });
       const result = await executeCronJob(mockDb([RUNNING_DEPLOYMENT]), makeJob(), { transport: t });

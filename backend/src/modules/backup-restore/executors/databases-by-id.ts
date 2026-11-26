@@ -40,6 +40,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
+import { loadTenantAdminAccount, tenantAdminReady } from '../../deployments/tenant-admin-store.js';
 import { and, eq, inArray } from 'drizzle-orm';
 import {
   databasesSelectorSchema,
@@ -146,6 +147,8 @@ export interface DatabasesRestoreDeps<Ctx> {
     database: string,
     filePath: string,
     deploymentSubPath: string,
+    /** The deployment restored into: picks the login the import runs as. */
+    deploymentId?: string,
   ) => Promise<{ readonly success: boolean; readonly error?: string }>;
   /**
    * Restore a MongoDB `.archive.gz` dump (mongorestore --archive --drop).
@@ -358,7 +361,7 @@ export async function restoreDatabasesForDeployments<Ctx>(
         continue;
       }
       const realDb = reals[0]!;
-      const res = await deps.importSql(ctx, realDb, p, dirName(p));
+      const res = await deps.importSql(ctx, realDb, p, dirName(p), dep.deploymentId);
       if (res.success) {
         imported.push(realDb);
       } else {
@@ -462,6 +465,7 @@ export async function execDatabasesByIdItem(args: {
     ?? process.env.KUBECONFIG_PATH ?? process.env.KUBECONFIG;
   const k8s: K8sClients = createK8sClients(kubeconfigPath);
 
+  const encryptionKey = ((app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined) ?? process.env.PLATFORM_ENCRYPTION_KEY;
   const deps: DatabasesRestoreDeps<DbManagerContext> = {
     buildDbContext: (dep) => buildDbContext(
       k8s,
@@ -473,8 +477,15 @@ export async function execDatabasesByIdItem(args: {
     ),
     listDumpFiles: (_ctx, deploymentName) => listPredumpFiles(k8s, kubeconfigPath, namespace, deploymentName),
     listDatabaseNames: async (ctx) => (await listDatabases(ctx)).map((d) => d.name),
-    importSql: async (ctx, database, filePath, deploymentSubPath) => {
-      const result = await importSqlFromPvcFile(ctx, database, '', filePath, deploymentSubPath);
+    // As the tenant's administrator where the instance has one: the dump is
+    // the tenant's own data and objects, and replayed as root/the superuser
+    // its functions, constraints and definers would run with the platform's
+    // privileges. An app stack's database has none and restores as before.
+    importSql: async (ctx, database, filePath, deploymentSubPath, deploymentId) => {
+      const as = encryptionKey && deploymentId && await tenantAdminReady(app.db, deploymentId)
+        ? await loadTenantAdminAccount(app.db, deploymentId, encryptionKey)
+        : null;
+      const result = await importSqlFromPvcFile(ctx, database, '', filePath, deploymentSubPath, as ? { as } : {});
       return { success: result.success, error: result.error };
     },
     importMongoArchive: async (ctx, filePath, deploymentSubPath) => {

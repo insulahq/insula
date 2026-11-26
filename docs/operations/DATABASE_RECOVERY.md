@@ -162,7 +162,7 @@ data files are a last resort that may not restore (§1).
 | **MongoDB backup** (now covered — was silently unsupported) | `mongodump --archive --gzip` → `predump-<db>-<bundleId>.archive.gz` on the PVC; plus the live-copied WiredTiger datadir in the files snapshot | Logical: `mongorestore --archive --gzip --drop` (recreates namespaces — target db need not exist). Last resort: files restore of the WiredTiger datadir | Use the `databases-by-id` restore item for a clean logical re-import, or `files-paths` for a raw datadir restore. |
 | **Cross-version DB restore** (restore into a newer/older or differently-configured engine) | Logical dump `dumped` on the PVC | Logical re-import via `databases-by-id` (`importSqlFromPvcFile` for SQL, `mongorestore` for Mongo) — portable across versions/engine config | Restore with `databases-by-id` (portable), **not** `files-paths` — a raw datadir is version/config-specific and may not attach to a different engine build. |
 | **DB dropped / corrupted** (accidental `DROP DATABASE`, logical corruption on the LIVE db) | Dump and raw files in the last good bundle | Logical re-import replays the dump into the running pod (SQL import, or `mongorestore --drop`); or, as a last resort, the raw datadir | Prefer `databases-by-id` (re-imports into the live pod without touching other DBs). If the whole datadir is corrupt, use `files-paths`. |
-| **Root-password recovery** (DB root creds lost) | Root passwords live in `deployments.configuration`, captured by the **`config`** component (not in the datadir/dump) | `config` component restore re-creates the deployment row; the password is injected as literal pod env | Restore the tenant `config`; the DB pod comes back with its original root password. **Caveat:** the reconcile redeploy path does **not** re-arm the password-reset init container — a same-bundle restore is coherent, but mixing/rotating creds between restore steps can mismatch (see §5). |
+| **Administrator-login recovery** (the platform cannot log in) | The login is not a password: root by socket (MariaDB/MySQL), the superuser by local trust (PostgreSQL), a pod-local root (MongoDB); the reset init container restores it on every restore path | Automatic on create, DR reconcile and archive restore; **Repair database access** otherwise (§6) | See §5–§6. |
 | **Tenant fully deleted** (row gone, namespace gone) | Bundle survives until its own retention sweep; carries `config` + `files` (raw files + dumps) + `meta.json` v2 tenant block | DR re-create from the offsite bundle re-provisions the namespace + empty PVC, then restore-cart overlays files and re-imports dumps | Follow `DR_DRILL_TENANTS.md` (re-create → provision → restore-cart with `files-paths` + `databases-by-id` + `config-tables`). Assert restore `status == completed`. |
 
 ---
@@ -249,122 +249,112 @@ How to read it:
 
 ---
 
-## 5. Root-password caveat (read before a mixed restore)
+## 5. The administrator login after a restore
 
-Root DB passwords are **not** in the datadir or the logical dump — they live in
-`deployments.configuration`, captured by the **`config`** component, and are
-injected into the pod as literal env at deploy time. Because of that:
+The platform's way into a tenant database is **not a password** any more
+(`deployments/db-admin-access.ts`):
 
-- A **same-bundle** restore (config + files + dumps all from one bundle) is
-  **coherent** — the pod comes back with the same root password the dump/datadir
-  expects.
-- A **mixed** restore — e.g. config from one bundle but data from another, or a
-  credential rotated between restore steps — leaves the pod env password out of
-  sync with the on-disk auth. Restore config and data from the **same** bundle to
-  stay coherent.
+| Engine | The platform logs in as | Reachable over the network? |
+|---|---|---|
+| MariaDB | `root@localhost IDENTIFIED VIA unix_socket` — the OS user of a process in the pod | no: every other root account is dropped |
+| MySQL | `root@localhost IDENTIFIED WITH auth_socket` | no: every other root account is dropped |
+| PostgreSQL | the superuser (`POSTGRES_USER`, default `postgres`) by the image's local trust | standalone instances: no — the superuser has no password; inside an app stack the app connects as it, so it keeps its password |
+| MongoDB | `root` with a password only the platform knows (replaced once at conversion: the tenant knew the old one) | no: `authenticationRestrictions` allow `127.0.0.1` / `::1` only |
 
-**The password-reset init container** (`deployments/password-reset.ts`) exists to
-absorb exactly that mismatch: it starts the engine with authentication disabled
-and re-stamps the password from `deployments.configuration` onto the reused
-datadir. It self-skips when the datadir is empty and is best-effort — it logs a
-`WARNING` and lets the database start rather than crash-looping the pod. It is
-armed on:
+This is for **standalone** database instances (catalog type `database`). A
+database inside an app stack keeps its root password — its app may use it — and
+the reconciler only checks that the platform still gets in.
+
+Tenants get their own administrator account (`dbadmin`, `deployments/tenant-admin.ts`):
+all of their databases, `db_…` databases they create in SQL, no account
+management. The SQL console, table browsing and tenant imports run as it, in a
+client started as `nobody` with its own commands switched off.
+
+On the first check and daily after, the reconciler also closes what a tenant
+could have left while it held root — extra superusers and global or
+system-schema grants, objects running as root, event triggers, untrusted
+functions, shell commands in the PostgreSQL configuration, network `trust`
+rules, root-like MongoDB users (`mysql-hardening.ts`, `pg-hardening.ts`,
+`mongo-hardening.ts`). What it changed is in `database_admin_state.last_changes`
+and the API log (`[database-admin]`).
+
+!!! note "Not yet covered: the data directory itself"
+    The file manager and SFTP still reach a database's data directory on the
+    tenant volume. A tenant who edits those files (`pg_hba.conf`, the MariaDB
+    system schema) can take its own instance's administrator login back; the
+    platform then reports it as lost (§6) and Repair restores it. Hiding data
+    directories from the file manager and SFTP is the open follow-up.
+
+A restored data directory brings **its own grant tables** — whatever they were
+when it was copied: a password root, a `root@'%'`. The reset init container
+(`deployments/password-reset.ts`) puts the platform's login back before the
+database starts: socket-only root and no other root account (MariaDB/MySQL), a
+superuser without a password (PostgreSQL), a pod-local root (MongoDB). It
+self-skips on an empty datadir and is best-effort — a `WARNING`, never a
+crash-looping pod. It is armed on:
 
 - the **create** path, for every database deployment;
-- the **DR reconcile** path (`dr-recover/reconcile.ts` passes
-  `armPasswordReset: true`).
+- the **DR reconcile** path (`dr-recover/reconcile.ts` passes `armPasswordReset: true`);
+- the **archive restore** path (`tenant-archive/restore-workloads.ts`);
+- **Repair database access** (§6).
 
-It is *not* armed on a routine env-var edit or config redeploy, so those still
-assume the on-disk password already matches.
+Every ten minutes the database-admin reconciler (`deployments/db-admin-reconciler.ts`)
+checks each running instance, converts an old password login the first time,
+keeps the tenant administrator's account and grants in shape, and records the
+result in `database_admin_state`.
 
 ---
 
-## 6. Engine admin lockout after a same-name re-create
+## 6. The platform lost its administrator login
 
-**Symptom.** SQL Manager cannot read a running database. `platform-api` logs
-`[db-manager] Exec failed: … ERROR 1045 (28000): Access denied for user
-'root'@'localhost'` on `/databases`, `/databases-with-size` and `/db-users`.
-Tenant applications keep working — they use their own DB user, not the admin.
+**Symptom.** The admin notification **"Platform lost its login to a tenant
+database"**, and `database_admin_state.mode = 'locked'` for the instance. The SQL
+Manager, the nightly logical dumps and restores fail there; tenant applications
+keep working (they use their own accounts).
 
-**Cause.** `storagePath` is deterministic (`${entry.type}/${entry.code}/${name}`,
-no uniqueness suffix), and `DELETE …/deployments/<id>` **without**
-`deleteData=true` leaves the data folder behind. Re-creating a deployment with
-the **same name** therefore mounts the previous datadir — and every engine
-applies `*_ROOT_PASSWORD` only when it initialises an *empty* one. The newly
-generated password is ignored; the on-disk one stays in force. If the old
-deployment row was hard-deleted, the original password is gone with it.
+**Causes.** Before an instance was converted: its root password was changed in
+SQL, or the datadir was re-used by a same-name re-create (`storagePath` is
+deterministic, and `DELETE … deployments/<id>` without `deleteData=true` leaves
+the folder; the engine applies `*_ROOT_PASSWORD` only to an *empty* datadir).
+After conversion, only something running as root inside the pod — or an edit
+of the data directory's files through the file manager (see the note in §5) —
+could change the socket login.
 
-**Confirm it in one query.** Compare the datadir's birth time with the row:
+**Recovery — Repair database access** (admin panel, or
+`POST /api/v1/admin/deployments/<id>/repair-database-access`; refused with 409
+unless the instance is a standalone one in `mode = 'locked'`): the instance is
+redeployed with the reset init container armed; **the database restarts once**
+and comes back with the platform's login. The reconciler checks it two minutes
+later and the "login restored" notice follows. Take a Longhorn snapshot of the
+volume first if the data matters:
 
-```bash
-# datadir age (MariaDB/MySQL)
-kubectl exec -n <tenant-ns> <db-pod> -c <engine> -- \
-  stat -c %y /var/lib/mysql/multi-master.info
-# deployment row age
-kubectl exec -n platform system-db-1 -c postgres -- \
-  psql -U postgres -d platform -c \
-  "SELECT name, created_at, storage_path FROM deployments WHERE id = '<id>';"
+```yaml
+apiVersion: longhorn.io/v1beta2
+kind: Snapshot
+metadata: { name: pre-admin-repair-<date>, namespace: longhorn-system }
+spec: { createSnapshot: true, volume: <pvc-volume-name> }
 ```
 
-A datadir **older** than `created_at` is this failure. (Deployments created after
-the fix in PR #358 arm the reset init container and self-heal on the first roll.)
+**Manual fallback** (the reset container cannot run, e.g. an engine it does not
+know). Scale the deployment to 0, then run a one-shot Job on the same PVC +
+`subPath` with the same image, started with `--skip-grant-tables` (MySQL also
+`--plugin-load-add=auth_socket.so`), and:
 
-**Recovery** — re-stamp the configured password onto the existing datadir.
-Non-destructive; costs one database restart.
+- MariaDB: `FLUSH PRIVILEGES; ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket;`
+- MySQL: `INSERT IGNORE INTO mysql.plugin (name, dl) VALUES ('auth_socket', 'auth_socket.so'); FLUSH PRIVILEGES; ALTER USER 'root'@'localhost' IDENTIFIED WITH auth_socket;`
+- both: `DROP USER` every other `root@<host>`.
 
-1. **Snapshot first.** Check for platform backups (`SELECT … FROM backups WHERE
-   tenant_id = …`); tenants with none still have Longhorn hourly snapshots. Take
-   an explicit one:
+!!! warning "Size the Job inside the tenant's ResourceQuota"
+    Tenant namespaces cap `limits.memory`. With the database scaled to 0 the
+    headroom is the quota minus whatever else is running — request **the same
+    memory as the database container**, not more.
 
-    ```yaml
-    apiVersion: longhorn.io/v1beta2
-    kind: Snapshot
-    metadata: { name: pre-root-pw-reset-<date>, namespace: longhorn-system }
-    spec: { createSnapshot: true, volume: <pvc-volume-name> }
-    ```
-
-2. **Scale the deployment to 0** and wait for the pod to go away. Never run the
-   reset against a live datadir — the engine holds the lock.
-3. **Stage the configured password** as a temporary Secret, read out of the
-   existing spec so it never lands in your shell history or a manifest:
-
-    ```bash
-    PW=$(kubectl get deploy <name> -n <tenant-ns> -o \
-      jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="MARIADB_ROOT_PASSWORD")].value}')
-    kubectl create secret generic <name>-root-reset-pw -n <tenant-ns> --from-literal=password="$PW"
-    ```
-
-4. **Run a one-shot Job** on the same PVC + `subPath`, using the same image and
-   the same buffer-tuning args as the main container, with
-   `--skip-grant-tables`, then
-   `FLUSH PRIVILEGES; CREATE USER IF NOT EXISTS 'root'@'localhost'; ALTER USER
-   'root'@'localhost' IDENTIFIED BY '<pw>'; GRANT ALL PRIVILEGES ON *.* TO
-   'root'@'localhost' WITH GRANT OPTION; ALTER USER IF EXISTS 'root'@'%'
-   IDENTIFIED BY '<pw>';` — then verify **with the new password** before
-   shutting the temporary server down. The `IF EXISTS` / `IF NOT EXISTS` guards
-   matter: a datadir missing either account otherwise aborts the whole reset.
-
-    !!! warning "Size the Job inside the tenant's ResourceQuota"
-        Tenant namespaces cap `limits.memory`. With the database scaled to 0 the
-        headroom is the quota minus whatever else is running — request **the same
-        memory as the database container**, not more. A Job that exceeds it never
-        creates a pod and the Job just sits at `0/1`; `kubectl describe job` shows
-        `FailedCreate … exceeded quota`.
-
-5. **Delete the Job and the Secret, scale back to 1**, then verify through the
-   platform's own path:
-
-    ```bash
-    kubectl exec -n <tenant-ns> <db-pod> -c <engine> -- \
-      sh -c 'mariadb -uroot -p$MARIADB_ROOT_PASSWORD -e "SHOW DATABASES;"'
-    ```
-
-    Then confirm at the API layer — SQL Manager requests for that deployment
-    should return `200`, and the engine log should stop recording `Access denied`.
+Scale back to 1 and verify through the platform's own path:
+`kubectl exec … -c <engine> -- mariadb -uroot -e "SELECT CURRENT_USER()"` (no
+password) returns `root@localhost`.
 
 **Prevention.** Delete the data along with the deployment when you want a clean
-start (`?force=true&deleteData=true`), or keep the existing deployment rather
-than re-creating it under the same name.
+start (`?force=true&deleteData=true`).
 
 ---
 

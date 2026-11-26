@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireTenantAccess, requireTenantRoleByMethod } from '../../middleware/auth.js';
 import { createDeploymentSchema, updateDeploymentSchema, updateDeploymentResourcesSchema } from './schema.js';
-import { triggerUpgradeSchema, batchUpgradeSchema, folderProblem } from '@insula/api-contracts';
+import { triggerUpgradeSchema, batchUpgradeSchema, folderProblem, type DeploymentCredentialsResponse } from '@insula/api-contracts';
+
+type AdminAccountStatus = DeploymentCredentialsResponse['adminAccountStatus'];
 import * as service from './service.js';
 import * as upgradeVersion from './upgrade-version.js';
 import { getApplicationUsage, refuseDeleted } from './application-limit.js';
@@ -15,9 +17,13 @@ import * as dbManager from './db-manager.js';
 import { registerRawBodyParser } from '../custom-deployments/raw-body-transport.js';
 import { generateSecurePassword } from './service.js';
 import { eq, and, ne, inArray, desc, sql, or, ilike } from 'drizzle-orm';
-import { catalogEntries, deployments, tenants } from '../../db/schema.js';
+import { catalogEntries, databaseAdminState, deployments, tenants } from '../../db/schema.js';
 import { fileManagerRequest } from '../file-manager/service.js';
 import { getFileManagerImage } from '../file-manager/image.js';
+import { catalogEntryIdsIn, stripPlatformOnlyConfigDeep } from './platform-only-config.js';
+import { databaseAdminMode, reconcileDatabaseAdminFor } from './db-admin-reconciler.js';
+import { ensureTenantAdmin, setTenantAdminPassword } from './tenant-admin.js';
+import { loadTenantAdminAccount, newTenantAdminPassword, saveTenantAdminAccount, tenantAdminReady } from './tenant-admin-store.js';
 import { describeTermination, isReplacedPodRecord } from '../../lib/container-termination.js';
 
 export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
@@ -26,6 +32,81 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireTenantRoleByMethod());
   app.addHook('onRequest', requireTenantAccess());
+  // A deployment's database administrator login is the platform's alone: no
+  // response from these routes — and so no panel or agent — carries it
+  // (platform-only-config.ts).
+  app.addHook('preSerialization', async (_request, _reply, payload) => {
+    const ids = [...catalogEntryIdsIn(payload)];
+    const types = new Map(ids.length === 0 ? [] : (await app.db.select({ id: catalogEntries.id, type: catalogEntries.type })
+      .from(catalogEntries).where(inArray(catalogEntries.id, ids))).map((r) => [r.id, r.type]));
+    // Only a standalone database instance's keys are the platform's; one whose
+    // entry is unknown is treated as one.
+    return stripPlatformOnlyConfigDeep(payload, (owner) => {
+      const id = owner.catalogEntryId ?? owner.catalog_entry_id;
+      return typeof id !== 'string' || (types.get(id) ?? 'database') === 'database';
+    });
+  });
+
+  const platformEncryptionKey = (): string | undefined =>
+    ((app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined) ?? process.env.PLATFORM_ENCRYPTION_KEY;
+  const kubeconfigPathOf = (): string | undefined =>
+    (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+
+  /**
+   * The login tenant-run SQL uses — always in a client that cannot leave SQL
+   * (db-manager.ts). A standalone instance: its tenant administrator, once
+   * set up — never root; not yet → 409 (and set it up now). An app stack's
+   * database: the stack's own root login, the app's, which the tenant holds
+   * anyway (platform-only-config.ts leaves it to them).
+   */
+  const tenantSqlLogin = async (deploymentId: string, ctx: dbManager.DbManagerContext): Promise<dbManager.DbLogin> => {
+    if (!(await isStandaloneDatabase(deploymentId))) return { username: ctx.rootUsername, password: ctx.rootPassword };
+    const encryptionKey = platformEncryptionKey();
+    if (!encryptionKey) throw new ApiError('ENCRYPTION_KEY_MISSING', 'The platform encryption key is not configured', 503);
+    const ready = await tenantAdminReady(app.db, deploymentId);
+    const account = ready ? await loadTenantAdminAccount(app.db, deploymentId, encryptionKey) : null;
+    if (account) return account;
+    const status = await adminAccountStatusOf(deploymentId, null);
+    if (status === 'lost') {
+      throw new ApiError('DATABASE_ACCESS_LOST', 'The platform has lost its administrator login to this database', 409, {},
+        'An operator has been notified and can restore it.');
+    }
+    if (status === 'unavailable') {
+      throw new ApiError('SQL_MANAGER_UNAVAILABLE', 'This database has no administrator account the SQL Manager can use', 409);
+    }
+    const k8s = getK8s();
+    if (k8s) void reconcileDatabaseAdminFor({ db: app.db, k8s, kubeconfigPath: kubeconfigPathOf(), encryptionKey }, deploymentId);
+    throw new ApiError('ADMIN_ACCOUNT_PENDING', 'The database administrator account is still being set up', 409, {},
+      'Try again in a minute — it is created as soon as the database answers.');
+  };
+
+  const isStandaloneDatabase = async (deploymentId: string): Promise<boolean> => {
+    const [row] = await app.db.select({ type: catalogEntries.type }).from(deployments)
+      .innerJoin(catalogEntries, eq(catalogEntries.id, deployments.catalogEntryId))
+      .where(eq(deployments.id, deploymentId));
+    return row?.type === 'database';
+  };
+
+  /** Roles that see the tenant administrator's password: it reaches every database of the instance. */
+  const ADMIN_ACCOUNT_ROLES: ReadonlySet<string> = new Set(['super_admin', 'admin', 'support', 'tenant_admin']);
+
+  /**
+   * Whether the instance has (or will have) a tenant administrator, for a
+   * caller with `role` (null: the role does not matter). Only a standalone
+   * database instance gets one (db-admin-reconciler.ts).
+   */
+  const adminAccountStatusOf = async (deploymentId: string, role: string | null, ready = false): Promise<AdminAccountStatus> => {
+    if (!(await isStandaloneDatabase(deploymentId))) return 'unavailable';
+    if (ready) return role === null || ADMIN_ACCOUNT_ROLES.has(role) ? 'ready' : 'restricted';
+    const mode = await databaseAdminMode(app.db, deploymentId);
+    if (mode === 'locked') return 'lost';
+    if (mode === 'open') return 'unavailable';
+    return 'pending';
+  };
+  /** The database refused the login itself (not a privilege), e.g. after the password was changed in SQL. */
+  const loginRefused = (error: string, username: string): boolean =>
+    /ERROR 1045 \(28000\)/.test(error) && error.includes(`'${username}'@`)
+    || /Authentication failed/i.test(error);
 
   // Lazy-init K8s tenants (null if no kubeconfig available)
   const getK8s = () => {
@@ -282,10 +363,59 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // GET /api/v1/tenants/:tenantId/deployments/:id/credentials
-  app.get('/tenants/:tenantId/deployments/:id/credentials', async (request) => {
+  // Passwords: refused to tenant-audience agents like every route that hands
+  // one out (issuesCredential). The database administrator here is the
+  // tenant's own account (tenant-admin.ts), never the platform's root.
+  app.get('/tenants/:tenantId/deployments/:id/credentials', { config: { issuesCredential: true } }, async (request) => {
     const { tenantId, id } = request.params as { tenantId: string; id: string };
     const result = await service.getDeploymentCredentials(app.db, tenantId, id);
-    return success(result);
+    const encryptionKey = platformEncryptionKey();
+    const ready = await tenantAdminReady(app.db, id);
+    const account = encryptionKey && ready ? await loadTenantAdminAccount(app.db, id, encryptionKey) : null;
+    const status = await adminAccountStatusOf(id, request.user?.role ?? '', account !== null);
+    if (status === 'pending' && encryptionKey) {
+      // Not set up yet (a new instance, or the first look after an upgrade):
+      // set it up now rather than at the next ten-minute pass. The panel
+      // shows "being set up" and asks again.
+      const k8s = getK8s();
+      if (k8s) {
+        void reconcileDatabaseAdminFor({ db: app.db, k8s, kubeconfigPath: kubeconfigPathOf(), encryptionKey }, id);
+      }
+    }
+    return success({
+      ...result,
+      adminAccount: account && status === 'ready' ? { username: account.username, password: account.password } : null,
+      adminAccountStatus: status,
+    });
+  });
+
+  // POST /api/v1/tenants/:tenantId/deployments/:id/admin-account/password
+  // A new password for the tenant's administrator account. Stored first, then
+  // set; if the database refuses, the stored one goes back to the old value,
+  // so the two never disagree (the reconciler sets the database to the stored
+  // password whenever they do).
+  app.post('/tenants/:tenantId/deployments/:id/admin-account/password', { config: { issuesCredential: true } }, async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    if (!ADMIN_ACCOUNT_ROLES.has(request.user?.role ?? '')) {
+      throw new ApiError('INSUFFICIENT_PERMISSIONS', 'Only a tenant administrator can set a new password for this account', 403);
+    }
+    const encryptionKey = platformEncryptionKey();
+    if (!encryptionKey) throw new ApiError('ENCRYPTION_KEY_MISSING', 'The platform encryption key is not configured', 503);
+    const ctx = await buildDbCtx(tenantId, id);
+    const current = await loadTenantAdminAccount(app.db, id, encryptionKey);
+    if (!current) {
+      throw new ApiError('ADMIN_ACCOUNT_PENDING', 'The administrator account is still being set up', 409, {},
+        'Try again in a minute — it is created as soon as the database answers.');
+    }
+    const next = { username: current.username, password: newTenantAdminPassword() };
+    await saveTenantAdminAccount(app.db, id, next, encryptionKey, { rotated: true });
+    try {
+      await setTenantAdminPassword(ctx, next);
+    } catch (err) {
+      await saveTenantAdminAccount(app.db, id, current, encryptionKey);
+      throw err instanceof dbManager.DbExecError ? new ApiError('DB_EXEC_FAILED', err.message, 502) : err;
+    }
+    return success(next);
   });
 
   // POST /api/v1/tenants/:tenantId/deployments/:id/regenerate-credentials
@@ -680,7 +810,22 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const ctx = await buildDbCtx(tenantId, id);
-      const result = await dbManager.executeQuery(ctx, body.database, body.query);
+      // The tenant's SQL runs as the tenant's administrator, never as root:
+      // its privileges decide what the SQL can reach (tenant-admin.ts).
+      const login = await tenantSqlLogin(id, ctx);
+      let result = await dbManager.executeQuery(ctx, body.database, body.query, { as: login });
+      if (result.error && loginRefused(result.error, login.username) && await isStandaloneDatabase(id)) {
+        // The password was changed in SQL: set it back to the panel's and try once more.
+        try {
+          await ensureTenantAdmin(ctx, login, { harden: false });
+        } catch (err) {
+          // The client's text may echo the platform's own statements: kept out of the answer.
+          if (!(err instanceof dbManager.DbExecError)) throw err;
+          request.log.warn({ err: err.message }, 'tenant administrator could not be set back');
+          throw new ApiError('DB_EXEC_FAILED', 'The administrator account could not be set back to its password', 502);
+        }
+        result = await dbManager.executeQuery(ctx, body.database, body.query, { as: login });
+      }
       return success(result);
     });
   });
@@ -749,7 +894,8 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const orderDir = (query.orderDir as string | undefined)?.toLowerCase() === 'desc' ? 'desc' as const : 'asc' as const;
 
     const ctx = await buildDbCtx(tenantId, id);
-    const result = await dbManager.browseTable(ctx, database, table, { limit, offset, orderBy, orderDir });
+    // As the tenant's administrator: reading a view runs the tenant's code in it.
+    const result = await dbManager.browseTable(ctx, database, table, { limit, offset, orderBy, orderDir }, { as: await tenantSqlLogin(id, ctx) });
     return success(result);
   });
 
@@ -768,7 +914,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const ctx = await buildDbCtx(tenantId, id);
-    const count = await dbManager.countRows(ctx, database, table);
+    const count = await dbManager.countRows(ctx, database, table, { as: await tenantSqlLogin(id, ctx) });
     return success({ count });
   });
 
@@ -813,7 +959,9 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const ctx = await buildDbCtx(tenantId, id);
-    const result = await dbManager.importSql(ctx, body.database, body.sql);
+    // A tenant's import runs as the tenant's administrator (DEFINER clauses
+    // rewritten, import-rewrite.ts), never as root.
+    const result = await dbManager.importSql(ctx, body.database, body.sql, { as: await tenantSqlLogin(id, ctx) });
     return success(result);
   });
 
@@ -839,7 +987,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const filePath = body.file_path.replace(/^\/+/, '');
 
     const { deploymentSubPath, ...ctx } = await buildDbCtx(tenantId, id);
-    const result = await dbManager.importSqlFromPvcFile(ctx, body.database, '', filePath, deploymentSubPath);
+    const result = await dbManager.importSqlFromPvcFile(ctx, body.database, '', filePath, deploymentSubPath, { as: await tenantSqlLogin(id, ctx) });
     return success(result);
   });
 
@@ -966,6 +1114,9 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
         catalogEntryName: catalogEntries.name,
         catalogEntryCode: catalogEntries.code,
         catalogEntryType: catalogEntries.type,
+        // How the platform reaches a database instance's administrator login
+        // (db-admin-state.ts); `locked` is what Repair database access is for.
+        databaseAccessMode: databaseAdminState.mode,
         status: deployments.status,
         statusMessage: deployments.statusMessage,
         lastError: deployments.lastError,
@@ -981,6 +1132,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       .from(deployments)
       .leftJoin(tenants, eq(deployments.tenantId, tenants.id))
       .leftJoin(catalogEntries, eq(deployments.catalogEntryId, catalogEntries.id))
+      .leftJoin(databaseAdminState, eq(databaseAdminState.deploymentId, deployments.id))
       .where(where)
       .orderBy(desc(deployments.createdAt))
       .limit(limit)
@@ -1015,6 +1167,41 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
     schema: { tags: ['Deployments'], summary: 'List all deployments (alias)', security: [{ bearerAuth: [] }] },
   }, adminListHandler);
+
+  // POST /api/v1/admin/deployments/:id/repair-database-access
+  // The platform lost its administrator login to this database instance
+  // (database_admin_state.mode = 'locked'): redeploy it with the reset
+  // container armed, which restores the login at start — the database restarts
+  // once. The reconciler checks it again shortly after.
+  app.post('/admin/deployments/:id/repair-database-access', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: { tags: ['Deployments'], summary: 'Restore the platform\'s administrator login to a database instance', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { id } = request.params as { id: string };
+    const k8s = getK8s();
+    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
+    const [dep] = await app.db.select().from(deployments).where(eq(deployments.id, id));
+    if (!dep) throw new ApiError('NOT_FOUND', 'Deployment not found', 404);
+    refuseDeleted(dep, 'repair');
+    // Only for what it is for: a restart of a healthy database, or of an app
+    // whose root the app itself uses, is not a repair.
+    if ((await adminAccountStatusOf(id, null)) === 'unavailable') {
+      throw new ApiError('NOT_A_DATABASE_INSTANCE', 'Only a standalone database instance can be repaired this way', 409);
+    }
+    const mode = await databaseAdminMode(app.db, id);
+    if (mode !== 'locked') {
+      throw new ApiError('DATABASE_ACCESS_NOT_LOST', `The platform still logs in to this database (${mode ?? 'not checked yet'}): nothing to repair`, 409, { mode });
+    }
+    await service.redeployWithCurrentConfig(app.db, dep, k8s, { armPasswordReset: true });
+    const encryptionKey = platformEncryptionKey();
+    if (encryptionKey) {
+      // The reset runs before the database starts; check once it is up.
+      setTimeout(() => {
+        void reconcileDatabaseAdminFor({ db: app.db, k8s, kubeconfigPath: kubeconfigPathOf(), encryptionKey }, id);
+      }, 120_000).unref();
+    }
+    return success({ redeployed: true });
+  });
 
   // POST /api/v1/admin/deployments/bulk-start
   app.post('/admin/deployments/bulk-start', {

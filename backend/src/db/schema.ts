@@ -825,6 +825,61 @@ export const deployments = pgTable('deployments', {
 //    lazy-load "Updates available?" pill reads this. Stale rows are
 //    served immediately and a background refresh fires.
 
+/**
+ * How the platform reaches each tenant database instance's administrator
+ * account, and the lockout incident (migration 0188, db-admin-access.ts).
+ */
+export const databaseAdminState = pgTable('database_admin_state', {
+  deploymentId: varchar('deployment_id', { length: 36 })
+    .primaryKey()
+    .references(() => deployments.id, { onDelete: 'cascade' }),
+  tenantId: varchar('tenant_id', { length: 36 })
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  engine: varchar('engine', { length: 16 }).notNull(),
+  /** socket | trust | restricted | password | locked | open | unreachable */
+  mode: varchar('mode', { length: 16 }).notNull(),
+  detail: text('detail'),
+  lastChanges: text('last_changes'),
+  checkedAt: timestamp('checked_at', { withTimezone: true }).notNull().defaultNow(),
+  /** When the instance first reached its target login. */
+  convertedAt: timestamp('converted_at', { withTimezone: true }),
+  lockedSince: timestamp('locked_since', { withTimezone: true }),
+  /** Set once the lockout alert reached someone; drives the recovery notice. */
+  alertedAt: timestamp('alerted_at', { withTimezone: true }),
+  /** The last pass over what a tenant could have left while it held root. */
+  hardenedAt: timestamp('hardened_at', { withTimezone: true }),
+  /** The pod that pass ran in: a new pod (a restore, a re-point) is hardened again at once. */
+  hardenedPod: varchar('hardened_pod', { length: 253 }),
+  /** The last full check; between two, a tick only proves the logins still work. */
+  shapedAt: timestamp('shaped_at', { withTimezone: true }),
+  /** Since when the instance has not answered (an incident once it lasts an hour). */
+  unreachableSince: timestamp('unreachable_since', { withTimezone: true }),
+  /** MongoDB: the root password the platform set (encrypted), kept to put a configuration that lost it right. */
+  rootSecretCipher: text('root_secret_cipher'),
+  /** MongoDB: when root's password was replaced by one only the platform knows. */
+  rootRotatedAt: timestamp('root_rotated_at', { withTimezone: true }),
+}, (table) => [
+  index('database_admin_state_tenant_idx').on(table.tenantId),
+]);
+
+/**
+ * The tenant's administrator account on each database instance (migration
+ * 0188, tenant-admin.ts). The password is AES-256-GCM-encrypted with
+ * PLATFORM_ENCRYPTION_KEY; only the credentials view decrypts it.
+ */
+export const databaseAdminAccounts = pgTable('database_admin_accounts', {
+  deploymentId: varchar('deployment_id', { length: 36 })
+    .primaryKey()
+    .references(() => deployments.id, { onDelete: 'cascade' }),
+  username: varchar('username', { length: 64 }).notNull(),
+  passwordCipher: text('password_cipher').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  rotatedAt: timestamp('rotated_at', { withTimezone: true }),
+  /** When the account was first set up in the database: the panel shows it from then on. */
+  readyAt: timestamp('ready_at', { withTimezone: true }),
+});
+
 export const customDeploymentImageCredentials = pgTable('custom_deployment_image_credentials', {
   id: varchar('id', { length: 36 }).primaryKey(),
   deploymentId: varchar('deployment_id', { length: 36 })

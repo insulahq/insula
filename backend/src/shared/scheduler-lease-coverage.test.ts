@@ -52,6 +52,7 @@ const LEASED: ReadonlyArray<{ file: string; job: string; timers?: number }> = [
   { file: 'modules/storage/image-pressure-watcher.ts', job: 'image-pressure-watcher' },
   { file: 'modules/storage/image-prune-scheduler.ts', job: 'daily-image-prune' },
   { file: 'modules/crowdsec-autoban/scheduler.ts', job: 'crowdsec-autoban' },
+  { file: 'modules/deployments/db-admin-reconciler.ts', job: 'database-admin-access' },
   { file: 'modules/domains/verification-cron.ts', job: 'domain-verification' },
   { file: 'modules/dns-apex-drift/scheduler.ts', job: 'dns-route-drift-scan' },
   // Pollers of the Kubernetes API. Not unsafe to run three times, but three

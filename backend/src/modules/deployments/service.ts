@@ -65,6 +65,7 @@ import type { Database } from '../../db/index.js';
 import type { CreateDeploymentInput, UpdateDeploymentInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
 import { assertApplicationRoom, refuseDeleted, withApplicationSlot } from './application-limit.js';
+import { isPlatformOnlyConfigKey, withoutPlatformOnlyConfig, withStoredPlatformOnlyConfig } from './platform-only-config.js';
 
 // ─── Error Helpers ──────────────────────────────────────────────────────────
 
@@ -106,6 +107,27 @@ export function generateSecurePassword(length: number): string {
  * form is gone. The Zod schema cannot catch this: it only sees the tenant's
  * own list, never the manifest's volumes.
  */
+/**
+ * A standalone database instance takes no extra mounts. A folder of the
+ * tenant's mounted over /usr/local/bin or /etc/mysql/conf.d would run the
+ * tenant's code as the container's root — the platform's administrator login
+ * there (db-admin-access.ts). Refused on create and edit, and left out of
+ * every render (stored ones from before are cleared by the reconciler).
+ */
+function refuseExtraMountsOnDatabase(
+  entryType: string | null | undefined,
+  extraMounts: ReadonlyArray<unknown> | null | undefined,
+): void {
+  if (entryType !== 'database' || !extraMounts || extraMounts.length === 0) return;
+  throw new ApiError('EXTRA_MOUNTS_NOT_ALLOWED', 'A database instance cannot mount extra folders', 400, { field: 'extra_mounts' },
+    'Import files through the SQL Manager instead; it reads them from your file storage.');
+}
+
+/** The extra mounts a render applies: none for a standalone database instance. */
+export function renderedExtraMounts<T>(entryType: string | null | undefined, extraMounts: T[] | null | undefined): T[] | undefined {
+  return entryType === 'database' ? undefined : (extraMounts ?? undefined);
+}
+
 function assertExtraMountsDoNotCollide(
   extraMounts: ReadonlyArray<{ folder: string; mount_path: string }> | null | undefined,
   volumes: ReadonlyArray<{ container_path: string }>,
@@ -489,6 +511,7 @@ export async function createDeployment(
   // message ("enable Allow Custom Host Ports on … in System Settings").
   // Returns the firewall block (or null) so we can pass it through to
   // deployCatalogEntry without re-parsing the manifest.
+  refuseExtraMountsOnDatabase(entry.type, input.extra_mounts);
   assertExtraMountsDoNotCollide(input.extra_mounts, volumes);
 
   const firewall = await enforceHostPortGate(db, entry, components, tenant.nodeName);
@@ -549,14 +572,30 @@ export async function createDeployment(
   }
 
   // Merge: fixed env vars + user config + generated secrets (generated cannot be overridden by user)
+  // A new MariaDB/MySQL instance initialises root on localhost only, so a
+  // root@'%' never exists to be reached over the network (db-admin-access.ts
+  // then makes root@localhost socket-only). The images read it on first start
+  // only; it rides along with this first deploy's env, and a later render
+  // without it changes nothing.
+  // Standalone instances only: an app stack's app may connect as root over
+  // the network, and its root stays as the app expects.
+  const standaloneDatabase = entry.type === 'database';
+  const dbEngineOfEntry = (components as Array<{ database?: string }>).find((c) => typeof c.database === 'string')?.database;
+  const rootHostEnv: Record<string, string> = !standaloneDatabase ? {}
+    : dbEngineOfEntry === 'mariadb' ? { MARIADB_ROOT_HOST: 'localhost' }
+    : dbEngineOfEntry === 'mysql' ? { MYSQL_ROOT_HOST: 'localhost' } : {};
+
+  // The tenant's input never sets a standalone instance's administrator login
+  // or the images' root switches (platform-only-config.ts).
   const finalConfiguration: Record<string, unknown> = {
     ...fixedEnvVars,
-    ...(input.configuration ?? {}),
+    ...rootHostEnv,
+    ...(standaloneDatabase ? withoutPlatformOnlyConfig(input.configuration ?? {}) : (input.configuration ?? {})),
     ...generatedSecrets,
   };
 
   // Build envVars object for the deployer — merged fixed so deployer treats them uniformly
-  const finalEnvVars = { fixed: fixedEnvVars };
+  const finalEnvVars = { fixed: { ...fixedEnvVars, ...rootHostEnv } };
 
   const id = crypto.randomUUID();
   const storagePath = input.storage_mode === 'custom' && input.storage_path
@@ -892,10 +931,28 @@ export async function updateDeployment(
   if (input.replica_count !== undefined) updateValues.replicaCount = input.replica_count;
   if (input.cpu_request !== undefined) updateValues.cpuRequest = input.cpu_request;
   if (input.memory_request !== undefined) updateValues.memoryRequest = input.memory_request;
-  if (input.configuration !== undefined) updateValues.configuration = input.configuration;
+  // The panel never sees the platform's keys, so a save keeps the stored
+  // values — and a save that sends its own cannot change them.
+  const storedConfiguration = parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
+  const [entryOfDeployment] = input.configuration !== undefined && deployment.catalogEntryId
+    ? await db.select({ type: catalogEntries.type }).from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId))
+    : [];
+  const nextConfiguration = input.configuration === undefined ? undefined
+    // No catalog entry (a custom container): not a database instance. An entry
+    // that is gone: assume one, keeping the platform's keys.
+    : (deployment.catalogEntryId ? (entryOfDeployment?.type ?? 'database') : 'custom') === 'database'
+      ? withStoredPlatformOnlyConfig(storedConfiguration, input.configuration)
+    : input.configuration;
+  if (nextConfiguration !== undefined) updateValues.configuration = nextConfiguration;
   // Replaces the whole list. A volumeMount change is a pod-template change,
   // so the redeploy below is what actually applies it.
-  if (input.extra_mounts !== undefined) updateValues.extraMounts = input.extra_mounts;
+  if (input.extra_mounts !== undefined) {
+    if (input.extra_mounts && input.extra_mounts.length > 0 && deployment.catalogEntryId) {
+      const [e] = await db.select({ type: catalogEntries.type }).from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId));
+      refuseExtraMountsOnDatabase(e?.type, input.extra_mounts);
+    }
+    updateValues.extraMounts = input.extra_mounts;
+  }
   // RE-POINT, not move. storagePath is the `subPath` of the tenant-storage
   // volumeMount, so writing it here and redeploying below is the whole change:
   // the pod comes back reading the new folder and the old one keeps its
@@ -946,9 +1003,8 @@ export async function updateDeployment(
   //
   // Reported against an Apache/PHP deployment: PHP_DISPLAY_ERRORS and
   // APACHE_DOCUMENT_ROOT saved, pod restarted, neither took effect.
-  const configurationChanged = input.configuration !== undefined
-    && canonicalJson(input.configuration)
-      !== canonicalJson(parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {});
+  const configurationChanged = nextConfiguration !== undefined
+    && canonicalJson(nextConfiguration) !== canonicalJson(storedConfiguration);
 
   // Replica count is rendered from the row by redeployWithCurrentConfig as
   // well, and had the identical problem — persisted, never applied.
@@ -1579,7 +1635,7 @@ export async function updateDeploymentResources(
         configuration: config,
         envVars: { fixed: resolved.fixedEnvVars },
         configurableEnvKeys: resolved.configurableEnvKeys,
-        extraMounts: deployment.extraMounts ?? undefined,
+        extraMounts: renderedExtraMounts(entry.type, deployment.extraMounts),
         // Multi-host mounts, resolved from the flag + the entry's capability.
         // Threaded at EVERY deploy call site: a redeploy that omitted them
         // would rewrite the pod template without the include directory, and
@@ -1896,7 +1952,7 @@ export async function redeployWithCurrentConfig(
     configurableEnvKeys: resolved.configurableEnvKeys,
     // Carried through every redeploy — dropping them here would silently
     // unmount a tenant's folders on the next credential rotation.
-    extraMounts: deployment.extraMounts ?? undefined,
+    extraMounts: renderedExtraMounts(entry.type, deployment.extraMounts),
     // Multi-host mounts — same reason as extraMounts directly above. Dropping
     // them on a rotation would unmount the storage root and the include
     // directory, and every site would fall back to the stock docroot.
@@ -2044,9 +2100,12 @@ export async function getDeploymentCredentials(
 
   const config = parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
 
-  // Build credentials from generated keys only
+  // Build credentials from generated keys only — never the platform's own
+  // database administrator login (platform-only-config.ts).
   const credentials: Record<string, string> = {};
+  const platformOnly = (key: string): boolean => entry.type === 'database' && isPlatformOnlyConfigKey(key);
   for (const key of generatedKeys) {
+    if (platformOnly(key)) continue;
     if (config[key] !== undefined && config[key] !== null) {
       credentials[key] = String(config[key]);
     }
@@ -2054,7 +2113,7 @@ export async function getDeploymentCredentials(
 
   const connectionInfo = buildConnectionInfo(deployment, entry, provides);
 
-  return { credentials, connectionInfo, generatedKeys };
+  return { credentials, connectionInfo, generatedKeys: generatedKeys.filter((k) => !platformOnly(k)) };
 }
 
 /**

@@ -44,6 +44,101 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **BREAKING — tenant databases: root belongs to the platform, and tenants get their own
+  administrator account.** The platform managed every catalog database (MariaDB, MySQL,
+  PostgreSQL, MongoDB) as root, with the root password it generated at create time. The
+  tenant had the same password: the panel showed it, every deployment read returned it, a
+  configuration save could overwrite it, the SQL console ran as root, and "All databases" in
+  Database Users granted `ALL ON *.*`, which includes the right to change root. Anything that
+  changed root's password left the platform locked out of the SQL Manager, the nightly dumps
+  and restores, without anyone noticing. A restore of an older data directory did the same.
+  Now the platform's login is no longer a password:
+  - **MariaDB:** `root@localhost` logs in by socket only (`unix_socket`), and `root@'%'` and
+    every other root account are removed.
+  - **MySQL:** the same with `auth_socket`.
+  - **PostgreSQL:** a standalone instance's superuser has no password; the platform uses the
+    image's local trust, under the superuser name the instance was created with (the SQL
+    Manager used to assume `postgres`).
+  - **MongoDB:** `root` may only log in from inside the database pod.
+
+  Only the platform can run a command inside the pod, so nothing is left to go stale. This
+  applies to standalone database instances; a database inside an app stack keeps its root
+  password, which its app may use, and is only checked. Each standalone instance gets a
+  `dbadmin` account instead, shown in the panel (to tenant administrators) with a "New
+  password" action. On MariaDB/MySQL it has full rights on every tenant database, can create
+  databases named `db_…` in SQL, and can see the process list. On PostgreSQL it is a
+  non-superuser that owns the tenant databases the superuser owned and can create new ones.
+  On MongoDB it reads and writes every database. It cannot change root or create accounts;
+  Database Users in the panel does that, and refuses to create, re-password or drop root, the
+  PostgreSQL superuser, MongoDB's root or `dbadmin`, and to grant the server's own databases
+  (`mysql`, `postgres`, `admin`, …). "All databases" in Database Users now means ALL on every
+  tenant database and on new `db_…` ones, granted directly (MariaDB and MySQL 8.0 do not
+  apply a definer's roles inside its views and triggers), not `ALL ON *.*`.
+
+  What a tenant ran in the platform's name now runs as `dbadmin`, in a client that cannot
+  leave SQL: the SQL console, table browsing and row counts (reading a view runs the tenant's
+  code in it), and imports. The client runs as an unprivileged user with no environment, and
+  each engine's own commands are switched off (`--binary-mode` for MariaDB/MySQL; psql
+  refuses every backslash command of an imported file with `\restrict`, which needs psql
+  from 18.0, 17.6, 16.10, 15.14, 14.19 or 13.22 — an older instance refuses plain-SQL imports
+  until it is updated, custom-format dumps still work). `DEFINER` clauses and replication
+  `SET`s from other servers' dumps are rewritten on the way in. Restores of a standalone
+  instance's databases from a backup run as `dbadmin` too; an app stack's database uses the
+  stack's own root login, which the tenant holds. The container terminal and cron jobs no
+  longer run in a database container for tenants (the terminal still does for platform
+  staff), and a database instance takes no extra mounts: a tenant folder mounted over
+  `/usr/local/bin` would be the tenant's code running as the container's root. **An instance
+  that has extra mounts loses them and restarts once.** MongoDB passwords no longer appear on
+  any command line in the pod.
+
+  A tenant held root until now, and root can leave a way back in. On the first check, and
+  daily after, the platform closes what it finds:
+  - **MariaDB/MySQL:** accounts with global privileges, a grant reaching the system schema, a
+    PROXY grant, or (MySQL) root granted as a role keep the same privileges on each tenant
+    database and lose the rest. Routines, triggers (in their order), views and events that
+    ran as root run as `dbadmin` — the old SQL Manager imported every dump as root, so most of
+    these are a dump's own views and triggers; one that cannot be moved, or that sits in the
+    server's own schema, is removed (its definition goes to the platform log). Anonymous
+    accounts, and other accounts by the tenant administrator's name, are removed. On MySQL,
+    the settings root persisted and server accounts in `mandatory_roles` are removed.
+  - **PostgreSQL:** other superusers, CREATEROLE/REPLICATION/BYPASSRLS roles and memberships
+    in the superuser or in `pg_execute_server_program` and the file-access roles are taken
+    back. Event triggers are disabled, write grants on the catalogs and on server-only catalog
+    functions revoked, functions in untrusted languages made outside an extension and
+    `file_fdw` tables locked to the platform, and what the superuser owned in tenant schemas
+    handed to the database's owner. Shell commands in the configuration (`archive_command`,
+    …) are cleared and `pg_hba.conf` rules trusting the network disabled. The platform's own
+    sessions pin `search_path` and, from 17, turn event triggers off.
+  - **MongoDB:** users holding root-like roles keep read/write on every database and lose the
+    rest. Root's password is replaced, once, by one only the platform knows.
+
+  A reconciler converts existing instances after the upgrade and checks every instance every
+  ten minutes (a full check hourly; the ticks between only prove the logins still work), four
+  instances at a time, each within a time limit. It proves the socket login works before it
+  removes a password, and leaves the password where it cannot. The panel shows `dbadmin` once
+  the first pass over the instance has finished. If the platform has lost its login to an
+  instance for five minutes, or the database has not answered for an hour, admins get one
+  alert ("Platform lost its login to a tenant database", saying which) and later a notice when
+  it is back; the panel tells the tenant too. "Repair database access" restores the login by
+  restarting the database once — on PostgreSQL ahead of whatever `pg_hba.conf` says — and is
+  offered, and accepted, only for an instance whose login the platform lost. The reset container that runs after a restore now restores this login
+  instead of a password. The Plesk migration imports as `dbadmin`. **For tenants:** a tool or
+  app connecting as root with the old password stops working; use `dbadmin` or a Database
+  Users account. A standalone instance's root keys no longer appear in any deployment
+  response or credentials view. The credentials route is refused to tenant-audience agents,
+  like every route that hands out a password.
+
+  Tested locally against MariaDB 10.11 and 12.3, MySQL 8.0, 8.4 and 9.7, PostgreSQL 13, 16.9
+  and 18 (default and custom superuser) and MongoDB 7 and 8, each seeded with the leftovers
+  above:
+  - the conversion from an image's default accounts, run twice;
+  - a stored password that drifted before and after conversion;
+  - the reset container on a restored data directory with a password `root@'%'` and
+    `root@127.0.0.1`, run twice;
+  - what `dbadmin`, and each leftover account, can and cannot do afterwards;
+  - that the tenant's routines, triggers, views, aggregates and data keep working;
+  - socket logins accepting any supplied password, so the SQL Manager's commands work before
+    and after.
 - **Backups no longer claim the raw database files are a safe fallback.** The bundle summary,
   its remediation text and the database recovery runbook said a database whose dump failed was
   still covered by a "crash-consistent" copy of its data files. It is not: the files snapshot

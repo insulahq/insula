@@ -32,7 +32,7 @@ function routeExec(route: (sql: string) => Reply): string[] {
 
 const ctx = {
   kubeconfigPath: undefined, namespace: 'ns', podName: 'pod', containerName: 'mariadb',
-  engine: 'mariadb' as const, rootPassword: 'r00tSecret',
+  engine: 'mariadb' as const, rootPassword: 'r00tSecret', rootUsername: 'root',
 };
 
 describe('setUserPassword (MariaDB)', () => {

@@ -8,6 +8,7 @@
  * and import/export for database manager UI.
  */
 
+import { randomBytes } from 'node:crypto';
 import { Exec, KubeConfig } from '@kubernetes/client-node';
 import { Readable, Writable } from 'node:stream';
 import { ApiError } from '../../shared/errors.js';
@@ -21,6 +22,9 @@ import {
   validateExistingName,
 } from '../../shared/sql-identifiers.js';
 import { dbEngineApiError } from './db-errors.js';
+import { RESERVED_ACCOUNT_NAMES, SELF_SERVICE_DB_PREFIX } from './db-account-names.js';
+import { PG_SAFE_ENV_SH, PG_SAFE_SESSION_SH } from './pg-session.js';
+import { MYSQL_TENANT_IMPORT_SED, rewriteMysqlDumpForTenant } from './import-rewrite.js';
 import {
   affectedRowsField,
   affectedRowsMarker,
@@ -63,11 +67,60 @@ function validateIdentifier(value: string, label: string): void {
   }
 }
 
+/**
+ * The engines' own databases. Creating one in the panel is either a no-op or
+ * worse: the new database is granted to the "all databases" role, and ALL on
+ * `mysql` is root (rewrite mysql.proc or mysql.global_priv, and the next flush
+ * or call runs as anyone).
+ */
+const RESERVED_DATABASES: Readonly<Record<string, readonly string[]>> = {
+  mariadb: ['mysql', 'sys', 'performance_schema', 'information_schema'],
+  mysql: ['mysql', 'sys', 'performance_schema', 'information_schema'],
+  postgresql: ['postgres', 'template0', 'template1'],
+  mongodb: ['admin', 'local', 'config'],
+};
+
+/**
+ * Accounts Database Users never creates, re-passwords or drops: root (by any
+ * other name: the PostgreSQL superuser, MongoDB's root user), the server's
+ * own, and the tenant administrator — whose password the platform keeps.
+ * Setting root's password from the panel would hand root back to the tenant;
+ * dropping it, lock the platform out.
+ */
+export function refuseReservedAccount(ctx: Pick<DbManagerContext, 'rootUsername'>, username: string): void {
+  const n = username.toLowerCase();
+  const reserved = ['root', 'postgres', 'healthcheck', ctx.rootUsername.toLowerCase(), ...RESERVED_ACCOUNT_NAMES.map((r) => r.toLowerCase())];
+  if (reserved.includes(n) || /^dbadmin(_|$)/.test(n)) {
+    throw new ApiError('RESERVED_ACCOUNT_NAME', `"${username}" is an account the platform manages and cannot be changed here`, 409, { username });
+  }
+}
+
+export function refuseReservedDatabaseName(engine: string, name: string): void {
+  if ((RESERVED_DATABASES[engine] ?? []).includes(name.toLowerCase())) {
+    throw new ApiError('RESERVED_DATABASE_NAME', `"${name}" is the database server's own database and cannot be created or granted`, 400, { name });
+  }
+}
+
 // ─── Shell / Mongo Escaping ──────────────────────────────────────────────────
 
 /** Escape a string for safe interpolation inside single-quoted shell arguments. */
 function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+/** The PostgreSQL superuser, as the shell inside the database container names it. */
+const PG_SUPERUSER_SH = '"${POSTGRES_USER:-postgres}"';
+
+/**
+ * psql / pg_dump / pg_restore as the instance's superuser over the local
+ * socket (the image's trust). The superuser is whatever the image was
+ * initialised with — POSTGRES_USER, which an app stack sets to its own user
+ * and a tenant may have chosen — read from the container's own environment,
+ * so it cannot disagree with the instance. `-U postgres` failed on both.
+ */
+function pgSuperuserCommand(bin: 'psql' | 'pg_dump' | 'pg_restore', args: readonly string[]): string[] {
+  // The pinned session (pg-session.ts) wraps the same exec.
+  return ['sh', '-c', PG_SAFE_SESSION_SH, 'sh', 'sh', '-c', `exec ${bin} -U ${PG_SUPERUSER_SH} "$@"`, bin, ...args];
 }
 
 /**
@@ -284,6 +337,22 @@ async function execInPodWithStdin(
 
 // ─── Find Pod ─────────────────────────────────────────────────────────────────
 
+/**
+ * Run one command in a database pod and return its output, for modules that
+ * manage the database's own accounts (db-admin-access.ts, tenant-admin.ts).
+ * A failed command rejects with a DbExecError carrying the redacted message.
+ */
+export async function execInDbPod(
+  ctx: Pick<DbManagerContext, 'kubeconfigPath' | 'namespace' | 'podName' | 'containerName'>,
+  command: string[],
+  /** Written to the command's stdin, then closed — where a password goes instead of argv. */
+  stdin?: string,
+): Promise<{ readonly stdout: string; readonly stderr: string }> {
+  return stdin === undefined
+    ? execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, command)
+    : execInPodWithStdin(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, command, stdin);
+}
+
 async function findPodName(
   k8s: K8sClients,
   namespace: string,
@@ -341,6 +410,66 @@ export const ENGINE_CONFIG: Record<Engine, {
   postgresql: { rootPasswordEnv: 'POSTGRES_PASSWORD', dataRoot: '/var/lib/postgresql', port: 5432 },
   mongodb: { rootPasswordEnv: 'MONGO_INITDB_ROOT_PASSWORD', rootUsernameEnv: 'MONGO_INITDB_ROOT_USERNAME', dataRoot: '/data/db', port: 27017 },
 };
+
+/** An account other than root to run a command as: the tenant's administrator (tenant-admin.ts). */
+export interface DbLogin {
+  readonly username: string;
+  readonly password: string;
+}
+
+/**
+ * A tenant's SQL runs in a client inside the database pod, and the clients
+ * have commands of their own: `system`/`\\!` (MariaDB/MySQL), `\\!` and
+ * `\\copy … program` (psql), `require('child_process')` (mongosh). A shell
+ * there is the container's OS root — the platform's administrator login
+ * (db-admin-access.ts). So a tenant-run client starts as `nobody` with an
+ * empty environment (no root password in env, /proc/1/environ unreadable),
+ * and each engine's client commands are switched off besides.
+ */
+const UNPRIVILEGED = ['env', '-i', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'HOME=/tmp', 'gosu', 'nobody'];
+
+/** The prefix for a client run on a tenant's behalf (`login` set), none for the platform's own. */
+function asTenant(login?: DbLogin): string[] {
+  return login ? UNPRIVILEGED : [];
+}
+
+/**
+ * A tenant's plain-SQL file for psql. psql runs every backslash line it reads
+ * (`\\! sh`, `\\copy … program`, `\\o |cmd`), and the pod's shell — even as
+ * `nobody` — reaches the superuser by the image's local trust. psql's
+ * restricted mode refuses all of them until `\\unrestrict <key>`, and the
+ * key is fresh for each import, so a file cannot carry it. COPY data is not
+ * read as commands either way. A dump's own `\\restrict` pair (pg_dump ≥
+ * 17.6/16.10) is dropped: it would only be refused inside ours.
+ */
+export const PSQL_RESTRICT_LINE_SED = '/^\\\\(un)?restrict[[:space:]]+[[:alnum:]]+[[:space:]]*$/d';
+const PSQL_RESTRICT_LINE = /^\\(?:un)?restrict[ \t]+[A-Za-z0-9]+[ \t\r]*$/gm;
+/** stderr marker: this pod's psql predates restricted mode (before 18.0, 17.6, 16.10, 15.14, 14.19, 13.22). */
+export const PSQL_TOO_OLD = 'INSULA_PSQL_WITHOUT_RESTRICT';
+export const PSQL_TOO_OLD_MESSAGE =
+  'This PostgreSQL server\'s psql is too old to import a plain SQL file safely (it cannot refuse the file\'s backslash commands). Update the instance to the latest minor release, or import a custom-format dump (pg_dump -Fc).';
+
+export function newPsqlRestrictKey(): string {
+  return randomBytes(16).toString('hex');
+}
+
+export function restrictedPsqlInput(sql: string, key: string): string {
+  return `\\restrict ${key}\n${sql.replace(PSQL_RESTRICT_LINE, '')}`;
+}
+
+/** `sh -c` lines: refuse (exit 3, stderr PSQL_TOO_OLD) unless psql knows `\\restrict`. `$1` user, `$2` database. */
+const PSQL_RESTRICT_PROBE =
+  `psql -X -U "$1" -d "$2" -c '\\restrict probe' </dev/null >/dev/null 2>&1 || { echo '${PSQL_TOO_OLD}' >&2; exit 3; }`;
+const UNPRIVILEGED_SH = UNPRIVILEGED.map(shellEscape).join(' ');
+
+/** MariaDB/MySQL client login: `login` over TCP inside the pod, or root over the socket. */
+function mysqlAuthArgs(bin: string, rootPassword: string, login?: DbLogin): string[] {
+  return login
+    // --binary-mode: no client commands (system, \\!, source, pager, tee) —
+    // only SQL, DELIMITER and charset reach the server.
+    ? [`-u${login.username}`, `-p${login.password}`, '-h127.0.0.1', '--protocol=TCP', '--binary-mode', '--local-infile=0', ...(bin === 'mysql' ? ['--get-server-public-key'] : [])]
+    : ['-u', 'root', `-p${rootPassword}`];
+}
 
 export interface DbManagerContext {
   readonly kubeconfigPath: string | undefined;
@@ -475,10 +604,52 @@ export function mysqlCreateDatabaseSql(dbName: string): string {
     + `CHARACTER SET utf8mb4 COLLATE ${APP_COMPATIBLE_MYSQL_COLLATION}`;
 }
 
+/** A database name in a GRANT, where `_` and `%` are wildcards: matched literally. */
+function mysqlGrantDbName(dbName: string): string {
+  return quoteMysqlIdentifier(dbName.replace(/\\/g, '\\\\').replace(/_/g, '\\_').replace(/%/g, '\\%'));
+}
+
+/** The GRANT pattern every "all databases" account holds (mysql-hardening.ts PREFIX_PATTERN). */
+const MYSQL_PREFIX_PATTERN = `${SELF_SERVICE_DB_PREFIX.replace(/_/g, '\\_')}%`;
+
+/** The "all databases" accounts: those holding the prefix grant. `'user'@'host'` ready for a GRANT. */
+async function mysqlAllDatabasesAccounts(
+  kp: string | undefined, ns: string, pod: string, cn: string, pw: string,
+): Promise<string[]> {
+  const out = await mysqlExec(kp, ns, pod, cn, pw,
+    `SELECT HEX(User), HEX(Host) FROM mysql.db WHERE Db = '${MYSQL_PREFIX_PATTERN.replace(/\\/g, '\\\\')}'`);
+  return out.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+    const [u, h] = l.split('\t').map((c) => Buffer.from(c, 'hex').toString('utf8'));
+    return h === '' ? quoteMysqlIdentifier(u) : `${mysqlLiteral(u)}@${mysqlLiteral(h)}`;
+  });
+}
+
+/** A MariaDB/MySQL string literal. */
+function mysqlLiteral(s: string): string {
+  return `'${s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+}
+
+/**
+ * ALL on the self-service prefix and on each given database — what an "all
+ * databases" account holds. Direct grants, not a role (mysql-hardening.ts
+ * allDatabasesGrants says why).
+ */
+function mysqlAllDatabasesGrantSql(account: string, dbNames: readonly string[]): string {
+  return [
+    `GRANT ALL PRIVILEGES ON ${quoteMysqlIdentifier(MYSQL_PREFIX_PATTERN)}.* TO ${account}`,
+    ...dbNames.map((d) => `GRANT ALL PRIVILEGES ON ${mysqlGrantDbName(d)}.* TO ${account}`),
+  ].join('; ');
+}
+
 async function mysqlCreateDatabase(
   kp: string | undefined, ns: string, pod: string, cn: string, pw: string, dbName: string,
 ): Promise<void> {
   await mysqlExec(kp, ns, pod, cn, pw, mysqlCreateDatabaseSql(dbName));
+  // Every "all databases" account (and the tenant's administrator) reaches it.
+  const accounts = await mysqlAllDatabasesAccounts(kp, ns, pod, cn, pw);
+  if (accounts.length > 0) {
+    await mysqlExec(kp, ns, pod, cn, pw, accounts.map((a) => `GRANT ALL PRIVILEGES ON ${mysqlGrantDbName(dbName)}.* TO ${a}`).join('; '));
+  }
 }
 
 async function mysqlDropDatabase(
@@ -492,6 +663,7 @@ async function mysqlListUsers(
 ): Promise<readonly DbUser[]> {
   const systemUsers = new Set([
     'root', 'mariadb.sys', 'mysql.sys', 'mysql.infoschema', 'mysql.session', 'healthcheck',
+    ...RESERVED_ACCOUNT_NAMES,
   ]);
   const out = await mysqlExec(
     kp, ns, pod, cn, pw,
@@ -561,21 +733,19 @@ async function mysqlCreateUser(
   if (dbName) {
     await mysqlExec(
       kp, ns, pod, cn, pw,
-      `GRANT ALL PRIVILEGES ON ${quoteMysqlIdentifier(dbName)}.* TO '${username}'@'%'`,
+      // Matched literally: as a pattern, `shop_db` would also grant `shopXdb`.
+      `GRANT ALL PRIVILEGES ON ${mysqlGrantDbName(dbName)}.* TO '${username}'@'%'`,
     );
   } else {
-    // No database chosen = the panel's "All databases" option. It used to fall
-    // through here granting NOTHING, leaving `GRANT USAGE ON *.*` — which means
-    // no privileges at all — so the user could authenticate and then be denied
-    // on every database. An option labelled "All databases" that grants access
-    // to none of them is worse than no option.
-    //
-    // The MariaDB instance belongs to this tenant alone, so *.* is scoped to
-    // their own server. GRANT OPTION is deliberately NOT included.
-    await mysqlExec(
-      kp, ns, pod, cn, pw,
-      `GRANT ALL PRIVILEGES ON *.* TO '${username}'@'%'`,
-    );
+    // No database chosen = the panel's "All databases" option: ALL on every
+    // tenant database and on new `db_…` ones, kept in step by the platform
+    // (mysql-hardening.ts ensureAllDatabasesAccounts). Not `ALL ON *.*`: that
+    // includes CREATE USER and write access to the system schema, so such a
+    // user could change root itself.
+    const dbs = (await mysqlExec(kp, ns, pod, cn, pw, 'SELECT HEX(SCHEMA_NAME) FROM information_schema.SCHEMATA'))
+      .split('\n').map((l) => Buffer.from(l.trim(), 'hex').toString('utf8'))
+      .filter((d) => d && !['information_schema', 'mysql', 'performance_schema', 'sys'].includes(d.toLowerCase()));
+    await mysqlExec(kp, ns, pod, cn, pw, mysqlAllDatabasesGrantSql(`'${username}'@'%'`, dbs));
   }
   await mysqlExec(kp, ns, pod, cn, pw, 'FLUSH PRIVILEGES');
 }
@@ -633,18 +803,22 @@ async function mysqlExecWithHeaders(
   containerName: string,
   rootPassword: string,
   sql: string,
+  login?: DbLogin,
 ): Promise<string> {
+  // As root over the socket, or as `login` over TCP inside the pod — the way
+  // the tenant's own tools reach it, with that account's privileges only.
+  const auth = (bin: string): string[] => mysqlAuthArgs(bin, rootPassword, login);
   let result: { stdout: string; stderr: string };
   try {
     result = await execInPod(
       kubeconfigPath, namespace, podName, containerName,
-      ['mariadb', '-u', 'root', `-p${rootPassword}`, '-e', sql, '--batch'],
+      [...asTenant(login), 'mariadb', ...auth('mariadb'), '-e', sql, '--batch'],
     );
   } catch (err) {
     if (!isBinaryNotFoundError(err)) throw err;
     result = await execInPod(
       kubeconfigPath, namespace, podName, containerName,
-      ['mysql', '-u', 'root', `-p${rootPassword}`, '-e', sql, '--batch'],
+      [...asTenant(login), 'mysql', ...auth('mysql'), '-e', sql, '--batch'],
     );
   }
   const { stdout, stderr } = result;
@@ -688,7 +862,7 @@ async function pgExec(
     namespace,
     podName,
     containerName,
-    ['psql', '-U', 'postgres', '-t', '-A', '-c', sql],
+    pgSuperuserCommand('psql', ['-t', '-A', '-c', sql]),
   );
   if (stderr && stderr.includes('ERROR')) {
     throw dbEngineApiError(redactDbSecrets(stderr));
@@ -729,7 +903,8 @@ async function pgListUsers(
 ): Promise<readonly DbUser[]> {
   const out = await pgExec(
     kp, ns, pod, cn,
-    "SELECT usename FROM pg_user WHERE usename NOT IN ('postgres')",
+    // Not the superuser (whatever its name) and not the platform's own accounts.
+    `SELECT usename FROM pg_user WHERE NOT usesuper AND usename NOT IN (${['postgres', ...RESERVED_ACCOUNT_NAMES].map(quotePgStringLiteral).join(', ')})`, // allow-array-binding: quoted literals joined into SQL text for psql, not a drizzle bind
   );
   const users = out
     .split('\n')
@@ -802,7 +977,8 @@ async function pgCreateUser(
     // pretending otherwise.
     const dbs = await pgExec(
       kp, ns, pod, cn,
-      'SELECT datname FROM pg_database WHERE datistemplate = false',
+      // The server's own `postgres` is no tenant database (refuseReservedDatabaseName).
+      "SELECT datname FROM pg_database WHERE datistemplate = false AND datname <> 'postgres'",
     );
     for (const raw of dbs.split('\n')) {
       const name = raw.trim();
@@ -849,15 +1025,22 @@ async function pgExecCsv(
   database: string,
   sql: string,
   rowCountMarker?: string,
+  login?: DbLogin,
 ): Promise<string> {
-  const rowCount = rowCountMarker ? ['-q', '-c', sql, '-c', psqlRowCountCommand(rowCountMarker)] : ['-c', sql];
+  // A `-c` string that starts with a backslash is a psql command (`\\! id`
+  // runs a shell); with a leading newline psql sends it all to the server as
+  // SQL. A tenant's SQL is always sent that way.
+  const query = login ? `\n${sql}` : sql;
+  const rowCount = rowCountMarker ? ['-q', '-c', query, '-c', psqlRowCountCommand(rowCountMarker)] : ['-c', query];
+  // A bare `-d x=y` is read as a connection string; see pgConnInfoDbName.
+  const args = ['-X', '-d', pgConnInfoDbName(database), ...rowCount, '--csv'];
   const { stdout, stderr } = await execInPod(
     kubeconfigPath,
     namespace,
     podName,
     containerName,
-    // A bare `-d x=y` is read as a connection string; see pgConnInfoDbName.
-    ['psql', '-U', 'postgres', '-d', pgConnInfoDbName(database), ...rowCount, '--csv'],
+    // `login` by the image's local trust: no password to send or to drift.
+    login ? [...asTenant(login), 'psql', '-U', login.username, ...args] : pgSuperuserCommand('psql', args),
   );
   if (stderr && stderr.includes('ERROR')) {
     throw dbEngineApiError(redactDbSecrets(stderr));
@@ -939,14 +1122,18 @@ async function mongoExec(
   rootPassword: string,
   command: string,
   rootUsername = 'root',
+  /** Run as this login (the tenant's administrator), unprivileged in the pod. */
+  tenant = false,
 ): Promise<string> {
+  // `-p` with no value reads the password from stdin: never in argv, where
+  // any process in the pod could read it from /proc/<pid>/cmdline.
   const authArgs = rootPassword
-    ? ['-u', rootUsername, '-p', rootPassword, '--authenticationDatabase', 'admin']
+    ? ['-u', rootUsername, '-p', '--authenticationDatabase', 'admin']
     : [];
-  const { stdout, stderr } = await execInPod(
-    kubeconfigPath, namespace, podName, containerName,
-    ['mongosh', '--quiet', ...authArgs, '--eval', command],
-  );
+  const argv = [...(tenant ? UNPRIVILEGED : []), 'mongosh', '--quiet', '--norc', ...authArgs, '--eval', command];
+  const { stdout, stderr } = rootPassword
+    ? await execInPodWithStdin(kubeconfigPath, namespace, podName, containerName, argv, `${rootPassword}\n`)
+    : await execInPod(kubeconfigPath, namespace, podName, containerName, argv);
   if (stderr && stderr.includes('MongoServerError')) {
     throw dbEngineApiError(redactDbSecrets(stderr));
   }
@@ -1008,9 +1195,12 @@ async function mongoCreateUser(
   kp: string | undefined, ns: string, pod: string, cn: string, pw: string,
   username: string, password: string, database?: string, rootUser = 'root',
 ): Promise<void> {
+  // No database = the panel's "All databases": readWriteAnyDatabase (readWrite
+  // on `admin` alone would reach none of the tenant's data).
   const db = database ?? 'admin';
+  const role = database ? `{role:"readWrite",db:"${mongoEscapeString(db)}"}` : '{role:"readWriteAnyDatabase",db:"admin"}';
   await mongoExec(kp, ns, pod, cn, pw,
-    `db.getSiblingDB("${mongoEscapeString(db)}").createUser({user:"${mongoEscapeString(username)}",pwd:"${mongoEscapeString(password)}",roles:[{role:"readWrite",db:"${mongoEscapeString(db)}"}]})`,
+    `db.getSiblingDB("${mongoEscapeString(db)}").createUser({user:"${mongoEscapeString(username)}",pwd:"${mongoEscapeString(password)}",roles:[${role}]})`,
     rootUser,
   );
 }
@@ -1051,12 +1241,14 @@ async function mongoExecuteQuery(
   database: string,
   query: string,
   startTime: number,
+  login?: DbLogin,
 ): Promise<QueryResult> {
   const out = await mongoExec(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-    ctx.rootPassword,
+    login ? login.password : ctx.rootPassword,
     `db = db.getSiblingDB("${mongoEscapeString(database)}"); EJSON.stringify(${query})`,
-    ctx.rootUsername,
+    login ? login.username : ctx.rootUsername,
+    Boolean(login),
   );
   const elapsed = Date.now() - startTime;
 
@@ -1116,6 +1308,7 @@ async function mongoBrowseCollection(
   database: string,
   collection: string,
   options: BrowseOptions,
+  login?: DbLogin,
 ): Promise<QueryResult> {
   const limit = Math.min(Math.max(options.limit ?? 50, 1), 1000);
   const offset = Math.max(options.offset ?? 0, 0);
@@ -1128,9 +1321,10 @@ async function mongoBrowseCollection(
 
   const out = await mongoExec(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-    ctx.rootPassword,
+    login ? login.password : ctx.rootPassword,
     `EJSON.stringify(db.getSiblingDB("${mongoEscapeString(database)}").getCollection(${JSON.stringify(collection)}).find().sort(${sortExpr}).skip(${offset}).limit(${limit}).toArray())`,
-    ctx.rootUsername,
+    login ? login.username : ctx.rootUsername,
+    Boolean(login),
   );
   const start = Date.now();
 
@@ -1159,12 +1353,14 @@ async function mongoCountDocuments(
   ctx: DbManagerContext,
   database: string,
   collection: string,
+  login?: DbLogin,
 ): Promise<number> {
   const out = await mongoExec(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-    ctx.rootPassword,
+    login ? login.password : ctx.rootPassword,
     `db.getSiblingDB("${mongoEscapeString(database)}").getCollection(${JSON.stringify(collection)}).countDocuments()`,
-    ctx.rootUsername,
+    login ? login.username : ctx.rootUsername,
+    Boolean(login),
   );
   return parseInt(out.trim(), 10) || 0;
 }
@@ -1173,15 +1369,14 @@ async function mongoCountDocuments(
  * Export a MongoDB database using mongodump --archive (outputs to stdout).
  */
 async function mongoExportDatabase(ctx: DbManagerContext, database: string): Promise<string> {
-  const authArgs = ctx.rootPassword
-    ? ['-u', ctx.rootUsername, '-p', ctx.rootPassword, '--authenticationDatabase', 'admin']
-    : [];
+  // No --password: the tool prompts and reads it from stdin, never argv (mongoExec says why).
+  const authArgs = ctx.rootPassword ? ['-u', ctx.rootUsername, '--authenticationDatabase', 'admin'] : [];
   try {
-    const { stdout, stderr } = await execInPod(
-      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+    const argv = ['mongodump', `--db=${database}`, ...authArgs, '--archive=/dev/stdout', '--gzip'];
+    const { stdout, stderr } = ctx.rootPassword
+      ? await execInPodWithStdin(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, argv, `${ctx.rootPassword}\n`)
       // `--db=<name>`: as a separate argument a name starting with `-` reads as an option.
-      ['mongodump', `--db=${database}`, ...authArgs, '--archive=/dev/stdout', '--gzip'],
-    );
+      : await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, argv);
     if (stderr && stderr.includes('error')) {
       throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
     }
@@ -1205,15 +1400,21 @@ async function mongoImportDatabase(
   ctx: DbManagerContext,
   database: string,
   data: string,
+  login?: DbLogin,
 ): Promise<ImportResult> {
-  const authArgs = ctx.rootPassword
-    ? ['-u', ctx.rootUsername, '-p', ctx.rootPassword, '--authenticationDatabase', 'admin']
-    : [];
+  const user = login ? login.username : ctx.rootUsername;
+  const password = login ? login.password : ctx.rootPassword;
   try {
+    // stdin carries the archive, so the password goes in a config file only
+    // root can read — first line of stdin, as a JSON (= YAML) string; never argv.
+    const script = 'umask 077; f=$(mktemp); trap \'rm -f "$f"\' EXIT; IFS= read -r line; '
+      + 'printf \'password: %s\\n\' "$line" > "$f"; mongorestore --config="$f" "$@"';
     const { stderr } = await execInPodWithStdin(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['mongorestore', `--db=${database}`, ...authArgs, '--archive=/dev/stdin', '--gzip'],
-      data,
+      password
+        ? ['sh', '-c', script, 'sh', `--db=${database}`, '-u', user, '--authenticationDatabase', 'admin', '--archive=/dev/stdin', '--gzip']
+        : ['mongorestore', `--db=${database}`, '--archive=/dev/stdin', '--gzip'],
+      password ? `${JSON.stringify(password)}\n${data}` : data,
     );
     if (stderr && stderr.includes('error')) {
       return { success: false, error: stderr };
@@ -1262,8 +1463,13 @@ export async function buildDbContext(
   else if (engine === 'mongodb') {
     rootPassword = String(configuration.MONGO_INITDB_ROOT_PASSWORD ?? '');
     rootUsername = String(configuration.MONGO_INITDB_ROOT_USERNAME ?? 'root');
+  } else if (engine === 'postgresql') {
+    // Local trust inside the container — no password. The superuser is the
+    // one the image was initialised with (POSTGRES_USER, default postgres).
+    rootUsername = typeof configuration.POSTGRES_USER === 'string' && configuration.POSTGRES_USER.trim()
+      ? configuration.POSTGRES_USER.trim()
+      : 'postgres';
   }
-  // PostgreSQL uses peer/trust auth inside container — no password needed
 
   return { kubeconfigPath, namespace, podName, containerName, engine, rootPassword, rootUsername, k8s };
 }
@@ -1287,6 +1493,7 @@ export async function listDatabases(ctx: DbManagerContext): Promise<readonly DbD
 
 export async function createDatabase(ctx: DbManagerContext, name: string): Promise<void> {
   validateIdentifier(name, 'database name');
+  refuseReservedDatabaseName(ctx.engine, name);
   if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
     return mysqlCreateDatabase(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, name,
@@ -1347,8 +1554,12 @@ export async function createUser(
 ): Promise<void> {
   try {
     validateIdentifier(username, 'username');
+    refuseReservedAccount(ctx, username);
     // The grant targets an EXISTING database; only the username is created here.
-    if (database) validateDatabaseName(database);
+    if (database) {
+      validateDatabaseName(database);
+      refuseReservedDatabaseName(ctx.engine, database);
+    }
     if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
       return await mysqlCreateUser(
         ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
@@ -1376,6 +1587,7 @@ export async function createUser(
 export async function dropUser(ctx: DbManagerContext, username: string): Promise<void> {
   try {
     validateIdentifier(username, 'username');
+    refuseReservedAccount(ctx, username);
     if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
       return await mysqlDropUser(
         ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, ctx.rootPassword, username,
@@ -1402,6 +1614,7 @@ export async function setUserPassword(
 ): Promise<void> {
   try {
     validateIdentifier(username, 'username');
+    refuseReservedAccount(ctx, username);
     if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
       return await mysqlSetPassword(
         ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
@@ -1455,6 +1668,12 @@ export async function executeQuery(
   ctx: DbManagerContext,
   database: string,
   query: string,
+  /**
+   * `as`: run the query as this account instead of root — the SQL console
+   * runs a tenant's SQL as the tenant's administrator, so its privileges, not
+   * a regex, decide what it can touch.
+   */
+  opts: { readonly as?: DbLogin } = {},
 ): Promise<QueryResult> {
   validateDatabaseName(database);
   validateQueryLength(query);
@@ -1463,13 +1682,13 @@ export async function executeQuery(
 
   try {
     if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
-      return await mysqlExecuteQuery(ctx, database, query, start);
+      return await mysqlExecuteQuery(ctx, database, query, start, opts.as);
     }
     if (ctx.engine === 'postgresql') {
-      return await pgExecuteQuery(ctx, database, query, start);
+      return await pgExecuteQuery(ctx, database, query, start, opts.as);
     }
     if (ctx.engine === 'mongodb') {
-      return await mongoExecuteQuery(ctx, database, query, start);
+      return await mongoExecuteQuery(ctx, database, query, start, opts.as);
     }
     throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} query execution not supported`, 400);
   } catch (err) {
@@ -1491,12 +1710,13 @@ async function mysqlExecuteQuery(
   database: string,
   query: string,
   startTime: number,
+  login?: DbLogin,
 ): Promise<QueryResult> {
   const marker = affectedRowsMarker();
   const sql = `USE ${quoteMysqlIdentifier(database)}; ${withMysqlRowCount(query, marker)}`;
   const output = await mysqlExecWithHeaders(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-    ctx.rootPassword, sql,
+    ctx.rootPassword, sql, login,
   );
   const elapsed = Date.now() - startTime;
   const counted = splitRowCount(output, marker, '\n');
@@ -1516,11 +1736,12 @@ async function pgExecuteQuery(
   database: string,
   query: string,
   startTime: number,
+  login?: DbLogin,
 ): Promise<QueryResult> {
   const marker = affectedRowsMarker();
   const output = await pgExecCsv(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-    database, query, marker,
+    database, query, marker, login,
   );
   const elapsed = Date.now() - startTime;
   const counted = splitRowCount(output, marker, ' ');
@@ -1799,6 +2020,12 @@ export async function browseTable(
   database: string,
   table: string,
   options: BrowseOptions = {},
+  /**
+   * `as`: the tenant's administrator. Reading a view runs the tenant's code
+   * in it (its functions run as the reader), so a tenant's table is never
+   * read as root.
+   */
+  opts: { readonly as?: DbLogin } = {},
 ): Promise<QueryResult> {
   validateDatabaseName(database);
   validateExistingName(table, 'table');
@@ -1809,7 +2036,7 @@ export async function browseTable(
   const orderDir = options.orderDir === 'desc' ? 'DESC' : 'ASC';
 
   if (ctx.engine === 'mongodb') {
-    return mongoBrowseCollection(ctx, database, table, { limit, offset, orderBy: options.orderBy, orderDir: options.orderDir });
+    return mongoBrowseCollection(ctx, database, table, { limit, offset, orderBy: options.orderBy, orderDir: options.orderDir }, opts.as);
   }
 
   const quote = ctx.engine === 'mariadb' || ctx.engine === 'mysql' ? quoteMysqlIdentifier
@@ -1820,7 +2047,7 @@ export async function browseTable(
   }
 
   const orderClause = options.orderBy ? ` ORDER BY ${quote(options.orderBy)} ${orderDir}` : '';
-  const result = await executeQuery(ctx, database, `SELECT * FROM ${quote(table)}${orderClause} LIMIT ${limit} OFFSET ${offset}`);
+  const result = await executeQuery(ctx, database, `SELECT * FROM ${quote(table)}${orderClause} LIMIT ${limit} OFFSET ${offset}`, opts);
   // executeQuery reports engine errors inline — right for the query tab, which
   // renders them as the result. Browsing has no such surface: an inline error
   // looked like an empty table, so it becomes an error response here.
@@ -1839,30 +2066,22 @@ export async function countRows(
   ctx: DbManagerContext,
   database: string,
   table: string,
+  /** `as`: the tenant's administrator — see browseTable. */
+  opts: { readonly as?: DbLogin } = {},
 ): Promise<number> {
   validateDatabaseName(database);
   validateExistingName(table, 'table');
 
   try {
-    if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
-      const out = await mysqlExec(
-        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-        ctx.rootPassword, `SELECT COUNT(*) FROM ${quoteMysqlIdentifier(database)}.${quoteMysqlIdentifier(table)}`,
-      );
-      return parseInt(out.trim(), 10) || 0;
-    }
-
-    if (ctx.engine === 'postgresql') {
-      const out = await pgExecCsv(
-        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-        database, `SELECT COUNT(*) FROM ${quoteAnsiIdentifier(table)}`,
-      );
-      const { rows } = parsePgCsvOutput(out);
-      return parseInt(rows[0]?.[0] ?? '0', 10) || 0;
+    if (ctx.engine === 'mariadb' || ctx.engine === 'mysql' || ctx.engine === 'postgresql') {
+      const quote = ctx.engine === 'postgresql' ? quoteAnsiIdentifier : quoteMysqlIdentifier;
+      const result = await executeQuery(ctx, database, `SELECT COUNT(*) FROM ${quote(table)}`, opts);
+      if (result.error) throw dbEngineApiError(result.error);
+      return parseInt(String(result.rows[0]?.[0] ?? '0'), 10) || 0;
     }
 
     if (ctx.engine === 'mongodb') {
-      return await mongoCountDocuments(ctx, database, table);
+      return await mongoCountDocuments(ctx, database, table, opts.as);
     }
   } catch (err) {
     throw asDbApiError(err);
@@ -1922,7 +2141,7 @@ async function mysqlExportDatabase(ctx: DbManagerContext, database: string): Pro
 async function pgExportDatabase(ctx: DbManagerContext, database: string): Promise<string> {
   const { stdout, stderr } = await execInPod(
     ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-    ['pg_dump', '-U', 'postgres', `--dbname=${pgConnInfoDbName(database)}`],
+    pgSuperuserCommand('pg_dump', [`--dbname=${pgConnInfoDbName(database)}`]),
   );
   if (stderr && stderr.includes('ERROR')) {
     throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
@@ -1939,6 +2158,8 @@ export async function importSql(
   ctx: DbManagerContext,
   database: string,
   sql: string,
+  /** `as`: import as this account (the tenant's administrator) instead of root — see import-rewrite.ts. */
+  opts: { readonly as?: DbLogin } = {},
 ): Promise<ImportResult> {
   validateDatabaseName(database);
 
@@ -1956,13 +2177,13 @@ export async function importSql(
 
   try {
     if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
-      return await mysqlImportSql(ctx, database, sql);
+      return await mysqlImportSql(ctx, database, opts.as ? rewriteMysqlDumpForTenant(sql) : sql, opts.as);
     }
     if (ctx.engine === 'postgresql') {
-      return await pgImportSql(ctx, database, sql);
+      return await pgImportSql(ctx, database, sql, opts.as);
     }
     if (ctx.engine === 'mongodb') {
-      return await mongoImportDatabase(ctx, database, sql);
+      return await mongoImportDatabase(ctx, database, sql, opts.as);
     }
     throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} SQL import not supported`, 400);
   } catch (err) {
@@ -1976,12 +2197,13 @@ async function mysqlImportSql(
   ctx: DbManagerContext,
   database: string,
   sql: string,
+  login?: DbLogin,
 ): Promise<ImportResult> {
   let result: { stdout: string; stderr: string };
   try {
     result = await execInPodWithStdin(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['mariadb', '-u', 'root', `-p${ctx.rootPassword}`, `--database=${database}`],
+      [...asTenant(login), 'mariadb', ...mysqlAuthArgs('mariadb', ctx.rootPassword, login), `--database=${database}`],
       sql,
     );
   } catch (err) {
@@ -1991,7 +2213,7 @@ async function mysqlImportSql(
     }
     result = await execInPodWithStdin(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['mysql', '-u', 'root', `-p${ctx.rootPassword}`, `--database=${database}`],
+      [...asTenant(login), 'mysql', ...mysqlAuthArgs('mysql', ctx.rootPassword, login), `--database=${database}`],
       sql,
     );
   }
@@ -2005,12 +2227,22 @@ async function pgImportSql(
   ctx: DbManagerContext,
   database: string,
   sql: string,
+  login?: DbLogin,
 ): Promise<ImportResult> {
-  const { stderr } = await execInPodWithStdin(
-    ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-    ['psql', '-U', 'postgres', '-d', pgConnInfoDbName(database)],
-    sql,
-  );
+  const args = ['-d', pgConnInfoDbName(database)];
+  let stderr: string;
+  try {
+    ({ stderr } = await execInPodWithStdin(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      login
+        ? ['sh', '-c', `${PSQL_RESTRICT_PROBE}\nexec ${UNPRIVILEGED_SH} psql -X -U "$1" -d "$2"`, 'sh', login.username, pgConnInfoDbName(database)]
+        : pgSuperuserCommand('psql', args),
+      login ? restrictedPsqlInput(sql, newPsqlRestrictKey()) : sql,
+    ));
+  } catch (err) {
+    if (err instanceof Error && err.message.includes(PSQL_TOO_OLD)) return { success: false, error: PSQL_TOO_OLD_MESSAGE };
+    throw err;
+  }
   if (stderr && stderr.includes('ERROR')) {
     return { success: false, error: stderr };
   }
@@ -2087,6 +2319,12 @@ export async function importSqlFromPvcFile(
   _sqlContent: string,
   filePath: string,
   deploymentSubPath: string,
+  /**
+   * `as`: import as this account (the tenant's administrator) — a tenant's
+   * file. Without it, root: the platform's own restores, which keep every
+   * DEFINER as it was dumped.
+   */
+  opts: { readonly as?: DbLogin } = {},
 ): Promise<ImportResult> {
   validateDatabaseName(database);
   validatePvcFilePath(filePath);
@@ -2233,8 +2471,14 @@ export async function importSqlFromPvcFile(
       // MySQL 8+ containers only have 'mysql'. Using sh -c with the wrong binary silently
       // fails because sh itself succeeds even when the inner command is not found.
       const dbCli = ctx.engine === 'mysql' ? 'mysql' : 'mariadb';
+      const auth = mysqlAuthArgs(dbCli, ctx.rootPassword, opts.as).map(shellEscape).join(' ');
+      // A tenant's file goes through the same rewrite as pasted SQL (import-rewrite.ts).
+      const rewrite = opts.as ? ` | sed -E ${shellEscape(MYSQL_TENANT_IMPORT_SED)}` : '';
+      // The file sits in the data directory, readable by root only: `cat`
+      // reads it, the client runs unprivileged.
+      const client = opts.as ? `${UNPRIVILEGED_SH} ${dbCli}` : dbCli;
       result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-        ['sh', '-c', `cat ${shellEscape(importPath)} | ${dbCli} -u root -p${shellEscape(ctx.rootPassword)} ${shellEscape(`--database=${database}`)}`]);
+        ['sh', '-c', `cat ${shellEscape(importPath)}${rewrite} | ${client} ${auth} ${shellEscape(`--database=${database}`)}`]);
       // Clean up import file after import (best-effort)
       await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
         ['rm', '-f', importPath]).catch(() => {});
@@ -2244,10 +2488,26 @@ export async function importSqlFromPvcFile(
         // in containerized environments. Only exit 2+ indicates fatal errors.
         // --no-owner --no-privileges avoids most warnings from dumps made on different servers.
         result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-          ['sh', '-c', `pg_restore -U postgres --no-owner --no-privileges ${shellEscape(`--dbname=${pgConnInfoDbName(database)}`)} ${shellEscape(importPath)} 2>&1; rc=$?; if [ $rc -gt 1 ]; then exit $rc; fi`]);
+          ['sh', '-c', `${PG_SAFE_ENV_SH} pg_restore -U ${opts.as ? shellEscape(opts.as.username) : PG_SUPERUSER_SH} --no-owner --no-privileges ${shellEscape(`--dbname=${pgConnInfoDbName(database)}`)} ${shellEscape(importPath)} 2>&1; rc=$?; if [ $rc -gt 1 ]; then exit $rc; fi`]);
+      } else if (opts.as) {
+        const key = newPsqlRestrictKey();
+        try {
+          result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+            ['sh', '-c',
+              `${PSQL_RESTRICT_PROBE}\n` +
+              `{ printf '%s\\n' ${shellEscape(`\\restrict ${key}`)}; sed -E ${shellEscape(PSQL_RESTRICT_LINE_SED)} ${shellEscape(importPath)}; } | ${UNPRIVILEGED_SH} psql -X -U "$1" -d "$2"`,
+              'sh', opts.as.username, pgConnInfoDbName(database)]);
+        } catch (err) {
+          if (err instanceof Error && err.message.includes(PSQL_TOO_OLD)) {
+            await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+              ['rm', '-f', importPath]).catch(() => {});
+            return { success: false, error: PSQL_TOO_OLD_MESSAGE };
+          }
+          throw err;
+        }
       } else {
         result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-          ['sh', '-c', `cat ${shellEscape(importPath)} | psql -U postgres -d ${shellEscape(pgConnInfoDbName(database))}`]);
+          ['sh', '-c', `${PG_SAFE_ENV_SH} cat ${shellEscape(importPath)} | psql -U ${PG_SUPERUSER_SH} -d ${shellEscape(pgConnInfoDbName(database))}`]);
       }
       await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
         ['rm', '-f', importPath]).catch(() => {});
@@ -2381,13 +2641,14 @@ export async function importMongoArchiveFromPvcFile(
       ['cp', fmSrcPath, fmDestPath]);
 
     const inPodPath = `${dataRoot}/${tempName}`;
-    const authArgs = ctx.rootPassword
-      ? `-u ${shellEscape(ctx.rootUsername)} -p ${shellEscape(ctx.rootPassword)} --authenticationDatabase admin`
-      : '';
+    // The password on stdin (the tool prompts for it), never in argv.
+    const authArgs = ctx.rootPassword ? `-u ${shellEscape(ctx.rootUsername)} --authenticationDatabase admin` : '';
     let result: { stdout: string; stderr: string };
     try {
-      result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-        ['sh', '-c', `mongorestore ${authArgs} --archive=${shellEscape(inPodPath)} --gzip --drop`]);
+      const argv = ['sh', '-c', `mongorestore ${authArgs} --archive=${shellEscape(inPodPath)} --gzip --drop`];
+      result = ctx.rootPassword
+        ? await execInPodWithStdin(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, argv, `${ctx.rootPassword}\n`)
+        : await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, argv);
     } finally {
       // Best-effort cleanup of the temp copy inside the DB mount.
       await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
@@ -2460,7 +2721,7 @@ export async function exportDatabaseToPvc(
     // hot snapshot, no lock. No extra flag needed for consistency.
     const { stderr } = await execInPod(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['sh', '-c', `pg_dump -U postgres ${shellEscape(`--dbname=${pgConnInfoDbName(database)}`)} > ${shellEscape(exportPath)}`],
+      ['sh', '-c', `${PG_SAFE_ENV_SH} pg_dump -U ${PG_SUPERUSER_SH} ${shellEscape(`--dbname=${pgConnInfoDbName(database)}`)} > ${shellEscape(exportPath)}`],
     );
     if (stderr && stderr.includes('ERROR')) throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
   } else if (ctx.engine === 'mongodb') {
@@ -2472,14 +2733,13 @@ export async function exportDatabaseToPvc(
     // degraded dump rather than a silent gap. (The files snapshot copies the
     // raw data directory too, but from the running server, so that copy is
     // not guaranteed to restore.)
-    const authArgs = ctx.rootPassword
-      ? `-u ${shellEscape(ctx.rootUsername)} -p ${shellEscape(ctx.rootPassword)} --authenticationDatabase admin`
-      : '';
+    // The password on stdin (the tool prompts for it), never in argv.
+    const authArgs = ctx.rootPassword ? `-u ${shellEscape(ctx.rootUsername)} --authenticationDatabase admin` : '';
     try {
-      const { stderr } = await execInPod(
-        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-        ['sh', '-c', `mongodump ${shellEscape(`--db=${database}`)} ${authArgs} --archive=${shellEscape(exportPath)} --gzip`],
-      );
+      const argv = ['sh', '-c', `mongodump ${shellEscape(`--db=${database}`)} ${authArgs} --archive=${shellEscape(exportPath)} --gzip`];
+      const { stderr } = ctx.rootPassword
+        ? await execInPodWithStdin(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, argv, `${ctx.rootPassword}\n`)
+        : await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName, argv);
       // mongodump writes progress to stderr; only a line containing "error"
       // (case-insensitive, mongodump's own convention) is a real failure.
       if (stderr && /\berror\b/i.test(stderr)) throw new ApiError('DB_EXPORT_ERROR', stderr, 500);

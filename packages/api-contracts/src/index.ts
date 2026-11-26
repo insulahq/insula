@@ -93,6 +93,7 @@ export * from './mtls-providers.js';
 export * from './ziti-providers.js';
 export * from './zrok-providers.js';
 export * from './deployment-network-access.js';
+export * from './deployment-credentials.js';
 export * from './ssh-keys.js';
 export * from './sftp-users.js';
 export * from './private-workers.js';

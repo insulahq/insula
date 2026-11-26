@@ -156,6 +156,10 @@ const STATIC_PATHS: Record<string, string> = {
   // the tenant the alert already named.
   'admin.tenant_workloads_down': '/tenants',
   'admin.tenant_workloads_recovered': '/tenants',
+  // Several instances of several tenants at once: the tenant list, where each
+  // tenant's databases are one click away.
+  'admin.tenant_database_access_lost': '/tenants',
+  'admin.tenant_database_access_restored': '/tenants',
   // Tenant side: the page that lists their applications and shows which is down.
   'tenant.workloads_down': '/applications',
   'tenant.workloads_recovered': '/applications',

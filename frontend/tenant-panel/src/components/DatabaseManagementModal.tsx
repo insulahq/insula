@@ -1,11 +1,10 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  X, Database, Copy, Check, Eye, EyeOff, RefreshCw, RotateCcw,
+  X, Database, Copy, Eye, EyeOff, RefreshCw, RotateCcw,
   Loader2, Server, Key, Link, Plus, Trash2, Users, Terminal,
 } from 'lucide-react';
 import {
-  useDeploymentCredentials,
   useRestartDeployment,
   useDbDatabases,
   useCreateDbDatabase,
@@ -15,7 +14,19 @@ import {
   useDropDbUser,
   useSetDbUserPassword,
 } from '@/hooks/use-deployments';
+import { useCredentialsAwaitingAdmin } from '@/hooks/use-credentials-awaiting-admin';
 import type { Deployment, CatalogEntry } from '@/types/api';
+import {
+  allDatabasesHint,
+  allDatabasesOptionLabel,
+  buildConnectionUrl,
+  managedDbEngineOf,
+  type ManagedDbEngine,
+} from '@/lib/database-admin';
+import { extractOperatorError } from '@/lib/extract-operator-error';
+import { CopyFieldButton as CopyButton, copyToClipboard } from './CopyFieldButton';
+import DatabaseAdminAccountCard from './DatabaseAdminAccountCard';
+import ErrorPanel from './ErrorPanel';
 
 interface DatabaseManagementModalProps {
   readonly open: boolean;
@@ -23,21 +34,6 @@ interface DatabaseManagementModalProps {
   readonly catalogEntry: CatalogEntry | null;
   readonly tenantId: string | undefined;
   readonly onClose: () => void;
-}
-
-function copyToClipboard(text: string): void {
-  if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text);
-  } else {
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand('copy');
-    document.body.removeChild(textarea);
-  }
 }
 
 function humanizeEnvVar(key: string): string {
@@ -48,23 +44,6 @@ function humanizeEnvVar(key: string): string {
     .trim();
 }
 
-function buildConnectionUrl(connectionInfo: {
-  readonly host?: string;
-  readonly port?: number;
-  readonly database?: string;
-  readonly username?: string;
-}): string | null {
-  if (!connectionInfo.host || !connectionInfo.port) return null;
-  const protocol = connectionInfo.port === 3306
-    ? 'mysql'
-    : connectionInfo.port === 5432
-      ? 'postgresql'
-      : 'redis';
-  const userPart = connectionInfo.username ? `${connectionInfo.username}:***@` : '';
-  const dbPart = connectionInfo.database ? `/${connectionInfo.database}` : '';
-  return `${protocol}://${userPart}${connectionInfo.host}:${connectionInfo.port}${dbPart}`;
-}
-
 // generateRandomPassword() was removed deliberately. Passwords for database
 // users are generated SERVER-side and returned in the response; a client-side
 // generator has nothing to do because the value it produces is never sent
@@ -73,33 +52,6 @@ function buildConnectionUrl(connectionInfo: {
 // every database user it created unusable. Its charset (`!@#$%^&*`) is how the
 // mismatch was finally identified: the server's charset is [a-zA-Z0-9_-], so a
 // displayed password containing a symbol proved it had never been applied.
-
-function CopyButton({
-  field,
-  value,
-  copiedField,
-  onCopy,
-}: {
-  readonly field: string;
-  readonly value: string;
-  readonly copiedField: string | null;
-  readonly onCopy: (field: string, value: string) => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={() => onCopy(field, value)}
-      className="shrink-0 rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-      data-testid={`copy-${field}`}
-    >
-      {copiedField === field ? (
-        <Check size={14} className="text-green-500" />
-      ) : (
-        <Copy size={14} />
-      )}
-    </button>
-  );
-}
 
 function ConnectionRow({
   label,
@@ -284,10 +236,12 @@ function UsersSection({
   tenantId,
   deploymentId,
   databases,
+  engine,
 }: {
   readonly tenantId: string | undefined;
   readonly deploymentId: string | undefined;
   readonly databases: readonly { name: string }[];
+  readonly engine: ManagedDbEngine | null;
 }) {
   const [newUsername, setNewUsername] = useState('');
   const [newDatabase, setNewDatabase] = useState('__all__');
@@ -305,9 +259,9 @@ function UsersSection({
   const users = usersData?.data ?? [];
 
   // Preselect the first real database when one exists. Granting a single
-  // database is what almost every application needs; "All databases" grants the
-  // whole server and should be a deliberate choice, not the option the form
-  // happens to open on. Only fires while the selection is still untouched.
+  // database is what almost every application needs; "All databases" grants
+  // every one of them and should be a deliberate choice, not the option the
+  // form happens to open on. Only fires while the selection is still untouched.
   useEffect(() => {
     if (showCreateForm && newDatabase === '__all__' && databases.length > 0) {
       setNewDatabase(databases[0].name);
@@ -401,22 +355,10 @@ function UsersSection({
 
       {!isLoading && !isError && (
         <>
-          {/* Root user row — always shown */}
-          <div className="space-y-2 mb-4">
-            <div data-testid="user-row-root">
-              <div className="flex items-center justify-between rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3 py-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="font-mono text-sm font-semibold text-amber-800 dark:text-amber-300">
-                    root
-                  </span>
-                  <span className="text-xs text-amber-600 dark:text-amber-400">
-                    — Superuser
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-
+          {/* No root row: the instance's root / superuser is the platform's
+              and is not the tenant's to use. The tenant's own administrator
+              is in the Credentials card; the API leaves it (and root) out of
+              this list. */}
           {users.length === 0 ? (
             <p className="text-sm text-gray-500 dark:text-gray-400 py-2">No additional users found.</p>
           ) : (
@@ -548,17 +490,23 @@ function UsersSection({
                   className="w-full rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                   data-testid="create-user-database"
                 >
-                  {/* Grants ALL PRIVILEGES on every database in this server.
-                      It used to grant NOTHING — the backend only issued a GRANT
-                      when a database was named — so a user created with the
-                      default could authenticate and then be denied everywhere. */}
-                  <option value="__all__">All databases (full access to this server)</option>
+                  {/* Every database of the instance — on MariaDB/MySQL through
+                      a role that also covers databases added later (in the
+                      panel, or in SQL as db_…), never `ALL ON *.*`, which
+                      includes CREATE USER and the system schema. PostgreSQL
+                      grants the databases that exist now. */}
+                  <option value="__all__">{allDatabasesOptionLabel(engine)}</option>
                   {databases.map((db) => (
                     <option key={db.name} value={db.name}>
                       {db.name}
                     </option>
                   ))}
                 </select>
+                {newDatabase === '__all__' && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400" data-testid="create-user-all-databases-hint">
+                    {allDatabasesHint(engine)}
+                  </p>
+                )}
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   A secure password will be generated automatically.
                 </p>
@@ -652,10 +600,25 @@ export default function DatabaseManagementModal({
 
   const deploymentId = deployment?.id;
   const isDatabase = catalogEntry?.type === 'database';
+  // Only an instance of a managed engine gets a tenant administrator account;
+  // for anything else the panel has no account to show or wait for.
+  const engine = isDatabase ? managedDbEngineOf(catalogEntry) : null;
+  const hasAdminAccount = engine !== null;
+  const running = deployment?.status === 'running';
 
-  const { data: credentialsData, isLoading: credentialsLoading } = useDeploymentCredentials(
+  const {
+    query: {
+      data: credentialsData,
+      isLoading: credentialsLoading,
+      isError: credentialsFailed,
+      error: credentialsError,
+    },
+    adminSetupSlow,
+    checkAgain: checkAdminAgain,
+  } = useCredentialsAwaitingAdmin(
     tenantId,
     open ? deploymentId : undefined,
+    open && hasAdminAccount && running,
   );
   const restartMutation = useRestartDeployment(tenantId);
 
@@ -697,9 +660,12 @@ export default function DatabaseManagementModal({
 
   if (!open || !deployment) return null;
 
+  const adminAccount = credentialsResult?.adminAccount ?? null;
   const connectionUrl = credentialsResult?.connectionInfo
-    ? (credentialsResult.connectionInfo.connectionUrl ?? buildConnectionUrl(credentialsResult.connectionInfo))
+    ? buildConnectionUrl(credentialsResult.connectionInfo, engine, adminAccount)
     : null;
+  const otherCredentials = Object.entries(credentialsResult?.credentials ?? {});
+  const showCredentialsCard = credentialsResult !== null && (hasAdminAccount || otherCredentials.length > 0);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" data-testid="database-management-modal">
@@ -812,49 +778,77 @@ export default function DatabaseManagementModal({
               </div>
             )}
 
+            {credentialsFailed && (
+              <ErrorPanel
+                error={extractOperatorError(credentialsError)}
+                severity="error"
+                compact
+                testId="credentials-error"
+              />
+            )}
+
             {/* Credentials Card */}
-            {Object.keys(credentialsResult?.credentials ?? {}).length > 0 && (
+            {showCredentialsCard && (
               <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-4" data-testid="credentials-card">
                 <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-4">
                   <Key size={16} className="text-blue-600 dark:text-blue-400" />
                   Credentials
                 </h3>
-                <div className="space-y-3">
-                  {Object.entries(credentialsResult!.credentials).map(([key, value]) => {
-                    const isRevealed = revealedCredentials.has(key);
-                    return (
-                      <div key={key} className="flex items-center justify-between text-sm" data-testid={`credential-row-${key}`}>
-                        <span className="text-xs font-medium text-gray-500 dark:text-gray-400 w-28 shrink-0">
-                          {humanizeEnvVar(key)}
-                        </span>
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <span className="font-mono text-sm text-gray-900 dark:text-gray-100 truncate select-all">
-                            {isRevealed ? value : '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => toggleCredentialVisibility(key)}
-                            className="shrink-0 rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                            data-testid={`toggle-credential-${key}`}
-                          >
-                            {isRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
-                          </button>
-                          <CopyButton
-                            field={`cred-${key}`}
-                            value={value}
-                            copiedField={copiedField}
-                            onCopy={handleCopy}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                {hasAdminAccount && deploymentId && (
+                  <DatabaseAdminAccountCard
+                    key={deploymentId}
+                    tenantId={tenantId}
+                    deploymentId={deploymentId}
+                    adminAccount={adminAccount}
+                    status={credentialsResult?.adminAccountStatus}
+                    engine={engine}
+                    running={running}
+                    setupSlow={adminSetupSlow}
+                    onCheckAgain={checkAdminAgain}
+                    copiedField={copiedField}
+                    onCopy={handleCopy}
+                  />
+                )}
+                {otherCredentials.length > 0 && (
+                  <div className={hasAdminAccount ? 'mt-4 pt-4 border-t border-gray-100 dark:border-gray-700' : ''}>
+                    <div className="space-y-3">
+                      {otherCredentials.map(([key, value]) => {
+                        const isRevealed = revealedCredentials.has(key);
+                        return (
+                          <div key={key} className="flex items-center justify-between text-sm" data-testid={`credential-row-${key}`}>
+                            <span className="text-xs font-medium text-gray-500 dark:text-gray-400 w-28 shrink-0">
+                              {humanizeEnvVar(key)}
+                            </span>
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="font-mono text-sm text-gray-900 dark:text-gray-100 truncate select-all">
+                                {isRevealed ? value : '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => toggleCredentialVisibility(key)}
+                                className="shrink-0 rounded p-1 text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+                                data-testid={`toggle-credential-${key}`}
+                              >
+                                {isRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
+                              </button>
+                              <CopyButton
+                                field={`cred-${key}`}
+                                value={value}
+                                copiedField={copiedField}
+                                onCopy={handleCopy}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
 
-                {/* Credentials note */}
-                <p className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400" data-testid="credentials-readonly-note">
-                  Set at deployment time. Change passwords inside the application if needed.
-                </p>
+                    {/* Credentials note \u2014 about these generated values, not the administrator account. */}
+                    <p className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400" data-testid="credentials-readonly-note">
+                      Set at deployment time. Change passwords inside the application if needed.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 
@@ -872,6 +866,7 @@ export default function DatabaseManagementModal({
                 tenantId={tenantId}
                 deploymentId={deploymentId}
                 databases={databases}
+                engine={engine}
               />
             )}
 

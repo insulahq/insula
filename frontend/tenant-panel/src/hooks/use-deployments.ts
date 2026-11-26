@@ -3,7 +3,12 @@ import { apiFetch } from '@/lib/api-client';
 import { deploymentListPollMs } from '@/lib/deployment-polling';
 import type { Deployment, PaginatedResponse } from '@/types/api';
 import type { z } from 'zod';
-import type { createDeploymentSchema, updateDeploymentSchema } from '@insula/api-contracts';
+import type {
+  createDeploymentSchema,
+  updateDeploymentSchema,
+  DeploymentCredentialsResponse,
+  RotateDatabaseAdminPasswordResponse,
+} from '@insula/api-contracts';
 
 // Derived from the shared Zod schemas rather than restated here — a local
 // copy is exactly how this one drifted (it was missing extra_mounts, and the
@@ -253,25 +258,66 @@ export function useDeleteDeployment(tenantId: string | undefined) {
   });
 }
 
-interface DeploymentCredentials {
-  readonly credentials: Record<string, string>;
-  readonly connectionInfo: {
-    readonly host?: string;
-    readonly port?: number;
-    readonly database?: string;
-    readonly username?: string;
-    readonly connectionUrl?: string;
-  } | null;
-  readonly generatedKeys: readonly string[];
+/** How often the credentials are read again while the administrator account is being set up. */
+export const ADMIN_ACCOUNT_PENDING_POLL_MS = 5_000;
+
+function credentialsKey(tenantId: string | undefined, deploymentId: string | undefined) {
+  return ['deployment-credentials', tenantId, deploymentId] as const;
 }
 
-export function useDeploymentCredentials(tenantId: string | undefined, deploymentId: string | undefined) {
+/**
+ * The deployment's credentials and, for a database instance, the tenant's own
+ * administrator account (never the platform's root / superuser).
+ *
+ * `pollWhileAdminPending`: the account is null until the platform has set it
+ * up, and the read itself starts that — so ask again every few seconds while
+ * it is null, and stop once it is there. Only for a running database
+ * instance: anything else has no account to wait for. The wait is bounded by
+ * the caller (use-credentials-awaiting-admin.ts).
+ */
+export function useDeploymentCredentials(
+  tenantId: string | undefined,
+  deploymentId: string | undefined,
+  options?: { readonly pollWhileAdminPending?: boolean },
+) {
+  const poll = options?.pollWhileAdminPending === true;
   return useQuery({
-    queryKey: ['deployment-credentials', tenantId, deploymentId],
-    queryFn: () => apiFetch<{ data: DeploymentCredentials }>(
+    queryKey: credentialsKey(tenantId, deploymentId),
+    queryFn: () => apiFetch<{ data: DeploymentCredentialsResponse }>(
       `/api/v1/tenants/${tenantId}/deployments/${deploymentId}/credentials`
     ),
     enabled: Boolean(tenantId) && Boolean(deploymentId),
+    // Plaintext passwords: dropped from the cache as soon as nothing shows
+    // them (the modal closes), not kept for the default five minutes.
+    gcTime: 0,
+    refetchInterval: (query) => (
+      poll && query.state.data?.data?.adminAccountStatus === 'pending'
+        ? ADMIN_ACCOUNT_PENDING_POLL_MS
+        : false
+    ),
+  });
+}
+
+/**
+ * A new password for the tenant's administrator account on a database
+ * instance. The server sets it and returns it; the cached credentials take
+ * the returned value at once, so the panel never shows the old one.
+ */
+export function useRotateDatabaseAdminPassword(tenantId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (deploymentId: string) =>
+      apiFetch<{ data: RotateDatabaseAdminPasswordResponse }>(
+        `/api/v1/tenants/${tenantId}/deployments/${deploymentId}/admin-account/password`,
+        { method: 'POST' },
+      ),
+    onSuccess: (res, deploymentId) => {
+      queryClient.setQueryData<{ data: DeploymentCredentialsResponse }>(
+        credentialsKey(tenantId, deploymentId),
+        (prev) => (prev ? { ...prev, data: { ...prev.data, adminAccount: res.data } } : prev),
+      );
+      queryClient.invalidateQueries({ queryKey: credentialsKey(tenantId, deploymentId) });
+    },
   });
 }
 
@@ -316,20 +362,9 @@ export function useSetMultihost(tenantId: string | undefined) {
   });
 }
 
-export function useRegenerateCredentials(tenantId: string | undefined) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ deploymentId, keys }: { deploymentId: string; keys?: string[] }) =>
-      apiFetch<{ data: DeploymentCredentials }>(
-        `/api/v1/tenants/${tenantId}/deployments/${deploymentId}/regenerate-credentials`,
-        { method: 'POST', body: JSON.stringify({ keys }) }
-      ),
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['deployment-credentials', tenantId, variables.deploymentId] });
-      queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
-    },
-  });
-}
+// useRegenerateCredentials() was removed: its endpoint answers 410
+// FEATURE_REMOVED and nothing called it. A database's administrator password
+// is rotated with useRotateDatabaseAdminPassword() above.
 
 export function useRestoreDeployment(tenantId: string | undefined) {
   const queryClient = useQueryClient();

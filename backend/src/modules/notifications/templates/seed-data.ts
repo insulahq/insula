@@ -2263,6 +2263,69 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     ],
   },
   {
+    categoryId: 'admin.tenant_database_access_lost',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'The platform cannot log in to {{count}} tenant database instance(s)',
+    bodyTemplate: emailMjml(
+      'Tenant database login lost',
+      'The platform can no longer log in as administrator to these database instances, so their SQL '
+        + 'Manager, logical backups and restores fail. Each entry says why. Where the login was refused, '
+        + 'open the instance and choose Repair database access: the database restarts once and comes back '
+        + 'with the platform\'s login. Where the database has not answered for an hour, check its pod — a '
+        + 'repair does not help there. The instances and what failed: {{tenantList}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'count', type: 'string', required: true },
+      { name: 'tenantList', type: 'list', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.tenant_database_access_lost',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Platform cannot log in to {{count}} tenant database(s)',
+    bodyTemplate: 'A refused login: Repair database access (restarts the database once). No answer for an hour: check the pod. {{tenantList}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'count', type: 'string', required: true },
+      { name: 'tenantList', type: 'list', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.tenant_database_access_restored',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'The platform can log in to {{count}} tenant database instance(s) again',
+    bodyTemplate: emailMjml(
+      'Tenant database login restored',
+      'The platform can log in as administrator to these database instances again; their SQL Manager, '
+        + 'backups and restores work again: {{tenantList}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'count', type: 'string', required: true },
+      { name: 'tenantList', type: 'list', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.tenant_database_access_restored',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Platform login to {{count}} tenant database(s) restored',
+    bodyTemplate: 'Backups and the SQL Manager work again: {{tenantList}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'count', type: 'string', required: true },
+      { name: 'tenantList', type: 'list', required: true },
+    ],
+  },
+  {
     categoryId: 'admin.tenant_workloads_recovered',
     channel: 'email',
     locale: 'en',

@@ -57,6 +57,7 @@
 | [R42](#r42--retire-roundcube) | Retire Roundcube | P3 | Started 2026-10-04 — Bulwark is the default and recommended engine; Roundcube is labelled legacy, receives security updates only, and UI/bootstrap text is engine-neutral. Removal not started |
 | [R43](#r43--drop-the-retired-plan-ai-budget-column) | Drop the retired plan AI-budget column | P3 | ✅ **Done on `development` 2026-10-06** — migration 0150 drops the column; ships in the next release (upgrade through v2026.10.6, see the entry) |
 | [R44](#r44--one-upgrade-procedure-nodes-first-pushed-done-means-done) | One upgrade procedure: nodes first, pushed, "done" means done | P1 | In progress (ADR-064) — P0 truthful status shipped in v2026.10.7-rc.2; P1 node push + hosts-first order (upgrade runs) lands for v2026.10.7-rc.3; P2 UX, P3 auto-update + parity, P4 Kubernetes step open |
+| [R48](#r48--database-data-directories-are-reachable-through-the-file-manager-and-sftp) | Database data directories are reachable through the file manager and SFTP | P2 | Open — found while making root the platform's; a tenant can take its own instance's administrator login back by editing the files |
 
 ---
 
@@ -2345,3 +2346,32 @@ email-domain reads until the rollout has replaced them.
 `email_domains` is in the tenant bundle `config` dump, so both columns are in
 `RETIRED_BUNDLE_COLUMNS`; keep that entry for as long as bundles taken before
 the drop can be restored.
+
+## R48 — Database data directories are reachable through the file manager and SFTP
+
+**Open.** Found while making a tenant database's root login the platform's
+(`deployments/db-admin-access.ts`, `docs/operations/DATABASE_RECOVERY.md` §5).
+
+A database instance keeps its data on the tenant volume (`storagePath`, or a
+stack component's volume under the app's), and the file manager mounts the
+whole volume as root with `DAC_OVERRIDE`; SFTP serves the same tree. So a
+tenant can still edit a running instance's files — `pg_hba.conf` and
+`postgresql.auto.conf`, the MariaDB/MySQL system schema, MongoDB's `admin`
+files — and take its own instance's administrator login back. Nothing outside
+that instance is reachable this way, and the platform notices (the login is
+reported lost; Repair restores it — on PostgreSQL by putting the platform's
+local rules ahead of whatever pg_hba.conf says), but the platform's login is
+only as safe as those files. (Extra mounts into a database container, the
+other way to put tenant files in it, are refused and removed.)
+
+**To do:** the file manager's HTTP API and `sftp-serve` treat a database data
+directory as platform-only, like `.platform`: no read, write, rename, delete or
+archive entry inside one, and no rename, delete or recursive chmod of a
+directory that contains one; archive extraction checks each entry's
+destination. Detect one by its marker files (`PG_VERSION`; `mysql/` with
+`ibdata1` or `aria_log_control`; `WiredTiger`) on the real path, so custom
+storage paths and stack components are covered without a list to keep in step.
+The platform's own operations (imports, pre-dumps) use the internal bypass. A
+tenant-visible change: database folders leave the file manager — the panel's
+copy already says raw files are not a backup.
+
