@@ -124,6 +124,27 @@ function refuseExtraMountsOnDatabase(
     'Import files through the SQL Manager instead; it reads them from your file storage.');
 }
 
+/**
+ * A database instance may not run below its catalog entry's minimum memory.
+ * The panel already offers that floor, but the API took anything — and below
+ * it the instance's own reset init container is OOM-killed on every start
+ * (MongoDB's below 256Mi: mongod and mongosh share the limit), so it never
+ * comes back after a restart.
+ */
+export async function refuseMemoryBelowDatabaseMinimum(
+  entry: { readonly type: string | null; readonly name?: string | null; readonly resources: unknown } | undefined,
+  memoryRequest: string | undefined,
+): Promise<void> {
+  if (!entry || entry.type !== 'database' || !memoryRequest) return;
+  const minimum = parseJsonField<{ minimum?: { memory?: string } }>(entry.resources as never)?.minimum?.memory;
+  if (!minimum) return;
+  const { parseResourceValue } = await import('../../shared/resource-parser.js');
+  if (parseResourceValue(memoryRequest, 'memory') < parseResourceValue(minimum, 'memory')) {
+    throw new ApiError('MEMORY_BELOW_MINIMUM', `${entry.name ?? 'This database'} needs at least ${minimum} of memory.`, 400,
+      { field: 'memory_request', minimum });
+  }
+}
+
 /** The extra mounts a render applies: none for a standalone database instance, none into the protected folder. */
 export function renderedExtraMounts<T extends { folder?: unknown }>(entryType: string | null | undefined, extraMounts: T[] | null | undefined): T[] | undefined {
   if (entryType === 'database') return undefined;
@@ -528,6 +549,7 @@ export async function createDeployment(
   const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
   const catalogManifestCpu = resources?.recommended?.cpu ?? resources?.minimum?.cpu ?? '0.1';
   const catalogMemory = resources?.recommended?.memory ?? resources?.minimum?.memory ?? '256Mi';
+  await refuseMemoryBelowDatabaseMinimum(entry, input.memory_request);
   /**
    * ★ A tiered tenant's new workload asks for a SHARE, not a reservation.
    *
@@ -967,6 +989,10 @@ export async function updateDeployment(
   if (input.name !== undefined) updateValues.name = input.name;
   if (input.replica_count !== undefined) updateValues.replicaCount = input.replica_count;
   if (input.cpu_request !== undefined) updateValues.cpuRequest = input.cpu_request;
+  if (input.memory_request !== undefined && deployment.catalogEntryId) {
+    const [entryForMemory] = await db.select().from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId));
+    await refuseMemoryBelowDatabaseMinimum(entryForMemory, input.memory_request);
+  }
   if (input.memory_request !== undefined) updateValues.memoryRequest = input.memory_request;
   // The panel never sees the platform's keys, so a save keeps the stored
   // values — and a save that sends its own cannot change them.
@@ -1545,6 +1571,10 @@ export async function updateDeploymentResources(
   const deployment = await getDeploymentById(db, tenantId, deploymentId);
   refuseDeleted(deployment, 'resize');
   const { parseResourceValue } = await import('../../shared/resource-parser.js');
+  if (input.memory_request && deployment.catalogEntryId) {
+    const [entryOfDeployment] = await db.select().from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId));
+    await refuseMemoryBelowDatabaseMinimum(entryOfDeployment, input.memory_request);
+  }
 
   // Validate against plan limits
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));

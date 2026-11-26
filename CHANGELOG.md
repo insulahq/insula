@@ -210,15 +210,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
-- **A MySQL instance with a small memory limit now comes back after a restart.** On every start
-  of a database pod whose data already exists, an init container restores the platform's
-  administrator login, running a temporary server. It started MySQL with the engine's defaults
-  (performance schema on, a 128 MB buffer pool), not with the lean options the catalog gives the
-  database itself, so at a 300Mi limit MySQL 8 was OOM-killed in that init container on every
-  start and the database never came up again — seen on DEV after a node restart. The temporary
-  server now starts with performance schema off and small buffers (MariaDB too); MySQL 8.0, 8.4
-  and 9.7 and MariaDB 10.11 and 12.3 were each checked to restore the login inside 300Mi.
-
+- **A database with a small memory limit now comes back after a restart.** On every start of a
+  database pod whose data already exists, an init container restores the platform's
+  administrator login, running a temporary server inside the database's own memory limit. It
+  started that server with the engine's defaults, not the lean options the catalog gives the
+  database itself: at 300Mi MySQL 8 was OOM-killed in that init container on every start and the
+  database never came up again (seen on DEV after a node restart). The temporary server now
+  starts lean on every engine — MySQL and MariaDB with performance schema off and small buffers,
+  PostgreSQL with small buffers and no preloaded library or WAL archiving, MongoDB with the
+  smallest WiredTiger cache it accepts. Checked at each catalog minimum: MariaDB 10.11/11.8/12.3
+  (256Mi), MySQL 8.0/8.4/9.7 (512Mi; also 300Mi), PostgreSQL 16/17/18 (128Mi) and MongoDB 7.0
+  (256Mi). MongoDB below 256Mi cannot run its reset at all (mongod and mongosh share the limit),
+  so **a database instance can no longer be created or resized below its catalog entry's minimum
+  memory** — the panel already offered that floor, the API now enforces it
+  (`MEMORY_BELOW_MINIMUM`). An existing instance keeps its template until its next redeploy with
+  the reset (Attach data, Repair, a restore).
 - **The nightly backup no longer gets a tenant's file manager killed for memory on a volume with
   many files, and a cut-short SQLite dump is no longer reported as complete.** To find SQLite
   files, the backup searched the whole volume inside the file manager with busybox `find`, which

@@ -97,9 +97,12 @@ function initResources(cpuRequest: string, memoryRequest: string) {
  * with its lean options (performance schema off, small buffers). Started with
  * the engine's defaults instead, MySQL 8 needs more than a 300Mi instance has
  * and the reset container is OOM-killed on every start, so the database never
- * comes back after a restart. These hold it well inside the limit.
+ * comes back after a restart. These hold it well inside the limit; PostgreSQL
+ * and MongoDB get the same treatment below (PG_LEAN_SERVER_OPTIONS, a small
+ * WiredTiger cache), so no engine's reset needs more than its own server.
  */
 const LEAN_SERVER_FLAGS = '--performance-schema=OFF --innodb-buffer-pool-size=32M --innodb-log-buffer-size=4M --max-connections=10';
+const PG_LEAN_SERVER_OPTIONS = '-c shared_buffers=16MB -c max_connections=10 -c work_mem=1MB -c maintenance_work_mem=16MB -c shared_preload_libraries= -c archive_mode=off';
 function buildMysqlFamilyResetScript(
   bin: {
     readonly server: string; readonly client: string; readonly admin: string; readonly socket: string;
@@ -160,6 +163,8 @@ function buildMariadbResetScript(): string {
     admin: 'mariadb-admin',
     socket: '/run/mysqld/mysqld.sock',
     socketPlugin: 'unix_socket',
+    // MariaDB-only buffers (the Aria page cache and MyISAM key cache default to 128 MB each).
+    leanFlags: '--aria-pagecache-buffer-size=8M --key-buffer-size=8M',
   });
 }
 
@@ -207,7 +212,10 @@ function buildPostgresqlResetScript(): string {
     '# Temporarily allow trust auth for local connections',
     'printf "local all all trust\\nhost all all 127.0.0.1/32 trust\\nhost all all ::1/128 trust\\n" > "$PGDATA/pg_hba.conf"',
     '# Start postgres locally',
-    'if pg_ctl -D "$PGDATA" -o "-c listen_addresses=\'\'" -w start; then',
+    // The temporary server runs inside the database container's memory limit
+    // (see LEAN_SERVER_FLAGS) with small buffers, and loads no library and
+    // archives nothing while the platform's login is put back.
+    `if pg_ctl -D "$PGDATA" -o "-c listen_addresses='' ${PG_LEAN_SERVER_OPTIONS}" -w start; then`,
     // The superuser the image was initialised with, by the local trust the
     // platform uses (db-admin-access.ts); its password goes, so it cannot be
     // reached over the network. A standalone instance's — the only kind this
@@ -233,7 +241,9 @@ function buildMongodbResetScript(passwordEnvVar: string, userEnvVar: string): st
     'if [ ! -e "$DBPATH/WiredTiger" ]; then echo "No existing data, skipping password reset"; exit 0; fi',
     'echo "Existing dbpath detected — re-stamping the configured admin credentials"',
     '# Start mongod without auth',
-    'if mongod --dbpath "$DBPATH" --bind_ip 127.0.0.1 --port 27017 --logpath /tmp/mongod.log --fork; then',
+    // The smallest WiredTiger cache mongod accepts (0.25 GB): mongod and mongosh
+    // share the container's limit here.
+    'if mongod --dbpath "$DBPATH" --bind_ip 127.0.0.1 --port 27017 --logpath /tmp/mongod.log --wiredTigerCacheSizeGB 0.25 --fork; then',
     '  READY=0',
     '  for i in $(seq 1 60); do if mongosh --host 127.0.0.1 --port 27017 --quiet --eval "db.adminCommand(\'ping\')" >/dev/null 2>&1; then READY=1; break; fi; sleep 1; done',
     '  if [ "$READY" = "1" ]; then',

@@ -20,6 +20,16 @@ describe('buildPasswordResetInitContainer', () => {
     expect(maria).not.toContain('--temptable-max-ram');
   });
 
+  it('starts every engine\'s temporary server no bigger than the server itself', () => {
+    const maria = buildPasswordResetInitContainer({ ...baseArgs, catalogCode: 'mariadb', image: 'mariadb:11', passwordEnvVar: 'MARIADB_ROOT_PASSWORD' })!.command[2]!;
+    expect(maria).toContain('--aria-pagecache-buffer-size=8M --key-buffer-size=8M');
+    const pg = buildPasswordResetInitContainer({ ...baseArgs, catalogCode: 'postgresql', image: 'postgres:18', passwordEnvVar: 'POSTGRES_PASSWORD' })!.command[2]!;
+    // Small buffers, and no library loaded or WAL archived while the login is put back.
+    expect(pg).toContain("-c listen_addresses='' -c shared_buffers=16MB -c max_connections=10 -c work_mem=1MB -c maintenance_work_mem=16MB -c shared_preload_libraries= -c archive_mode=off");
+    const mongo = buildPasswordResetInitContainer({ ...baseArgs, catalogCode: 'mongodb-7', image: 'mongo:7.0', passwordEnvVar: 'MONGO_INITDB_ROOT_PASSWORD', passwordEnvVarUser: 'MONGO_INITDB_ROOT_USERNAME' })!.command[2]!;
+    expect(mongo).toContain('--wiredTigerCacheSizeGB 0.25');
+  });
+
   describe('MariaDB', () => {
     it('returns init container for mariadb with correct image and ALTER USER', () => {
       const result = buildPasswordResetInitContainer({

@@ -373,6 +373,19 @@ describe.skipIf(!dbAvailable)('database data folders (integration)', () => {
       .rejects.toMatchObject({ code: 'DATABASE_DATA_DETACHED' });
   });
 
+  it('refuses a database instance below its catalog\'s minimum memory, on every resize path', async () => {
+    const { updateDeployment, updateDeploymentResources } = await import('./service.js');
+    await db().update(catalogEntries).set({ resources: { minimum: { memory: '256Mi' } } } as never).where(eq(catalogEntries.id, dbEntry));
+    const id = await seedDb('small', 'database/mariadb/small');
+    await expect(updateDeploymentResources(db(), tenantId, id, { memory_request: '192Mi' })).rejects.toMatchObject({ code: 'MEMORY_BELOW_MINIMUM' });
+    await expect(updateDeployment(db(), tenantId, id, { memory_request: '0.125Gi' })).rejects.toMatchObject({ code: 'MEMORY_BELOW_MINIMUM' });
+    // An application is not held to it.
+    await db().update(catalogEntries).set({ resources: { minimum: { memory: '256Mi' } } } as never).where(eq(catalogEntries.id, appEntry));
+    const appId = randomUUID();
+    await db().insert(deployments).values({ id: appId, tenantId, name: 'smallapp', catalogEntryId: appEntry, cpuRequest: '0.25', status: 'stopped', storagePath: 'runtime/php/smallapp' } as typeof deployments.$inferInsert);
+    await expect(updateDeployment(db(), tenantId, appId, { memory_request: '128Mi' })).resolves.toBeDefined();
+  });
+
   it('releases the folder on a permanent delete: kept, or removed', async () => {
     await seedDb('keep', 'database/mariadb/keep');
     await seedDb('drop', 'database/mariadb/drop');
