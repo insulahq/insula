@@ -28,6 +28,7 @@ const folders: DatabaseFoldersResponse = {
   instances: [
     { deploymentId: 'd1', name: 'shop', catalogCode: 'mariadb', status: 'running', detachedPath: null, folder: 'database/mariadb/shop', sizeBytes: 52_428_800 },
     { deploymentId: 'd2', name: 'old', catalogCode: 'postgresql', status: 'stopped', detachedPath: 'kept-databases/old', folder: 'kept-databases/old', sizeBytes: null },
+    { deploymentId: 'd3', name: 'shared', catalogCode: 'mariadb', status: 'running', detachedPath: null, folder: 'media/db', sizeBytes: 10 },
   ],
   orphans: [],
 };
@@ -46,6 +47,7 @@ describe('ProtectedDatabaseFolder', () => {
     expect(shop).toHaveTextContent('50.0 MB');
     expect(screen.getByTestId('protected-database-row-old')).toHaveTextContent('Data detached');
     expect(screen.getByTestId('protected-database-row-old')).toHaveTextContent('—');
+    expect(screen.getByTestId('protected-database-row-shared')).toHaveTextContent('Not protected yet');
     expect(mockApiFetch).toHaveBeenCalledWith('/api/v1/tenants/t1/database-folders');
     fireEvent.click(screen.getByRole('button', { name: 'kept-databases' }));
     expect(onOpenKept).toHaveBeenCalled();

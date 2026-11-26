@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { Database, FolderInput, Loader2, Lock } from 'lucide-react';
-import { KEPT_DATABASES_ROOT } from '@insula/api-contracts';
+import { KEPT_DATABASES_ROOT, isUnderDatabaseRoot } from '@insula/api-contracts';
 import { useDatabaseFolders, useReleaseOrphanFolders } from '@/hooks/use-deployments';
 import { formatDataSize } from '@/lib/format-snapshot-size';
 
@@ -70,7 +70,7 @@ export default function ProtectedDatabaseFolder({ tenantId, onOpenKept }: { tena
                       <span className="text-xs font-normal text-gray-500 dark:text-gray-400">{i.catalogCode}</span>
                     </span>
                   </td>
-                  <td className="px-4 py-2 text-gray-600 dark:text-gray-300">{stateLabel(i.status, i.detachedPath)}</td>
+                  <td className="px-4 py-2 text-gray-600 dark:text-gray-300">{stateLabel(i.status, i.detachedPath, i.folder)}</td>
                   <td className="hidden px-4 py-2 font-mono text-xs text-gray-500 dark:text-gray-400 sm:table-cell">{i.folder}</td>
                   <td className="px-4 py-2 text-right tabular-nums text-gray-700 dark:text-gray-300">{formatDataSize(i.sizeBytes)}</td>
                 </tr>
@@ -113,8 +113,11 @@ export default function ProtectedDatabaseFolder({ tenantId, onOpenKept }: { tena
   );
 }
 
-function stateLabel(status: string, detachedPath: string | null): string {
+function stateLabel(status: string, detachedPath: string | null, folder: string): string {
   if (detachedPath) return 'Data detached';
+  // Its folder is shared with another application, so it has not been moved
+  // into the protected folder yet (the operator is told).
+  if (!isUnderDatabaseRoot(folder)) return 'Not protected yet (folder shared)';
   if (status === 'deleted') return 'Recently deleted';
   if (status === 'stopped') return 'Stopped';
   if (status === 'running') return 'Attached, running';

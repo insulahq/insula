@@ -445,10 +445,11 @@ function buildScript(opts: { snapshotId: string; includePaths: ReadonlyArray<str
     // restic lands files under <target>/source/<...> (capture root was
     // /source). Overlay them onto the live PVC. If nothing matched the
     // includes, the staged tree is empty and cp -a is a no-op.
+    // Count restored entries for the progress line (best-effort) — before the
+    // protected folder's files move to kept-databases/, so they count too.
+    `COUNT=$(find ${RESTORE_TMP}${FILES_CAPTURE_ROOT} -type f 2>/dev/null | wc -l | tr -d ' ')`,
     ...(opts.redirectProtected ? [protectedFolderRedirectScript(`${RESTORE_TMP}${FILES_CAPTURE_ROOT}`, FILES_CAPTURE_ROOT)] : []),
     `if [ -d ${RESTORE_TMP}${FILES_CAPTURE_ROOT} ]; then cp -a ${RESTORE_TMP}${FILES_CAPTURE_ROOT}/. ${FILES_CAPTURE_ROOT}/; fi`,
-    // Count restored entries for the progress line (best-effort).
-    `COUNT=$(find ${RESTORE_TMP}${FILES_CAPTURE_ROOT} -type f 2>/dev/null | wc -l | tr -d ' ')`,
     'echo "FILES_RESTORED count=${COUNT:-0}"',
   ].join('\n');
 }
