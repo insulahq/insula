@@ -345,6 +345,36 @@ separately because they need different actions.
     longer does. A backup that has never run has never worked, and looking
     for what changed will waste your time.
 
+### Tenant database backups overdue
+
+A tenant bundle can complete while a database dump inside it failed, so the
+bundle's status cannot tell you that a database is unprotected. Each bundle
+therefore records, per database, the **last attempt** and the **last good
+backup** (a dump that the bundle's files snapshot kept).
+
+A database is **overdue** when its last good backup is older than the longest
+gap between two scheduled tenant-bundle runs, plus two hours — 26 hours for a
+daily schedule, and a weekday-only schedule is not called overdue over the
+weekend. Only tenants the scheduled run covers are judged. You get **one
+notification** (*Tenant database backups overdue*) listing every newly overdue
+database with its tenant, its last good backup and the last error; each
+affected tenant gets its own notice at the same time. When a database is
+backed up again, both get a *working again* notice — only for databases that
+alerted.
+
+Where to look:
+
+- **Tenant → Storage & backups → Database backups** — every database of the
+  tenant, with its last good backup and last attempt.
+- **Backups → Tenant Backups → Backups** — every overdue database across
+  tenants, shown only when there is one.
+
+!!! warning "The raw data files are not a fallback"
+    The files snapshot also copies each database's data directory, but it reads
+    the live volume file by file over minutes, with no volume snapshot. That
+    copy may not restore. A database without a good dump has no reliable backup
+    in that bundle.
+
 ## Retention
 
 Every backup class follows one rule:
