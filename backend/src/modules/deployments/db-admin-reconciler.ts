@@ -37,7 +37,7 @@ import { withSchedulerLease } from '../../shared/scheduler-lease.js';
 import { decrypt, encrypt } from '../oidc/crypto.js';
 import { buildDbContext, execInDbPod, type DbManagerContext, type Engine } from './db-manager.js';
 import { adminLoginWorks, ensureDatabaseAdminAccess, type AdminAccessMode } from './db-admin-access.js';
-import type { DbCommandRunner } from './db-exec.js';
+import { tryRun, type DbCommandRunner } from './db-exec.js';
 import { chooseTenantAdminUsername, ensureTenantAdmin, tenantAdminLogsIn } from './tenant-admin.js';
 import {
   loadTenantAdminAccount, markTenantAdminReady, newTenantAdminPassword, recordFirstTenantAdminAccount, tenantAdminReady,
@@ -123,14 +123,27 @@ async function persistMongoRootPassword(db: Database, deploymentId: string, pass
  * but takes the one the platform set (a deployment edit raced the save), put
  * that one back. Returns the context to go on with.
  */
-async function recoverMongoRoot(deps: ReconcileDeps, md: ManagedDatabase, ctx: DbManagerContext, prev: StateRow | undefined, run: DbCommandRunner, changes: string[]): Promise<DbManagerContext> {
-  if (md.engine !== 'mongodb' || !prev?.rootSecretCipher) return ctx;
+async function recoverMongoRoot(
+  deps: ReconcileDeps, md: ManagedDatabase, ctx: DbManagerContext, prev: StateRow | undefined, run: DbCommandRunner, changes: string[],
+): Promise<{ ctx: DbManagerContext; rotateAgain: boolean }> {
+  if (md.engine !== 'mongodb' || !prev?.rootSecretCipher) return { ctx, rotateAgain: false };
   const secret = decrypt(prev.rootSecretCipher, deps.encryptionKey);
   const x = { ctx, run };
-  if (secret === ctx.rootPassword || (await rootLogsInWith(x, ctx.rootPassword)) || !(await rootLogsInWith(x, secret))) return ctx;
-  await persistMongoRootPassword(deps.db, md.deploymentId, secret);
-  changes.push("put root's password back into the configuration");
-  return { ...ctx, rootPassword: secret };
+  if (await rootLogsInWith(x, ctx.rootPassword)) return { ctx, rotateAgain: false };
+  if (secret !== ctx.rootPassword && (await rootLogsInWith(x, secret))) {
+    await persistMongoRootPassword(deps.db, md.deploymentId, secret);
+    changes.push("put root's password back into the configuration");
+    return { ctx: { ...ctx, rootPassword: secret }, rotateAgain: false };
+  }
+  // A pod started from a spec older than the rotation: its reset container
+  // set root back to the password in that spec — the one the tenant knew.
+  // Log in with it, and replace it again.
+  const env = (await tryRun(x, ['sh', '-c', 'printf %s "$MONGO_INITDB_ROOT_PASSWORD"'])).stdout;
+  if (env && env !== ctx.rootPassword && (await rootLogsInWith(x, env))) {
+    changes.push("root had the pod's older password again (a restart from an older spec): replacing it");
+    return { ctx: { ...ctx, rootPassword: env }, rotateAgain: true };
+  }
+  return { ctx, rotateAgain: false };
 }
 
 /**
@@ -147,6 +160,11 @@ async function rotateMongoRoot(deps: ReconcileDeps, md: ManagedDatabase, ctx: Db
     .onConflictDoUpdate({ target: databaseAdminState.deploymentId, set: { rootSecretCipher } });
   if (!(await rotateRoot({ ctx, run }, next))) return null;
   await persistMongoRootPassword(deps.db, md.deploymentId, next);
+  // The pod's spec carries the password too: its reset container stamps it on
+  // every start. Redeployed now — the database restarts once — so a restart
+  // never brings back the one the tenant knew.
+  const [dep] = await deps.db.select().from(deployments).where(eq(deployments.id, md.deploymentId));
+  if (dep) await redeployWithCurrentConfig(deps.db, dep, deps.k8s);
   return { ...ctx, rootPassword: next };
 }
 
@@ -210,8 +228,9 @@ export async function reconcileInstance(deps: ReconcileDeps, md: ManagedDatabase
 
   const changes: string[] = [];
   let access;
+  let rotateAgain = false;
   try {
-    ctx = await recoverMongoRoot(deps, md, ctx, prev, run, changes);
+    ({ ctx, rotateAgain } = await recoverMongoRoot(deps, md, ctx, prev, run, changes));
     if (changes.length === 0) {
       const quick = await quickCheck(deps, md, ctx, prev, now, run);
       if (quick) return quick;
@@ -225,16 +244,17 @@ export async function reconcileInstance(deps: ReconcileDeps, md: ManagedDatabase
   const base = { md, mode: access.mode, changes, pod: ctx.podName, full: true } as const;
   if (!md.standalone || !LOGGED_IN_MODES.has(access.mode)) return { ...base, detail: access.detail };
 
-  let rotated = false;
   let detail = access.detail;
   try {
-    if (md.engine === 'mongodb' && access.mode === 'restricted' && !prev?.rootRotatedAt) {
+    if (md.engine === 'mongodb' && access.mode === 'restricted' && (!prev?.rootRotatedAt || rotateAgain)) {
       const next = await rotateMongoRoot(deps, md, ctx, prev, run);
-      if (next) {
-        ctx = next;
-        rotated = true;
-        changes.push('root has a new password only the platform knows (the tenant knew the old one)');
-      } else detail = "root's password could not be replaced; the next check tries again";
+      if (!next) {
+        detail = "root's password could not be replaced; the next check tries again";
+      } else {
+        // The redeploy restarts the pod: the rest happens at the next check, in the new one.
+        changes.push('root has a new password only the platform knows (the tenant knew the old one); restarted once to carry it');
+        return { ...base, detail, rotated: true };
+      }
     }
     // Only where root is the platform's alone; and again in a new pod, which
     // may be a restore of an older data directory.
@@ -259,10 +279,10 @@ export async function reconcileInstance(deps: ReconcileDeps, md: ManagedDatabase
     // root is not the platform's alone anyway (settled on the password
     // login: the socket does not work in this pod).
     if (hardened || (!TARGET_MODES.has(access.mode) && !access.partial)) await markTenantAdminReady(deps.db, md.deploymentId, now);
-    return { ...base, detail, hardened, stuck, hardenTried: harden && result.problems.length > 0, rotated };
+    return { ...base, detail, hardened, stuck, hardenTried: harden && result.problems.length > 0, rotated: false };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { ...base, detail: `the tenant administrator account could not be set up: ${msg}`, rotated };
+    return { ...base, detail: `the tenant administrator account could not be set up: ${msg}`, rotated: false };
   }
 }
 

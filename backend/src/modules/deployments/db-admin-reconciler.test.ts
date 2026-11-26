@@ -713,17 +713,19 @@ describe('reconcileInstance', () => {
       vi.mocked(ensureDatabaseAdminAccess).mockResolvedValue({ mode: 'restricted', changed: [] });
     });
 
-    it('the first time root is restricted, its password is replaced — and the new one kept BEFORE it is set', async () => {
+    it('the first time root is restricted, its password is replaced — the new one kept BEFORE it is set, the pod redeployed to carry it', async () => {
       const order: string[] = [];
       const f = fakeDb();
       const insertSpy = f.db.insert.bind(f.db) as (t: unknown) => unknown;
       (f.db as unknown as { insert: unknown }).insert = (t: unknown) => { order.push('keep-secret'); return insertSpy(t); };
       vi.mocked(rotateRoot).mockImplementation(async () => { order.push('rotate'); return true; });
       vi.mocked(ensureTenantAdmin).mockImplementation(async (c) => { order.push(`ensure-with:${c.rootPassword}`); return { changes: [], problems: [] }; });
+      vi.mocked(redeployWithCurrentConfig).mockImplementation(async () => { order.push('redeploy'); });
       const o = await reconcileInstance(deps(f.db), mongo());
-      expect(order).toEqual(['keep-secret', 'rotate', 'ensure-with:fresh-platform-secret']);
+      // The rest waits for the new pod (next check): the redeploy restarts it.
+      expect(order).toEqual(['keep-secret', 'rotate', 'redeploy']);
       expect(o).toMatchObject({ rotated: true, mode: 'restricted' });
-      expect(o.changes).toContain('root has a new password only the platform knows (the tenant knew the old one)');
+      expect(o.changes.join('|')).toContain('root has a new password only the platform knows (the tenant knew the old one)');
       expect(f.upserts[0]!.values).toMatchObject({ deploymentId: 'dep-1', mode: 'restricted' });
       expect(f.upserts[0]!.values.rootSecretCipher).toEqual(expect.stringMatching(/^[0-9a-f]+:[0-9a-f]+:[0-9a-f]+$/));
       expect(f.upserts[0]!.set).toEqual({ rootSecretCipher: f.upserts[0]!.values.rootSecretCipher });
@@ -740,7 +742,21 @@ describe('reconcileInstance', () => {
       expect(o.rotated).toBe(true);
       expect(rotateRoot).toHaveBeenCalledTimes(1);
       expect(f.upserts[0]!.values.rootSecretCipher).toBe(prev.rootSecretCipher);
-      expect(vi.mocked(ensureTenantAdmin).mock.calls[0]![0].rootPassword).toBe(pending);
+    });
+
+    it('a pod back on the password the tenant knew (restarted from an older spec) is logged in with it, and rotated again', async () => {
+      const kept = 'set-by-the-platform';
+      const prev = prevRow({ engine: 'mongodb', mode: 'restricted', rootSecretCipher: encrypt(kept, KEY), rootRotatedAt: at('2026-01-01T00:00:00Z') });
+      vi.mocked(buildDbContext).mockResolvedValue(dbCtx({ engine: 'mongodb', rootPassword: kept }));
+      // Neither the configured password nor the kept one; the pod's env one does.
+      vi.mocked(rootLogsInWith).mockImplementation(async (_x, pw) => pw === 'from-the-old-spec');
+      run.mockImplementation(async (_c: unknown, argv: string[]) => ({ stdout: argv.join(' ').includes('MONGO_INITDB_ROOT_PASSWORD') ? 'from-the-old-spec' : '', stderr: '' }));
+      vi.mocked(rotateRoot).mockImplementation(async (x, next) => { expect(x.ctx.rootPassword).toBe('from-the-old-spec'); expect(next).toBe(kept); return true; });
+      const o = await reconcileInstance(deps(fakeDb().db), mongo(), prev);
+      expect(rotateRoot).toHaveBeenCalledTimes(1);
+      expect(redeployWithCurrentConfig).toHaveBeenCalled();
+      expect(o).toMatchObject({ rotated: true });
+      expect(o.changes.join('|')).toContain("root had the pod's older password again");
     });
 
     it('a kept password that is already the configured one is not reused: a fresh one is made', async () => {
