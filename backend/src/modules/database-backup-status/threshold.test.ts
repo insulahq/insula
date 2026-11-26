@@ -38,7 +38,7 @@ describe('staleThresholdMs — the longest gap between scheduled runs, plus grac
   });
 
   it('a daily run in a zone that leaves summer time waits the 25-hour day', () => {
-    // Europe/Berlin falls back on 2026-10-25: the 01:30 local run moves an hour later in UTC.
+    // The week holds the autumn change in Europe/Berlin: after it the 01:30 local run is an hour later in UTC.
     expect(staleThresholdMs('30 1 * * *', 'Europe/Berlin', new Date('2026-10-22T12:00:00Z'))).toBe(25 * H + STALE_GRACE_MS);
   });
 });
