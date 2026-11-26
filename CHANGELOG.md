@@ -19,17 +19,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   itself, and nothing read it again. On production one tenant's seven MariaDB databases failed to
   dump every night for at least two weeks while every bundle said `completed`, and nobody was
   told. Now every bundle records, per database, the last attempt and the last good backup: a dump
-  that the bundle's files snapshot kept. A database counts as overdue when its last good backup
-  is older than the longest gap between two scheduled bundle runs, plus two hours (26 hours for
-  a daily schedule; a weekday-only schedule is not called overdue over the weekend). A sweep
-  every 15 minutes announces each overdue database once: one notification to the admins listing
-  every newly overdue database with its tenant, last good backup and last error, and one to each
-  affected tenant listing its own. When a database is backed up again, both get a "working again"
-  notice, only for databases that alerted. A database is dropped from the status only when it is
-  shown to be gone, never because one bundle failed to list it. The status is shown on the admin
-  tenant page (Storage & backups → Database backups), on the admin Tenant Backups page (every
-  overdue database, when there is one), and on the tenant's Backups page, where a bundle in which
-  not every database dumped is also marked. API:
+  that the bundle's files snapshot kept. A database is overdue when the latest scheduled bundle
+  run that has had time to finish did not back it up: the run counts once its wave has had the
+  last scheduled wave's duration plus an hour (at least two hours), a wave still running is
+  never judged, and a tenant bundled at the end of a long wave is not called overdue in the
+  meantime. Only tenants the wave covers and running database instances are judged: a stopped
+  instance shows "Stopped", a deleted one is not dumped and its rows are removed, and when a
+  tenant leaves the wave (suspended, archived, schedule disabled) its alert ends without a
+  notice. A sweep every 15 minutes announces each overdue database once: one notification to
+  the admins listing every newly overdue database with its tenant, last good backup and the
+  operator diagnosis, and one to each affected tenant listing its own with only the kind of
+  failure (not running, volume full, could not log in, timed out, tool missing, …), never the
+  error text. A database that alerted in the last 12 hours does not alert again until the
+  window has passed. When a database is backed up again, both get a "working again" notice,
+  only for databases that alerted. When the dump step did not run at all, every database is
+  marked failed and keeps its last good backup; a database is dropped from the status only when
+  it is shown to be gone, never because one bundle failed to list it. A tenant keeps at most
+  500 rows (the rest of an instance's databases fold into one row) and names are capped. The
+  status is shown on the admin tenant page (Storage & backups → Database backups), on the admin
+  Tenant Backups page (every overdue database, when there is one), and on the tenant's Backups
+  page, where a bundle in which not every database dumped is also marked. API, cursor-paginated:
   `GET /api/v1/admin/tenants/:tenantId/database-backups`,
   `GET /api/v1/admin/database-backups/overdue` and `GET /api/v1/tenant/backups/databases`.
 
@@ -91,6 +100,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   containing a newline are skipped. A database with a pending rollback journal is skipped
   instead of replayed. Databases without a write-ahead log are opened read-only. Two paths that
   flatten to the same name no longer overwrite each other's dump.
+
+### Security
+
+- **A database password quoted in a dump command no longer survives into a backup error.** The
+  errors from tenant database commands strip the password from the command line before it is
+  stored or shown, but they ended the password at the first space or quote: `-p'a b'`, a
+  password with an escaped `'`, `--password='a b'` or mongodump's `-p '…'` left the rest of the
+  password in the error, and `MYSQL_PWD=` was not stripped at all. These errors are written to the
+  per-database backup status and the admin notifications. The whole shell word is now removed,
+  quoted or not, on every line of the error.
 
 ## [2026.11.15] - 2026-11-25
 

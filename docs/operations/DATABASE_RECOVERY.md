@@ -91,16 +91,36 @@ After every bundle, each database's outcome is recorded in
 backup** — a `dumped` entry whose files snapshot completed (the dump lives inside
 that snapshot). Rows are removed only when a database is shown to be gone (its
 deployment deleted, or a clean listing that no longer names it); a failed listing
-removes nothing.
+removes nothing. When the dump step did not run at all (no Kubernetes API, the
+file manager could not start, the pre-dump step threw), every database the tenant
+has is stamped `failed` with *the dump did not run: …* — its last good backup is
+kept. Deleted and stopped database deployments are not dumped and get no
+synthetic failure row. Names are capped at 255 characters (a longer name keeps a
+hash suffix so its row stays stable), and a tenant keeps at most 500 rows: the
+rest of an instance's databases fold into one *(more databases)* row with the
+worst status of the folded ones.
 
-A sweep (every 15 minutes, one replica) calls a database **overdue** when its last
-good backup — or, if it never had one, when it was first seen — is older than the
-longest gap between two runs of the tenant-bundle schedule plus two hours (26 hours
-for a daily schedule). Only tenants the nightly wave covers are judged. Each
-overdue database is announced **once per episode**: one admin notification
-(*Tenant database backups overdue*) listing every newly overdue database, and one
-notification to each affected tenant. When a database has a good backup again,
-both get a *working again* notice — only for episodes that alerted.
+A sweep (every 15 minutes, one replica) judges each database against one
+**scheduled run**: the latest firing of the tenant-bundle schedule whose wave has
+had time to finish, where *time to finish* is the duration of the last completed
+scheduled wave plus one hour (at least two hours), never a run whose wave is
+still running, and never a run the scheduler did not fire (the schedule was off,
+or was enabled after it). A database is **overdue** when it was known before that run and
+has had no good backup since the run started — wherever its tenant fell in the
+wave. Only tenants the wave covers and running database instances are judged; a
+stopped or removed instance is shown as such and is never overdue. When a tenant
+leaves the wave (suspended, archived, schedule disabled) or an instance stops, its
+open episode closes silently.
+
+Each overdue database is announced **once per episode**: one admin notification
+(*Tenant database backups overdue*) listing every newly overdue database with the
+operator diagnosis, and one notification to each affected tenant naming only the
+kind of failure (*the platform could not log in to the database*, *the volume was
+full*, …), never the error text. A database alerted on in the last 12 hours does
+not alert again: a new episode inside that window opens quietly and is announced
+when the window has passed — or closes silently if it recovers first. When a
+database has a good backup again, both get a *working again* notice — only for
+episodes that alerted. Each item is cut at 300 characters.
 
 Where to look:
 
@@ -110,9 +130,9 @@ Where to look:
   across tenants (shown only when there is one).
 - Tenant panel → **Backups → Database backups**, and a *Not every database dumped*
   marker on bundles whose `database_dumps` is `degraded`.
-- API: `GET /api/v1/admin/tenants/:tenantId/database-backups`,
+- API (cursor-paginated, `limit` ≤ 100): `GET /api/v1/admin/tenants/:tenantId/database-backups`,
   `GET /api/v1/admin/database-backups/overdue`,
-  `GET /api/v1/tenant/backups/databases`.
+  `GET /api/v1/tenant/backups/databases` (the tenant gets `lastErrorKind`/`lastErrorLabel`, not `lastError`).
 
 Per-database status values:
 
@@ -137,7 +157,7 @@ data files are a last resort that may not restore (§1).
 | Scenario | What happens in a bundle | Recovery mechanism | Operator action |
 |----------|--------------------------|--------------------|-----------------|
 | **DB pod crash / OOM** (engine dies mid-write, before/at capture) | The logical dump for that DB may be `failed` or absent; the files snapshot holds a live, file-by-file copy of the datadir | Prefer the last bundle whose dump is `dumped` (`databases-by-id`). Otherwise the raw datadir via `files-paths`, which may or may not crash-recover | Restore from the newest bundle with a good dump. Use the raw datadir only when no dump exists, and check the database after it starts. |
-| **PVC full at capture** (>= 90% full or < 200 MiB free) | Logical dump **skipped** (not written) — per-db `degraded`, error names the fill %; the database is not backed up by this bundle | The previous bundle's dump; the raw datadir is a last resort | Grow the tenant volume or free space, then **re-run the bundle** to get a fresh logical dump. The overdue alert follows if it persists past the schedule's gap. |
+| **PVC full at capture** (>= 90% full or < 200 MiB free) | Logical dump **skipped** (not written) — per-db `degraded`, error names the fill %; the database is not backed up by this bundle | The previous bundle's dump; the raw datadir is a last resort | Grow the tenant volume or free space, then **re-run the bundle** to get a fresh logical dump. The overdue alert follows if the next scheduled run does not back it up either. |
 | **Dump tool missing** (bring-your-own image without `mysqldump`/`mongodump`) | Per-db `degraded`; error = "\<tool\> is not available in this container"; no logical backup | Raw datadir only — a last resort | Add the client binary to the BYO image. Until then this database has no reliable backup, and it is reported overdue. |
 | **MongoDB backup** (now covered — was silently unsupported) | `mongodump --archive --gzip` → `predump-<db>-<bundleId>.archive.gz` on the PVC; plus the live-copied WiredTiger datadir in the files snapshot | Logical: `mongorestore --archive --gzip --drop` (recreates namespaces — target db need not exist). Last resort: files restore of the WiredTiger datadir | Use the `databases-by-id` restore item for a clean logical re-import, or `files-paths` for a raw datadir restore. |
 | **Cross-version DB restore** (restore into a newer/older or differently-configured engine) | Logical dump `dumped` on the PVC | Logical re-import via `databases-by-id` (`importSqlFromPvcFile` for SQL, `mongorestore` for Mongo) — portable across versions/engine config | Restore with `databases-by-id` (portable), **not** `files-paths` — a raw datadir is version/config-specific and may not attach to a different engine build. |
@@ -151,7 +171,7 @@ data files are a last resort that may not restore (§1).
 
 Keyed off the bundle's `database_dumps.status` and the per-database `error`
 string. Until the fix lands, the database has **no reliable backup** in new
-bundles (§1), and it is reported overdue once that lasts past the schedule's gap.
+bundles (§1), and it is reported overdue after the first scheduled run without a good dump.
 
 | Symptom (`database_dumps`) | Cause | Fix |
 |----------------------------|-------|-----|

@@ -298,6 +298,11 @@ export async function runBundle(
   // does a SQLite file missing from it mean the file is gone
   // (database-backup-status/recorder.ts).
   let sqliteCaptureComplete = false;
+  // Why the database dumps / the SQLite capture did not run at all, if they
+  // did not: the recorder stamps those databases' last attempt as failed
+  // rather than leave one that reads as backed up.
+  let databaseDumpsDidNotRun: string | undefined;
+  let sqliteDidNotRun: string | undefined;
 
   const tasks: Array<Promise<void>> = [];
 
@@ -305,6 +310,8 @@ export async function runBundle(
   if (input.components.files) {
     tasks.push((async () => {
       if (!deps.k8s) {
+        databaseDumpsDidNotRun = 'the Kubernetes API was unavailable';
+        sqliteDidNotRun = 'the Kubernetes API was unavailable';
         errors.push('files: kubernetes tenant unavailable');
         await markComponentFailed(deps.db, bundleId, 'files', 'archive.tar.gz', 'kubernetes tenant unavailable');
         return;
@@ -328,6 +335,7 @@ export async function runBundle(
         // Failures are per-deployment + per-database; never abort the
         // bundle (the file-system snapshot is still valid even if
         // logical dumps fail).
+        let predumpsRan = false;
         try {
           dbPredumpResults = await runPreCaptureDatabaseDumps({
             db: deps.db,
@@ -337,6 +345,7 @@ export async function runBundle(
             backupId: bundleId,
             kubeconfigPath: deps.kubeconfigPath,
           });
+          predumpsRan = true;
           for (const r of dbPredumpResults) {
             if (r.error) {
               // eslint-disable-next-line no-console
@@ -348,6 +357,7 @@ export async function runBundle(
           // before the snapshot. Best-effort: a failure here never aborts the
           // bundle (the raw SQLite file is still captured by the files snapshot).
           fmLease = await leaseBundleFileManager(deps.k8s, namespace, bundleId, acquireFileManagerLease);
+          if (!fmLease) sqliteDidNotRun = 'the file manager could not be started';
           if (fmLease) {
             let sqliteInterrupted = false;
             try {
@@ -390,6 +400,8 @@ export async function runBundle(
           // dbPredumpResults holds (empty on a total orchestration error).
           // eslint-disable-next-line no-console
           console.warn(`[bundle ${bundleId}] pre-dump orchestration error: ${(err as Error).message}`);
+          if (!predumpsRan) databaseDumpsDidNotRun = `the pre-dump step failed: ${(err as Error).message}`;
+          if (!sqliteCaptureComplete && !sqliteDump) sqliteDidNotRun ??= `the pre-dump step failed: ${(err as Error).message}`;
         }
 
         filesResult = await captureFilesComponent({
@@ -858,6 +870,8 @@ export async function runBundle(
       summary: databaseDumps,
       snapshotKept: filesResult !== undefined,
       sqliteCaptureComplete,
+      databaseDumpsDidNotRun,
+      sqliteDidNotRun,
     });
   }
 

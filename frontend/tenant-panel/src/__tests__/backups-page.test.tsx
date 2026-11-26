@@ -20,7 +20,7 @@ vi.mock('../hooks/use-tenant-backups', () => ({
   })),
   useRunBundleNow: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false, error: null })),
   downloadTenantDataExport: vi.fn(),
-  useTenantDatabaseBackups: vi.fn(() => ({ data: { data: { databases: [] } }, isLoading: false, isError: false })),
+  useTenantDatabaseBackups: vi.fn(() => ({ data: { pages: [] }, isLoading: false, isError: false })),
 }));
 
 function wrapper({ children }: { children: React.ReactNode }) {

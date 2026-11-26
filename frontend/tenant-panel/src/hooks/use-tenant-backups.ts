@@ -7,10 +7,10 @@
  * added. Per platform policy, tenants don't set their own schedules.
  */
 
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import { useAuth } from '@/hooks/use-auth';
-import type { BundleSummary, DatabaseBackupStatusList, RestoreJobSummary } from '@insula/api-contracts';
+import type { BundleSummary, DatabaseBackupStatus, PaginationMeta, RestoreJobSummary } from '@insula/api-contracts';
 
 interface BundlesResponse { readonly data: readonly BundleSummary[] }
 interface RunNowResponse {
@@ -28,14 +28,23 @@ export function useTenantBundles() {
   });
 }
 
+interface DatabaseBackupsPage {
+  readonly data: readonly DatabaseBackupStatus[];
+  readonly pagination: PaginationMeta;
+}
+
 /**
  * The last attempt and the last good backup of each of the tenant's
- * databases, as recorded after every bundle.
+ * databases, as recorded after every bundle, a page at a time.
  */
 export function useTenantDatabaseBackups() {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: ['tenant-backups', 'databases'],
-    queryFn: () => apiFetch<{ data: DatabaseBackupStatusList }>('/api/v1/tenant/backups/databases'),
+    queryFn: ({ pageParam }: { pageParam: string | null }) => apiFetch<DatabaseBackupsPage>(
+      pageParam ? `/api/v1/tenant/backups/databases?cursor=${encodeURIComponent(pageParam)}` : '/api/v1/tenant/backups/databases',
+    ),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last: DatabaseBackupsPage) => (last.pagination?.has_more ? last.pagination.cursor : null),
   });
 }
 

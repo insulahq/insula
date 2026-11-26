@@ -947,8 +947,8 @@ export interface AdminDatabaseBackupStalePayload {
   readonly databases: readonly string[];
   readonly databaseCount: string;
   readonly tenantCount: string;
-  /** How old a backup may be before it counts as overdue ("26 hours"). */
-  readonly staleAfter: string;
+  /** The scheduled run they had no good backup in, as "YYYY-MM-DD HH:MM UTC". */
+  readonly missedRun: string;
 }
 /**
  * Tenant databases with no good backup for longer than the schedule allows.
@@ -984,9 +984,10 @@ export async function notifyAdminDatabaseBackupRecovered(
 }
 
 export interface TenantDatabaseBackupStalePayload {
-  /** The tenant's overdue databases, each with its last good backup and why. Rendered as a list. */
+  /** The tenant's overdue databases, each with its last good backup and what went wrong. Rendered as a list. */
   readonly databases: readonly string[];
-  readonly staleAfter: string;
+  /** The scheduled run they had no good backup in. */
+  readonly missedRun: string;
 }
 /** The tenant's own copy: these databases of yours have no recent backup. */
 export async function notifyTenantDatabaseBackupStale(

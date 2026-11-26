@@ -2329,10 +2329,10 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'admin.database_backup_stale',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: 'Database backups overdue: {{databaseCount}} database(s){{#if tenantName}} of {{tenantName}}{{/if}}',
+    subjectTemplate: 'Database backups overdue: {{databaseCount}} database(s){{#if tenantName}} of "{{tenantName}}"{{/if}}',
     bodyTemplate: emailMjml(
       'Tenant database backups overdue',
-      'These databases have had no good backup for more than {{staleAfter}} '
+      'These databases had no good backup in the scheduled backup run of {{missedRun}} '
         + '({{databaseCount}} database(s) in {{tenantCount}} tenant(s)): {{databases}} '
         + 'The files snapshot still copies each database\'s own files, but from the running server, '
         + 'so those copies are not guaranteed to restore. Fix the reason given for each database, '
@@ -2344,29 +2344,29 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'databases', type: 'list', required: true },
       { name: 'databaseCount', type: 'string', required: true },
       { name: 'tenantCount', type: 'string', required: true },
-      { name: 'staleAfter', type: 'string', required: true },
+      { name: 'missedRun', type: 'string', required: true },
     ],
   },
   {
     categoryId: 'admin.database_backup_stale',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: 'Database backups overdue: {{databaseCount}} database(s){{#if tenantName}} of {{tenantName}}{{/if}}',
-    bodyTemplate: 'No good backup for more than {{staleAfter}}: {{databases}}',
+    subjectTemplate: 'Database backups overdue: {{databaseCount}} database(s){{#if tenantName}} of "{{tenantName}}"{{/if}}',
+    bodyTemplate: 'No good backup in the scheduled run of {{missedRun}}: {{databases}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'databases', type: 'list', required: true },
       { name: 'databaseCount', type: 'string', required: true },
       { name: 'tenantCount', type: 'string', required: true },
-      { name: 'staleAfter', type: 'string', required: true },
+      { name: 'missedRun', type: 'string', required: true },
     ],
   },
   {
     categoryId: 'admin.database_backup_recovered',
     channel: 'email',
     locale: 'en',
-    subjectTemplate: 'Database backups working again: {{databaseCount}} database(s){{#if tenantName}} of {{tenantName}}{{/if}}',
+    subjectTemplate: 'Database backups working again: {{databaseCount}} database(s){{#if tenantName}} of "{{tenantName}}"{{/if}}',
     bodyTemplate: emailMjml(
       'Tenant database backups working again',
       'These databases that were reported overdue have been backed up again: {{databases}}',
@@ -2382,7 +2382,7 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     categoryId: 'admin.database_backup_recovered',
     channel: 'in_app',
     locale: 'en',
-    subjectTemplate: 'Database backups working again: {{databaseCount}} database(s){{#if tenantName}} of {{tenantName}}{{/if}}',
+    subjectTemplate: 'Database backups working again: {{databaseCount}} database(s){{#if tenantName}} of "{{tenantName}}"{{/if}}',
     bodyTemplate: 'Backed up again: {{databases}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
@@ -2398,15 +2398,15 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     subjectTemplate: 'Your database backups are overdue',
     bodyTemplate: emailMjml(
       'Your database backups are overdue',
-      'These databases have not been backed up successfully for more than {{staleAfter}}: {{databases}} '
-        + 'Our operators have been alerted at the same time. If a reason is given that you can fix '
+      'These databases were not backed up successfully in the scheduled backup run of {{missedRun}}: {{databases}} '
+        + 'Our operators have been alerted at the same time. If the reason given is one you can fix '
         + 'in your database, fixing it lets the next nightly backup succeed.',
     ),
     bodyFormat: 'mjml',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'databases', type: 'list', required: true },
-      { name: 'staleAfter', type: 'string', required: true },
+      { name: 'missedRun', type: 'string', required: true },
     ],
   },
   {
@@ -2414,12 +2414,12 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Your database backups are overdue',
-    bodyTemplate: 'Not backed up successfully for more than {{staleAfter}}: {{databases}} Our operators are alerted.',
+    bodyTemplate: 'Not backed up successfully in the scheduled run of {{missedRun}}: {{databases}} Our operators are alerted.',
     bodyFormat: 'plaintext',
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'databases', type: 'list', required: true },
-      { name: 'staleAfter', type: 'string', required: true },
+      { name: 'missedRun', type: 'string', required: true },
     ],
   },
   {

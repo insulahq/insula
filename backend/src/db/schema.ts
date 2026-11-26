@@ -4685,8 +4685,6 @@ export const nodeHealthState = pgTable('node_health_state', {
 export type NodeHealthState = typeof nodeHealthState.$inferSelect;
 export type NewNodeHealthState = typeof nodeHealthState.$inferInsert;
 
-// Migration 0133 — per-tenant resource-saturation EPISODES.
-//
 /**
  * One row per tenant database: its last backup attempt and its last good one
  * (migration 0187). Written after every bundle from its `database_dumps`
@@ -4713,12 +4711,16 @@ export const databaseBackupStatus = pgTable('database_backup_status', {
   lastSuccessSizeBytes: bigint('last_success_size_bytes', { mode: 'number' }),
   staleSince: timestamp('stale_since', { withTimezone: true }),
   alertedAt: timestamp('alerted_at', { withTimezone: true }),
+  /** When this database last caused an overdue alert; survives the episode (migration 0188). */
+  lastAlertedAt: timestamp('last_alerted_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   primaryKey({ columns: [table.tenantId, table.subjectKey, table.databaseName] }),
   index('database_backup_status_stale_idx').on(table.staleSince).where(sql`stale_since IS NOT NULL`),
 ]);
 
+// Migration 0133 — per-tenant resource-saturation EPISODES.
+//
 // One row per (tenant, resource); `level` is a column so warning→critical is a
 // transition inside one episode instead of a second row that can never clear.
 // Replaces an hour-bucketed dedupe key that re-announced a sustained condition

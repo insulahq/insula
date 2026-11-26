@@ -31,7 +31,7 @@
  *      lines as evidence).
  */
 
-import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { backupSchedules, tenants, hostingPlans } from '../../db/schema.js';
 import { cronMatchesMinuteInZone } from '../../shared/cron-match.js';
 import { resolvePlatformTimeZone } from '../system-settings/platform-timezone.js';
@@ -91,7 +91,11 @@ export async function selectWaveTenants(
       ${tenants.status} NOT IN ('archived', 'suspended')
       AND COALESCE(${tenants.includeInScheduledBundlesOverride},
                    ${hostingPlans.includeInScheduledBundles}) = TRUE
-    `);
+    `)
+    // A stable order: each tenant is bundled at about the same point of every
+    // wave, so the time between two of its nightly backups stays close to the
+    // schedule's interval instead of swinging by the length of the wave.
+    .orderBy(asc(tenants.createdAt), asc(tenants.id));
 }
 
 export async function runGlobalBundleTick(app: FastifyInstance, now: Date = new Date()): Promise<TickResult> {

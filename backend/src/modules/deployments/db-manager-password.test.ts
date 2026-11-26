@@ -131,6 +131,17 @@ describe('redactDbSecrets', () => {
     ['mariadb -u root -pS3cret -e x', 'mariadb -u root -p*** -e x'],
     ["sh -c cat f | mariadb -u root -p'S3cret' db", 'sh -c cat f | mariadb -u root -p*** db'],
     ['mongosh --password S3cret', 'mongosh --password ***'],
+    // A quoted password with a space or an escaped quote is one shell word:
+    // no tail of it may survive.
+    ["sh -c cat f | mariadb -u root -p'a'\\''b' db", 'sh -c cat f | mariadb -u root -p*** db'],
+    ["mariadb -u root -p'a b c' -e x", 'mariadb -u root -p*** -e x'],
+    ["mysqldump --password='a b' db", 'mysqldump --password=*** db'],
+    ["mysqldump --password \"a \\\"b\" db", 'mysqldump --password *** db'],
+    ["mongodump -u root -p 'a '\\''b' --archive", 'mongodump -u root -p *** --archive'],
+    ["env MYSQL_PWD='s3 cret' mysql -u root", 'env MYSQL_PWD=*** mysql -u root'],
+    ['PGPASSWORD="x y" psql', 'PGPASSWORD=*** psql'],
+    // The exec status can wrap the command line over several lines.
+    ["error executing command [sh -c mariadb-dump -u root\n-p'line two pw' -- shop], exit code 2", 'error executing command [sh -c mariadb-dump -u root\n-p*** -- shop], exit code 2'],
     // mongodump's -p takes the password as its own word; the exec status
     // message echoes the whole command when stderr is empty.
     ["sh -c mongodump --db=app -u 'root' -p 'S3cret' --authenticationDatabase admin", "sh -c mongodump --db=app -u 'root' -p *** --authenticationDatabase admin"],

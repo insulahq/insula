@@ -90,6 +90,14 @@ function loadKubeConfig(kubeconfigPath?: string): KubeConfig {
 }
 
 /**
+ * One shell word, the way `sh -c` reads it: single-quoted runs (which can hold
+ * spaces), double-quoted runs, backslash escapes and plain characters, back to
+ * back. Matching only `\S+` left the tail of a quoted password that holds a
+ * space or an escaped quote (`-p'a b'`, `-p'a'\''b'`) in the text.
+ */
+const SHELL_WORD = String.raw`(?:'[^']*'|"(?:[^"\\]|\\.)*"|\\.|[^\s'"\\])+`;
+
+/**
  * Strip credentials from text that came from (or echoes) an exec command line.
  * The k8s exec status message embeds the full argv — `-p<root password>` and,
  * for ALTER USER / CREATE USER, the new password — so it must never reach an
@@ -97,13 +105,13 @@ function loadKubeConfig(kubeconfigPath?: string): KubeConfig {
  */
 export function redactDbSecrets(text: string): string {
   return text
-    .replace(/(^|\s)-p(?=\S)\S+/g, '$1-p***')
+    .replace(new RegExp(`(^|\\s)-p(?=\\S)${SHELL_WORD}`, 'g'), '$1-p***')
     // mongosh / mongodump / mongorestore take the password as its own word
     // (`-p '<pw>'`); the exec status echoes it like any other argument. Only
     // after a Mongo tool's name, so `mkdir -p /data` keeps its path.
-    .replace(/(\bmongo(?:sh|dump|restore)?\b[^\n]*?\s)-p\s+(?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|\S+)/g, '$1-p ***')
-    .replace(/--password(=|\s+)\S+/gi, '--password$1***')
-    .replace(/PGPASSWORD=\S+/g, 'PGPASSWORD=***')
+    .replace(new RegExp(`(\\bmongo(?:sh|dump|restore)?\\b[^\\n]*?\\s)-p\\s+${SHELL_WORD}`, 'g'), '$1-p ***')
+    .replace(new RegExp(`--password(=|\\s+)${SHELL_WORD}`, 'gi'), '--password$1***')
+    .replace(new RegExp(`\\b(PGPASSWORD|MYSQL_PWD)=${SHELL_WORD}`, 'g'), '$1=***')
     .replace(/(IDENTIFIED\s+(?:VIA\s+\S+\s+USING|BY)\s+(?:PASSWORD\s*)?\(?\s*)'(?:[^'\\]|\\.)*'/gi, "$1'***'")
     .replace(/(PASSWORD\s*\(?\s*)'(?:[^'\\]|\\.)*'/gi, "$1'***'");
 }

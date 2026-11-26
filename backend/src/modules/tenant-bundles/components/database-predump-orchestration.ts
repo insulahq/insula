@@ -14,7 +14,7 @@
  * remains a thin coordinator that calls this once.
  */
 
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, isNull, notInArray, sql } from 'drizzle-orm';
 import { heldPastExpiry } from '../bundle-hold.js';
 import type { Database } from '../../../db/index.js';
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
@@ -70,6 +70,12 @@ export async function runPreCaptureDatabaseDumps(
       and(
         eq(deployments.tenantId, args.tenantId),
         eq(catalogEntries.type, 'database'),
+        // A deleted deployment has nothing to dump, and a stopped one has no
+        // running server to dump it from; its last dump stays its backup.
+        // Listing either produced a "(deployment)" failure every night — and
+        // an overdue-backup alert for a database nobody runs.
+        isNull(deployments.deletedAt),
+        notInArray(deployments.status, ['deleted', 'stopped']),
       ),
     );
 

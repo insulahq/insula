@@ -8,6 +8,8 @@
 import { Loader2 } from 'lucide-react';
 import type { AdminDatabaseBackupStatus } from '@insula/api-contracts';
 import TimeCell from '@/components/ui/TimeCell';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 import { formatBytes } from '@/lib/format-bytes';
 import { useTenantDatabaseBackups } from '@/hooks/use-database-backups';
 import { Card, Chip, type Tone } from './ui';
@@ -16,6 +18,13 @@ const STATUS: Readonly<Record<AdminDatabaseBackupStatus['lastStatus'], { label: 
   dumped: { label: 'Backed up', tone: 'ok' },
   degraded: { label: 'Skipped', tone: 'warn' },
   failed: { label: 'Failed', tone: 'bad' },
+};
+
+/** Stopped and removed instances are not judged overdue; say why, next to the name. */
+const INSTANCE: Readonly<Record<AdminDatabaseBackupStatus['instanceState'], { label: string; title: string } | null>> = {
+  active: null,
+  stopped: { label: 'Stopped', title: 'The database instance is stopped: it is not backed up and not reported overdue until it runs again.' },
+  removed: { label: 'Removed', title: 'The database instance was deleted; this row goes with the next backup.' },
 };
 
 export function DatabaseBackupsTable({ databases, showTenant = false }: {
@@ -36,6 +45,7 @@ export function DatabaseBackupsTable({ databases, showTenant = false }: {
       <tbody>
         {databases.map((d) => {
           const s = STATUS[d.lastStatus];
+          const inst = INSTANCE[d.instanceState];
           return (
             <tr
               key={`${d.tenantId}|${d.subjectKey}|${d.databaseName}`}
@@ -53,7 +63,12 @@ export function DatabaseBackupsTable({ databases, showTenant = false }: {
                   )}
                 </div>
               </td>
-              <td className="px-5 py-3 text-gray-700 dark:text-gray-300">{d.instanceLabel}</td>
+              <td className="px-5 py-3 text-gray-700 dark:text-gray-300">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="break-all">{d.instanceLabel}</span>
+                  {inst && <Chip tone="neutral" title={inst.title} testId="database-backup-instance-state">{inst.label}</Chip>}
+                </div>
+              </td>
               <td className="px-5 py-3 text-gray-700 dark:text-gray-300">
                 {d.lastSuccessAt ? (
                   <>
@@ -71,8 +86,11 @@ export function DatabaseBackupsTable({ databases, showTenant = false }: {
                   <Chip tone={s.tone}>{s.label}</Chip>
                   <span className="text-gray-500 dark:text-gray-400"><TimeCell iso={d.lastAttemptAt} /></span>
                 </div>
+                {d.lastErrorLabel && (
+                  <p className="mt-1 text-xs font-medium text-gray-700 dark:text-gray-300" data-testid="database-backup-error-kind">{d.lastErrorLabel}</p>
+                )}
                 {d.lastError && (
-                  <p className="mt-1 max-w-xl break-words text-xs text-gray-600 dark:text-gray-400" data-testid="database-backup-error">
+                  <p className="mt-0.5 max-w-xl break-words text-xs text-gray-600 dark:text-gray-400" data-testid="database-backup-error">
                     {d.lastError}
                   </p>
                 )}
@@ -85,9 +103,32 @@ export function DatabaseBackupsTable({ databases, showTenant = false }: {
   );
 }
 
+/** "Show more" under a paged table; renders nothing when there is no next page. */
+export function ShowMore({ hasNextPage, isFetchingNextPage, fetchNextPage }: {
+  readonly hasNextPage: boolean;
+  readonly isFetchingNextPage: boolean;
+  readonly fetchNextPage: () => unknown;
+}) {
+  if (!hasNextPage) return null;
+  return (
+    <div className="border-t border-gray-100 px-5 py-3 dark:border-gray-700">
+      <button
+        type="button"
+        onClick={() => { void fetchNextPage(); }}
+        disabled={isFetchingNextPage}
+        className="inline-flex items-center gap-2 rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+        data-testid="database-backups-show-more"
+      >
+        {isFetchingNextPage && <Loader2 size={12} className="animate-spin" />}
+        Show more
+      </button>
+    </div>
+  );
+}
+
 export default function DatabaseBackupsCard({ tenantId }: { readonly tenantId: string }) {
   const q = useTenantDatabaseBackups(tenantId);
-  const databases = q.data?.data?.databases ?? [];
+  const databases = q.data?.pages.flatMap((p) => p.data ?? []) ?? [];
   const overdue = databases.filter((d) => d.overdue).length;
   return (
     <Card
@@ -106,13 +147,16 @@ export default function DatabaseBackupsCard({ tenantId }: { readonly tenantId: s
       {q.isLoading ? (
         <div className="flex items-center gap-2 px-5 py-4 text-sm text-gray-500 dark:text-gray-400"><Loader2 size={14} className="animate-spin" /> Loading…</div>
       ) : q.error ? (
-        <p className="px-5 py-4 text-sm text-red-600 dark:text-red-400">Failed to load database backups.</p>
+        <div className="p-5"><ErrorPanel error={extractOperatorError(q.error)} onRetry={() => { void q.refetch(); }} compact testId="database-backups-error-panel" /></div>
       ) : databases.length === 0 ? (
         <p className="px-5 py-4 text-sm text-gray-600 dark:text-gray-400">
           No databases recorded yet. Databases appear here after the next backup of this tenant.
         </p>
       ) : (
-        <DatabaseBackupsTable databases={databases} />
+        <>
+          <DatabaseBackupsTable databases={databases} />
+          <ShowMore hasNextPage={q.hasNextPage} isFetchingNextPage={q.isFetchingNextPage} fetchNextPage={q.fetchNextPage} />
+        </>
       )}
     </Card>
   );

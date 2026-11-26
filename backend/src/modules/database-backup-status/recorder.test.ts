@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { BackupDatabaseDumps } from '@insula/api-contracts';
 import {
   DEPLOYMENT_ENTRY,
+  DUMPS_DID_NOT_RUN_PREFIX,
   ERROR_MAX_CHARS,
+  MAX_ROWS_PER_SUBJECT,
+  MAX_ROWS_PER_TENANT,
+  MORE_DATABASES_ENTRY,
+  NAME_MAX_CHARS,
   SNAPSHOT_NOT_KEPT_ERROR,
   SQLITE_DISCOVERY_ENTRY,
   SQLITE_SUBJECT,
@@ -34,7 +39,7 @@ function row(databaseName: string, over: Partial<DatabaseBackupRow> = {}): Datab
     tenantId: T, subjectKey: DEP, databaseName, deploymentId: DEP, deploymentName: 'my-mariadb', engine: 'mariadb',
     lastAttemptAt: NIGHT1, lastAttemptBundleId: 'bkp-1', lastStatus: 'dumped', lastError: null,
     lastSuccessAt: NIGHT1, lastSuccessBundleId: 'bkp-1', lastSuccessSizeBytes: 100,
-    staleSince: null, alertedAt: null, createdAt: new Date('2026-11-01T00:00:00Z'), ...over,
+    staleSince: null, alertedAt: null, lastAlertedAt: null, createdAt: new Date('2026-11-01T00:00:00Z'), ...over,
   };
 }
 
@@ -69,9 +74,9 @@ describe('planDatabaseBackupRecord — what a bundle records', () => {
 
   it('keeps the episode state the sweep owns', () => {
     const stale = new Date('2026-11-22T04:00:00Z');
-    const plan = planDatabaseBackupRecord([row('shop', { staleSince: stale, alertedAt: stale })],
+    const plan = planDatabaseBackupRecord([row('shop', { staleSince: stale, alertedAt: stale, lastAlertedAt: stale })],
       outcome(summary([{ name: 'shop', status: 'dumped', sizeBytes: 1 }])), live);
-    expect(plan.upserts[0]).toMatchObject({ staleSince: stale, alertedAt: stale, lastSuccessAt: NIGHT2 });
+    expect(plan.upserts[0]).toMatchObject({ staleSince: stale, alertedAt: stale, lastAlertedAt: stale, lastSuccessAt: NIGHT2 });
   });
 
   it('never stores a password an error echoed from the dump command', () => {
@@ -151,5 +156,70 @@ describe('planDatabaseBackupRecord — pruning only on positive evidence', () =>
       expect(plan.deletes).toEqual([]);
       expect(plan.upserts).toEqual([expect.objectContaining({ databaseName: SQLITE_DISCOVERY_ENTRY, lastStatus: 'failed' })]);
     });
+  });
+});
+
+describe('planDatabaseBackupRecord — dumps that did not run', () => {
+  it('stamps the live databases it did not reach as failed, keeping their last good backup', () => {
+    const plan = planDatabaseBackupRecord(
+      [row('shop'), row('crm')],
+      outcome({ status: 'none', deployments: [] }, { databaseDumpsDidNotRun: 'the pre-dump step failed: boom' }),
+      live,
+    );
+    expect(plan.deletes).toEqual([]);
+    expect(plan.upserts.map((u) => [u.databaseName, u.lastStatus, u.lastAttemptAt, u.lastSuccessAt])).toEqual([
+      ['shop', 'failed', NIGHT2, NIGHT1], ['crm', 'failed', NIGHT2, NIGHT1],
+    ]);
+    expect(plan.upserts[0]!.lastError).toBe(`${DUMPS_DID_NOT_RUN_PREFIX}: the pre-dump step failed: boom`);
+  });
+
+  it('stamps SQLite rows when the SQLite capture did not run, without pruning them', () => {
+    const sqlite = row('/data/a.db', { subjectKey: SQLITE_SUBJECT, deploymentId: null, engine: 'sqlite' });
+    const plan = planDatabaseBackupRecord([sqlite], outcome({ status: 'none', deployments: [] },
+      { sqliteCaptureComplete: false, sqliteDidNotRun: 'the file manager could not be started' }), live);
+    expect(plan.deletes).toEqual([]);
+    expect(plan.upserts[0]).toMatchObject({ databaseName: '/data/a.db', lastStatus: 'failed' });
+  });
+
+  it('a deleted deployment is still pruned, not stamped', () => {
+    const plan = planDatabaseBackupRecord([row('wiki', { subjectKey: 'dep-gone' })],
+      outcome({ status: 'none', deployments: [] }, { databaseDumpsDidNotRun: 'x' }), new Set());
+    expect(plan.deletes).toEqual([{ subjectKey: 'dep-gone', databaseName: 'wiki' }]);
+    expect(plan.upserts).toEqual([]);
+  });
+});
+
+describe('planDatabaseBackupRecord — bounded by what a tenant controls', () => {
+  it('cuts a long name, keeping a hash of the whole so two long names stay apart', () => {
+    const a = `/data/${'x'.repeat(400)}/a.db`;
+    const b = `/data/${'x'.repeat(400)}/b.db`;
+    const sqlite = (names: string[]): BackupDatabaseDumps => ({ status: 'ok', deployments: [
+      { deploymentId: '', deploymentName: '(sqlite files)', engine: 'sqlite', databases: names.map((n) => ({ name: n, status: 'dumped' as const, sizeBytes: 1 })) },
+    ] });
+    const plan = planDatabaseBackupRecord([], outcome(sqlite([a, b])), live);
+    const names = plan.upserts.map((u) => u.databaseName);
+    expect(names.every((n) => n.length <= NAME_MAX_CHARS)).toBe(true);
+    expect(new Set(names).size).toBe(2);
+    // the same name always maps to the same key
+    expect(planDatabaseBackupRecord([], outcome(sqlite([a])), live).upserts[0]!.databaseName).toBe(names[0]);
+  });
+
+  it('folds a subject\'s databases past the cap into one counted row, worst status first', () => {
+    const many = Array.from({ length: MAX_ROWS_PER_SUBJECT + 40 }, (_, i) => ({
+      name: `db${String(i).padStart(4, '0')}`, status: (i === 120 ? 'failed' : 'dumped') as 'failed' | 'dumped', sizeBytes: 10,
+    }));
+    const plan = planDatabaseBackupRecord([], outcome(summary(many)), live);
+    expect(plan.upserts).toHaveLength(MAX_ROWS_PER_SUBJECT);
+    const more = plan.upserts.find((u) => u.databaseName === MORE_DATABASES_ENTRY)!;
+    expect(more).toMatchObject({ lastStatus: 'failed', lastError: '1 of 41 further databases were not backed up' });
+  });
+
+  it('a tenant with many subjects keeps under its overall cap', () => {
+    const deps = Array.from({ length: 20 }, (_, d) => ({
+      deploymentId: `dep-${d}`, deploymentName: `db-${d}`, engine: 'mariadb',
+      databases: Array.from({ length: 60 }, (_, i) => ({ name: `d${i}`, status: 'dumped' as const, sizeBytes: 1 })),
+    }));
+    const plan = planDatabaseBackupRecord([], outcome({ status: 'ok', deployments: deps }), new Set(deps.map((d) => d.deploymentId)));
+    expect(plan.upserts.length).toBeLessThanOrEqual(MAX_ROWS_PER_TENANT);
   });
 });
