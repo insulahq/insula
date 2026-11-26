@@ -34,6 +34,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   PostgreSQL image, and an operator update that also changes how the database pods are built.
   `upgrade-cnpg.sh` now passes the same settings as `bootstrap.sh`. Before, it dropped this
   setting and the operator's reconcile limit (3) whenever it ran.
+- **The Files page's "used" figure now comes from the volume itself.** It used to add up every
+  file with `du`, after every upload, delete and trash action. Now it is the volume's size minus
+  its free space, the figure that reaches 100% exactly when writes start failing. It can read a
+  little higher than before, because it counts the file system's own metadata. On a test volume
+  of 300,000 empty files the two differed by 250 MB of 2 GB; on ordinary volumes the difference
+  is small. The walk was also a memory risk: on lab DEV, `du` over 300,000 files charged 116 MiB
+  of metadata cache to the file manager's 256 MiB limit, the same failure the backup hit (see
+  Fixed).
 
 ### Fixed
 

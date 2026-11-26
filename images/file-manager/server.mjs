@@ -1216,20 +1216,24 @@ function parseDf(dfOut) {
   const mountIdx = fields.length - 1;
   const totalBytes = parseInt(fields[mountIdx - 4], 10) || 0;
   const availableBytes = parseInt(fields[mountIdx - 2], 10) || 0;
-  return { totalBytes, availableBytes };
+  // What the volume has spent, by its own count: the bar then reaches 100%
+  // exactly when writes start failing.
+  const usedBytes = Math.max(0, totalBytes - availableBytes);
+  return { totalBytes, availableBytes, usedBytes };
 }
 
 async function handleDiskUsage(req, res) {
   try {
-    // Use du for actual bytes used — runs as root so it can read all dirs
-    // (database data owned by mysql/postgres user).
-    const { stdout: duOut } = await execFileAsync('du', ['-sb', BASE], { timeout: 30_000 });
-    const usedBytes = parseInt(duOut.split('\t')[0], 10) || 0;
-
-    // df gives PVC capacity on real block storage (correct in production).
-    // On local-path provisioner (local dev), it returns host FS size — acceptable trade-off.
+    // The volume's own counters, read in constant time. Used to be
+    // `du -sb /data`, which stats every file: the inode cache that fills is
+    // charged to this container's memory limit, and the panel re-reads disk
+    // usage after every upload, delete and trash action. On a volume of
+    // ~480k files that cache reached ~240 MB of the 256 MiB limit, after which
+    // a write to the volume — which cannot reclaim it — OOM-kills the file
+    // manager. df gives PVC figures on real block storage (production); on the
+    // local-path provisioner (local dev) they are the host filesystem's.
     const { stdout: dfOut } = await execFileAsync('df', ['-B1', BASE], { timeout: 10_000 });
-    const { totalBytes, availableBytes } = parseDf(dfOut);
+    const { totalBytes, availableBytes, usedBytes } = parseDf(dfOut);
 
     // The recycle bin has NO size cap by design — an automatic size-driven
     // purge would delete one tenant's files because another filled the bin.
