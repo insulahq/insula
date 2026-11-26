@@ -55,6 +55,7 @@ import {
   type PreDumpDeploymentResult,
 } from './components/database-predump-orchestration.js';
 import { removePartialSqliteDumps, runSqliteCapture } from './components/sqlite-predump.js';
+import { recordDatabaseBackupResults } from '../database-backup-status/recorder.js';
 import { leaseBundleFileManager, predumpsNeedCleanup } from './components/bundle-file-manager.js';
 import { acquireFileManagerLease, type FileManagerLease } from '../file-manager/lease.js';
 import { recordResticSnapshot, recordResticRunFailed } from './repo-state.js';
@@ -293,6 +294,10 @@ export async function runBundle(
   // SQLite files discovered + logically dumped on the PVC (not a catalog DB
   // deployment). Folded into the database-dump summary as an 'sqlite' entry.
   let sqliteDump: Awaited<ReturnType<typeof runSqliteCapture>>['entry'] = null;
+  // The SQLite capture ran to its end without a dump cut short: only then
+  // does a SQLite file missing from it mean the file is gone
+  // (database-backup-status/recorder.ts).
+  let sqliteCaptureComplete = false;
 
   const tasks: Array<Promise<void>> = [];
 
@@ -354,6 +359,7 @@ export async function runBundle(
               });
               sqliteDump = capture.entry;
               sqliteInterrupted = capture.interrupted;
+              sqliteCaptureComplete = !capture.interrupted;
             } catch (err) {
               // eslint-disable-next-line no-console
               console.warn(`[bundle ${bundleId}] sqlite pre-dump error: ${(err as Error).message}`);
@@ -701,12 +707,14 @@ export async function runBundle(
   // mailboxes still produces a fully-completed bundle.
   const status: 'completed' | 'partial' = errors.length === 0 ? 'completed' : 'partial';
 
-  // Database logical-dump summary — a SEPARATE dimension from `status`. A
-  // degraded/failed logical dump never blocks restore (the raw-files
-  // component always captures each database's crash-consistent on-disk
-  // directory), so it must NOT flip the bundle to `partial`; it is surfaced
-  // to the operator here instead. Null when files weren't requested (the
-  // dumps live inside the files snapshot, so there's nothing to summarise).
+  // Database logical-dump summary — a SEPARATE dimension from `status`: a
+  // degraded/failed logical dump does not flip the bundle to `partial`. It is
+  // recorded per database (database_backup_status) and alerted on when a
+  // database goes without a good dump for longer than the schedule allows.
+  // The files snapshot also copies each database's own files, but from the
+  // running server, so those copies are not guaranteed to restore. Null when
+  // files weren't requested (the dumps live inside the files snapshot, so
+  // there's nothing to summarise).
   const databaseDumps = input.components.files
     ? buildDatabaseDumpsSummary(dbPredumpResults, sqliteDump ? [sqliteDump] : [])
     : null;
@@ -838,6 +846,20 @@ export async function runBundle(
       databaseDumps,
     })
     .where(eq(backupJobs.id, bundleId));
+
+  // Standing per-database status: what the stale-backup alert and both panels
+  // read. A dump only counts as a backup when the files snapshot that carries
+  // it completed. Never throws.
+  if (databaseDumps) {
+    await recordDatabaseBackupResults(deps.db, {
+      tenantId: input.tenantId,
+      bundleId,
+      at: new Date(),
+      summary: databaseDumps,
+      snapshotKept: filesResult !== undefined,
+      sqliteCaptureComplete,
+    });
+  }
 
   // Mirror terminal state to the chip + bell.
   //

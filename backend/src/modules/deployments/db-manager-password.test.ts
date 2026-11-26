@@ -131,6 +131,10 @@ describe('redactDbSecrets', () => {
     ['mariadb -u root -pS3cret -e x', 'mariadb -u root -p*** -e x'],
     ["sh -c cat f | mariadb -u root -p'S3cret' db", 'sh -c cat f | mariadb -u root -p*** db'],
     ['mongosh --password S3cret', 'mongosh --password ***'],
+    // mongodump's -p takes the password as its own word; the exec status
+    // message echoes the whole command when stderr is empty.
+    ["sh -c mongodump --db=app -u 'root' -p 'S3cret' --authenticationDatabase admin", "sh -c mongodump --db=app -u 'root' -p *** --authenticationDatabase admin"],
+    ['mongosh -u root -p S3cret --quiet', 'mongosh -u root -p *** --quiet'],
     ['PGPASSWORD=S3cret psql', 'PGPASSWORD=*** psql'],
     ["ALTER USER 'a'@'%' IDENTIFIED BY 'S3cret'", "ALTER USER 'a'@'%' IDENTIFIED BY '***'"],
     ["CREATE USER `a`@`%` IDENTIFIED BY PASSWORD '*ABC'", "CREATE USER `a`@`%` IDENTIFIED BY PASSWORD '***'"],

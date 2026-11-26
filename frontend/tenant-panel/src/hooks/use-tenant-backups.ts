@@ -10,7 +10,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import { useAuth } from '@/hooks/use-auth';
-import type { BundleSummary, RestoreJobSummary } from '@insula/api-contracts';
+import type { BundleSummary, DatabaseBackupStatusList, RestoreJobSummary } from '@insula/api-contracts';
 
 interface BundlesResponse { readonly data: readonly BundleSummary[] }
 interface RunNowResponse {
@@ -25,6 +25,17 @@ export function useTenantBundles() {
   return useQuery({
     queryKey: ['tenant-backups', 'bundles'],
     queryFn: () => apiFetch<BundlesResponse>('/api/v1/tenant/backups/bundles'),
+  });
+}
+
+/**
+ * The last attempt and the last good backup of each of the tenant's
+ * databases, as recorded after every bundle.
+ */
+export function useTenantDatabaseBackups() {
+  return useQuery({
+    queryKey: ['tenant-backups', 'databases'],
+    queryFn: () => apiFetch<{ data: DatabaseBackupStatusList }>('/api/v1/tenant/backups/databases'),
   });
 }
 

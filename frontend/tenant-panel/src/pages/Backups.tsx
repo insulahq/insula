@@ -15,6 +15,7 @@ import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import TimeCell from '@/components/ui/TimeCell';
+import DatabaseBackupsCard from '@/components/DatabaseBackupsCard';
 
 function formatBytes(bytes: number | null): string {
   if (bytes === null || bytes === 0) return '-';
@@ -109,6 +110,8 @@ export default function Backups() {
           <span>{(runNow.error as Error).message}</span>
         </div>
       )}
+
+      <DatabaseBackupsCard />
 
       {carts.length > 0 && (
         <div
@@ -234,7 +237,20 @@ export default function Backups() {
                       {b.label ?? b.id.slice(0, 12)}
                     </td>
                     <td className="px-6 py-3 text-gray-600 dark:text-gray-400">{b.initiator}</td>
-                    <td className="px-6 py-3"><StatusBadge status={b.status} /></td>
+                    <td className="px-6 py-3">
+                      <StatusBadge status={b.status} />
+                      {/* A bundle can finish while a database dump in it
+                          failed; the bundle status cannot say so. */}
+                      {b.databaseDumps?.status === 'degraded' && (
+                        <span
+                          className="mt-1 block text-xs text-amber-700 dark:text-amber-300"
+                          data-testid={`bundle-db-dumps-degraded-${b.id}`}
+                          title="See Database backups above for which databases and why"
+                        >
+                          Not every database dumped
+                        </span>
+                      )}
+                    </td>
                     <td className="hidden px-6 py-3 text-gray-600 dark:text-gray-400 sm:table-cell">{formatBytes(b.sizeBytes)}</td>
                     <td className="hidden px-6 py-3 text-gray-600 dark:text-gray-400 md:table-cell">
                       {b.resticAddedBytes == null

@@ -98,6 +98,10 @@ function loadKubeConfig(kubeconfigPath?: string): KubeConfig {
 export function redactDbSecrets(text: string): string {
   return text
     .replace(/(^|\s)-p(?=\S)\S+/g, '$1-p***')
+    // mongosh / mongodump / mongorestore take the password as its own word
+    // (`-p '<pw>'`); the exec status echoes it like any other argument. Only
+    // after a Mongo tool's name, so `mkdir -p /data` keeps its path.
+    .replace(/(\bmongo(?:sh|dump|restore)?\b[^\n]*?\s)-p\s+(?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|\S+)/g, '$1-p ***')
     .replace(/--password(=|\s+)\S+/gi, '--password$1***')
     .replace(/PGPASSWORD=\S+/g, 'PGPASSWORD=***')
     .replace(/(IDENTIFIED\s+(?:VIA\s+\S+\s+USING|BY)\s+(?:PASSWORD\s*)?\(?\s*)'(?:[^'\\]|\\.)*'/gi, "$1'***'")
@@ -2457,8 +2461,9 @@ export async function exportDatabaseToPvc(
     // is captured by the files snapshot alongside the raw WiredTiger dir.
     // `mongodump` may be absent in a bring-your-own MongoDB image — surface
     // that as EXPORT_NOT_AVAILABLE so the caller can record a VISIBLE
-    // degraded dump (the crash-consistent raw-files snapshot still covers
-    // the data) rather than a silent gap.
+    // degraded dump rather than a silent gap. (The files snapshot copies the
+    // raw data directory too, but from the running server, so that copy is
+    // not guaranteed to restore.)
     const authArgs = ctx.rootPassword
       ? `-u ${shellEscape(ctx.rootUsername)} -p ${shellEscape(ctx.rootPassword)} --authenticationDatabase admin`
       : '';
@@ -2474,7 +2479,7 @@ export async function exportDatabaseToPvc(
       if (isBinaryNotFoundError(err)) {
         throw new ApiError(
           'EXPORT_NOT_AVAILABLE',
-          'mongodump is not available in this MongoDB container image; the crash-consistent raw-files snapshot still captures this database.',
+          'mongodump is not available in this MongoDB container image, so this database has no logical backup. The files snapshot copies its data files, but from the running server, so that copy is not guaranteed to restore.',
           400,
         );
       }

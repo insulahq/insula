@@ -50,6 +50,7 @@ import SnapshotDataSize from '@/components/SnapshotDataSize';
 import SnapshotRestoreProgressModal from '@/components/SnapshotRestoreProgressModal';
 import { DATA_SIZE_HELP, VOLUME_SIZE_HELP, formatVolumeSize } from '@/lib/format-snapshot-size';
 import DeletedTenantsCard from '@/components/backups/DeletedTenantsCard';
+import OverdueDatabaseBackupsCard from '@/components/backups/OverdueDatabaseBackupsCard';
 import ClassStorageTotal from '@/components/backups/ClassStorageTotal';
 import { formatBytes } from '@/lib/format-bytes';
 
@@ -1321,6 +1322,7 @@ export default function TenantsBackupsPage() {
           <div className="space-y-3">
             {errorBanner}
             <ClassStorageTotal cls="tenant" />
+            <OverdueDatabaseBackupsCard />
             <DeletedTenantsCard />
             <div className="flex items-center justify-end">
               <button

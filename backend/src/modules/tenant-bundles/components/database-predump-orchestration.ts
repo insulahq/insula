@@ -173,11 +173,12 @@ export async function runPreCaptureDatabaseDumps(
  * {@link BackupDatabaseDumps} summary persisted on the bundle.
  *
  * The summary is a SEPARATE dimension from the bundle's `status`: a bundle can
- * be `completed` while its database dumps are `degraded`. The raw-files
- * component always captures each database's crash-consistent on-disk directory,
- * so a degraded/failed logical dump never blocks restore — it only means the
- * portable, cross-version logical layer is absent for those databases, which
- * the operator surfaces from this summary.
+ * be `completed` while its database dumps are `degraded`. The files component
+ * also copies each database's on-disk directory, but it reads the live volume
+ * while the server runs, over minutes — that copy is not crash-consistent and
+ * is not guaranteed to restore. The dump is the database's backup; the summary
+ * is recorded per database (database_backup_status) and an overdue one is
+ * alerted on.
  */
 export function buildDatabaseDumpsSummary(
   results: ReadonlyArray<PreDumpDeploymentResult>,
@@ -223,7 +224,7 @@ export function buildDatabaseDumpsSummary(
       : 'ok';
 
   const remediation = status === 'degraded'
-    ? 'One or more databases have no fresh logical dump in this bundle. The crash-consistent raw-files snapshot still captures them, so the bundle remains restorable; to also get a portable/cross-version logical dump, resolve the per-database reason shown (install the dump tool in a bring-your-own image, grow a full PVC, or use a supported engine) and re-run the bundle.'
+    ? 'One or more databases have no fresh logical dump in this bundle, so this bundle holds no reliable backup of them. The files snapshot copies their data files too, but from the running server, so those copies are not guaranteed to restore. Resolve the reason shown for each database (install the dump tool in a bring-your-own image, grow a full volume, or fix the database itself) and re-run the bundle.'
     : null;
 
   return { status, deployments, remediation };

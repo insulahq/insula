@@ -124,6 +124,10 @@ const SUBJECT_VARS = new Set([
   // (tenant.workload_disk_limit, R37). A list on every channel, per the
   // standing rule that several items are never one paragraph.
   "workloads",
+  // `databases` is the same kind of subject as `workloads`: every database an
+  // overdue-backup notice is about, each naming its instance and database,
+  // as a list (admin.database_backup_stale and its tenant copy).
+  "databases",
 ]);
 // NOT in that list, deliberately: `userName`, `contactName` and `greeting`.
 // They name the RECIPIENT, not the subject, and the shared email wrapper

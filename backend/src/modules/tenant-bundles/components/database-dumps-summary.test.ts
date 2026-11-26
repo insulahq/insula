@@ -51,7 +51,11 @@ describe('buildDatabaseDumpsSummary', () => {
       }),
     ]);
     expect(s.status).toBe('degraded');
-    expect(s.remediation).toMatch(/raw-files snapshot/i);
+    // The remediation must not promise the raw data files as a fallback: they
+    // are copied from the running server and are not guaranteed to restore.
+    expect(s.remediation).toMatch(/no reliable backup/i);
+    expect(s.remediation).toMatch(/not guaranteed to restore/i);
+    expect(s.remediation).not.toMatch(/crash-consistent|remains restorable/i);
     expect(s.deployments[0]?.databases[0]).toMatchObject({ name: 'appdb', status: 'degraded' });
   });
 

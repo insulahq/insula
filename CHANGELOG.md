@@ -12,7 +12,34 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+
+- **A database whose backups keep failing is now reported, to the operator and to the tenant.**
+  Each nightly bundle dumps every tenant database, but it recorded the outcome only on the bundle
+  itself, and nothing read it again. On production one tenant's seven MariaDB databases failed to
+  dump every night for at least two weeks while every bundle said `completed`, and nobody was
+  told. Now every bundle records, per database, the last attempt and the last good backup: a dump
+  that the bundle's files snapshot kept. A database counts as overdue when its last good backup
+  is older than the longest gap between two scheduled bundle runs, plus two hours (26 hours for
+  a daily schedule; a weekday-only schedule is not called overdue over the weekend). A sweep
+  every 15 minutes announces each overdue database once: one notification to the admins listing
+  every newly overdue database with its tenant, last good backup and last error, and one to each
+  affected tenant listing its own. When a database is backed up again, both get a "working again"
+  notice, only for databases that alerted. A database is dropped from the status only when it is
+  shown to be gone, never because one bundle failed to list it. The status is shown on the admin
+  tenant page (Storage & backups → Database backups), on the admin Tenant Backups page (every
+  overdue database, when there is one), and on the tenant's Backups page, where a bundle in which
+  not every database dumped is also marked. API:
+  `GET /api/v1/admin/tenants/:tenantId/database-backups`,
+  `GET /api/v1/admin/database-backups/overdue` and `GET /api/v1/tenant/backups/databases`.
+
 ### Changed
+
+- **Backups no longer claim the raw database files are a safe fallback.** The bundle summary,
+  its remediation text and the database recovery runbook said a database whose dump failed was
+  still covered by a "crash-consistent" copy of its data files. It is not: the files snapshot
+  reads the live volume file by file over minutes, with no volume snapshot, so the copy may not
+  restore. They now say a database without a good dump has no reliable backup in that bundle.
 
 - **A CloudNativePG operator update no longer restarts the platform database.** Until now every
   operator update restarted each database instance once, to load the new instance manager (the

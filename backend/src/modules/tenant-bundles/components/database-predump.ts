@@ -22,8 +22,8 @@
  *   - One deployment failing (pod not running, dump exited non-zero)
  *     does NOT abort the bundle. The error is recorded per
  *     deployment; the orchestrator still proceeds to the files
- *     capture, which gets crash-consistent on-disk files for the
- *     failed deployment.
+ *     capture. That copies the failed deployment's on-disk files too,
+ *     but from the running server, so it is no substitute for the dump.
  *   - One database failing inside a deployment (e.g. mid-transaction
  *     lock) does NOT abort the others in that deployment.
  *   - Per-deployment time bound (default 5 min) protects the bundle
@@ -116,8 +116,8 @@ export interface PreDumpDatabaseFailure {
   /**
    * True when the dump could not run for a benign, recoverable reason (dump
    * tool absent in a bring-your-own image, PVC too full, engine unsupported
-   * for logical dump). The raw-files snapshot still covers the data → the
-   * orchestrator records this as `degraded`, NOT a bundle failure. False =
+   * for logical dump). Recorded as `degraded`, NOT a bundle failure — but the
+   * database has no logical backup in this bundle. False =
    * the dump command errored unexpectedly (`failed`).
    */
   readonly benign: boolean;
@@ -204,8 +204,8 @@ async function runOneDeployment(
 
     // Guard: refuse to write a logical dump into a nearly-full PVC — the
     // write could ENOSPC the tenant's LIVE database and take the app down.
-    // Degrade VISIBLY instead; the crash-consistent raw-files snapshot still
-    // captures every database.
+    // Degrade VISIBLY instead: these databases then have no logical backup
+    // in this bundle, and the overdue-backup alert follows if it persists.
     if (deps.checkFreeSpace) {
       const space = await deps.checkFreeSpace(ctx).catch(() => null);
       if (space && (space.usedPercent >= 90 || space.freeBytes < 200 * 1024 * 1024)) {
@@ -217,7 +217,7 @@ async function runOneDeployment(
           databaseDumps: [],
           databaseFailures: databases.map((d) => ({
             database: d.name,
-            error: `PVC ${space.usedPercent}% full — logical dump skipped to avoid filling the volume and crashing the live database. The crash-consistent raw-files snapshot still captured this database; grow the tenant volume or free space, then re-run the bundle for a fresh logical dump.`,
+            error: `PVC ${space.usedPercent}% full — logical dump skipped to avoid filling the volume and crashing the live database. This database has no logical backup in this bundle (its data files are copied from the running server and are not guaranteed to restore); grow the tenant volume or free space, then re-run the bundle.`,
             benign: true,
           })),
         };
@@ -290,9 +290,9 @@ function errorMessage(err: unknown): string {
 /**
  * Classify a dump error as benign (recoverable → `degraded`) vs. a genuine
  * failure. Benign = the dump tool is absent (bring-your-own image), the engine
- * has no logical-dump path, or the PVC was too full to write safely. In every
- * benign case the crash-consistent raw-files snapshot still covers the data,
- * so the bundle stays restorable and the operator just sees a degraded dump.
+ * has no logical-dump path, or the PVC was too full to write safely. Benign
+ * means expected, not harmless: the database still has no logical backup in
+ * this bundle, and its overdue-backup alert follows if it persists.
  */
 function isBenignDumpError(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;

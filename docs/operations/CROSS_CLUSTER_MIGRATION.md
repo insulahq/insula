@@ -123,9 +123,9 @@ a live A automatically. Finish the move deliberately:
   engine. Consequences:
   - Tenant databases live *inside* the tenant PVC under a
     `databases/<name>-<suffix>` subPath, so the `files` component does carry
-    their on-disk data directory. It is a **crash-consistent copy of a running
-    database** — InnoDB/Postgres normally replay their journals and come up
-    clean, but that is a recovery, not a guaranteed-consistent dump.
+    their on-disk data directory. It is a **file-by-file copy of a running
+    database**, taken over minutes with no volume snapshot — not even
+    crash-consistent, so it may not come up at all. The dump is what to rely on.
   - The ADR-047 pre-capture hook *does* write a clean logical dump
     (`predump-<db>-<bundleId>.sql`) into the same PVC, and it is restored
     alongside the files — but **nothing replays it automatically.**

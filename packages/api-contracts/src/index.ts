@@ -29,6 +29,7 @@ export * from './backup-schedules.js';
 export * from './backups-overview.js';
 export * from './tenant-bundles.js';
 export * from './restore.js';
+export * from './database-backups.js';
 export * from './dr-recover.js';
 export * from './dr-recover-task.js';
 export * from './migration.js';
