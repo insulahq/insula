@@ -23,6 +23,7 @@ import { multihostMountsFor, loadSiteFoldersFor } from '../multihost/reconciler.
 import { deployCatalogEntry } from './k8s-deployer.js';
 import { getTenantDiskLimits } from '../tenant-disk/limits.js';
 import { refuseDeleted } from './application-limit.js';
+import { refuseDetachedData } from './database-data.js';
 import {
   getTenantNamespace,
   tenantPlacementOf,
@@ -287,6 +288,7 @@ export async function upgradeDeploymentVersion(
   }
   assertCatalogSourced(deployment);
   refuseDeleted(deployment, 'upgrade');
+  refuseDetachedData(deployment, 'upgrade');
 
   const [entry] = await db
     .select()
@@ -679,6 +681,7 @@ export async function rollbackDeploymentVersion(
     throw new ApiError('DEPLOYMENT_NOT_FOUND', `Deployment ${deploymentId} not found`, 404);
   }
   assertCatalogSourced(deployment);
+  refuseDetachedData(deployment, 'roll back');
   if (!deployment.previousVersion) {
     throw new ApiError(
       'ROLLBACK_NOT_AVAILABLE',

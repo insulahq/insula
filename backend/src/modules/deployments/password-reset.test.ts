@@ -9,6 +9,17 @@ describe('buildPasswordResetInitContainer', () => {
     memoryRequest: '400Mi',
   };
 
+  it('starts the temporary MySQL-family server lean, inside the instance\'s memory limit (engine defaults OOM a 300Mi MySQL 8)', () => {
+    const mysql = buildPasswordResetInitContainer({ ...baseArgs, catalogCode: 'mysql', image: 'mysql:8.0', passwordEnvVar: 'MYSQL_ROOT_PASSWORD' })!.command[2]!;
+    const maria = buildPasswordResetInitContainer({ ...baseArgs, catalogCode: 'mariadb', image: 'mariadb:11', passwordEnvVar: 'MARIADB_ROOT_PASSWORD' })!.command[2]!;
+    for (const script of [mysql, maria]) {
+      expect(script).toMatch(/--skip-grant-tables[^\n]*--performance-schema=OFF --innodb-buffer-pool-size=32M --innodb-log-buffer-size=4M --max-connections=10/);
+    }
+    // MySQL-only: MariaDB refuses an option it does not know.
+    expect(mysql).toContain('--temptable-max-ram=16M');
+    expect(maria).not.toContain('--temptable-max-ram');
+  });
+
   describe('MariaDB', () => {
     it('returns init container for mariadb with correct image and ALTER USER', () => {
       const result = buildPasswordResetInitContainer({

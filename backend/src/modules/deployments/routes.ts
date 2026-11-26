@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireTenantAccess, requireTenantRoleByMethod } from '../../middleware/auth.js';
 import { createDeploymentSchema, updateDeploymentSchema, updateDeploymentResourcesSchema } from './schema.js';
-import { triggerUpgradeSchema, batchUpgradeSchema, folderProblem, type DeploymentCredentialsResponse } from '@insula/api-contracts';
+import { attachDatabaseDataSchema, triggerUpgradeSchema, batchUpgradeSchema, folderProblem, isUnderDatabaseRoot, type DeploymentCredentialsResponse } from '@insula/api-contracts';
+import { folderSizes, formatFolderBytes, withPlatformFiles } from './database-folders.js';
+import { attachDatabaseData, detachDatabaseData, listDatabaseFolders, refuseDetachedData, releaseOrphanFolders } from './database-data.js';
 
 type AdminAccountStatus = DeploymentCredentialsResponse['adminAccountStatus'];
 import * as service from './service.js';
@@ -437,6 +439,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     const { tenantId, id } = request.params as { tenantId: string; id: string };
     const deployment = await service.getDeploymentById(app.db, tenantId, id);
     refuseDeleted(deployment, 'restart');
+    refuseDetachedData(deployment, 'restart');
 
     const k8s = getK8s();
     if (!k8s) {
@@ -603,13 +606,23 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     let storageUsedFormatted = '0 B';
     try {
       const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-      const fmResult = await fileManagerRequest(k8s, kubeconfigPath, namespace, getFileManagerImage(), '/folder-size', {
-        query: { path: deployment.storagePath ? `/${deployment.storagePath}` : `/databases/${deployment.name}` },
-      });
-      if (fmResult.status === 200) {
-        const parsed = JSON.parse(fmResult.body) as { sizeBytes?: number; sizeFormatted?: string };
-        storageUsedBytes = parsed.sizeBytes ?? 0;
-        storageUsedFormatted = parsed.sizeFormatted ?? '0 B';
+      // A database instance's folder is in the protected folder, which the
+      // file manager itself sees as empty (R48): measured by its platform
+      // container instead.
+      if (deployment.storagePath && isUnderDatabaseRoot(deployment.storagePath)) {
+        const folder = deployment.storagePath;
+        const sizes = await withPlatformFiles(k8s, kubeconfigPath, namespace, 'db-folder-size', (run) => folderSizes(run, [folder]));
+        storageUsedBytes = sizes.get(folder) ?? 0;
+        storageUsedFormatted = formatFolderBytes(storageUsedBytes);
+      } else {
+        const fmResult = await fileManagerRequest(k8s, kubeconfigPath, namespace, getFileManagerImage(), '/folder-size', {
+          query: { path: deployment.storagePath ? `/${deployment.storagePath}` : `/databases/${deployment.name}` },
+        });
+        if (fmResult.status === 200) {
+          const parsed = JSON.parse(fmResult.body) as { sizeBytes?: number; sizeFormatted?: string };
+          storageUsedBytes = parsed.sizeBytes ?? 0;
+          storageUsedFormatted = parsed.sizeFormatted ?? '0 B';
+        }
       }
     } catch (fmErr) {
       app.log.warn({ err: fmErr instanceof Error ? fmErr.message : String(fmErr) }, 'File manager folder-size failed');
@@ -623,6 +636,60 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       storageUsedBytes,
       storageUsedFormatted,
     });
+  });
+
+  // ─── R48: the protected database folder ─────────────────────────────────
+  // GET /api/v1/tenants/:tenantId/database-folders — the standalone
+  // instances, where their data is and how big it is, and the folders that
+  // belong to none (the file manager's view of the protected folder). A read:
+  // it changes nothing.
+  app.get('/tenants/:tenantId/database-folders', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const k8s = getK8s();
+    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
+    const namespace = await service.getTenantNamespace(app.db, tenantId);
+    return success(await listDatabaseFolders({ db: app.db, k8s, kubeconfigPath: kubeconfigPathOf() }, tenantId, namespace));
+  });
+
+  // POST /api/v1/tenants/:tenantId/database-folders/release-orphans — move
+  // the folders of the protected folder that belong to no instance out to
+  // kept-databases/, where the tenant can reach (and delete) them.
+  app.post('/tenants/:tenantId/database-folders/release-orphans', async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const k8s = getK8s();
+    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
+    const namespace = await service.getTenantNamespace(app.db, tenantId);
+    return success(await releaseOrphanFolders({ db: app.db, k8s, kubeconfigPath: kubeconfigPathOf() }, tenantId, namespace));
+  });
+
+  // POST /api/v1/tenants/:tenantId/deployments/:id/detach-data — stop the
+  // instance and move its data to kept-databases/ for raw access.
+  app.post('/tenants/:tenantId/deployments/:id/detach-data', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const k8s = getK8s();
+    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
+    const result = await detachDatabaseData({ db: app.db, k8s, kubeconfigPath: kubeconfigPathOf() }, tenantId, id,
+      service.databaseInstanceControl(app.db, tenantId, id, k8s));
+    return success(result);
+  });
+
+  // POST /api/v1/tenants/:tenantId/deployments/:id/attach-data — move a
+  // folder (default: the detached one) back in and start the instance.
+  app.post('/tenants/:tenantId/deployments/:id/attach-data', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const parsed = attachDatabaseDataSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw new ApiError('INVALID_FIELD_VALUE', `Validation error: ${parsed.error.issues[0]?.message ?? 'invalid'}`, 400);
+    }
+    const k8s = getK8s();
+    if (!k8s) throw new ApiError('K8S_UNAVAILABLE', 'Kubernetes cluster is not available', 503);
+    const result = await attachDatabaseData({ db: app.db, k8s, kubeconfigPath: kubeconfigPathOf() }, tenantId, id, parsed.data.path,
+      service.databaseInstanceControl(app.db, tenantId, id, k8s));
+    // The platform's login was reset on this start; set the tenant
+    // administrator up again without waiting for the next pass.
+    const encryptionKey = platformEncryptionKey();
+    if (encryptionKey) void reconcileDatabaseAdminFor({ db: app.db, k8s, kubeconfigPath: kubeconfigPathOf(), encryptionKey }, id);
+    return success(result);
   });
 
   // POST /api/v1/tenants/:tenantId/deployments/:id/restore

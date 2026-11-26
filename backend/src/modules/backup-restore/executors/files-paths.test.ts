@@ -115,6 +115,28 @@ describe('buildFilesPathsJobSpec', () => {
     expect(cmd).toContain('cp -a /restore-tmp/source/. /source/');
   });
 
+  it('sends restored files from the protected database folder to kept-databases/ before the overlay (R48)', () => {
+    const commandOf = (input: Parameters<typeof buildFilesPathsJobSpec>[0]): string => (buildFilesPathsJobSpec(input) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    }).spec.template.spec.containers[0]!.command.join(' ');
+    const redirected = commandOf(baseInput);
+    expect(redirected).toContain("if [ -d '/restore-tmp/source/database' ]");
+    expect(redirected.indexOf('PROTECTED_FOLDER_REDIRECT')).toBeLessThan(redirected.indexOf('cp -a /restore-tmp/source/. /source/'));
+    expect(redirected).toContain("mkdir -p '/source/kept-databases'");
+    // The platform's own pre-dump fetch puts dump files back in each instance's folder.
+    expect(commandOf({ ...baseInput, protectedFolder: 'in-place' })).not.toContain('PROTECTED_FOLDER_REDIRECT');
+  });
+
+  it('masks the protected folder read-only in a tenant restore, so a symlink left in a restored path cannot reach it (R48)', () => {
+    type Spec = { spec: { template: { spec: { containers: Array<{ volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }> }>; volumes: Array<{ name: string; emptyDir?: unknown }> } } } };
+    const mountsOf = (input: Parameters<typeof buildFilesPathsJobSpec>[0]) => (buildFilesPathsJobSpec(input) as Spec).spec.template.spec;
+    const tenant = mountsOf(baseInput);
+    expect(tenant.containers[0]!.volumeMounts).toContainEqual({ name: 'database-mask', mountPath: '/source/database', readOnly: true });
+    expect(tenant.volumes.find((v) => v.name === 'database-mask')?.emptyDir).toBeDefined();
+    const platform = mountsOf({ ...baseInput, protectedFolder: 'in-place' });
+    expect(platform.containers[0]!.volumeMounts.some((m) => m.name === 'database-mask')).toBe(false);
+  });
+
   it('passes one --include /source/<path> per requested DISPLAY path', () => {
     const spec = buildFilesPathsJobSpec({
       ...baseInput,

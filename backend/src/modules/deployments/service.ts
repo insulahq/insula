@@ -7,7 +7,8 @@
 import { eq, and, ne, desc, asc, lt, gt, sql, isNotNull } from 'drizzle-orm';
 import { deployments, catalogEntries, catalogEntryVersions, tenants, clusterNodes, hostingPlans, ingressRoutes, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import { normalizeMountPath } from '@insula/api-contracts';
+import { DATABASE_ROOT, canonicalDatabasePath, isUnderDatabaseRoot, normalizeMountPath } from '@insula/api-contracts';
+import { adoptFolderForNewDatabase, refuseDetachedData, releaseDatabaseFolderOnDelete, type InstanceControl } from './database-data.js';
 import { InsufficientResourceBudgetError } from './resource-allocator.js';
 import { findAdminPasswordEnvVar } from './password-reset.js';
 import { capabilityOf, deleteDeploymentSites, multihostMountsFor, loadSiteFoldersFor } from '../multihost/reconciler.js';
@@ -123,9 +124,16 @@ function refuseExtraMountsOnDatabase(
     'Import files through the SQL Manager instead; it reads them from your file storage.');
 }
 
-/** The extra mounts a render applies: none for a standalone database instance. */
-export function renderedExtraMounts<T>(entryType: string | null | undefined, extraMounts: T[] | null | undefined): T[] | undefined {
-  return entryType === 'database' ? undefined : (extraMounts ?? undefined);
+/** The extra mounts a render applies: none for a standalone database instance, none into the protected folder. */
+export function renderedExtraMounts<T extends { folder?: unknown }>(entryType: string | null | undefined, extraMounts: T[] | null | undefined): T[] | undefined {
+  if (entryType === 'database') return undefined;
+  // R48: an extra mount saved before the protected folder existed may still
+  // name it; it would hand a database's live files to this container.
+  const kept = (extraMounts ?? []).filter((m) => !(typeof m.folder === 'string' && isUnderDatabaseRoot(m.folder)));
+  if (extraMounts && kept.length < extraMounts.length) {
+    console.warn(`[deployments] left out ${extraMounts.length - kept.length} extra mount(s) into the protected ${DATABASE_ROOT}/ folder`);
+  }
+  return extraMounts ? kept : undefined;
 }
 
 function assertExtraMountsDoNotCollide(
@@ -598,9 +606,17 @@ export async function createDeployment(
   const finalEnvVars = { fixed: { ...fixedEnvVars, ...rootHostEnv } };
 
   const id = crypto.randomUUID();
-  const storagePath = input.storage_mode === 'custom' && input.storage_path
+  // A standalone database always keeps its data in the protected folder
+  // (R48); a folder the tenant picked is moved there once the row exists.
+  const isStandaloneDatabase = entry.type === 'database';
+  const adoptFolder = isStandaloneDatabase && input.storage_mode === 'custom' && input.storage_path
     ? input.storage_path
-    : `${entry.type}/${entry.code}/${input.name}`;
+    : null;
+  const storagePath = isStandaloneDatabase
+    ? canonicalDatabasePath(entry.code, input.name)
+    : input.storage_mode === 'custom' && input.storage_path
+      ? input.storage_path
+      : `${entry.type}/${entry.code}/${input.name}`;
 
   // Pre-flight: distinguish "active duplicate" from "soft-deleted with same name".
   // Soft-deleted rows still hold the (tenant_id, name) slot deliberately so a
@@ -674,6 +690,17 @@ export async function createDeployment(
       );
     }
     throw err;
+  }
+
+  // R48: the picked folder becomes the instance's data, moved into the
+  // protected folder before the first start. A failed move leaves no instance.
+  if (adoptFolder && k8s && namespace) {
+    try {
+      await adoptFolderForNewDatabase({ db, k8s }, tenantId, namespace, adoptFolder, storagePath);
+    } catch (err) {
+      await db.delete(deployments).where(eq(deployments.id, id));
+      throw err;
+    }
   }
 
   // Deploy to K8s if cluster is available
@@ -925,6 +952,16 @@ export async function updateDeployment(
   // Every edit, not only a status change: a configuration or replica edit
   // redeploys the Kubernetes objects of the row it changes.
   refuseDeleted(deployment, input.status === 'stopped' ? 'stop' : input.status !== undefined ? 'start' : 'change');
+  if (input.status === 'running') refuseDetachedData(deployment, 'start');
+  // R48: a standalone database's folder is the platform's — Detach data and
+  // Attach data move it; re-pointing it here would run the database on a
+  // folder the file manager can edit.
+  if (input.storage_path !== undefined && deployment.catalogEntryId) {
+    const [e] = await db.select({ type: catalogEntries.type }).from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId));
+    if (e?.type === 'database') {
+      throw new ApiError('DATABASE_FOLDER_MANAGED', 'A database instance\'s data folder is managed by the platform. Use Detach data and Attach data instead.', 409);
+    }
+  }
 
   const updateValues: Record<string, unknown> = {};
   if (input.name !== undefined) updateValues.name = input.name;
@@ -1188,6 +1225,25 @@ export async function deleteDeployment(
   }
 }
 
+/**
+ * Stopping and redeploying a standalone database instance, for moving its
+ * data (R48, database-data.ts). The redeploy arms the reset init container:
+ * the folder may come from anywhere, and the platform's login must hold on
+ * the start that follows.
+ */
+export function databaseInstanceControl(db: Database, tenantId: string, deploymentId: string, k8s: K8sClients): InstanceControl {
+  return {
+    stop: async () => { await updateDeployment(db, tenantId, deploymentId, { status: 'stopped' }, k8s); },
+    redeploy: async (replicas) => {
+      if (replicas > 0) {
+        await db.update(deployments).set({ status: 'pending', lastError: null }).where(eq(deployments.id, deploymentId));
+      }
+      const fresh = await getDeploymentById(db, tenantId, deploymentId);
+      await redeployWithCurrentConfig(db, fresh as typeof deployments.$inferSelect, k8s, { armPasswordReset: true, replicas });
+    },
+  };
+}
+
 export async function restoreDeployment(
   db: Database,
   tenantId: string,
@@ -1216,7 +1272,10 @@ export async function restoreDeployment(
     .where(and(eq(deployments.id, deploymentId), eq(deployments.status, 'deleted'))));
 
   // Scale K8s resources back up
-  if (k8s) {
+  // R48: an instance whose data is detached comes back stopped — started, it
+  // would initialise a fresh database on an empty folder.
+  const detached = Boolean(deployment.dataDetachedPath);
+  if (k8s && !detached) {
     const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
     const namespace = tenant?.kubernetesNamespace;
 
@@ -1247,7 +1306,7 @@ export async function restoreDeployment(
   }
 
   await db.update(deployments)
-    .set({ status: 'running', deletedAt: null, lastError: null })
+    .set({ status: detached ? 'stopped' : 'running', deletedAt: null, lastError: null })
     .where(eq(deployments.id, deploymentId));
 
   return getDeploymentById(db, tenantId, deploymentId);
@@ -1297,7 +1356,27 @@ export async function hardDeleteDeployment(
         );
       }
 
-      if (deleteData && deployment.storagePath) {
+      // R48: a standalone database's folder leaves the protected folder —
+      // kept in kept-databases/, from there into the recycle bin, or removed.
+      const [ofEntry] = deployment.catalogEntryId
+        ? await db.select({ type: catalogEntries.type }).from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId))
+        : [];
+      // Only a folder in the protected folder (or a detached one) — one not
+      // moved there yet is still the file manager's to remove.
+      const standaloneDatabase = !isCustomDeployment(deployment) && ofEntry?.type === 'database'
+        && (Boolean(deployment.dataDetachedPath) || isUnderDatabaseRoot(deployment.storagePath ?? ''));
+      let dataFolder = deployment.storagePath;
+      if (standaloneDatabase) {
+        try {
+          dataFolder = await releaseDatabaseFolderOnDelete({ db, k8s }, namespace, deployment,
+            deleteData && permanentData === true ? 'remove' : 'keep');
+        } catch (err) {
+          dataFolder = null;
+          console.warn(`[deployments] hard-delete: the data of '${deployment.name}' stayed in the protected folder — the tenant sees it there as a `
+            + `folder without an instance and can move it to kept-databases/: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      if (deleteData && dataFolder && !(standaloneDatabase && permanentData === true)) {
         try {
           const { fileManagerRequest } = await import('../file-manager/service.js');
           const { getFileManagerImage } = await import('../file-manager/image.js');
@@ -1314,7 +1393,7 @@ export async function hardDeleteDeployment(
           await fileManagerRequest(k8s, kubeconfigPath, namespace, getFileManagerImage(), '/rm', {
             method: 'POST',
             body: JSON.stringify({
-              path: `/${deployment.storagePath}`,
+              path: `/${dataFolder}`,
               permanent: permanentData === true,
               actor: actor ?? null,
               origin: 'deployment',
@@ -1933,6 +2012,10 @@ export async function redeployWithCurrentConfig(
   const passwordEnvVar = opts.armPasswordReset
     ? findAdminPasswordEnvVar(Object.keys(config))
     : undefined;
+  // R48: one guard for every path that starts an instance this way (repair,
+  // DR reconcile, credential rotation …): with its data detached, the pod
+  // would initialise a fresh database on an empty folder.
+  if ((opts.replicas ?? deployment.replicaCount ?? 1) > 0) refuseDetachedData(deployment, 'start');
 
   await deployCatalogEntry(k8s, {
     diskLimits: await getTenantDiskLimits(db),
@@ -2263,6 +2346,9 @@ export async function listStorageFolders(
       for (const entry of entries) {
         if (entry.type === 'directory') {
           const fullPath = basePath === '' ? entry.name : `${basePath}/${entry.name}`;
+          // R48: the protected folder holds the database instances' data and
+          // cannot be picked for anything.
+          if (isUnderDatabaseRoot(fullPath)) continue;
           // One listing answers both questions: whether the folder is empty,
           // and whether it is worth offering a drill-down into it.
           let isEmpty = true;

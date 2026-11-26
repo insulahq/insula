@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { FM_PLATFORM_CONTAINER } from '../file-manager/protected-folder.js';
 import { eq, and, sql, desc, lte, inArray, notInArray } from 'drizzle-orm';
 import {
   backupJobs,
@@ -691,9 +692,15 @@ async function measurePvcUsed(ctx: ServiceCtx, namespace: string): Promise<numbe
     const pods = await ctx.k8s.core.listNamespacedPod({
       namespace, labelSelector: 'app=file-manager',
     });
-    const running = ((pods as { items?: Array<{ metadata?: { name?: string }; status?: { phase?: string } }> }).items ?? [])
+    const running = ((pods as { items?: Array<{ metadata?: { name?: string }; spec?: { containers?: Array<{ name?: string }> }; status?: { phase?: string } }> }).items ?? [])
       .find((p) => p.status?.phase === 'Running');
     if (!running?.metadata?.name) return 0;
+    // The platform container: the file-manager container sees the protected
+    // database folder as empty (R48), so `du` there would leave every
+    // database's data out of the figure a shrink is checked against. A file
+    // manager from before it has no such container — and no mask either.
+    const container = (running.spec?.containers ?? []).some((c) => c.name === FM_PLATFORM_CONTAINER)
+      ? FM_PLATFORM_CONTAINER : 'file-manager';
 
     const { Exec, KubeConfig } = await import('@kubernetes/client-node');
     const { Writable } = await import('node:stream');
@@ -704,7 +711,7 @@ async function measurePvcUsed(ctx: ServiceCtx, namespace: string): Promise<numbe
     const out = new Writable({ write(chunk, _e, cb) { stdout += chunk.toString(); cb(); } });
     const err = new Writable({ write(_c, _e, cb) { cb(); } });
     await new Promise<void>((resolve, reject) => {
-      exec.exec(namespace, running.metadata!.name!, 'file-manager',
+      exec.exec(namespace, running.metadata!.name!, container,
         ['du', '-sb', '/data'],
         out, err, null, false,
         (status) => {

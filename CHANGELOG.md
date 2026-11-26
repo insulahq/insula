@@ -140,6 +140,39 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   - that the tenant's routines, triggers, views, aggregates and data keep working;
   - socket logins accepting any supplied password, so the SQL Manager's commands work before
     and after.
+- **BREAKING — tenant databases: their data folders leave the file manager.** A standalone
+  database instance keeps its data in one protected folder, `database/<engine>/<name>`, which
+  the file manager, SFTP, rsync and scp now see as empty and read-only. The file manager could
+  read and change a running instance's files as root, so a tenant could take the instance's
+  administrator login back by editing them. The file-manager pod mounts an empty read-only
+  volume over that folder (its container holds no right to unmount it); the platform's own file
+  work moves to a second container in the pod. Opening `database` in the file manager explains
+  the folder and lists the instances with their data sizes. For raw access, **Detach data**
+  (the instance's detail view) stops the instance and moves its data to
+  `kept-databases/<name>`; **Attach data** moves that folder, or any other, back and starts the
+  instance on it, with the platform's login restored on that start. What else changes:
+  - an instance on a custom or legacy (`databases/<name>`) path is moved into the protected
+    folder once, **restarting it once**; a folder another deployment also uses is left where it
+    is and the operator is told;
+  - creating a database on an existing folder moves that folder in;
+  - a permanent delete moves the folder to `kept-databases/` (or from there into the recycle
+    bin, or removes it) instead of leaving it where nothing can see it; a folder there with no
+    instance is listed in the file manager's view of the folder, with a button that moves it
+    out;
+  - a folder attached or moved in loses the PostgreSQL settings that run commands or load code
+    (and MySQL's persisted settings) before its first start;
+  - restoring files from a bundle puts anything from the protected folder into
+    `kept-databases/<name>-restored-<time>` instead of over a running instance, so those
+    instances no longer stop for a file restore; the restore cannot write into the protected
+    folder at all, not even through a symlink left in a restored path;
+  - extra mounts, storage paths, site folders, container volumes and SFTP home paths cannot
+    name the protected folder, and a database's storage path can no longer be re-pointed
+    directly;
+  - an import refuses a file that resolves into the protected folder.
+  A tenant who deliberately mounts its own database's files through a symlink can still reach
+  them; the platform's lost-login alert and the daily hardening pass cover that case.
+  Recovery steps: `docs/operations/DATABASE_RECOVERY.md` §7.
+
 - **Backups no longer claim the raw database files are a safe fallback.** The bundle summary,
   its remediation text and the database recovery runbook said a database whose dump failed was
   still covered by a "crash-consistent" copy of its data files. It is not: the files snapshot
@@ -176,6 +209,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Fixed).
 
 ### Fixed
+
+- **A MySQL instance with a small memory limit now comes back after a restart.** On every start
+  of a database pod whose data already exists, an init container restores the platform's
+  administrator login, running a temporary server. It started MySQL with the engine's defaults
+  (performance schema on, a 128 MB buffer pool), not with the lean options the catalog gives the
+  database itself, so at a 300Mi limit MySQL 8 was OOM-killed in that init container on every
+  start and the database never came up again — seen on DEV after a node restart. The temporary
+  server now starts with performance schema off and small buffers (MariaDB too); MySQL 8.0, 8.4
+  and 9.7 and MariaDB 10.11 and 12.3 were each checked to restore the login inside 300Mi.
 
 - **The nightly backup no longer gets a tenant's file manager killed for memory on a volume with
   many files, and a cut-short SQLite dump is no longer reported as complete.** To find SQLite

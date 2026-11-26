@@ -90,11 +90,23 @@ function initResources(cpuRequest: string, memoryRequest: string) {
 // therefore probes the datadir first, guards every statement, and reports a
 // loud WARNING instead of failing.
 
+
+/**
+ * The temporary server only runs a few statements, inside the database
+ * container's own memory limit — which the catalog sizes for a server started
+ * with its lean options (performance schema off, small buffers). Started with
+ * the engine's defaults instead, MySQL 8 needs more than a 300Mi instance has
+ * and the reset container is OOM-killed on every start, so the database never
+ * comes back after a restart. These hold it well inside the limit.
+ */
+const LEAN_SERVER_FLAGS = '--performance-schema=OFF --innodb-buffer-pool-size=32M --innodb-log-buffer-size=4M --max-connections=10';
 function buildMysqlFamilyResetScript(
   bin: {
     readonly server: string; readonly client: string; readonly admin: string; readonly socket: string;
     /** 'unix_socket' (MariaDB) or 'auth_socket' (MySQL, a plugin to install first). */
     readonly socketPlugin: 'unix_socket' | 'auth_socket';
+    /** Engine-only options for the temporary server's memory (see LEAN_SERVER_FLAGS). */
+    readonly leanFlags?: string;
   },
 ): string {
   const sock = bin.socket;
@@ -114,7 +126,7 @@ function buildMysqlFamilyResetScript(
     `mkdir -p "$(dirname ${sock})" 2>/dev/null || true`,
     `chown mysql:mysql "$(dirname ${sock})" 2>/dev/null || true`,
     '# Start with --skip-grant-tables so we can connect whatever root\'s login is now',
-    `${bin.server} --user=mysql --datadir="$DATADIR" --skip-networking --skip-grant-tables${loadPlugin} &`,
+    `${bin.server} --user=mysql --datadir="$DATADIR" --skip-networking --skip-grant-tables${loadPlugin} ${LEAN_SERVER_FLAGS}${bin.leanFlags ? ` ${bin.leanFlags}` : ''} &`,
     'PID=$!',
     'READY=0',
     `for i in $(seq 1 60); do if ${bin.client} -u root --socket=${sock} -e "SELECT 1" >/dev/null 2>&1; then READY=1; break; fi; sleep 1; done`,
@@ -158,6 +170,7 @@ function buildMysqlResetScript(): string {
     admin: 'mysqladmin',
     socket: '/var/run/mysqld/mysqld.sock',
     socketPlugin: 'auth_socket',
+    leanFlags: '--temptable-max-ram=16M',
   });
 }
 

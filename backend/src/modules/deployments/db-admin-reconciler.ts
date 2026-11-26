@@ -43,7 +43,8 @@ import {
   loadTenantAdminAccount, markTenantAdminReady, newTenantAdminPassword, recordFirstTenantAdminAccount, tenantAdminReady,
 } from './tenant-admin-store.js';
 import { rootLogsInWith, rotateRoot } from './mongo-hardening.js';
-import { getTenantNamespace, parseJsonField, redeployWithCurrentConfig } from './service.js';
+import { databaseInstanceControl, getTenantNamespace, parseJsonField, redeployWithCurrentConfig } from './service.js';
+import { relocateDatabaseFolders } from './database-data.js';
 import {
   DATABASE_ADMIN_TICK_MS, HARDEN_INTERVAL_MS, incidentReason, incidentTransition, LOGGED_IN_MODES, ON_DEMAND_MIN_INTERVAL_MS,
   SHAPE_INTERVAL_MS, stateValuesFor, TARGET_MODES,
@@ -451,6 +452,17 @@ export function startDatabaseAdminScheduler(deps: ReconcileDeps & { readonly tic
   const tick = (): void => safeTick(
     'database-admin',
     () => withSchedulerLease(deps.db, 'database-admin-access', tickMs * 1.5, async () => {
+      // R48: an instance still on a custom or legacy path moves into the
+      // protected folder first (one restart). Two per tick keeps a tick well
+      // inside its lease; the rest follow on the next ones.
+      const relocated = await relocateDatabaseFolders(
+        { db: deps.db, k8s: deps.k8s, kubeconfigPath: deps.kubeconfigPath },
+        (row) => databaseInstanceControl(deps.db, row.tenantId, row.id, deps.k8s),
+        2,
+      );
+      if (relocated.moved > 0 || relocated.blocked > 0) {
+        console.log(`[database-admin] data folders: ${relocated.moved} moved into the protected folder, ${relocated.blocked} blocked`);
+      }
       const r = await reconcileDatabaseAdmin(deps);
       if (r.checked > 0) {
         console.log(`[database-admin] checked ${r.checked} instance(s): ${r.changed} changed, ${r.locked} locked, ${r.unreachable} unreachable`);

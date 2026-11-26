@@ -27,6 +27,7 @@ import {
   type Engine,
 } from '../../deployments/db-manager.js';
 import { execInPod } from '../../../shared/k8s-exec.js';
+import { FM_PLATFORM_CONTAINER } from '../../file-manager/protected-folder.js';
 import {
   preCaptureDatabaseDumps,
   type PreDumpDeployment,
@@ -255,7 +256,9 @@ export async function deletePredumpsFromPvc(args: {
 }): Promise<void> {
   const safe = args.bundleId.replace(/[^A-Za-z0-9._-]/g, '_');
   try {
-    await execInPod(args.kubeconfigPath, args.namespace, args.fmPod, 'file-manager',
+    // The platform container: predumps sit in the protected database
+    // folder, which the file-manager container sees as empty (R48).
+    await execInPod(args.kubeconfigPath, args.namespace, args.fmPod, FM_PLATFORM_CONTAINER,
       ['sh', '-c', `find /data -type f -name 'predump-*-${safe}.*' -delete 2>/dev/null || true`]);
   } catch (err) {
     // Best-effort — the retention-window prune bounds accumulation regardless.

@@ -744,6 +744,11 @@ export const deployments = pgTable('deployments', {
   memoryRequest: varchar('memory_request', { length: 20 }).notNull().default('256Mi'),
   configuration: jsonb('configuration').$type<Record<string, unknown> | null>(),
   storagePath: varchar('storage_path', { length: 500 }),
+  /** R48: set while a standalone database's data is detached — the folder it was moved to. */
+  dataDetachedPath: varchar('data_detached_path', { length: 500 }),
+  dataDetachedAt: timestamp('data_detached_at', { withTimezone: true }),
+  /** R48: the storage path before the data moved into the protected folder (old bundles' pre-dumps). */
+  storageRelocatedFrom: varchar('storage_relocated_from', { length: 500 }),
   /**
    * Tenant-defined extra volume mounts (migration 0093). Array of
    * `{ folder, mount_path, read_only }` validated by `extraMountsSchema`.

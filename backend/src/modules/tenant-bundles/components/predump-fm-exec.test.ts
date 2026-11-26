@@ -95,7 +95,7 @@ describe('deletePredumpsFromPvc', () => {
     execInPod.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
     await deletePredumpsFromPvc({ namespace: 'tenant-a', fmPod: 'file-manager-x', bundleId: 'bkp-1' });
     const [, ns, pod, container, cmd] = execInPod.mock.calls[0]!;
-    expect([ns, pod, container]).toEqual(['tenant-a', 'file-manager-x', 'file-manager']);
+    expect([ns, pod, container]).toEqual(['tenant-a', 'file-manager-x', 'platform-files']);
     expect((cmd as string[])[2]).toContain("-name 'predump-*-bkp-1.*' -delete");
   });
 

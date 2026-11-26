@@ -154,6 +154,7 @@ export * from './ip.js';
 export * from './dns-resolver.js';
 export * from './app-preview.js';
 export * from './extra-mounts.js';
+export * from './database-folders.js';
 export * from './namespace-integrity.js';
 export * from './cert-download.js';
 export * from './storage-lifecycle.js';

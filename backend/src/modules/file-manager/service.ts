@@ -932,8 +932,10 @@ export async function getReadyFileManagerPod(
     namespace,
     labelSelector: 'app=file-manager',
   });
-  const podItems = (pods as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string } }[] }).items ?? [];
-  const runningPod = podItems.find(p => p.status?.phase === 'Running');
+  const podItems = (pods as { items?: readonly { metadata?: { name?: string; deletionTimestamp?: string }; status?: { phase?: string } }[] }).items ?? [];
+  // Never one on its way out: right after a recreate the old pod (without the
+  // platform-files container) can still be Running for a moment.
+  const runningPod = podItems.find(p => p.status?.phase === 'Running' && !p.metadata?.deletionTimestamp);
   if (!runningPod?.metadata?.name) {
     throw new Error('File manager pod not found after startup');
   }

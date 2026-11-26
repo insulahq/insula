@@ -68,6 +68,7 @@ import {
   type DbManagerContext,
 } from '../../deployments/db-manager.js';
 import { withFileManagerLease } from '../../file-manager/lease.js';
+import { FM_PLATFORM_CONTAINER } from '../../file-manager/protected-folder.js';
 import { execInPod } from '../../../shared/k8s-exec.js';
 import { buildFilesPathsJobSpec, resolveRestoreJobNode, waitForJob } from './files-paths.js';
 import { resolveTenantBundleReadTarget, sourceShimJobLabels } from '../../backup-source-shim/service.js';
@@ -501,13 +502,13 @@ export async function execDatabasesByIdItem(args: {
     importSql: async (ctx, database, filePath, deploymentSubPath, deploymentId) => {
       const login = await restoreLogin(deploymentId);
       if (login === 'not-ready') return { success: false, error: NOT_READY };
-      const result = await importSqlFromPvcFile(ctx, database, '', filePath, deploymentSubPath, login ? { as: login } : {});
+      const result = await importSqlFromPvcFile(ctx, database, '', filePath, deploymentSubPath, { ...(login ? { as: login } : {}), fromOwnFolder: true });
       return { success: result.success, error: result.error };
     },
     importMongoArchive: async (ctx, filePath, deploymentSubPath, deploymentId) => {
       const login = await restoreLogin(deploymentId);
       if (login === 'not-ready') return { success: false, error: NOT_READY };
-      const result = await importMongoArchiveFromPvcFile(ctx, filePath, deploymentSubPath, login ? { as: login } : {});
+      const result = await importMongoArchiveFromPvcFile(ctx, filePath, deploymentSubPath, { ...(login ? { as: login } : {}), fromOwnFolder: true });
       return { success: result.success, error: result.error };
     },
   };
@@ -526,7 +527,13 @@ export async function execDatabasesByIdItem(args: {
     namespace,
     tenantId: job.tenantId,
     bundleId: item.bundleId,
-    storagePaths: targets.map((t) => t.storagePath).filter((s): s is string => Boolean(s)),
+    // A bundle taken before an instance's data moved into the protected
+    // folder (R48) has its predumps under the old path.
+    storagePaths: [
+      ...targets.map((t) => t.storagePath),
+      ...(await app.db.select({ from: deployments.storageRelocatedFrom }).from(deployments)
+        .where(inArray(deployments.id, targets.map((t) => t.deploymentId)))).map((r) => r.from),
+    ].filter((s): s is string => Boolean(s)),
     cartId: item.restoreJobId,
     itemId: item.id,
   }).catch(async (err) => {
@@ -694,6 +701,8 @@ async function fetchPredumpsFromSnapshot(args: {
       jobName, namespace, pvcName, tenantId, cartId: args.cartId, itemId: args.itemId,
       credsSecretName, snapshotId: comp.sha256, includePaths,
       jobImage: TOOLS_IMAGE_DEFAULT, pinToNode, activeDeadlineSeconds: 10 * 60,
+      // The predumps go back into each instance's own folder, for the import.
+      protectedFolder: 'in-place',
       extraLabels: sourceShimJobLabels(read),
     });
     const createdJob = await (k8s.batch as unknown as {
@@ -737,7 +746,9 @@ async function listPredumpFiles(
   namespace: string,
   _deploymentName: string,
 ): Promise<string[]> {
-  const res = await withFileManagerLease(k8s, namespace, 'db-restore-list', (fmPod) => execInPod(kubeconfigPath, namespace, fmPod, 'file-manager',
+  // The platform container: the file-manager container sees the protected
+  // database folder (where each instance's predumps land) as empty (R48).
+  const res = await withFileManagerLease(k8s, namespace, 'db-restore-list', (fmPod) => execInPod(kubeconfigPath, namespace, fmPod, FM_PLATFORM_CONTAINER,
     ['find', '/data', '-type', 'f', '(', '-name', 'predump-*.sql', '-o', '-name', 'predump-*.archive.gz', ')']));
   if (res.exitCode !== 0) return [];
   return res.stdout.split('\n').map((s) => s.trim()).filter(Boolean)

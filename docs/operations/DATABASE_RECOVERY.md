@@ -278,12 +278,13 @@ rules, root-like MongoDB users (`mysql-hardening.ts`, `pg-hardening.ts`,
 `mongo-hardening.ts`). What it changed is in `database_admin_state.last_changes`
 and the API log (`[database-admin]`).
 
-!!! note "Not yet covered: the data directory itself"
-    The file manager and SFTP still reach a database's data directory on the
-    tenant volume. A tenant who edits those files (`pg_hba.conf`, the MariaDB
-    system schema) can take its own instance's administrator login back; the
-    platform then reports it as lost (§6) and Repair restores it. Hiding data
-    directories from the file manager and SFTP is the open follow-up.
+!!! note "The data directory itself"
+    A standalone instance's data sits in the protected `database/` folder,
+    which the file manager, SFTP, rsync and scp see as empty and read-only
+    (§7). Raw access goes through **Detach data**. A tenant who deliberately
+    plants a symlink and mounts it into one of its own containers can still
+    reach its own instance's files; the platform then reports the login lost
+    (§6), Repair restores it, and the hardening pass removes a second way in.
 
 A restored data directory brings **its own grant tables** — whatever they were
 when it was copied: a password root, a `root@'%'`. The reset init container
@@ -358,6 +359,64 @@ start (`?force=true&deleteData=true`).
 
 ---
 
+## 7. Raw files and the protected database folder
+
+**Layout.** Every standalone instance keeps its data at
+`database/<engine>/<name>` on the tenant volume (roadmap R48). The file-manager
+pod mounts an empty read-only volume over `/data/database`, so the file
+manager's API, SFTP, rsync and scp — all of which run in its `file-manager`
+container — see an empty folder they cannot write, rename or remove. The
+platform's own file work (imports, exports, pre-dumps, sizes, moves) runs in the
+pod's `platform-files` container, which sees the folder. Entering `database` in
+the tenant panel's file manager lists the instances with their data sizes
+(`GET /api/v1/tenants/<id>/database-folders`). App stacks keep their database
+under the app's folder, as before — their tenant holds root there.
+
+**A broken instance that needs its raw files** (InnoDB recovery, a corrupt
+WiredTiger file, inspecting `pg_wal`):
+
+1. **Detach data** (instance detail → Data, or
+   `POST /api/v1/tenants/<id>/deployments/<dep>/detach-data`). The instance
+   stops and its folder moves to `kept-databases/<name>` (time-suffixed if
+   taken), visible in the file manager and over SFTP. It cannot start, restart,
+   upgrade or roll back until data is attached again.
+2. Work on the files. To run the engine's own tools on them, deploy a custom
+   container with the same image and an extra mount on that folder; it has a
+   terminal.
+3. **Attach data** (`POST …/attach-data` with `{ "path": "<folder>" }`, default
+   the detached folder). The folder moves back in — refused when another
+   deployment mounts it, when it is behind a symlink, or while the instance
+   still has data — its hard links are broken, its configuration files lose
+   the PostgreSQL settings that run commands, load code or include other files
+   (and MySQL's `mysqld-auto.cnf`), and the instance is redeployed with the
+   reset init container armed: the platform's login comes back on that start
+   and the hardening pass cleans up whatever else the folder brought. A move
+   that landed before its bookkeeping did is finished by running Attach again.
+
+**Other ways data leaves or enters the folder.**
+
+| Event | What happens to the folder |
+|---|---|
+| Normal delete (Recently Deleted) | Stays; **Restore** brings the instance back on it. A detached instance restores stopped. |
+| Permanent delete, data kept | Moves to `kept-databases/<name>`. |
+| Permanent delete with data | Moves there, then into the recycle bin (or is removed for good with "delete permanently"). |
+| Create on an existing folder | The picked folder moves in (same checks as Attach). |
+| A folder in `database/` with no instance | Listed when the tenant opens the folder; **Move to kept-databases** (`POST /api/v1/tenants/<id>/database-folders/release-orphans`) moves it out. |
+| File restore from a bundle | Anything restored from under `database/` lands in `kept-databases/<name>-restored-<time>`, never over the instance; the instance keeps running. The restore Job sees `database/` read-only, so a symlink in a restored path cannot write into it (the restore fails instead). |
+| Instance on a custom or legacy path | Moved in once by the database-admin reconciler (one restart); the old path is kept in `deployments.storage_relocated_from` so a bundle taken before still finds its pre-dumps. A folder another deployment uses is left in place and the operator gets a "Tenant databases" notice. |
+
+**Whole-volume snapshot restore taken before the move.** The data comes back
+at the old path while the instance points at `database/…`, so the instance
+starts empty. Detach data (moves the empty folder out), then Attach data with
+the old path.
+
+**Operators** keep their own ways in: the admin terminal into a database
+container (admin and super_admin), `kubectl exec` into the `platform-files`
+container of the tenant's file-manager pod (`/data/database/…`), and the node
+terminal.
+
+---
+
 ## Related docs
 
 - ADR-048 — Tenant Backup v2, **Primitive 3 (database pre-dumps)**:
@@ -366,6 +425,7 @@ start (`?force=true&deleteData=true`).
   `docs/architecture/adr/ADR-028-backup-architecture.md`
 - ADR-032 — BackupStore interface + bundle orchestration:
   `docs/architecture/adr/ADR-032-backupstore-interface-and-bundle-orchestration.md`
+- Roadmap R48 — the protected database folder: `docs/roadmap/ROADMAP.md`
 - Backup component model (the `files`/`config` components, no new component):
   `docs/architecture/BACKUP_COMPONENT_MODEL.md`
 - Tenant backup operator runbook: `docs/operations/TENANT_BACKUP.md`

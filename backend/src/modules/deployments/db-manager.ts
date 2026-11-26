@@ -24,6 +24,10 @@ import {
 import { dbEngineApiError } from './db-errors.js';
 import { RESERVED_ACCOUNT_NAMES, SELF_SERVICE_DB_PREFIX } from './db-account-names.js';
 import { PG_SAFE_ENV_SH, PG_SAFE_SESSION_SH } from './pg-session.js';
+import { DATABASE_ROOT } from '@insula/api-contracts';
+import { execInPod as sharedExecInPod } from '../../shared/k8s-exec.js';
+import { FM_PLATFORM_CONTAINER } from '../file-manager/protected-folder.js';
+import { stageTenantFile, type PlatformFilesRun } from './database-folders.js';
 import { MYSQL_TENANT_IMPORT_SED, rewriteMysqlDumpForTenant } from './import-rewrite.js';
 import {
   affectedRowsField,
@@ -2311,6 +2315,33 @@ function getImportFileExtension(filePath: string): string {
  */
 
 /**
+ * Copies (or gunzips) the file an import reads into the instance's own folder,
+ * in the file-manager pod's platform container (R48). The file must resolve
+ * outside the protected database folder — or inside `ownFolder` when the
+ * platform restores its own dump — and the check and the read use one open
+ * descriptor, so a path swapped to a symlink after the check is never read.
+ * `dst` is relative to the volume.
+ */
+async function stageImportSource(
+  ctx: DbManagerContext,
+  fmPodName: string,
+  file: string,
+  dst: string,
+  mode: 'copy' | 'gunzip',
+  ownFolder: string | undefined,
+): Promise<{ readonly ok: true } | { readonly ok: false; readonly error: string }> {
+  const run: PlatformFilesRun = (argv) => sharedExecInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, FM_PLATFORM_CONTAINER, argv);
+  const r = await stageTenantFile(run, file, dst, mode, ownFolder);
+  if (r.ok) return r;
+  return {
+    ok: false,
+    error: r.reason === 'protected'
+      ? `The file is in the protected ${DATABASE_ROOT} folder (or links into it). Import a file from your own folders.`
+      : r.reason === 'missing' ? 'The file was not found.' : 'The file could not be read for the import.',
+  };
+}
+
+/**
  * Import SQL from a file already on the shared PVC (uploaded via the file manager).
  * The route handler reads the file content from the file-manager pod and passes it here.
  * This bypasses the MAX_IMPORT_LENGTH check since the data is read server-side.
@@ -2335,8 +2366,10 @@ export async function importSqlFromPvcFile(
    * `as`: import as this account (the tenant's administrator) — a tenant's
    * file. Without it, root: the platform's own restores, which keep every
    * DEFINER as it was dumped.
+   * `fromOwnFolder`: the file may sit in the instance's own data folder — the
+   * platform's restore of its own dump. A tenant's file never may (R48).
    */
-  opts: { readonly as?: DbLogin } = {},
+  opts: { readonly as?: DbLogin; readonly fromOwnFolder?: boolean } = {},
 ): Promise<ImportResult> {
   validateDatabaseName(database);
   validatePvcFilePath(filePath);
@@ -2355,8 +2388,8 @@ export async function importSqlFromPvcFile(
   const cleanFilePath = filePath.replace(/^\/+/, '');
   const cleanSubPath = deploymentSubPath.replace(/^\/+/, '').replace(/\/+$/, '');
   const fileExt = getImportFileExtension(filePath);
-  const importFileName = `_import_${Date.now()}${fileExt}`;
-  const sqlFileName = `_import_${Date.now()}.sql`;
+  const importFileName = `platform-import-${Date.now()}${fileExt}`;
+  const sqlFileName = `platform-import-${Date.now()}.sql`;
 
   // Held for the whole import, including the catch's temp-file cleanup —
   // released in the finally (file-manager/lease.ts).
@@ -2367,10 +2400,19 @@ export async function importSqlFromPvcFile(
     fmLease = await acquireFileManagerLease(ctx.k8s!, ctx.namespace, 'sql-import');
     const fmPodName = fmLease.podName;
 
-    // Step 1: Extract/decompress archives in the file-manager pod (has tar, unzip, gunzip).
-    // Database pods (especially MySQL 8) lack these tools.
+    // R48: the tenant's file is staged into this instance's folder by the
+    // platform container — refused when it resolves into the protected
+    // database folder (except the platform's own dump in this instance's
+    // folder), and read through the descriptor that was checked.
+    const ownFolder = opts.fromOwnFolder ? cleanSubPath : undefined;
+    const stage = (dst: string, mode: 'copy' | 'gunzip') =>
+      stageImportSource(ctx, fmPodName, cleanFilePath, `${cleanSubPath}/${dst}`, mode, ownFolder);
+
+    // Step 1: Extract/decompress archives in the file-manager pod's platform
+    // container (it has tar, unzip, gunzip, and sees the database folders the
+    // file-manager container itself does not). Database pods (especially
+    // MySQL 8) lack these tools.
     // Result: a plain .sql (or pg_restore-compatible) file in the database's subPath.
-    const fmSrcPath = `/data/${cleanFilePath}`;
     const fmDestDir = `/data/${cleanSubPath}`;
     const fmSqlPath = `${fmDestDir}/${sqlFileName}`;
     const ext = getImportFileExtension(filePath);
@@ -2378,32 +2420,44 @@ export async function importSqlFromPvcFile(
     // For pg_restore formats, keep the original extension
     let isPgRestore = ctx.engine === 'postgresql' && ['.tar', '.dump', '.backup'].includes(ext);
     let dbImportFileName = isPgRestore ? importFileName : sqlFileName;
-    const pgRestoreFileName = `_import_${Date.now()}.pgdump`;
+    const pgRestoreFileName = `platform-import-${Date.now()}.pgdump`;
 
     if (isPgRestore) {
       // PostgreSQL native format — copy as-is for pg_restore
-      await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-        ['cp', fmSrcPath, `${fmDestDir}/${importFileName}`]);
+      const staged = await stage(importFileName, 'copy');
+      if (!staged.ok) return { success: false, error: staged.error };
     } else if (ext === '.sql') {
-      await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-        ['cp', fmSrcPath, fmSqlPath]);
+      const staged = await stage(sqlFileName, 'copy');
+      if (!staged.ok) return { success: false, error: staged.error };
     } else if (ext === '.sql.gz' || ext === '.gz') {
-      await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-        ['sh', '-c', `gunzip -c ${shellEscape(fmSrcPath)} > ${shellEscape(fmSqlPath)}`]);
+      const staged = await stage(sqlFileName, 'gunzip');
+      if (!staged.ok) return { success: false, error: staged.error };
     } else if (ext === '.tar.gz' || ext === '.tgz' || ext === '.tar' || ext === '.zip') {
+      // The archive is staged into this instance's folder first, and extracted
+      // from that copy, which the tenant cannot reach.
+      const archiveName = `platform-import-src-${Date.now()}${ext}`;
+      const staged = await stage(archiveName, 'copy');
+      if (!staged.ok) return { success: false, error: staged.error };
+      const fmSrcPath = `${fmDestDir}/${archiveName}`;
       // Extract archive and detect content type.
       // PostgreSQL rules: .sql → psql, .tar/.dump/.backup → pg_restore
       // MariaDB/MySQL: only .sql files are supported
+      // The tenant's archive is unpacked as nobody with no capabilities: the
+      // platform container sees every instance's folder (R48), and an entry
+      // that is a symlink into one, followed by a file through it, must not
+      // be written. tar reads the archive from a descriptor root opened;
+      // unzip needs a seekable file, so it gets a copy nobody owns.
+      const asNobody = 'setpriv --reuid=65534 --regid=65534 --clear-groups --inh-caps=-all --bounding-set=-all';
       const extractCmd = ext === '.zip'
-        ? `unzip -o ${shellEscape(fmSrcPath)} -d /tmp/_imp > /dev/null`
+        ? `cp ${shellEscape(fmSrcPath)} /tmp/_imp.zip && chown 65534:65534 /tmp/_imp.zip && ${asNobody} unzip -o /tmp/_imp.zip -d /tmp/_imp > /dev/null; rc=$?; rm -f /tmp/_imp.zip; [ "$rc" = 0 ]`
         : ext === '.tar'
-          ? `tar xf ${shellEscape(fmSrcPath)} -C /tmp/_imp`
-          : `tar xzf ${shellEscape(fmSrcPath)} -C /tmp/_imp`;
+          ? `${asNobody} tar xf - -C /tmp/_imp < ${shellEscape(fmSrcPath)}`
+          : `${asNobody} tar xzf - -C /tmp/_imp < ${shellEscape(fmSrcPath)}`;
 
       // Extract, then detect: SQL (has .sql files), PGDUMP (has .tar/.dump/.backup), or EMPTY
-      const detectResult = await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+      const detectResult = await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, FM_PLATFORM_CONTAINER,
         ['sh', '-c',
-          `set -e; rm -rf /tmp/_imp; mkdir -p /tmp/_imp; ${extractCmd}\n` +
+          `set -e; rm -rf /tmp/_imp; mkdir -p /tmp/_imp; chown 65534:65534 /tmp/_imp; ${extractCmd}\n` +
           `if [ "$(find /tmp/_imp -name '*.sql' -type f | wc -l)" -gt 0 ]; then\n` +
           `  find /tmp/_imp -name '*.sql' -type f -exec cat {} + > ${shellEscape(fmSqlPath)}\n` +
           `  echo SQL\n` +
@@ -2421,13 +2475,15 @@ export async function importSqlFromPvcFile(
           `rm -rf /tmp/_imp`,
         ]);
 
+      await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, FM_PLATFORM_CONTAINER,
+        ['rm', '-f', fmSrcPath]).catch(() => {});
       const mode = detectResult.stdout.trim();
       if (mode === 'PGDUMP' && ctx.engine === 'postgresql') {
         isPgRestore = true;
         dbImportFileName = pgRestoreFileName;
       } else if (mode === 'PGDUMP') {
         // Non-PostgreSQL engine: the archive had no .sql files
-        await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+        await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, FM_PLATFORM_CONTAINER,
           ['rm', '-f', `${fmDestDir}/${pgRestoreFileName}`]).catch(() => {});
         return { success: false, error: 'No SQL content found in the archive. Ensure the archive contains .sql files.' };
       } else if (mode === 'EMPTY') {
@@ -2435,18 +2491,18 @@ export async function importSqlFromPvcFile(
       }
       // mode === 'SQL' → fmSqlPath has the concatenated SQL content
     } else {
-      await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-        ['cp', fmSrcPath, fmSqlPath]);
+      const staged = await stage(sqlFileName, 'copy');
+      if (!staged.ok) return { success: false, error: staged.error };
     }
 
     // Verify the extracted file has content (archives may contain no .sql files)
     if (!isPgRestore && ext !== '.sql') {
-      const sizeResult = await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+      const sizeResult = await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, FM_PLATFORM_CONTAINER,
         ['sh', '-c', `stat -c '%s' ${shellEscape(fmSqlPath)} 2>/dev/null || echo 0`]);
       const fileSize = parseInt(sizeResult.stdout.trim(), 10) || 0;
       if (fileSize === 0) {
         // Clean up empty file
-        await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+        await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, FM_PLATFORM_CONTAINER,
           ['sh', '-c', `rm -f ${shellEscape(fmSqlPath)}`]).catch(() => {});
         return {
           success: false,
@@ -2460,16 +2516,16 @@ export async function importSqlFromPvcFile(
     // ./import-system-guard.ts). Scanned in place, so any file size works.
     const systemPattern = isPgRestore ? null : systemImportPattern(ctx.engine);
     if (systemPattern) {
-      const scan = await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+      const scan = await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, FM_PLATFORM_CONTAINER,
         ['sh', '-c', grepScanCommand(shellEscape(systemPattern), shellEscape(fmSqlPath))]);
       if (scan.stdout.includes(GREP_FAILED)) {
-        await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+        await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, FM_PLATFORM_CONTAINER,
           ['rm', '-f', fmSqlPath]).catch(() => {});
         return { success: false, error: 'The file could not be checked before import (it could not be read). Nothing was imported — upload it again and retry.' };
       }
       const hit = parseGrepHit(scan.stdout);
       if (hit) {
-        await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+        await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, FM_PLATFORM_CONTAINER,
           ['rm', '-f', fmSqlPath]).catch(() => {});
         return { success: false, error: systemImportRefusal(ctx.engine, hit) };
       }
@@ -2589,7 +2645,7 @@ export async function importSqlFromPvcFile(
         const fmPods = await ctx.k8s.core.listNamespacedPod({ namespace: ctx.namespace, labelSelector: 'app=file-manager' });
         const fmPod = ((fmPods as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string } }[] }).items ?? []).find(p => p.status?.phase === 'Running');
         if (fmPod?.metadata?.name) {
-          await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPod.metadata.name, 'file-manager',
+          await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPod.metadata.name, FM_PLATFORM_CONTAINER,
             ['sh', '-c', `rm -f ${shellEscape(`/data/${cleanSubPath}/${importFileName}`)} ${shellEscape(`/data/${cleanSubPath}/${sqlFileName}`)}`]);
         }
       }
@@ -2635,7 +2691,7 @@ export async function importMongoArchiveFromPvcFile(
    * the pod and never into admin/config/local — an archive is the tenant's
    * data, and one carrying admin.system.users would replace the accounts.
    */
-  opts: { readonly as?: DbLogin } = {},
+  opts: { readonly as?: DbLogin; readonly fromOwnFolder?: boolean } = {},
 ): Promise<ImportResult> {
   validatePvcFilePath(filePath);
   if (ctx.engine !== 'mongodb') {
@@ -2644,19 +2700,20 @@ export async function importMongoArchiveFromPvcFile(
   const dataRoot = ENGINE_CONFIG.mongodb.dataRoot;
   const cleanFilePath = filePath.replace(/^\/+/, '');
   const cleanSubPath = deploymentSubPath.replace(/^\/+/, '').replace(/\/+$/, '');
-  const tempName = `_import_${Date.now()}.archive.gz`;
+  const tempName = `platform-import-${Date.now()}.archive.gz`;
 
   let fmLease: import('../file-manager/lease.js').FileManagerLease | null = null;
   try {
     const { acquireFileManagerLease } = await import('../file-manager/lease.js');
     fmLease = await acquireFileManagerLease(ctx.k8s!, ctx.namespace, 'mongo-import');
     const fmPodName = fmLease.podName;
-    const fmSrcPath = `/data/${cleanFilePath}`;
-    const fmDestPath = `/data/${cleanSubPath}/${tempName}`;
     // Copy the archive into the DB's own mount so the mongo pod can read it
-    // at ${dataRoot}/${tempName} (the DB pod only sees its data root).
-    await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
-      ['cp', fmSrcPath, fmDestPath]);
+    // at ${dataRoot}/${tempName} (the DB pod only sees its data root) — staged
+    // by the platform container, refused when it resolves into the protected
+    // folder (see stageImportSource).
+    const staged = await stageImportSource(ctx, fmPodName, cleanFilePath, `${cleanSubPath}/${tempName}`, 'copy',
+      opts.fromOwnFolder ? cleanSubPath : undefined);
+    if (!staged.ok) return { success: false, error: staged.error };
 
     const inPodPath = `${dataRoot}/${tempName}`;
     let result: { stdout: string; stderr: string };
@@ -2812,8 +2869,12 @@ export async function exportDatabaseToPvc(
 
   const { withFileManagerLease } = await import('../file-manager/lease.js');
   await withFileManagerLease(ctx.k8s!, ctx.namespace, 'sql-export', (exportFmPodName) => execInPod(
-    ctx.kubeconfigPath, ctx.namespace, exportFmPodName, 'file-manager',
-    ['sh', '-c', `mkdir -p /data/exports && mv ${shellEscape(`/data/${cleanSubPath}/${outputFileName}`)} ${shellEscape(`/data/exports/${outputFileName}`)}`],
+    ctx.kubeconfigPath, ctx.namespace, exportFmPodName, FM_PLATFORM_CONTAINER,
+    // `exports` is the tenant's folder: a link planted there must not steer
+    // the dump into the protected folder (R48) — it is moved aside first.
+    ['sh', '-c', 'd=/data/exports; if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then mv -- "$d" "$d.moved-$(date -u +%Y%m%d%H%M%S)" || exit 1; fi; '
+      + 'mkdir -p "$d" && [ -d "$d" ] && [ ! -L "$d" ] && mv -n -- "$1" "$d/$2"',
+    'export', `/data/${cleanSubPath}/${outputFileName}`, outputFileName],
   ));
 
   const pvcPath = `/exports/${outputFileName}`;

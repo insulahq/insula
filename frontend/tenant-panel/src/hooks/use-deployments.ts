@@ -8,6 +8,9 @@ import type {
   updateDeploymentSchema,
   DeploymentCredentialsResponse,
   RotateDatabaseAdminPasswordResponse,
+  DatabaseFoldersResponse,
+  DetachDatabaseDataResponse,
+  ReleaseOrphanFoldersResponse,
 } from '@insula/api-contracts';
 
 // Derived from the shared Zod schemas rather than restated here — a local
@@ -619,6 +622,60 @@ export function useSetDbUserPassword(tenantId: string | undefined) {
       ),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['db-users', tenantId, variables.deploymentId] });
+    },
+  });
+}
+
+/**
+ * The standalone database instances, where their data is and how big it is
+ * (R48) — what the file manager shows in the protected `database` folder.
+ */
+export function useDatabaseFolders(tenantId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['database-folders', tenantId],
+    queryFn: () => apiFetch<{ data: DatabaseFoldersResponse }>(`/api/v1/tenants/${tenantId}/database-folders`),
+    enabled: !!tenantId && enabled,
+    staleTime: 30_000,
+  });
+}
+
+/** Stop the instance and move its data to kept-databases/ for raw access. */
+export function useDetachDatabaseData(tenantId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (deploymentId: string) =>
+      apiFetch<{ data: DetachDatabaseDataResponse }>(`/api/v1/tenants/${tenantId}/deployments/${deploymentId}/detach-data`, { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
+      queryClient.invalidateQueries({ queryKey: ['database-folders', tenantId] });
+    },
+  });
+}
+
+/** Move a folder (default: the detached one) back in and start the instance. */
+export function useAttachDatabaseData(tenantId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deploymentId, path }: { deploymentId: string; path?: string }) =>
+      apiFetch<{ data: { storagePath: string } }>(`/api/v1/tenants/${tenantId}/deployments/${deploymentId}/attach-data`, {
+        method: 'POST',
+        body: JSON.stringify(path ? { path } : {}),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
+      queryClient.invalidateQueries({ queryKey: ['database-folders', tenantId] });
+    },
+  });
+}
+
+/** Move the protected folder's folders that belong to no instance out to kept-databases/. */
+export function useReleaseOrphanFolders(tenantId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ data: ReleaseOrphanFoldersResponse }>(`/api/v1/tenants/${tenantId}/database-folders/release-orphans`, { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['database-folders', tenantId] });
     },
   });
 }
