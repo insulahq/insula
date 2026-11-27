@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.11.16-rc.1] - 2026-11-27
-
 ### BREAKING
 
 > **Before upgrading:** tell tenants whose apps or tools log in to a standalone database
@@ -153,6 +151,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Recovery steps: `docs/operations/DATABASE_RECOVERY.md` §7.
 
 ### Added
+
+- **Catalog repositories sync themselves once a day, and each has a switch to turn that off.**
+  A repository synced only when it was added, when the API started and it had never been
+  synced, or when an admin pressed **sync**, so new versions and fixes in a catalog reached the
+  platform only by hand. Now an hourly check, run by one API replica, syncs every repository with
+  **Auto-sync** on whose last good sync is a day old; one whose sync failed is tried again the
+  next hour, and the failure shows on its row as before. The switch is on the Repositories tab
+  (Applications → Repositories) and in the API (`auto_sync_enabled` on
+  `PATCH /api/v1/admin/catalog-repos/:id`). Every repository, existing ones included, starts with
+  it on, so after the upgrade a repository last synced more than a day ago syncs within the
+  hour. The repository field `sync_interval_minutes` (default 60) is removed: it was stored and
+  accepted by the API, but nothing ever synced on it. Migration `0193` drops its column, so
+  during the upgrade the previous release's API pods fail repository reads (the Repositories
+  page, a manual sync) until the rollout has replaced them, for seconds; an earlier release can
+  no longer read catalog repositories on this database.
 
 - **Every database is backed up on its own, straight into the backup store, and restores on its
   own: in place, as a copy, or as a test.** A bundle used to dump each database onto the tenant's

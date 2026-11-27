@@ -600,7 +600,8 @@ export const catalogRepositories = pgTable('catalog_repositories', {
   url: varchar('url', { length: 500 }).notNull(),
   branch: varchar('branch', { length: 100 }).notNull().default('main'),
   authToken: varchar('auth_token', { length: 500 }),
-  syncIntervalMinutes: integer('sync_interval_minutes').notNull().default(60),
+  // Synced once a day by modules/catalog/auto-sync.ts while on.
+  autoSyncEnabled: boolean('auto_sync_enabled').notNull().default(true),
   lastSyncedAt: timestamp('last_synced_at'),
   status: catalogRepoStatusEnum().notNull().default('active'),
   lastError: text('last_error'),

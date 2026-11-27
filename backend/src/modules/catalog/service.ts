@@ -393,7 +393,7 @@ export async function createCatalogRepo(db: Database, input: CreateCatalogRepoIn
     url: input.url,
     branch,
     authToken: input.auth_token ?? null,
-    syncIntervalMinutes: input.sync_interval_minutes ?? 60,
+    autoSyncEnabled: input.auto_sync_enabled ?? true,
     status: 'active',
   });
 
@@ -424,7 +424,7 @@ export async function updateCatalogRepo(db: Database, id: string, input: UpdateC
   if (input.url !== undefined) updateValues.url = input.url;
   if (input.branch !== undefined) updateValues.branch = input.branch;
   if (input.auth_token !== undefined) updateValues.authToken = input.auth_token;
-  if (input.sync_interval_minutes !== undefined) updateValues.syncIntervalMinutes = input.sync_interval_minutes;
+  if (input.auto_sync_enabled !== undefined) updateValues.autoSyncEnabled = input.auto_sync_enabled;
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(catalogRepositories).set(updateValues).where(eq(catalogRepositories.id, id));
@@ -482,7 +482,7 @@ export async function restoreDefaultRepo(db: Database) {
     url: DEFAULT_CATALOG_URL,
     branch: 'main',
     authToken: null,
-    syncIntervalMinutes: 60,
+    autoSyncEnabled: true,
     status: 'active',
   });
 
@@ -588,9 +588,10 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
       usedTarball = true;
       console.log(`[catalog-sync] Tarball extracted to ${localRoot}`);
     } else {
-      // HTTP source: no tarball, fall back to per-file fetch
-      // Create a temporary local cache by fetching catalog.json + each manifest
-      localRoot = await syncViaPerFileFetch(source, repo.branch, repo.authToken);
+      // HTTP source: no tarball, fall back to per-file fetch. The fetched
+      // files go to the same per-repository cache as a tarball, so a daily
+      // sync replaces them instead of leaving a directory behind each time.
+      localRoot = await persistCatalogCache(await syncViaPerFileFetch(source, repo.branch, repo.authToken), repoId);
     }
 
     // Read catalog.json from local files
@@ -966,27 +967,35 @@ async function syncViaPerFileFetch(
   branch: string,
   authToken?: string | null,
 ): Promise<string> {
-  const { mkdtemp, writeFile, mkdir } = await import('node:fs/promises');
+  const { mkdtemp, writeFile, mkdir, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
 
   const tempDir = await mkdtemp(join(tmpdir(), 'catalog-http-'));
-  const catalogUrl = buildCatalogFileUrl(source, branch, 'catalog.json');
-  const catalogRaw = await fetchJson<CatalogJson>(catalogUrl, authToken);
+  try {
+    const catalogUrl = buildCatalogFileUrl(source, branch, 'catalog.json');
+    const catalogRaw = await fetchJson<CatalogJson>(catalogUrl, authToken);
 
-  await writeFile(join(tempDir, 'catalog.json'), JSON.stringify(catalogRaw));
+    await writeFile(join(tempDir, 'catalog.json'), JSON.stringify(catalogRaw));
 
-  for (const code of (catalogRaw.entries ?? [])) {
-    const manifestUrl = buildCatalogFileUrl(source, branch, `${code}/manifest.json`);
-    try {
-      const manifest = await fetchJson<Record<string, unknown>>(manifestUrl, authToken);
-      await mkdir(join(tempDir, code), { recursive: true });
-      await writeFile(join(tempDir, code, 'manifest.json'), JSON.stringify(manifest));
-    } catch {
-      // Skip entries that fail
+    // A code names a directory here, so only a valid entry name is fetched; the
+    // sync reports the others (`Invalid entry code`) from catalog.json.
+    const codes = Array.isArray(catalogRaw.entries) ? catalogRaw.entries : [];
+    for (const code of codes.filter((c): c is string => typeof c === 'string' && VALID_ENTRY_NAME.test(c))) {
+      const manifestUrl = buildCatalogFileUrl(source, branch, `${code}/manifest.json`);
+      try {
+        const manifest = await fetchJson<Record<string, unknown>>(manifestUrl, authToken);
+        await mkdir(join(tempDir, code), { recursive: true });
+        await writeFile(join(tempDir, code, 'manifest.json'), JSON.stringify(manifest));
+      } catch {
+        // Skip entries that fail
+      }
     }
-  }
 
-  return tempDir;
+    return tempDir;
+  } catch (err) {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 // ─── Catalog Entry Queries ──────────────────────────────────────────────────

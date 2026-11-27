@@ -7,7 +7,8 @@ export interface CatalogRepo {
   readonly name: string;
   readonly url: string;
   readonly branch: string;
-  readonly syncIntervalMinutes: number;
+  /** Synced once a day while on. */
+  readonly autoSyncEnabled: boolean;
   readonly lastSyncedAt: string | null;
   readonly status: 'active' | 'error' | 'syncing';
   readonly lastError: string | null;
@@ -83,6 +84,21 @@ export function useSyncCatalogRepo() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['catalog-repos'] });
       queryClient.invalidateQueries({ queryKey: ['catalog'] });
+    },
+  });
+}
+
+export function useSetCatalogRepoAutoSync() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ id, enabled }: { readonly id: string; readonly enabled: boolean }) =>
+      apiFetch<{ data: CatalogRepo }>(`/api/v1/admin/catalog-repos/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ auto_sync_enabled: enabled }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['catalog-repos'] });
     },
   });
 }
