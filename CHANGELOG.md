@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.17-rc.1] - 2026-11-27
+
 ### Changed
 
 - **Only the Official Catalog syncs itself by default.** 2026.11.16 turned daily auto-sync on for
