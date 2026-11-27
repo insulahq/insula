@@ -2,6 +2,7 @@
 export {
   createCatalogRepoSchema,
   updateCatalogRepoSchema,
+  updateCatalogRepoSettingsSchema,
   type CreateCatalogRepoInput,
   type UpdateCatalogRepoInput,
   type CatalogEntryResponse,

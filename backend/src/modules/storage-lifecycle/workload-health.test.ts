@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   GRACE_MS, RECENT_EVENT_MS,
-  classifyUnavailability, currentEvidence, evidenceIsStale, isHealable, labelForReason, parsePreQuiesceReplicas,
+  classifyUnavailability, currentEvidence, evidenceIsStale, isHealable, labelForReason, notReadyOrClassified, parsePreQuiesceReplicas,
+  ROLLOUT_HOLD_MAX_MS, rolloutInProgress, rolloutMayExplain, workloadPodFacts,
   type EvidenceEvent, type EvidencePod, type HealReason,
   restoreWithoutFileManager,
 } from './workload-health.js';
@@ -131,12 +132,15 @@ describe('isHealable — which causes a volume re-stage can actually fix', () =>
     expect(isHealable('image')).toBe(false);
     expect(isHealable('crash')).toBe(false);
     expect(isHealable('unschedulable')).toBe(false);
+    // Volume mounted, container running, app not answering: a re-stage only
+    // restarts whatever it is doing (lab DEV: a Moodle upgrade migration).
+    expect(isHealable('not_ready')).toBe(false);
   });
 
   it('covers every member of the union (an un-decided cause is a silent tenant)', () => {
     const all: HealReason[] = [
       'volume_attach', 'quota_rejected', 'unschedulable', 'image', 'crash',
-      'stranded_at_zero', 'unknown',
+      'stranded_at_zero', 'node_down', 'not_ready', 'unknown',
     ];
     for (const r of all) expect(typeof isHealable(r)).toBe('boolean');
     // Both arms are actually exercised — a gate that answers the same way for
@@ -156,7 +160,7 @@ describe('isHealable — which causes a volume re-stage can actually fix', () =>
 describe('labelForReason — total, and never re-derived from truncated detail', () => {
   const ALL: HealReason[] = [
     'volume_attach', 'quota_rejected', 'unschedulable', 'image', 'crash',
-    'stranded_at_zero', 'unknown',
+    'stranded_at_zero', 'node_down', 'not_ready', 'unknown',
   ];
 
   it('gives every reason a distinct, non-empty label', () => {
@@ -372,5 +376,93 @@ describe('restoreWithoutFileManager (a re-stage heal)', () => {
   it('changes nothing for a tenant without a file manager', () => {
     const snap = { deployments: [{ name: 'web', replicas: 2 }], cronJobs: [] };
     expect(restoreWithoutFileManager(snap)).toEqual({ restore: snap, fileManagerLeftDown: false });
+  });
+});
+
+// ── deliberate change vs. outage ───────────────────────────────────────
+//
+// Lab DEV, a Moodle upgrade: the version change rolled the pod (Recreate), the
+// workload was "unavailable", and the episode from its first start an hour
+// earlier was reopened with its old clock — re-staged, database included, 16
+// seconds after the click.
+describe('rolloutInProgress — a rollout is not an outage while it is within its deadline', () => {
+  const now = Date.parse('2026-11-27T14:05:00Z');
+  const dep = (generation: number, observed: number, progressing?: { status: string; reason: string }, updatedAgoMs = 60_000) => ({
+    metadata: { generation },
+    status: {
+      observedGeneration: observed,
+      conditions: progressing ? [{ type: 'Progressing', ...progressing, lastUpdateTime: new Date(now - updatedAgoMs).toISOString() }] : [],
+    },
+  });
+  it('a new spec the controller has not observed yet is a rollout starting', () => {
+    expect(rolloutInProgress(dep(5, 4, { status: 'True', reason: 'NewReplicaSetAvailable' }), now)).toBe(true);
+  });
+  it('Progressing True while it advances; not once complete or stalled', () => {
+    expect(rolloutInProgress(dep(5, 5, { status: 'True', reason: 'ReplicaSetUpdated' }), now)).toBe(true);
+    expect(rolloutInProgress(dep(5, 5, { status: 'True', reason: 'NewReplicaSetCreated' }), now)).toBe(true);
+    expect(rolloutInProgress(dep(5, 5, { status: 'True', reason: 'NewReplicaSetAvailable' }), now)).toBe(false);
+    expect(rolloutInProgress(dep(5, 5, { status: 'False', reason: 'ProgressDeadlineExceeded' }), now)).toBe(false);
+    expect(rolloutInProgress(dep(5, 5), now)).toBe(false);
+  });
+  it('holds back no longer than ROLLOUT_HOLD_MAX_MS, however long the deadline, and not without a timestamp', () => {
+    expect(rolloutInProgress(dep(5, 5, { status: 'True', reason: 'ReplicaSetUpdated' }, ROLLOUT_HOLD_MAX_MS + 1000), now)).toBe(false);
+    expect(rolloutInProgress({ status: { conditions: [{ type: 'Progressing', status: 'True', reason: 'ReplicaSetUpdated' }] } }, now)).toBe(false);
+  });
+  it('holds back only the causes a starting pod may explain', () => {
+    expect(rolloutMayExplain('unknown')).toBe(true);
+    expect(rolloutMayExplain('not_ready')).toBe(true);
+    for (const r of ['volume_attach', 'node_down', 'quota_rejected', 'crash', 'image', 'unschedulable', 'stranded_at_zero'] as const) {
+      expect(rolloutMayExplain(r), r).toBe(false);
+    }
+  });
+});
+
+describe('workloadPodFacts — what the live pods of each workload show', () => {
+  const pod = (name: string, rs: string, created: string, status: EvidencePod['status'], extra: Partial<NonNullable<EvidencePod['metadata']>> = {}): EvidencePod => ({
+    metadata: { name, uid: name, creationTimestamp: created, ownerReferences: [{ kind: 'ReplicaSet', name: rs }], ...extra },
+    status,
+  });
+  const running = (ready: boolean, cs: Record<string, unknown> = {}) => ({
+    phase: 'Running',
+    conditions: [{ type: 'Ready', status: ready ? 'True' : 'False' }],
+    containerStatuses: [{ ready, state: { running: {} }, ...cs }],
+  });
+  it('the oldest live pod, ignoring finished and terminating ones', () => {
+    const f = workloadPodFacts([
+      pod('moodle-7c9-a', 'moodle-7c9', '2026-11-27T14:03:05Z', running(false)),
+      pod('moodle-6b1-b', 'moodle-6b1', '2026-11-27T13:49:21Z', { phase: 'Running' }, { deletionTimestamp: '2026-11-27T14:03:04Z' }),
+      pod('moodle-5a0-c', 'moodle-5a0', '2026-11-27T12:00:00Z', { phase: 'Failed' }),
+    ]);
+    expect(f.get('moodle')?.oldestLiveMs).toBe(Date.parse('2026-11-27T14:03:05Z'));
+  });
+  it('running with containers started but not ready', () => {
+    expect(workloadPodFacts([pod('app-1-a', 'app-1', '2026-11-27T14:00:00Z', running(false))]).get('app')?.runningNotReady).toBe(true);
+    expect(workloadPodFacts([pod('app-1-a', 'app-1', '2026-11-27T14:00:00Z', running(true))]).get('app')?.runningNotReady).toBe(false);
+    const pending = { phase: 'Pending', containerStatuses: [{ state: { waiting: { reason: 'ContainerCreating' } } }] };
+    expect(workloadPodFacts([pod('app-1-a', 'app-1', '2026-11-27T14:00:00Z', pending)]).get('app')?.runningNotReady).toBe(false);
+  });
+  it('a container that exited non-zero, even while it is up again between back-offs', () => {
+    const now = Date.parse('2026-11-27T14:05:00Z');
+    const between = running(false, { restartCount: 3, lastState: { terminated: { exitCode: 1, finishedAt: '2026-11-27T14:04:30Z' } } });
+    expect(workloadPodFacts([pod('app-1-a', 'app-1', '2026-11-27T14:00:00Z', between)], now).get('app')?.crashing).toBe(true);
+    const recovered = running(true, { restartCount: 1, lastState: { terminated: { exitCode: 1, finishedAt: '2026-11-27T14:04:30Z' } } });
+    expect(workloadPodFacts([pod('app-1-a', 'app-1', '2026-11-27T14:00:00Z', recovered)], now).get('app')?.crashing).toBe(false);
+    // An OOM kill last night, migrating now: not a crash.
+    const history = running(false, { restartCount: 1, lastState: { terminated: { exitCode: 137, finishedAt: '2026-11-26T23:10:00Z' } } });
+    expect(workloadPodFacts([pod('app-1-a', 'app-1', '2026-11-26T23:10:05Z', history)], now).get('app')?.crashing).toBe(false);
+  });
+});
+
+describe('notReadyOrClassified — the pods\' own state when the messages say nothing', () => {
+  const facts = (f: Partial<{ runningNotReady: boolean; crashing: boolean }>) => ({ oldestLiveMs: null, runningNotReady: false, crashing: false, ...f });
+  it('running but not ready is not_ready, not a heal', () => {
+    expect(notReadyOrClassified(null, [], facts({ runningNotReady: true })).reason).toBe('not_ready');
+  });
+  it('a container exiting non-zero is a crash, also between back-offs', () => {
+    expect(notReadyOrClassified(null, [], facts({ crashing: true, runningNotReady: true })).reason).toBe('crash');
+  });
+  it('a message-based cause still wins, and nothing known stays unknown', () => {
+    expect(notReadyOrClassified(null, ['FailedMount: MountVolume.MountDevice failed for volume "pvc-1" : rpc error: code = Internal desc = mkdir /var/lib/kubelet/plugins/kubernetes.io/csi/driver.longhorn.io/abc/globalmount: file exists'], facts({ runningNotReady: true })).reason).toBe('volume_attach');
+    expect(notReadyOrClassified(null, [], undefined).reason).toBe('unknown');
   });
 });

@@ -11,15 +11,18 @@ import { readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { eq } from 'drizzle-orm';
 import { closeTestDb, cleanTables, getTestDb, isDbAvailable, runMigrations } from '../../test-helpers/db.js';
-import { catalogEntries, catalogRepositories } from '../../db/schema.js';
+import { catalogEntries, catalogRepositories, platformSettings } from '../../db/schema.js';
+import { privateIPv4 } from '../../test-helpers/private-address.js';
 import { AUTO_SYNC_EVERY_MS, STALE_SYNCING_MS, reposDueForAutoSync, runCatalogAutoSync } from './auto-sync.js';
-import { syncCatalogRepo, updateCatalogRepo } from './service.js';
+import { createCatalogRepo, syncCatalogRepo, updateCatalogRepo } from './service.js';
 
 const dbAvailable = await isDbAvailable();
+// The fake repository is on this machine's private address: loopback is never fetched.
+const lanIp = privateIPv4();
 const HOUR = 60 * 60 * 1000;
 const quiet = { info: () => {}, warn: () => {}, error: () => {} };
 
-describe.skipIf(!dbAvailable)('catalog auto-sync (integration)', () => {
+describe.skipIf(!dbAvailable || !lanIp)('catalog auto-sync (integration)', () => {
   const db = () => getTestDb();
   let server: Server;
   let baseUrl = '';
@@ -43,8 +46,8 @@ describe.skipIf(!dbAvailable)('catalog auto-sync (integration)', () => {
       }
       res.writeHead(404); res.end();
     });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    await new Promise<void>((resolve) => server.listen(0, lanIp!, resolve));
+    baseUrl = `http://${lanIp}:${(server.address() as AddressInfo).port}`;
   });
   afterAll(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -52,7 +55,9 @@ describe.skipIf(!dbAvailable)('catalog auto-sync (integration)', () => {
   });
   // A real sync stamps the real time, so the tests judge against it.
   let now = new Date();
-  beforeEach(async () => { await cleanTables(); now = new Date(); listed = ['alpha']; requested = []; });
+  const allowPrivate = (on: boolean) => db().insert(platformSettings).values({ key: 'catalog_repos_allow_private_hosts', value: String(on) })
+    .onConflictDoUpdate({ target: platformSettings.key, set: { value: String(on) } });
+  beforeEach(async () => { await cleanTables(); await allowPrivate(true); now = new Date(); listed = ['alpha']; requested = []; });
 
   const ago = (ms: number) => new Date(now.getTime() - ms);
   const repo = async (name: string, v: { auto?: boolean; synced?: Date | null; status?: 'active' | 'error' | 'syncing'; updated?: Date; url?: string }) => {
@@ -121,5 +126,28 @@ describe.skipIf(!dbAvailable)('catalog auto-sync (integration)', () => {
     expect(await left()).toBe(before);
     const [row] = await db().select().from(catalogRepositories).where(eq(catalogRepositories.id, id));
     expect(row.localCachePath).toBe(`${tmpdir()}/catalog-cache-${id}`);
+  });
+
+  it('refuses a repository on a private address while that is not allowed, and loopback always', async () => {
+    const id = await repo('lan', { url: baseUrl });
+    await allowPrivate(false);
+    await expect(syncCatalogRepo(db(), id)).rejects.toMatchObject({ code: 'CATALOG_URL_REFUSED' });
+    const [row] = await db().select().from(catalogRepositories).where(eq(catalogRepositories.id, id));
+    expect(row.status).toBe('error');
+    expect(row.lastError).toContain('Allow repositories on private networks');
+    expect(requested).toEqual([]);
+
+    await allowPrivate(true);
+    const port = (server.address() as AddressInfo).port;
+    const lo = await repo('loopback', { url: `http://127.0.0.1:${port}` });
+    await expect(syncCatalogRepo(db(), lo)).rejects.toMatchObject({ code: 'CATALOG_URL_REFUSED' });
+    expect(requested).toEqual([]);
+  });
+
+  it('a repository someone adds starts with auto-sync off unless they ask for it', async () => {
+    const off = await createCatalogRepo(db(), { name: 'mine', url: baseUrl, branch: 'main' });
+    expect(off.autoSyncEnabled).toBe(false);
+    const on = await createCatalogRepo(db(), { name: 'mine-too', url: `${baseUrl}/`, branch: 'main', auto_sync_enabled: true });
+    expect(on.autoSyncEnabled).toBe(true);
   });
 });

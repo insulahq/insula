@@ -8,7 +8,10 @@ import {
   useSyncCatalogRepo,
   useRestoreDefaultCatalogRepo,
   useSetCatalogRepoAutoSync,
+  useCatalogRepoSettings,
+  useSetCatalogRepoSettings,
 } from '@/hooks/use-catalog-repos';
+import { useAuth } from '@/hooks/use-auth';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 
@@ -33,12 +36,17 @@ export default function CatalogRepoSettings() {
   const syncRepo = useSyncCatalogRepo();
   const restoreDefault = useRestoreDefaultCatalogRepo();
   const setAutoSync = useSetCatalogRepoAutoSync();
+  const settings = useCatalogRepoSettings();
+  const setSettings = useSetCatalogRepoSettings();
+  const isSuperAdmin = useAuth((s) => s.user?.role === 'super_admin');
+  const allowPrivate = settings.data?.data.allowPrivateAddresses ?? false;
 
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [branch, setBranch] = useState('main');
   const [authToken, setAuthToken] = useState('');
+  const [autoSyncNew, setAutoSyncNew] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<{ id: string; message: string } | null>(null);
@@ -60,11 +68,13 @@ export default function CatalogRepoSettings() {
         url: url.trim(),
         branch: branch.trim() || 'main',
         auth_token: authToken.trim() || undefined,
+        auto_sync_enabled: autoSyncNew,
       });
       setName('');
       setUrl('');
       setBranch('main');
       setAuthToken('');
+      setAutoSyncNew(false);
       setShowForm(false);
     } catch {
       // Error is available via addRepo.error
@@ -206,6 +216,21 @@ export default function CatalogRepoSettings() {
               />
             </div>
           </div>
+          <label className="mt-3 flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-brand-500 focus:ring-brand-500 dark:border-gray-600 dark:bg-gray-700"
+              checked={autoSyncNew}
+              onChange={(e) => setAutoSyncNew(e.target.checked)}
+              data-testid="repo-auto-sync-input"
+            />
+            <span>
+              Sync once a day
+              <span className="block text-xs text-gray-500 dark:text-gray-400">
+                Changes in this repository then reach the catalog — and deployments with automatic upgrades — without anyone pressing Sync. Turn it on only for a repository you trust.
+              </span>
+            </span>
+          </label>
           {addRepo.error && (
             <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2.5" data-testid="add-repo-error">
               <AlertCircle size={16} className="mt-0.5 shrink-0 text-red-500 dark:text-red-400" />
@@ -227,6 +252,47 @@ export default function CatalogRepoSettings() {
           </div>
         </form>
       )}
+
+      <div className="mb-4 flex items-start justify-between gap-4 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900" data-testid="repo-private-setting">
+        <div>
+          <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Allow repositories on private networks</p>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Repository URLs are refused when they point at an internal address. Turn this on for a catalog served from your own network
+            (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 and the like) — your servers&apos; own private addresses then become reachable for these
+            fetches too. Loopback, cloud metadata and the cluster&apos;s pod and service networks stay refused.
+            {!isSuperAdmin && ' Only a super admin can change this.'}
+          </p>
+          {settings.isError && (
+            <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="repo-private-setting-read-error">
+              Could not read this setting{settings.error instanceof Error ? `: ${settings.error.message}` : ''}.
+            </p>
+          )}
+          {setSettings.error && (
+            <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="repo-private-setting-error">
+              {setSettings.error instanceof Error ? setSettings.error.message : 'Could not change the setting'}
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={allowPrivate}
+          aria-label="Allow repositories on private networks"
+          disabled={!isSuperAdmin || settings.isLoading || settings.isError || setSettings.isPending}
+          onClick={() => setSettings.mutate(!allowPrivate)}
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 disabled:cursor-not-allowed disabled:opacity-60 ${
+            allowPrivate ? 'bg-brand-500' : 'bg-gray-300 dark:bg-gray-600'
+          }`}
+          data-testid="repo-private-setting-toggle"
+        >
+          <span
+            aria-hidden="true"
+            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition-transform ${
+              allowPrivate ? 'translate-x-5' : 'translate-x-0'
+            }`}
+          />
+        </button>
+      </div>
 
       {isLoading && (
         <div className="flex items-center justify-center py-8" data-testid="repos-loading">
