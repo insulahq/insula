@@ -12,6 +12,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+> **Measured on lab staging** (three servers, 2026.11.16 → 2026.11.17-rc.1, applied from the
+> Upgrades API). The upgrade took about four minutes and runs no host migrations. Only the platform
+> API and the two panels restarted: the platform database, mail and every tenant workload kept
+> running, nothing was re-staged, and a probe every two seconds of each server's ingress, the API
+> and SMTP saw no failed request. Afterwards the Official Catalog kept its daily sync, the two
+> repositories added on 2026.11.16 had theirs switched off, and **Allow repositories on private
+> networks** was on, because one of them was served from an internal address.
+
 ### Changed
 
 - **Only the Official Catalog syncs itself by default.** 2026.11.16 turned daily auto-sync on for
