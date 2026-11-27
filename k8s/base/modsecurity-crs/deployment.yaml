@@ -57,7 +57,7 @@ spec:
           # `-alpine` variant is tiny (~150MB final image). Pinned to
           # CRS 4.30.0, the newest nginx-alpine build of it. Bump via PR
           # after running the live block-test smoke.
-          image: docker.io/owasp/modsecurity-crs:4.30.0-nginx-alpine-202610180210
+          image: docker.io/owasp/modsecurity-crs:4.30.0-nginx-alpine-202611190211
           imagePullPolicy: IfNotPresent
           env:
             - name: BACKEND
@@ -230,7 +230,7 @@ spec:
         # patch. Redaction is a value-only substitution, so the record stays
         # valid JSON (verified against a real blocked request).
         - name: audit-redactor
-          image: docker.io/owasp/modsecurity-crs:4.30.0-nginx-alpine-202610180210
+          image: docker.io/owasp/modsecurity-crs:4.30.0-nginx-alpine-202611190211
           imagePullPolicy: IfNotPresent
           command:
             - /bin/sh
