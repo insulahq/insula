@@ -14,6 +14,7 @@
  *     between never leaves the platform without it).
  */
 
+import { classifyBackupLogin } from './backup-login.js';
 import { fromHex, MONGO_OK_JS, mongoResult, mongoRoot, outputLines, sh, tryRun, type Exec } from './db-exec.js';
 
 /** Roles from the admin database a tenant account may hold: data, not accounts. */
@@ -38,10 +39,22 @@ export async function demotePrivilegedUsers(x: Exec, keep: ReadonlySet<string>):
   const { ctx } = x;
   const out = await sh(x, mongoRoot(ctx, LIST_USERS_JS));
   const changed: string[] = [];
+  const now = Date.now();
   for (const line of outputLines(out)) {
     if (!/^[0-9a-f]+$/i.test(line)) continue;
     const u = JSON.parse(fromHex(line)) as MongoUser;
     if (u.db === 'admin' && (u.user === ctx.rootUsername || keep.has(u.user))) continue;
+    // A backup run's login (backup-login.ts) holds `backup` for its dump: a
+    // fresh one is left alone, one left behind is dropped.
+    const kind = u.db === 'admin' ? classifyBackupLogin(u.user, now) : 'other';
+    if (kind === 'fresh') continue;
+    if (kind === 'stale') {
+      const dropped = await tryRun(x, mongoRoot(ctx, `db.getSiblingDB("admin").dropUser(${JSON.stringify(u.user)}); "ok"`));
+      if (dropped.ok) {
+        changed.push(`dropped ${u.user}, a backup login left behind`);
+        continue;
+      }
+    }
     const remove = unsafeRoles(u);
     if (remove.length === 0) continue;
     const js = `const d = db.getSiblingDB(${JSON.stringify(u.db)});`

@@ -13,3 +13,10 @@ export const TENANT_ADMIN_USERNAMES = ['dbadmin', 'dbadmin_insula'] as const;
 
 /** Every name above that is an account (Database Users never lists these). */
 export const RESERVED_ACCOUNT_NAMES: readonly string[] = [...TENANT_ADMIN_USERNAMES, 'insula_socket_probe'];
+
+/** A backup run's own login (backup-login.ts): never listed, never changed in Database Users. */
+export const BACKUP_LOGIN_PREFIX = 'platform_bk_';
+
+export function isBackupLoginPrefixed(name: string): boolean {
+  return name.toLowerCase().startsWith(BACKUP_LOGIN_PREFIX);
+}

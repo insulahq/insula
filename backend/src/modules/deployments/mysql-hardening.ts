@@ -27,10 +27,11 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { classifyBackupLogin } from './backup-login.js';
 import { SELF_SERVICE_DB_PREFIX } from './db-account-names.js';
 import { DbExecError } from './db-manager.js';
 import {
-  fromHexColumn, hexColumnSql as hx, mysqlAccount, MYSQL_SYSTEM_SCHEMAS, mysqlIdent, mysqlRoot, mysqlRootScript, mysqlString, outputLines, sh, tryRun, unescapeBatch,
+  fromHexColumn, grantPattern, hexColumnSql as hx, mysqlAccount, MYSQL_SYSTEM_SCHEMAS, mysqlIdent, mysqlRoot, mysqlRootScript, mysqlString, outputLines, sh, tryRun, unescapeBatch,
   type Exec,
 } from './db-exec.js';
 
@@ -49,10 +50,7 @@ const DATABASE_PRIVILEGES: ReadonlySet<string> = new Set([
   'EVENT', 'TRIGGER', 'DELETE HISTORY', 'SHOW CREATE ROUTINE',
 ]);
 
-/** The GRANT pattern matching exactly this database (`_` and `%` are wildcards there). */
-export function grantPattern(db: string): string {
-  return db.replace(/\\/g, '\\\\').replace(/_/g, '\\_').replace(/%/g, '\\%');
-}
+export { grantPattern };
 
 /** What every "all databases" account holds — the self-service prefix — and so the mark of one. */
 export const PREFIX_PATTERN = `${grantPattern(SELF_SERVICE_DB_PREFIX)}%`;
@@ -268,7 +266,17 @@ export async function narrowAccount(x: Exec, user: string, host: string): Promis
 export async function narrowAccounts(x: Exec, skip: ReadonlySet<string>): Promise<string[]> {
   const changed: string[] = [];
   const dbs = await listTenantDatabases(x);
+  const now = Date.now();
   for (const account of await listAccounts(x, skip)) {
+    // A backup run's login (backup-login.ts) reads routines through a global
+    // or system-schema grant: a fresh one is left alone, one left behind is
+    // dropped — and if it cannot be, narrowed like any other account.
+    const kind = account.host === '%' ? classifyBackupLogin(account.user, now) : 'other';
+    if (kind === 'fresh') continue;
+    if (kind === 'stale' && (await tryRun(x, mysqlRoot(x.ctx, `DROP USER ${accountSql(account.user, '%')}`))).ok) {
+      changed.push(`dropped ${account.user}, a backup login left behind`);
+      continue;
+    }
     if (account.user === '' && account.host !== null) {
       // An anonymous account matches every user name, and a more specific
       // host wins: ''@'127.0.0.1' would stand in for the tenant administrator.

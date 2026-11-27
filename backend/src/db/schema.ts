@@ -19,6 +19,7 @@ import {
   doublePrecision,
 } from 'drizzle-orm/pg-core';
 import { sql, isNotNull } from 'drizzle-orm';
+import type { BackupDatabaseDumps } from '@insula/api-contracts';
 
 // PostgreSQL bytea — Drizzle has no first-class bytea helper, so we
 // declare a custom type that maps Buffer ↔ bytea. Used for WebAuthn
@@ -4159,6 +4160,7 @@ export const backupComponentNameEnum = pgEnum('backup_component_name', [
   'mailboxes',
   'config',
   'secrets',
+  'databases',
 ]);
 
 export const backupComponentStatusEnum = pgEnum('backup_component_status', [
@@ -4235,16 +4237,7 @@ export const backupJobs = pgTable('backup_jobs', {
   // @insula/api-contracts). Null on bundles captured before the column
   // existed. Independent of `status` — a `completed` bundle may carry a
   // `degraded` dump summary (the raw-files floor keeps it restorable).
-  databaseDumps: jsonb('database_dumps').$type<{
-    status: 'ok' | 'degraded' | 'none';
-    deployments: Array<{
-      deploymentId: string;
-      deploymentName: string;
-      engine: string | null;
-      databases: Array<{ name: string; status: 'dumped' | 'degraded' | 'failed'; sizeBytes: number; error?: string | null }>;
-    }>;
-    remediation?: string | null;
-  } | null>(),
+  databaseDumps: jsonb('database_dumps').$type<BackupDatabaseDumps | null>(),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [

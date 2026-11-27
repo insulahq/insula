@@ -78,6 +78,11 @@ export function mysqlIdent(s: string): string {
   return `\`${s.replace(/`/g, '``')}\``;
 }
 
+/** The GRANT pattern matching exactly this database (`_` and `%` are wildcards there). */
+export function grantPattern(db: string): string {
+  return db.replace(/\\/g, '\\\\').replace(/_/g, '\\_').replace(/%/g, '\\%');
+}
+
 export function pgIdent(s: string): string {
   return `"${s.replace(/"/g, '""')}"`;
 }

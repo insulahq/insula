@@ -69,7 +69,7 @@ export interface UploadTokenError {
  */
 export function verifyUploadToken(
   token: string,
-  expected: { bundleId: string; component: 'files' | 'mailboxes' | 'config' | 'secrets'; artifactName: string },
+  expected: { bundleId: string; component: 'files' | 'mailboxes' | 'config' | 'secrets' | 'databases'; artifactName: string },
   keyHex: string,
   now: number = Date.now(),
 ): UploadTokenError | null {

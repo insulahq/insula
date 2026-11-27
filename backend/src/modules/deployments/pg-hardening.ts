@@ -37,7 +37,8 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { fromHex, outputLines, pgIdent, pgString, pgSuperuser, sh, type Exec } from './db-exec.js';
+import { classifyBackupLogin } from './backup-login.js';
+import { fromHex, outputLines, pgIdent, pgString, pgSuperuser, sh, tryRun, type Exec } from './db-exec.js';
 
 const hex = (expr: string): string => `pg_catalog.encode(pg_catalog.convert_to(${expr}, 'UTF8'), 'hex')`;
 
@@ -67,9 +68,20 @@ async function serverVersionNum(x: Exec): Promise<number> {
 export async function hardenPostgresCluster(x: Exec): Promise<string[]> {
   const { ctx } = x;
   const changed: string[] = [];
+  // A backup run's login (backup-login.ts) holds BYPASSRLS (before 14,
+  // SUPERUSER) for its dump: a fresh one is left alone, one left behind is
+  // dropped — and if it cannot be, hardened like any other role.
+  const backupLogins = new Set<string>();
+  const now = Date.now();
+  for (const r of outputLines(await sh(x, pgSuperuser(ctx, `SELECT ${hex('rolname')} FROM pg_catalog.pg_roles WHERE rolname ~ '^platform_bk_'`))).map(fromHex)) {
+    const kind = classifyBackupLogin(r, now);
+    if (kind === 'fresh') backupLogins.add(r);
+    else if (kind === 'stale' && (await tryRun(x, pgSuperuser(ctx, `DROP ROLE ${pgIdent(r)}`))).ok) changed.push(`dropped ${r}, a backup login left behind`);
+  }
   const roles = outputLines(await sh(x, pgSuperuser(ctx,
     `SELECT ${hex('rolname')} FROM pg_catalog.pg_roles WHERE rolname <> current_user AND rolname !~ '^pg_' AND (rolsuper OR rolcreaterole OR rolreplication OR rolbypassrls)`)))
-    .map(fromHex);
+    .map(fromHex)
+    .filter((r) => !backupLogins.has(r));
   for (const r of roles) {
     await sh(x, pgSuperuser(ctx, `ALTER ROLE ${pgIdent(r)} NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS`));
     changed.push(`${r} is no longer a superuser or role administrator`);

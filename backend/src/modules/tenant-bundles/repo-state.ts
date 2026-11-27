@@ -30,7 +30,7 @@ import { BUNDLE_SCHEMA_VERSION } from './restic-driver.js';
 export interface RecordResticSnapshotArgs {
   readonly db: Database;
   readonly tenantId: string;
-  readonly component: 'files' | 'mailboxes';
+  readonly component: 'files' | 'mailboxes' | 'databases';
   readonly repoUri: string;
   readonly targetConfigId: string | null;
   readonly snapshotId: string;
@@ -154,7 +154,7 @@ export async function anchorResticRepoTotal(args: {
 export async function recordResticRunFailed(args: {
   readonly db: Database;
   readonly tenantId: string;
-  readonly component: 'files' | 'mailboxes';
+  readonly component: 'files' | 'mailboxes' | 'databases';
   readonly runAt: Date;
 }): Promise<void> {
   // INSERT path uses a dummy repoUri because the row may not exist

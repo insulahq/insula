@@ -187,10 +187,16 @@ describe('hardenPostgresCluster', () => {
     sessionSettings?: Array<[db: string, role: string, name: string]>;
     hba?: string[];
     dataDir?: string;
+    /** Roles named like a backup run's login (backup-login.ts). */
+    backupLogins?: string[];
+    /** DROP ROLE fails (the role owns something). */
+    dropFails?: boolean;
   }
 
   function server(w: World) {
     return fake(({ sql }) => {
+      if (sql.includes("WHERE rolname ~ '^platform_bk_'")) return (w.backupLogins ?? []).map(hex).join('\n');
+      if (sql.startsWith('DROP ROLE') && w.dropFails) return new Error('role owns objects');
       if (sql.includes('FROM pg_catalog.pg_roles WHERE rolname <> current_user')) return (w.roles ?? []).map(hex).join('\n');
       if (sql === 'SHOW server_version_num') return w.version ?? '180000';
       if (sql === 'SHOW data_directory') return w.dataDir ?? DATA;
@@ -360,8 +366,43 @@ describe('hardenPostgresCluster', () => {
   it('never modifies the platform\'s own role: it is excluded by name', async () => {
     const s = server({});
     await hardenPostgresCluster({ ctx: ctx(), run: s.run });
-    expect(s.sqls[0]).toContain('rolname <> current_user');
-    expect(s.sqls[0]).toContain("rolname !~ '^pg_'");
+    const roles = s.sqls.find((q) => q.includes('rolsuper OR rolcreaterole'));
+    expect(roles).toContain('rolname <> current_user');
+    expect(roles).toContain("rolname !~ '^pg_'");
+  });
+
+  describe('a backup run\'s login', () => {
+    const now = Math.floor(Date.now() / 1000);
+    const fresh = `platform_bk_${now - 60}_abc123`;
+    const stale = `platform_bk_${now - 13 * 3600}_abc123`;
+    const future = `platform_bk_${now + 3600}_abc123`;
+
+    it('leaves a fresh one its BYPASSRLS (its dump runs now)', async () => {
+      const s = server({ backupLogins: [fresh], roles: [fresh, 'evil'] });
+      const changed = await hardenPostgresCluster({ ctx: ctx(), run: s.run });
+      expect(changed).toEqual(['evil is no longer a superuser or role administrator']);
+      expect(s.sqls.some((q) => q.includes(`"${fresh}"`))).toBe(false);
+    });
+
+    it('drops one left behind, and one dated in the future (no run mints that)', async () => {
+      const s = server({ backupLogins: [stale, future], roles: [] });
+      const changed = await hardenPostgresCluster({ ctx: ctx(), run: s.run });
+      expect(s.sqls).toContain(`DROP ROLE "${stale}"`);
+      expect(s.sqls).toContain(`DROP ROLE "${future}"`);
+      expect(changed).toEqual([`dropped ${stale}, a backup login left behind`, `dropped ${future}, a backup login left behind`]);
+    });
+
+    it('hardens one that cannot be dropped like any other role', async () => {
+      const s = server({ backupLogins: [stale], roles: [stale], dropFails: true });
+      const changed = await hardenPostgresCluster({ ctx: ctx(), run: s.run });
+      expect(changed).toEqual([`${stale} is no longer a superuser or role administrator`]);
+    });
+
+    it('treats a name that merely starts with the prefix as any role', async () => {
+      const s = server({ backupLogins: ['platform_bk_evil'], roles: ['platform_bk_evil'] });
+      const changed = await hardenPostgresCluster({ ctx: ctx(), run: s.run });
+      expect(changed).toEqual(['platform_bk_evil is no longer a superuser or role administrator']);
+    });
   });
 });
 

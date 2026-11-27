@@ -21,6 +21,8 @@ export default defineConfig({
       // invisible in CI because CI always builds fresh. See CLAUDE.md on
       // `tsc --build --force`.
       '@insula/api-contracts': path.resolve(__dirname, '../../packages/api-contracts/src/index.ts'),
+      // The shared restore cart likewise (a worktree's node_modules is the main checkout's).
+      '@insula/ui-restore-cart': path.resolve(__dirname, '../../packages/ui-restore-cart/src/index.ts'),
     },
   },
 });

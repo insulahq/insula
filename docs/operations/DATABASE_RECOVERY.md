@@ -36,16 +36,43 @@ via the `files-paths` restore item (§4) — never as the database's backup.
 ### The logical dump — the database's backup
 
 Capture takes a **per-database logical dump**: consistent, and portable
-cross-version, cross-engine-config, or into a differently-shaped target. Each
-dump lands on the tenant PVC (and is therefore captured by the same files
-snapshot):
+cross-version, cross-engine-config, or into a differently-shaped target.
 
-| Engine | Dump command | Artifact on PVC |
-|--------|--------------|-----------------|
-| MariaDB / MySQL | `mysqldump` / `mariadb-dump --single-transaction --quick --routines --triggers` | `predump-<db>-<bundleId>.sql` |
-| PostgreSQL | `pg_dump` (MVCC-consistent) | `predump-<db>-<bundleId>.sql` |
-| MongoDB | `mongodump --archive --gzip` | `predump-<db>-<bundleId>.archive.gz` |
-| SQLite | `sqlite3 <file> .dump` (per discovered file) | `.backup-sqlite-dumps/predump-<path>-<bundleId>.sqlite.sql` |
+**Standalone database instances** (the catalog's MariaDB, MySQL, PostgreSQL and
+MongoDB) are backed up **one restic snapshot per database**, beside the files
+snapshot and in the same per-tenant repository. For each running instance the
+bundle runs one Job in the tenant's namespace: an init container copies restic in,
+and the instance's **own image** (so the dump client is the server's version) runs
+`restic backup --stdin-from-command -- <dump>` per database. The dump streams
+straight into the repository — **nothing is written to the tenant's volume**, so
+a full volume no longer skips a dump, and a dump that fails saves no snapshot at
+all. The dump client runs without the restic credentials in its environment. The
+Job connects over the instance's Service with a **login minted for the run** (read
+privileges only; `platform_bk_<time>_<hex>`), made right before the Job and dropped
+when it ends; one left behind by a run that died (older than 7 hours, or dated in
+the future) is dropped by the next hardening pass. **PostgreSQL before 14** is not
+backed up this way — only a superuser reads everything there — and is reported
+`failed` until the instance is updated.
+
+| Engine | Dump | File in the snapshot |
+|--------|------|----------------------|
+| MariaDB / MySQL | `mariadb-dump` / `mysqldump --single-transaction --quick --routines --triggers --events --hex-blob --no-tablespaces` (MySQL also `--set-gtid-purged=OFF`) | `<hex of name>.sql` |
+| PostgreSQL | `pg_dump -Fc` (custom format) | `<hex of name>.pgdump` |
+| MongoDB | `mongodump --archive --gzip --db <name>` | `<hex of name>.archive.gz` |
+| SQLite | `sqlite3 <file> .dump` (per discovered file) | on the volume: `.backup-sqlite-dumps/predump-<path>-<bundleId>.sqlite.sql` |
+
+Each database is a `databases` row in `backup_components` (artifact
+`<deploymentId>:<database>`, `sha256` = the snapshot id) and an entry in
+`meta.json` `components.databases.snapshots`; the snapshot is tagged with the
+deployment, the database (hex), the engine and the server version. Retention, bundle
+deletion and DR treat these snapshots like the files and mailbox ones, and a **data
+export** carries each dump under `components/databases/<deploymentId>/<database>/`.
+Importing an export does not replay them (the preflight says so): the raw data files
+come back with the files, and a dump loads through the SQL Manager.
+
+Bundles taken **before** per-database snapshots carry their dumps inside the files
+snapshot instead (`predump-<db>-<bundleId>.sql` / `.archive.gz` in the instance's
+folder); they still restore, whole instances in place (§4).
 
 **SQLite is file-based, not a catalog deployment.** It has no live "database pod",
 so capture instead **discovers** SQLite files on the PVC via the file-manager pod
@@ -59,13 +86,11 @@ consistent even under concurrent app writes.
 The SQL dumps are a **consistent HOT snapshot**: `--single-transaction` takes the
 dump inside one InnoDB transaction, so there is **NO table lock and NO
 write-downtime** for the live tenant database. `pg_dump` is already MVCC-consistent
-and takes no lock. MongoDB coverage is **new** — `mongodump` bundles were silently
-unsupported before this feature.
+and takes no lock.
 
-**Free-space guard.** Before writing a logical dump, capture checks the DB pod's
-data volume. If it is **>= 90% full** or has **< 200 MiB free**, the logical dump
-is **skipped** (nothing is written) so the dump can never `ENOSPC` and crash the
-**live** database. That database then has no reliable backup in this bundle.
+**Free-space guard (SQLite).** The SQLite dumps do land on the volume: before
+writing one, capture keeps the volume below 90% full, counting the dump, and skips
+it otherwise (the raw file is still captured).
 
 ### The critical invariant — dumps are a SEPARATE dimension from bundle status
 
@@ -157,11 +182,12 @@ data files are a last resort that may not restore (§1).
 | Scenario | What happens in a bundle | Recovery mechanism | Operator action |
 |----------|--------------------------|--------------------|-----------------|
 | **DB pod crash / OOM** (engine dies mid-write, before/at capture) | The logical dump for that DB may be `failed` or absent; the files snapshot holds a live, file-by-file copy of the datadir | Prefer the last bundle whose dump is `dumped` (`databases-by-id`). Otherwise the raw datadir via `files-paths`, which may or may not crash-recover | Restore from the newest bundle with a good dump. Use the raw datadir only when no dump exists, and check the database after it starts. |
-| **PVC full at capture** (>= 90% full or < 200 MiB free) | Logical dump **skipped** (not written) — per-db `degraded`, error names the fill %; the database is not backed up by this bundle | The previous bundle's dump; the raw datadir is a last resort | Grow the tenant volume or free space, then **re-run the bundle** to get a fresh logical dump. The overdue alert follows if the next scheduled run does not back it up either. |
+| **PVC full at capture** | A standalone instance's dump streams into restic and needs no room on the volume. A SQLite dump that would fill the volume past 90% is **skipped** — `degraded`, the error names the fill | The previous bundle's dump; the raw file is still captured | Grow the tenant volume or free space, then **re-run the bundle**. The overdue alert follows if the next scheduled run does not back it up either. |
+| **Database not running at capture** | No dump: the instance's entry is `(deployment)` `failed`, "the database could not be reached" | The previous bundle's snapshots | Start the instance (or find why it is down), then re-run the bundle. |
 | **Dump tool missing** (bring-your-own image without `mysqldump`/`mongodump`) | Per-db `degraded`; error = "\<tool\> is not available in this container"; no logical backup | Raw datadir only — a last resort | Add the client binary to the BYO image. Until then this database has no reliable backup, and it is reported overdue. |
-| **MongoDB backup** (now covered — was silently unsupported) | `mongodump --archive --gzip` → `predump-<db>-<bundleId>.archive.gz` on the PVC; plus the live-copied WiredTiger datadir in the files snapshot | Logical: `mongorestore --archive --gzip --drop` (recreates namespaces — target db need not exist). Last resort: files restore of the WiredTiger datadir | Use the `databases-by-id` restore item for a clean logical re-import, or `files-paths` for a raw datadir restore. |
-| **Cross-version DB restore** (restore into a newer/older or differently-configured engine) | Logical dump `dumped` on the PVC | Logical re-import via `databases-by-id` (`importSqlFromPvcFile` for SQL, `mongorestore` for Mongo) — portable across versions/engine config | Restore with `databases-by-id` (portable), **not** `files-paths` — a raw datadir is version/config-specific and may not attach to a different engine build. |
-| **DB dropped / corrupted** (accidental `DROP DATABASE`, logical corruption on the LIVE db) | Dump and raw files in the last good bundle | Logical re-import replays the dump into the running pod (SQL import, or `mongorestore --drop`); or, as a last resort, the raw datadir | Prefer `databases-by-id` (re-imports into the live pod without touching other DBs). If the whole datadir is corrupt, use `files-paths`. |
+| **MongoDB backup** | `mongodump --archive --gzip` → one restic snapshot per database; plus the live-copied WiredTiger datadir in the files snapshot | Logical: `mongorestore --archive --gzip --drop` (recreates namespaces — target db need not exist). Last resort: files restore of the WiredTiger datadir | Use the `databases-by-id` restore item for a clean logical re-import, or `files-paths` for a raw datadir restore. |
+| **Cross-version DB restore** (restore into a newer or differently-configured engine) | Logical dump `dumped` | Logical re-import via `databases-by-id` — portable across versions/engine config. A dump from a **newer** server than the instance runs is refused | Restore with `databases-by-id` (portable), **not** `files-paths` — a raw datadir is version/config-specific. Into an older server: update the instance first. |
+| **DB dropped / corrupted** (accidental `DROP DATABASE`, logical corruption on the LIVE db) | Dump and raw files in the last good bundle | `databases-by-id`: `copy` next to the original to compare, `replace` to bring it back in place (a dropped one is created again), `test` to prove the backup first; or, as a last resort, the raw datadir | Prefer `databases-by-id` (touches only the chosen databases). If the whole datadir is corrupt, use `files-paths`. |
 | **Administrator-login recovery** (the platform cannot log in) | The login is not a password: root by socket (MariaDB/MySQL), the superuser by local trust (PostgreSQL), a pod-local root (MongoDB); the reset init container restores it on every restore path | Automatic on create, DR reconcile and archive restore; **Repair database access** otherwise (§6) | See §5–§6. |
 | **Tenant fully deleted** (row gone, namespace gone) | Bundle survives until its own retention sweep; carries `config` + `files` (raw files + dumps) + `meta.json` v2 tenant block | DR re-create from the offsite bundle re-provisions the namespace + empty PVC, then restore-cart overlays files and re-imports dumps | Follow `DR_DRILL_TENANTS.md` (re-create → provision → restore-cart with `files-paths` + `databases-by-id` + `config-tables`). Assert restore `status == completed`. |
 
@@ -175,8 +201,9 @@ bundles (§1), and it is reported overdue after the first scheduled run without 
 
 | Symptom (`database_dumps`) | Cause | Fix |
 |----------------------------|-------|-----|
-| `status: degraded`; per-db `error` contains "PVC NN% full — logical dump skipped" | DB pod's data volume was **>= 90% full** or had **< 200 MiB free** at capture; the free-space guard refused to write the dump to protect the live DB | Grow the tenant volume (or delete stale data), then re-run the bundle. Meanwhile the newest bundle with a good dump is the backup. |
-| `status: degraded`; per-db `error` = "mysqldump / mongodump is not available in this container" | Bring-your-own DB image ships no dump client | Add the client to the image. Without it this database has no reliable backup — only the live-copied raw files. |
+| `status: degraded`; a SQLite entry's `error` contains "PVC 90% full" / "would fill the volume past 90%" | The volume had no room for the SQLite dump | Grow the tenant volume (or delete stale data), then re-run the bundle. Meanwhile the newest bundle with a good dump is the backup. |
+| `status: degraded`; `(deployment)` `failed` with "no dump tool in this image" / "restic cannot run in this image" | The instance's image has no dump client, or cannot run the (glibc) restic binary | Use a catalog image, or add the client to a bring-your-own image. Without it this database has no reliable backup — only the live-copied raw files. |
+| `status: degraded`; `(deployment)` `failed` with "the database could not be reached" / "the backup login could not be created" | The instance was not running, or the platform could not log in as root | Start the instance; if it runs, **Repair database access** (§6), then re-run the bundle. |
 | `status: degraded`; per-db `status: degraded`, engine unsupported | Engine has no logical dumper wired up | Expected, but this database has no reliable backup — only the live-copied raw files (`files-paths`). |
 | `status: degraded`; per-db `status: failed`; `error` is an unexpected engine message (e.g. `mysqldump: Got error … during …`) | The dump command errored unexpectedly (engine mid-failure, permissions, transient I/O) | Check the DB pod health/logs; fix the underlying DB issue (e.g. `mariadb-upgrade` when system tables are out of date); re-run the bundle. |
 | `status: none` | Tenant has **no** add-on databases — nothing to dump | No action. |
@@ -233,11 +260,48 @@ How to read it:
 
 ### Restore mechanics (reference)
 
-- **`databases-by-id`** restore item re-imports the **logical** dumps back into the
-  running DB pods: SQL via `importSqlFromPvcFile`, MongoDB `.archive.gz` via
-  `mongorestore --archive --gzip --drop` (recreates namespaces, so the target db
-  need not pre-exist). If a DB pod is not running or no dump exists, it **skips
-  gracefully** — not a failure.
+- **`databases-by-id`** restore item, for a bundle with per-database snapshots:
+  one Job per instance streams each snapshot into the running database,
+  **logged in as the tenant's administrator** — never root: the dump is the
+  tenant's data and objects. The Job has two containers that share only named
+  pipes: `fetch` (the backup-tools image, a native sidecar) holds the restic
+  credentials and runs `restic dump`; `restore` (the instance's image) holds only
+  the administrator's login and replays the pipe through the client. The client,
+  which can run shell commands, never sees the backup store's credentials. Nothing
+  is staged on the volume. The
+  selector picks whole instances (`all`, `ids`) or chosen databases
+  (`databases`), and a **mode**:
+  - `replace` (default) — into the database of the same name (created again if it
+    is gone): the tables, views and routines in the backup are recreated over what
+    is there; anything made since stays. PostgreSQL runs `pg_restore --clean
+    --single-transaction`: all of it, or nothing changes, and objects keep their
+    owners. MariaDB/MySQL replay the dump table by table, MongoDB `mongorestore
+    --drop` collection by collection: a failure part-way leaves a mix.
+  - `copy` — into a new database the platform creates and hands to the tenant's
+    administrator (`targetName`, or `<name>_restored_<yyyymmddhhmm>`); the
+    original is not touched. PostgreSQL loads it `--no-owner`: the copy belongs to
+    the administrator.
+  - `test` — into a scratch database `restoretest_<hex>`, counts the tables or
+    collections that came back, and drops it. Changes nothing.
+
+  A backup from a **newer server** than the instance now runs (MariaDB/MySQL/
+  MongoDB major.minor, PostgreSQL major) is refused: update the instance first.
+  The server's own databases (`mysql`, `admin`, `config`, …) are never a target.
+  The restore drops definers (MariaDB/MySQL) and, in a copy or test, owners
+  (PostgreSQL): those objects now belong to the administrator, so a routine or view
+  that ran with a limited app account's rights runs with the administrator's.
+  Tenants can add these items to their own restore cart (Backups → Restore →
+  Databases); the instance must be running and its data attached.
+- For a bundle **from before per-database snapshots**, `databases-by-id` restores
+  whole instances in place only (other modes are refused with
+  `DB_RESTORE_MODE_UNAVAILABLE`): it fetches the pre-dumps back from the files
+  snapshot into each instance's folder and re-imports them — SQL via
+  `importSqlFromPvcFile`, MongoDB `.archive.gz` via `mongorestore --archive --gzip
+  --drop`. If a DB pod is not running or no dump exists, it **skips gracefully**.
+- **MySQL with binary logging** (the default): only SUPER may create a routine or
+  trigger, so the platform keeps `log_bin_trust_function_creators` on — set at
+  every administrator check and before a restore. A standalone server replicates
+  nothing, and the setting only lets an account create routines as itself.
 - **`files-paths`** restore item restores the **raw DB directory** — a live,
   file-by-file copy that may not restore (§1). Use it only when no bundle has a
   good dump of the database, and check the database once it starts.

@@ -73,6 +73,20 @@ describe('demotePrivilegedUsers', () => {
     );
   });
 
+  it("leaves a fresh backup run's login its backup role, drops one left behind", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const fresh = `platform_bk_${now - 60}_abc123`;
+    const stale = `platform_bk_${now - 13 * 3600}_abc123`;
+    const s = server([user(fresh, 'admin', ['backup', 'admin']), user(stale, 'admin', ['backup', 'admin']), user(fresh, 'shop', ['backup', 'admin'])]);
+    const changed = await demotePrivilegedUsers(x(s.run), new Set(['dbadmin']));
+    expect(s.evals).toContain(`db.getSiblingDB("admin").dropUser(${JSON.stringify(stale)}); "ok"`);
+    expect(changed).toEqual([
+      `dropped ${stale}, a backup login left behind`,
+      // Not in admin: not one of ours, demoted like any user.
+      `${fresh}@shop no longer holds backup (it keeps read/write on every database)`,
+    ]);
+  });
+
   it('grants the data roles BEFORE revoking, so a failure in between never leaves the user with less', async () => {
     const s = server([user('evil', 'admin', ['userAdmin', 'admin'])]);
     await demotePrivilegedUsers(x(s.run), new Set());

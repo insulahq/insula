@@ -31,11 +31,11 @@
  *   file paths are DISPLAY paths (relative, no leading `/source` and no
  *   leading slash).
  *
- * Pre-capture DB dump:
- *   The orchestrator runs preCaptureDatabaseDumps BEFORE this component
- *   spawns the Job. Dump files land at `/exports/predump-…sql` on the
- *   tenant PVC; `restic backup /source` snapshots them alongside the
- *   raw on-disk files. NO DB CLIENTS in this Job's image.
+ * Databases:
+ *   Standalone database instances are backed up by their own snapshots
+ *   (database-snapshots.ts); this snapshot holds their raw data files only.
+ *   SQLite files are dumped onto the volume BEFORE this Job (sqlite-predump.ts)
+ *   and ride along. NO DB CLIENTS in this Job's image.
  *
  * Compression:
  *   `--compression auto` is passed EXPLICITLY. It is also restic's default
@@ -357,9 +357,8 @@ export function buildFilesComponentJobSpec(input: {
  * Job that runs `restic backup /source` directly. Returns the restic
  * snapshot id parsed from the Job log line `FILES_DONE snapshot=<id>`.
  *
- * Pre-condition: orchestrator has already run preCaptureDatabaseDumps
- * for this tenant's database deployments (so dumps are on the PVC and
- * will be included in the snapshot).
+ * Pre-condition: the orchestrator has dumped the tenant's SQLite files onto
+ * the PVC, so the snapshot includes them.
  */
 export async function captureFilesComponent(
   opts: CaptureFilesComponentOpts,

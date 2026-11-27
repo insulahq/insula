@@ -164,7 +164,7 @@ const DEFAULT_MAX_PRUNES = 4;
  * than silently dropped, then picked up by the next tick.
  */
 const DEFAULT_MAX_REPO_ANCHORS = 10;
-const RESTIC_COMPONENTS: ReadonlySet<string> = new Set<ResticComponent>(['files', 'mailboxes']);
+const RESTIC_COMPONENTS: ReadonlySet<string> = new Set<ResticComponent>(['files', 'mailboxes', 'databases']);
 
 /** `bundle-id=<uuid>` → `<uuid>`. Returns null when the tag is absent. */
 function bundleIdFromTags(tags: ReadonlyArray<string>): string | null {
@@ -296,7 +296,7 @@ export async function runResticRetentionSweep(
       SELECT DISTINCT bj.tenant_id, bc.component::text AS component
       FROM backup_components bc
       JOIN backup_jobs bj ON bj.id = bc.backup_job_id
-      WHERE bc.component IN ('files','mailboxes')
+      WHERE bc.component IN ('files','mailboxes','databases')
         AND bc.sha256 IS NOT NULL
       UNION
       SELECT tenant_id, component::text AS component FROM restic_repo_reclaim_state
@@ -1023,7 +1023,7 @@ export async function purgeFullyReclaimedBundles(
       -- NOT NULL (FK column).
       AND bj.id NOT IN (
         SELECT bc.backup_job_id FROM backup_components bc
-        WHERE bc.component IN ('files','mailboxes')
+        WHERE bc.component IN ('files','mailboxes','databases')
           AND bc.sha256 IS NOT NULL
           AND bc.snapshot_reclaimed_at IS NULL
       )

@@ -12,7 +12,7 @@ import { seedPlan, seedRegion, seedTenant } from '../../test-helpers/fixtures.js
 import { backupJobs, backupSchedules, catalogEntries, databaseBackupStatus, deployments } from '../../db/schema.js';
 import { recordDatabaseBackupResults } from './recorder.js';
 import { loadRowPage, pageKey, resolveJudgedRun } from './sweep.js';
-import { runPreCaptureDatabaseDumps } from '../tenant-bundles/components/database-predump-orchestration.js';
+import { instancesToBackUp } from '../tenant-bundles/components/database-snapshots.js';
 import { selectWaveTenants } from '../tenant-bundles/global-scheduler.js';
 
 const dbAvailable = await isDbAvailable();
@@ -107,13 +107,11 @@ describe.skipIf(!dbAvailable)('database backup status (integration)', () => {
     expect(await resolveJudgedRun(db(), new Date('2026-11-26T09:00:00Z'))).toBeNull();
   });
 
-  it('the pre-dump leaves deleted and stopped database deployments alone', async () => {
+  it('the database backup leaves deleted and stopped database deployments alone', async () => {
     await seedDeployment('dep-deleted', 'deleted', new Date());
     await seedDeployment('dep-soft', 'running', new Date());
     await seedDeployment('dep-stopped', 'stopped');
-    // No Kubernetes client: the call may only succeed because nothing is listed.
-    const results = await runPreCaptureDatabaseDumps({ db: db(), k8s: undefined as never, tenantId, namespace: 'tenant-x', backupId: 'bkp-1' });
-    expect(results).toEqual([]);
+    expect(await instancesToBackUp(db(), tenantId)).toEqual([]);
   });
 
   it('the wave bundles tenants in a stable order', async () => {

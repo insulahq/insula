@@ -14,6 +14,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Added
 
+- **Every database is backed up on its own, straight into the backup store, and restores on its
+  own: in place, as a copy, or as a test.** A bundle used to dump each database onto the tenant's
+  volume before the files snapshot took it, so a nearly full volume skipped the dump and a large
+  dump could fill the volume of the live database. Now each running database instance gets one
+  Job per bundle that streams every database's dump into the tenant's restic repository, one
+  snapshot per database, logged in with an account made for that run and dropped after it.
+  Nothing is written to the volume. The bundle records each snapshot, and retention, deleting a
+  bundle and disaster recovery handle them like the files and mailbox snapshots. The restore cart
+  in both panels has a **Databases** tab: pick an instance or single databases and restore them
+  **as a copy** next to the original (named by you or `<name>_restored_<time>`), as a **test**
+  into a scratch database that is counted and dropped, or **in place**. A restore runs as the
+  tenant's database administrator, never as root, and a backup from a newer server than the
+  instance runs is refused. Tenants can now restore their own databases. In the restore Job the
+  backup store's credentials and the database client sit in separate containers, so a dump's
+  content never runs next to those credentials. A data export carries each database's dump.
+  PostgreSQL before 14 is not backed up this way (only a superuser could read everything) and is
+  reported until the instance is updated; the catalog ships 18. Bundles from before this restore
+  whole instances in place, as before. See `docs/operations/DATABASE_RECOVERY.md`.
+
 - **A database whose backups keep failing is now reported, to the operator and to the tenant.**
   Each nightly bundle dumps every tenant database, but it recorded the outcome only on the bundle
   itself, and nothing read it again. On production one tenant's seven MariaDB databases failed to
@@ -209,6 +228,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Fixed).
 
 ### Fixed
+
+- **On MySQL the tenant's database administrator can create routines and triggers.** MySQL logs
+  binary by default, and then only an account with SUPER may create a function, procedure or
+  trigger — which the administrator does not hold, so it could not, and a restore of a dump that
+  holds one failed. The platform now keeps `log_bin_trust_function_creators` on for MySQL
+  instances: a standalone server replicates nothing, and the setting lets an account create
+  routines only as itself.
 
 - **A database with a small memory limit now comes back after a restart.** On every start of a
   database pod whose data already exists, an init container restores the platform's

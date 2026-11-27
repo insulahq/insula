@@ -26,6 +26,7 @@ import type {
   BrowseDeploymentsData,
   BrowseDomainsData,
   BrowseMailboxesData,
+  BrowseDatabasesData,
   BrowseFilesData,
 } from '@insula/ui-restore-cart';
 
@@ -136,6 +137,15 @@ export function useBrowseDomains(bundleId: string | null) {
     queryKey: ['tenant-bundle-browse', 'domains', bundleId],
     enabled: !!(tenantId && bundleId),
     queryFn: () => apiFetch<BrowseEnvelope<BrowseDomainsData>>(browseUrl(tenantId, bundleId!, 'domains')),
+  });
+}
+
+export function useBrowseDatabases(bundleId: string | null) {
+  const tenantId = useTenantId();
+  return useQuery({
+    queryKey: ['tenant-bundle-browse', 'databases', bundleId],
+    enabled: !!(tenantId && bundleId),
+    queryFn: () => apiFetch<BrowseEnvelope<BrowseDatabasesData>>(browseUrl(tenantId, bundleId!, 'databases')),
   });
 }
 

@@ -112,6 +112,6 @@ function upgradeV1ToV2(v1: Record<string, unknown>): Record<string, unknown> {
 export const META_FILENAME = 'meta.json';
 
 /** Canonical component subdirectory name. */
-export function componentDir(component: 'files' | 'mailboxes' | 'config' | 'secrets'): string {
+export function componentDir(component: 'files' | 'mailboxes' | 'config' | 'secrets' | 'databases'): string {
   return `components/${component}`;
 }

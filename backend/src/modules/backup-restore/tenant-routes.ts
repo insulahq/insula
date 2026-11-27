@@ -19,6 +19,7 @@ import type { FastifyInstance } from 'fastify';
 import { eq, asc, sql, and, inArray } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { browseFilesTree } from './browse-files-restic.js';
+import { browseBundleDatabases } from './browse-databases.js';
 import {
   authenticate,
   requirePanel,
@@ -207,6 +208,13 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
     const handle = await store.open(bundleId);
     if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artefacts not found on remote target', 404);
     return success({ bundleId, addresses: await readMailboxAddresses(store, handle) });
+  });
+
+  app.get('/tenants/:tenantId/bundles/:bundleId/browse/databases', async (request) => {
+    const { tenantId, bundleId } = request.params as { tenantId: string; bundleId: string };
+    const bundle = await loadBundle(app, bundleId);
+    assertOwnership(bundle.tenantId, tenantId, 'Bundle');
+    return success(await browseBundleDatabases(app, bundleId, tenantId));
   });
 
   app.get('/tenants/:tenantId/bundles/:bundleId/browse/deployments', async (request) => {

@@ -111,7 +111,7 @@ export interface BundleDatabaseOutcome {
   /** When the bundle finished — the attempt (and, if good, the success) time. */
   readonly at: Date;
   readonly summary: BackupDatabaseDumps;
-  /** The files snapshot that carries the dumps completed. */
+  /** The files snapshot completed: it keeps the dumps that have no snapshot of their own (SQLite). */
   readonly snapshotKept: boolean;
   /**
    * The SQLite capture ran to its end without being cut short. False when the
@@ -171,11 +171,14 @@ function foldEntries(entries: readonly SummaryEntry[], keep: number): SummaryEnt
   const rest = sorted.slice(kept.length);
   const worst = rest.reduce((w, e) => (STATUS_RANK[e.status] > STATUS_RANK[w] ? e.status : w), 'dumped' as DumpStatus);
   const failed = rest.filter((e) => e.status !== 'dumped').length;
+  // The folded entry stands on its own snapshots only when every dump in it does.
+  const ownSnapshots = rest.every((e) => e.status !== 'dumped' || Boolean(e.snapshotId));
   return [...kept, {
     name: MORE_DATABASES_ENTRY,
     status: worst,
     sizeBytes: rest.reduce((n, e) => n + (e.sizeBytes ?? 0), 0),
     error: failed === 0 ? null : `${failed} of ${rest.length} further databases were not backed up`,
+    ...(ownSnapshots ? { snapshotId: rest.find((e) => e.snapshotId)?.snapshotId } : {}),
   }];
 }
 
@@ -226,7 +229,9 @@ export function planDatabaseBackupRecord(
     for (const db of entries) {
       listed.add(db.name);
       const prev = byKey.get(key(subjectKey, db.name));
-      const kept = db.status !== 'dumped' || outcome.snapshotKept;
+      // A dump with its own snapshot is kept by it; one that rode on the files
+      // snapshot (SQLite, older bundles) only when that snapshot completed.
+      const kept = db.status !== 'dumped' || Boolean(db.snapshotId) || outcome.snapshotKept;
       const status: DumpStatus = kept ? db.status : 'failed';
       const good = status === 'dumped';
       upsert(prev, {

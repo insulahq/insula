@@ -57,7 +57,7 @@
 | [R42](#r42--retire-roundcube) | Retire Roundcube | P3 | Started 2026-10-04 — Bulwark is the default and recommended engine; Roundcube is labelled legacy, receives security updates only, and UI/bootstrap text is engine-neutral. Removal not started |
 | [R43](#r43--drop-the-retired-plan-ai-budget-column) | Drop the retired plan AI-budget column | P3 | ✅ **Done on `development` 2026-10-06** — migration 0150 drops the column; ships in the next release (upgrade through v2026.10.6, see the entry) |
 | [R44](#r44--one-upgrade-procedure-nodes-first-pushed-done-means-done) | One upgrade procedure: nodes first, pushed, "done" means done | P1 | In progress (ADR-064) — P0 truthful status shipped in v2026.10.7-rc.2; P1 node push + hosts-first order (upgrade runs) lands for v2026.10.7-rc.3; P2 UX, P3 auto-update + parity, P4 Kubernetes step open |
-| [R48](#r48--database-data-directories-are-reachable-through-the-file-manager-and-sftp) | Database data directories are reachable through the file manager and SFTP | P2 | In progress — one protected `database/` folder, masked in the file manager; Detach/Attach for raw access |
+| [R48](#r48--database-data-directories-are-reachable-through-the-file-manager-and-sftp) | Database data directories are reachable through the file manager and SFTP | P2 | ✅ **Done on `development` 2026-11-26** — one protected `database/` folder, masked in the file manager; Detach/Attach for raw access. Ships in the next release |
 
 ---
 
@@ -2349,7 +2349,7 @@ the drop can be restored.
 
 ## R48 — Database data directories are reachable through the file manager and SFTP
 
-**In progress.** Found while making a tenant database's root login the platform's
+**Done on `development` 2026-11-26** (ships in the next release). Found while making a tenant database's root login the platform's
 (`deployments/db-admin-access.ts`, `docs/operations/DATABASE_RECOVERY.md` §5).
 
 A database instance keeps its data on the tenant volume (`storagePath`, or a

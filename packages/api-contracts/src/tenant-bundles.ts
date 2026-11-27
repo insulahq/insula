@@ -19,7 +19,7 @@ export const backupJobStatusSchema = z.enum([
 ]);
 export type BackupJobStatus = z.infer<typeof backupJobStatusSchema>;
 
-export const backupComponentNameSchema = z.enum(['files', 'mailboxes', 'config', 'secrets']);
+export const backupComponentNameSchema = z.enum(['files', 'mailboxes', 'config', 'secrets', 'databases']);
 export type BackupComponentName = z.infer<typeof backupComponentNameSchema>;
 
 export const backupComponentStatusSchema = z.enum([
@@ -95,7 +95,17 @@ export const backupMetaComponentSecretsSchema = z.object({
   encryptionKeyId: z.string().regex(/^k\d+$/), // 'k1', 'k2', ...
 });
 
+/**
+ * Per-database restic snapshots, keyed `<deploymentId>:<database>` — so DR and
+ * a cross-cluster import can rebuild the component rows from meta.json alone.
+ */
+export const backupMetaComponentDatabasesSchema = z.object({
+  sizeBytes: z.number().int().nonnegative(),
+  snapshots: z.record(z.string(), z.string().regex(/^[0-9a-f]{8,64}$/)),
+});
+
 export const backupMetaComponentsSchema = z.object({
+  databases: backupMetaComponentDatabasesSchema.optional(),
   files: backupMetaComponentFilesSchema.optional(),
   mailboxes: backupMetaComponentMailboxesSchema.optional(),
   config: backupMetaComponentConfigSchema.optional(),
@@ -267,6 +277,14 @@ export const backupDatabaseDumpEntrySchema = z.object({
   sizeBytes: z.number().int().nonnegative().default(0),
   /** Present for degraded/failed — plain-English reason + remediation hint. */
   error: z.string().nullable().optional(),
+  /**
+   * The database's own restic snapshot (bundles from per-database snapshots
+   * on). Absent for SQLite files and older bundles, whose dumps rode on the
+   * files snapshot.
+   */
+  snapshotId: z.string().regex(/^[0-9a-f]{8,64}$/).optional(),
+  /** The server's version when it was dumped (`SELECT VERSION()`, …). */
+  serverVersion: z.string().max(200).optional(),
 });
 
 export const backupDatabaseDumpDeploymentSchema = z.object({

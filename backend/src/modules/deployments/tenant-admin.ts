@@ -149,7 +149,22 @@ async function ensureMysqlTenantAdmin(x: Exec, account: TenantAdminAccount, opts
     changed.push(...(await step(problems, 'objects that ran as root', () => adoptRootDefinedObjects(x, acct))));
   }
   changed.push(...(await ensureAllDatabasesAccounts(x)));
+  changed.push(...(await step(problems, 'routine creation', () => trustRoutineCreators(x))));
   return { changes: changed, problems };
+}
+
+/**
+ * With binary logging on (MySQL's default) only SUPER may create a routine or
+ * trigger, so the tenant administrator could not — nor restore a dump that
+ * holds one. A standalone server replicates nothing, and the setting lets an
+ * account create routines as itself only, so it is turned on. Set at every
+ * check: a restart forgets it, and hardening clears persisted settings.
+ */
+export async function trustRoutineCreators(x: Exec): Promise<string[]> {
+  const [logBin, trusted] = (await sh(x, mysqlRoot(x.ctx, 'SELECT @@GLOBAL.log_bin, @@GLOBAL.log_bin_trust_function_creators'))).trim().split('\t');
+  if (logBin !== '1' || trusted === '1') return [];
+  await sh(x, mysqlRoot(x.ctx, 'SET GLOBAL log_bin_trust_function_creators = ON'));
+  return ['routines and triggers can be created without SUPER (binary logging is on)'];
 }
 
 // ─── PostgreSQL ─────────────────────────────────────────────────────────────

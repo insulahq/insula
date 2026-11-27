@@ -1,11 +1,12 @@
 /**
  * Restore executor: `databases-by-id` (gap G4).
  *
- * Recovers a tenant's add-on database(s) from the per-database `.sql`
- * dump captured INSIDE the files snapshot (ADR-047). The pre-capture
- * hook (`tenant-bundles/components/database-predump.ts` →
- * `db-manager.ts:exportDatabaseToPvc`) dumps each database into the DB pod's
- * OWN storage subPath on the tenant PVC:
+ * Recovers a tenant's add-on database(s). A bundle with per-database
+ * snapshots restores from them (databases-from-snapshots.ts); an older one
+ * from the per-database `.sql` dump captured INSIDE the files snapshot
+ * (ADR-047), described below. The pre-capture hook those bundles were taken
+ * with (since removed; `db-manager.ts:exportDatabaseToPvc`) dumped each
+ * database into the DB pod's OWN storage subPath on the tenant PVC:
  *
  *     database/<engine>/<name>/predump-<db>-<bundleId>.sql   (standalone DB)
  *
@@ -39,6 +40,7 @@
  *                                         `type='database'` catalog deployment)
  */
 
+import { loadDatabaseSnapshotRows, restoreDatabasesFromSnapshots } from './databases-from-snapshots.js';
 import type { FastifyInstance } from 'fastify';
 import { loadTenantAdminAccount, tenantAdminReady } from '../../deployments/tenant-admin-store.js';
 import { and, eq, inArray } from 'drizzle-orm';
@@ -132,7 +134,7 @@ export interface DatabasesRestoreSummary {
 /**
  * Injected side-effect surface. `Ctx` is the per-deployment DB context
  * threaded from `buildDbContext` into the other calls (opaque to the
- * orchestration — mirrors `database-predump.ts` so tests can stub the
+ * orchestration — so tests can stub the
  * k8s exec without a live cluster).
  */
 export interface DatabasesRestoreDeps<Ctx> {
@@ -170,7 +172,7 @@ export interface DatabasesRestoreDeps<Ctx> {
 
 /**
  * Replicate the pre-dump filename char-sanitisation so a database name
- * maps to the same token the capture wrote. `database-predump.ts`
+ * maps to the same token the capture wrote. The capture
  * applies this to the whole filename; only the `<db>` segment can hold
  * chars outside the allowlist (the literal parts + the `bkp-<uuid>`
  * bundle id are already safe), so sanitising the name alone is faithful.
@@ -203,9 +205,16 @@ export function isPodNotRunning(err: unknown): boolean {
  * Resolve the selector to the concrete set of database deployments.
  *
  * - `kind: 'all'` → every database deployment already fetched for the tenant.
- * - `kind: 'ids'` → each requested id, validated against `requestedById`:
+ * - `kind: 'ids'` / `'databases'` → each requested id, validated against `requestedById`:
  *     missing / foreign tenant → 404; non-database catalog type → 400.
  */
+/** The deployments a selector names (none for `all`). */
+export function requestedIds(selector: DatabasesSelector): readonly string[] {
+  if (selector.kind === 'ids') return selector.deploymentIds;
+  if (selector.kind === 'databases') return [selector.deploymentId];
+  return [];
+}
+
 export function selectTargetDeployments(
   selector: DatabasesSelector,
   tenantId: string,
@@ -216,7 +225,7 @@ export function selectTargetDeployments(
     return [...tenantDbDeployments];
   }
   const out: TargetDeployment[] = [];
-  for (const id of selector.deploymentIds) {
+  for (const id of requestedIds(selector)) {
     const row = requestedById.get(id);
     if (!row || row.tenantId !== tenantId) {
       throw new ApiError(
@@ -513,6 +522,39 @@ export async function execDatabasesByIdItem(args: {
     },
   };
 
+  // A bundle with per-database snapshots restores from them, in the mode the
+  // item asks for; an older one from the pre-dumps its files snapshot holds,
+  // in place only.
+  const snapshotRows = await loadDatabaseSnapshotRows(app, item.bundleId);
+  if (snapshotRows.length > 0) {
+    if (!encryptionKey) throw new ApiError('CONFIG_INVALID', 'PLATFORM_ENCRYPTION_KEY not configured', 500);
+    const fromSnapshots = await restoreDatabasesFromSnapshots({
+      app, k8s, kubeconfigPath, namespace, tenantId: job.tenantId, bundleId: item.bundleId, restoreId: item.restoreJobId,
+      selector, targets, rows: snapshotRows, secretsKeyHex: encryptionKey,
+      loginFor: (id) => restoreLogin(id),
+      onProgress: (msg) => setProgress(app, item, msg),
+    });
+    await setProgress(app, item, formatSummary(fromSnapshots));
+    if (fromSnapshots.totalFailed > 0) {
+      throw new ApiError(
+        'DB_RESTORE_IMPORT_FAILED',
+        `database restore had ${fromSnapshots.totalFailed} failure(s)`,
+        500,
+        { imported: fromSnapshots.totalImported, skipped: fromSnapshots.totalSkipped, failed: fromSnapshots.totalFailed },
+      );
+    }
+    return;
+  }
+  if ((selector.mode ?? 'replace') !== 'replace' || selector.kind === 'databases') {
+    throw new ApiError(
+      'DB_RESTORE_MODE_UNAVAILABLE',
+      'This bundle was taken before databases were backed up one by one: it can only restore whole instances, in place.',
+      400,
+      { mode: selector.mode ?? 'replace', kind: selector.kind },
+      'Restore the whole instance in place, or pick a newer bundle.',
+    );
+  }
+
   // Snapshot-restore: predumps no longer persist on the live PVC (capture
   // deletes them after the files snapshot to keep the tenant PVC footprint at
   // ~0 — a 2-5 GB PVC can't hold a retention window of full dumps). Fetch this
@@ -609,7 +651,7 @@ async function resolveTargetDeployments(
     })
     .from(deployments)
     .leftJoin(catalogEntries, eq(deployments.catalogEntryId, catalogEntries.id))
-    .where(inArray(deployments.id, [...selector.deploymentIds]));
+    .where(inArray(deployments.id, [...requestedIds(selector)]));
 
   const requestedById = new Map<string, RequestedDeploymentRow>();
   for (const r of rows) {

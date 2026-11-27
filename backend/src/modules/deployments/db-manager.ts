@@ -22,7 +22,7 @@ import {
   validateExistingName,
 } from '../../shared/sql-identifiers.js';
 import { dbEngineApiError } from './db-errors.js';
-import { RESERVED_ACCOUNT_NAMES, SELF_SERVICE_DB_PREFIX } from './db-account-names.js';
+import { isBackupLoginPrefixed, RESERVED_ACCOUNT_NAMES, SELF_SERVICE_DB_PREFIX } from './db-account-names.js';
 import { PG_SAFE_ENV_SH, PG_SAFE_SESSION_SH } from './pg-session.js';
 import { DATABASE_ROOT } from '@insula/api-contracts';
 import { execInPod as sharedExecInPod } from '../../shared/k8s-exec.js';
@@ -94,7 +94,7 @@ const RESERVED_DATABASES: Readonly<Record<string, readonly string[]>> = {
 export function refuseReservedAccount(ctx: Pick<DbManagerContext, 'rootUsername'>, username: string): void {
   const n = username.toLowerCase();
   const reserved = ['root', 'postgres', 'healthcheck', ctx.rootUsername.toLowerCase(), ...RESERVED_ACCOUNT_NAMES.map((r) => r.toLowerCase())];
-  if (reserved.includes(n) || /^dbadmin(_|$)/.test(n)) {
+  if (reserved.includes(n) || /^dbadmin(_|$)/.test(n) || isBackupLoginPrefixed(n)) {
     throw new ApiError('RESERVED_ACCOUNT_NAME', `"${username}" is an account the platform manages and cannot be changed here`, 409, { username });
   }
 }
@@ -690,7 +690,7 @@ async function mysqlListUsers(
       const [username, host] = line.split('\t');
       return { username, host: host ?? '%' };
     })
-    .filter((u) => !systemUsers.has(u.username));
+    .filter((u) => !systemUsers.has(u.username) && !isBackupLoginPrefixed(u.username));
 
   // Query per-user database grants from mysql.db
   const dbGrantsOut = await mysqlExec(
@@ -918,7 +918,7 @@ async function pgListUsers(
   const out = await pgExec(
     kp, ns, pod, cn,
     // Not the superuser (whatever its name) and not the platform's own accounts.
-    `SELECT usename FROM pg_user WHERE NOT usesuper AND usename NOT IN (${['postgres', ...RESERVED_ACCOUNT_NAMES].map(quotePgStringLiteral).join(', ')})`, // allow-array-binding: quoted literals joined into SQL text for psql, not a drizzle bind
+    `SELECT usename FROM pg_user WHERE NOT usesuper AND usename NOT IN (${['postgres', ...RESERVED_ACCOUNT_NAMES].map(quotePgStringLiteral).join(', ')}) AND usename !~ '^platform_bk_'`, // allow-array-binding: quoted literals joined into SQL text for psql, not a drizzle bind
   );
   const users = out
     .split('\n')
@@ -1202,7 +1202,7 @@ async function mongoListUsers(
   return out.split('\n').filter(Boolean).map((line) => {
     const [username, dbs] = line.split('\t');
     return { username, host: '*', databases: dbs ? dbs.split(',') : [] };
-  });
+  }).filter((u) => !isBackupLoginPrefixed(u.username ?? ''));
 }
 
 async function mongoCreateUser(

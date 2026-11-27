@@ -67,6 +67,11 @@ describe('planDatabaseBackupRecord — what a bundle records', () => {
     });
   });
 
+  it('a dump with a snapshot of its own is kept by it, whatever became of the files snapshot', () => {
+    const plan = planDatabaseBackupRecord([row('shop')], outcome(summary([{ name: 'shop', status: 'dumped', sizeBytes: 9, snapshotId: 'abcdef12' }]), { snapshotKept: false }), live);
+    expect(plan.upserts[0]).toMatchObject({ lastStatus: 'dumped', lastError: null, lastSuccessAt: NIGHT2, lastSuccessSizeBytes: 9 });
+  });
+
   it('a dump whose files snapshot failed is not a backup', () => {
     const plan = planDatabaseBackupRecord([row('shop')], outcome(summary([{ name: 'shop', status: 'dumped', sizeBytes: 9 }]), { snapshotKept: false }), live);
     expect(plan.upserts[0]).toMatchObject({ lastStatus: 'failed', lastError: SNAPSHOT_NOT_KEPT_ERROR, lastSuccessAt: NIGHT1 });
@@ -212,6 +217,17 @@ describe('planDatabaseBackupRecord — bounded by what a tenant controls', () =>
     expect(plan.upserts).toHaveLength(MAX_ROWS_PER_SUBJECT);
     const more = plan.upserts.find((u) => u.databaseName === MORE_DATABASES_ENTRY)!;
     expect(more).toMatchObject({ lastStatus: 'failed', lastError: '1 of 41 further databases were not backed up' });
+  });
+
+  it('the folded row is kept by its databases\' own snapshots when the files snapshot failed', () => {
+    const many = Array.from({ length: MAX_ROWS_PER_SUBJECT + 3 }, (_, i) => ({
+      name: `db${String(i).padStart(4, '0')}`, status: 'dumped' as const, sizeBytes: 10, snapshotId: `abcdef${String(i).padStart(4, '0')}`,
+    }));
+    const plan = planDatabaseBackupRecord([], outcome(summary(many), { snapshotKept: false }), live);
+    expect(plan.upserts.every((u) => u.lastStatus === 'dumped')).toBe(true);
+    const mixed = many.map((d, i) => (i === many.length - 1 ? { name: d.name, status: d.status, sizeBytes: d.sizeBytes } : d));
+    const plan2 = planDatabaseBackupRecord([], outcome(summary(mixed), { snapshotKept: false }), live);
+    expect(plan2.upserts.find((u) => u.databaseName === MORE_DATABASES_ENTRY)).toMatchObject({ lastStatus: 'failed', lastError: SNAPSHOT_NOT_KEPT_ERROR });
   });
 
   it('a tenant with many subjects keeps under its overall cap', () => {

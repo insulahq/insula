@@ -1807,8 +1807,8 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         .from(backupComponents)
         .where(eq(backupComponents.backupJobId, id));
       const resticComps = comps.filter(
-        (c): c is { component: 'files' | 'mailboxes'; sha256: string } =>
-          (c.component === 'files' || c.component === 'mailboxes') && typeof c.sha256 === 'string' && c.sha256.length > 0,
+        (c): c is { component: 'files' | 'mailboxes' | 'databases'; sha256: string } =>
+          (c.component === 'files' || c.component === 'mailboxes' || c.component === 'databases') && typeof c.sha256 === 'string' && c.sha256.length > 0,
       );
       if (resticComps.length > 0 && configuredKey) {
         const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
@@ -1819,13 +1819,17 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         const bundleLayout = await resolveBundleRepoLayout(app.db, id);
         const target = await resolveShimBackupTarget(createK8sClients(kubeconfigPath).core, 'tenant', app.log);
         const passwordHex = deriveResticPassword(secretsKeyHex, job.tenantId);
-        for (const c of resticComps) {
+        // One forget per component: a bundle holds a snapshot per database
+        // (and per mailbox), and each forget takes the repository lock.
+        const byComponent = new Map<'files' | 'mailboxes' | 'databases', string[]>();
+        for (const c of resticComps) byComponent.set(c.component, [...(byComponent.get(c.component) ?? []), c.sha256]);
+        for (const [component, snapshotIds] of byComponent) {
           await runResticForget({
             target, passwordHex,
             // The BUNDLE's layout: forgetting from the wrong repository is a
             // no-op that leaves the snapshots behind forever (ADR-061).
-            repoUri: buildResticRepoUri(target, job.tenantId, c.component, bundleLayout),
-            snapshotIds: [c.sha256], log: app.log,
+            repoUri: buildResticRepoUri(target, job.tenantId, component, bundleLayout),
+            snapshotIds, log: app.log,
           });
         }
       }

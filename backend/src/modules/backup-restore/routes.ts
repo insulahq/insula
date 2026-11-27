@@ -18,6 +18,7 @@
  * executors) lives separately for HMAC-token auth.
  */
 
+import { browseBundleDatabases } from './browse-databases.js';
 import type { FastifyInstance } from 'fastify';
 import { eq, asc, sql, and, inArray } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
@@ -500,6 +501,12 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
     if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artefacts not found on remote target', 404);
     void job;
     return success({ bundleId, addresses: await readMailboxAddresses(store, handle) });
+  });
+
+  app.get('/admin/tenant-bundles/:bundleId/browse/databases', async (request) => {
+    const { bundleId } = request.params as { bundleId: string };
+    const job = await loadBundle(app, bundleId);
+    return success(await browseBundleDatabases(app, bundleId, job.tenantId));
   });
 
   app.get('/admin/tenant-bundles/:bundleId/browse/deployments', async (request) => {

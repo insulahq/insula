@@ -33,6 +33,7 @@ import {
   useBrowseDeployments,
   useBrowseDomains,
   useBrowseMailboxes,
+  useBrowseDatabases,
   useBrowseFiles,
 } from '@/hooks/use-restore-carts';
 
@@ -49,6 +50,7 @@ const tenantHooks: RestoreCartHooks = {
   useBrowseDeployments: useBrowseDeployments as RestoreCartHooks['useBrowseDeployments'],
   useBrowseDomains: useBrowseDomains as RestoreCartHooks['useBrowseDomains'],
   useBrowseMailboxes: useBrowseMailboxes as RestoreCartHooks['useBrowseMailboxes'],
+  useBrowseDatabases: useBrowseDatabases as RestoreCartHooks['useBrowseDatabases'],
   useBrowseFiles: useBrowseFiles as RestoreCartHooks['useBrowseFiles'],
 };
 

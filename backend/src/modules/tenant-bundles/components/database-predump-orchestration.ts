@@ -1,251 +1,17 @@
 /**
- * Pre-capture DB dump orchestration glue.
- *
- * Wraps `preCaptureDatabaseDumps` (database-predump.ts) with the
- * platform-specific bits the orchestrator needs:
- *   - Query the tenant's deployment rows JOINED with catalog_entries
- *     so we know which deployments are databases.
- *   - Build a DbManagerContext per deployment via the existing SQL
- *     Manager primitive `db-manager.buildDbContext`.
- *   - Hand off to `preCaptureDatabaseDumps`.
- *
- * Kept separate from the orchestrator file so it can be unit-tested
- * with a stubbed db + a stubbed kube tenant. The orchestrator
- * remains a thin coordinator that calls this once.
+ * Clean-up after the files snapshot: the SQLite dumps a bundle wrote onto the
+ * tenant's volume (sqlite-predump.ts). Standalone database instances are
+ * backed up straight into restic and leave nothing there
+ * (database-snapshots.ts).
  */
-
-import { eq, and, isNull, notInArray, sql } from 'drizzle-orm';
-import { heldPastExpiry } from '../bundle-hold.js';
-import type { Database } from '../../../db/index.js';
-import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
-import { deployments, catalogEntries } from '../../../db/schema.js';
-import {
-  buildDbContext,
-  exportDatabaseToPvc,
-  listDatabases,
-  ENGINE_CONFIG,
-  type Engine,
-} from '../../deployments/db-manager.js';
 import { execInPod } from '../../../shared/k8s-exec.js';
 import { FM_PLATFORM_CONTAINER } from '../../file-manager/protected-folder.js';
-import {
-  preCaptureDatabaseDumps,
-  type PreDumpDeployment,
-  type PreDumpDeploymentResult,
-} from './database-predump.js';
-import type { BackupDatabaseDumps } from '@insula/api-contracts';
-
-export interface RunPreCaptureDumpsArgs {
-  readonly db: Database;
-  readonly k8s: K8sClients;
-  readonly tenantId: string;
-  readonly namespace: string;
-  readonly backupId: string;
-  readonly kubeconfigPath?: string;
-  readonly onProgress?: (msg: string) => void;
-}
 
 /**
- * Resolve every database deployment for the tenant and run the pre-
- * capture dump hook. Returns per-deployment results for the
- * orchestrator to log; never throws (failures are recorded in the
- * result rows so a single broken deployment does not abort the bundle).
- */
-export async function runPreCaptureDatabaseDumps(
-  args: RunPreCaptureDumpsArgs,
-): Promise<ReadonlyArray<PreDumpDeploymentResult>> {
-  // SELECT the database deployments. JOIN against catalog_entries
-  // so we know runtime + type without a second round-trip.
-  const rows = await args.db
-    .select({
-      deploymentId: deployments.id,
-      deploymentName: deployments.name,
-      configuration: deployments.configuration,
-      catalogCode: catalogEntries.code,
-      catalogRuntime: catalogEntries.runtime,
-      catalogType: catalogEntries.type,
-    })
-    .from(deployments)
-    .innerJoin(catalogEntries, eq(deployments.catalogEntryId, catalogEntries.id))
-    .where(
-      and(
-        eq(deployments.tenantId, args.tenantId),
-        eq(catalogEntries.type, 'database'),
-        // A deleted deployment has nothing to dump, and a stopped one has no
-        // running server to dump it from; its last dump stays its backup.
-        // Listing either produced a "(deployment)" failure every night — and
-        // an overdue-backup alert for a database nobody runs.
-        isNull(deployments.deletedAt),
-        notInArray(deployments.status, ['deleted', 'stopped']),
-      ),
-    );
-
-  if (rows.length === 0) {
-    return [];
-  }
-
-  // Compute the predump-prune window: prune predumps older than the LONGEST
-  // live bundle's retention (an expired bundle's off-site snapshot is gone → its
-  // live-PVC predump can never be restored). Skip pruning entirely if ANY live
-  // bundle has INFINITE retention (expires_at NULL) — its predump must persist.
-  // The current bundle's row already exists (inserted + reserved before this
-  // hook runs), so its retention is included. Best-effort: a query failure just
-  // leaves this run unpruned (accumulation bound, not correctness).
-  let pruneOlderThanDays: number | undefined;
-  try {
-    const rawDb = args.db as unknown as {
-      execute: (q: ReturnType<typeof sql>) => Promise<{ rows: Array<{ has_infinite: boolean | null; maxret: number | string | null }> }> };
-    const res = await rawDb.execute(sql`
-      SELECT bool_or(expires_at IS NULL) AS has_infinite,
-             COALESCE(max(retention_days) FILTER (WHERE expires_at IS NOT NULL), 0) AS maxret
-      FROM backup_jobs
-      WHERE tenant_id = ${args.tenantId} AND (expires_at IS NULL OR expires_at > now() OR ${heldPastExpiry('backup_jobs')})`);
-    const r = res.rows?.[0];
-    if (r && !r.has_infinite && Number(r.maxret) > 0) {
-      pruneOlderThanDays = Number(r.maxret) + 7; // +7d buffer so a still-restorable predump is never pruned
-    }
-  } catch { /* best-effort */ }
-
-  const dumpInputs: PreDumpDeployment[] = rows.map((r) => ({
-    deploymentId: r.deploymentId,
-    deploymentName: r.deploymentName,
-    namespace: args.namespace,
-    catalogCode: r.catalogCode,
-    catalogRuntime: r.catalogRuntime,
-    catalogType: r.catalogType,
-    configuration: (r.configuration ?? {}) as Record<string, unknown>,
-  }));
-
-  return preCaptureDatabaseDumps(
-    dumpInputs,
-    {
-      buildDbContext: async (dep) =>
-        buildDbContext(
-          args.k8s,
-          args.kubeconfigPath,
-          dep.namespace,
-          dep.deploymentName,
-          { runtime: dep.catalogRuntime, code: dep.catalogCode },
-          (dep.configuration ?? {}) as Record<string, unknown>,
-        ),
-      // The DbManagerContext from buildDbContext carries k8s; the
-      // hook adapter strips it back out per its narrower interface,
-      // so the lambdas below cast to the shape preCaptureDatabaseDumps
-      // expects.
-      listDatabases: async (ctx) =>
-        listDatabases(ctx as Parameters<typeof listDatabases>[0]),
-      exportDatabaseToPvc: async (ctx, database, outputFileName, deploymentSubPath) =>
-        exportDatabaseToPvc(
-          ctx as Parameters<typeof exportDatabaseToPvc>[0],
-          database,
-          outputFileName,
-          deploymentSubPath,
-          // Predump: keep the dump IN PLACE (files snapshot captures it; restore
-          // finds it there). Skips the file-manager-pod move that would else
-          // fail the dump when the on-demand FM pod isn't up at capture time.
-          // pruneOlderThanDays bounds accumulation of prior bundles' predumps
-          // on the tenant PVC (expired-bundle predumps are unrestorable).
-          { moveToExports: false, pruneOlderThanDays },
-        ),
-      // Free-space probe on the DB pod's data volume. `df -P -k <dataRoot>`
-      // prints one data row: "Filesystem 1K-blocks Used Available Capacity%
-      // Mounted". We read Available (col 4) + Capacity% (col 5). Any parse or
-      // exec failure returns null → the hook proceeds (fail-open: a probe
-      // hiccup must not suppress a dump).
-      checkFreeSpace: async (ctx) => {
-        try {
-          const dataRoot = ENGINE_CONFIG[ctx.engine].dataRoot;
-          const res = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-            ['sh', '-c', `df -P -k ${dataRoot} | tail -1`]);
-          if (res.exitCode !== 0) return null;
-          const parts = res.stdout.trim().split(/\s+/);
-          const availKb = Number.parseInt(parts[3] ?? '', 10);
-          const usedPercent = Number.parseInt((parts[4] ?? '').replace('%', ''), 10);
-          if (!Number.isFinite(availKb) || !Number.isFinite(usedPercent)) return null;
-          return { freeBytes: availKb * 1024, usedPercent };
-        } catch {
-          return null;
-        }
-      },
-    },
-    {
-      backupId: args.backupId,
-      onProgress: args.onProgress,
-    },
-  );
-}
-
-/**
- * Fold per-deployment pre-dump results into the operator-facing
- * {@link BackupDatabaseDumps} summary persisted on the bundle.
- *
- * The summary is a SEPARATE dimension from the bundle's `status`: a bundle can
- * be `completed` while its database dumps are `degraded`. The files component
- * also copies each database's on-disk directory, but it reads the live volume
- * while the server runs, over minutes — that copy is not crash-consistent and
- * is not guaranteed to restore. The dump is the database's backup; the summary
- * is recorded per database (database_backup_status) and an overdue one is
- * alerted on.
- */
-export function buildDatabaseDumpsSummary(
-  results: ReadonlyArray<PreDumpDeploymentResult>,
-  extraDeployments: ReadonlyArray<BackupDatabaseDumps['deployments'][number]> = [],
-): BackupDatabaseDumps {
-  const fromResults = results.map((r) => {
-    const databases: BackupDatabaseDumps['deployments'][number]['databases'] = [];
-    for (const d of r.databaseDumps) {
-      databases.push({ name: d.database, status: 'dumped', sizeBytes: d.sizeBytes });
-    }
-    for (const f of r.databaseFailures) {
-      databases.push({
-        name: f.database,
-        status: f.benign ? 'degraded' : 'failed',
-        sizeBytes: 0,
-        error: f.error,
-      });
-    }
-    // A deployment-level error (e.g. listDatabases failed, pod not running)
-    // means we could not even enumerate its databases — surface it as a
-    // synthetic failed entry so the gap is visible.
-    if (r.error) {
-      databases.push({ name: '(deployment)', status: 'failed', sizeBytes: 0, error: r.error });
-    }
-    return {
-      deploymentId: r.deploymentId,
-      deploymentName: r.deploymentName,
-      engine: r.engine as string | null,
-      databases,
-    };
-  });
-
-  // extraDeployments carries non-catalog logical dumps (e.g. SQLite files
-  // discovered on the PVC). They fold into the same summary + status.
-  const deployments = [...fromResults, ...extraDeployments];
-
-  // Status is derived from the FINAL per-database statuses so extras count too.
-  const allDbs = deployments.flatMap((d) => d.databases);
-  const status: BackupDatabaseDumps['status'] = allDbs.length === 0
-    ? 'none'
-    : allDbs.some((db) => db.status !== 'dumped')
-      ? 'degraded'
-      : 'ok';
-
-  const remediation = status === 'degraded'
-    ? 'One or more databases have no fresh logical dump in this bundle, so this bundle holds no reliable backup of them. The files snapshot copies their data files too, but from the running server, so those copies are not guaranteed to restore. Resolve the reason shown for each database (install the dump tool in a bring-your-own image, grow a full volume, or fix the database itself) and re-run the bundle.'
-    : null;
-
-  return { status, deployments, remediation };
-}
-
-/**
- * Delete THIS bundle's predumps from the live tenant PVC AFTER the files
- * snapshot has captured them. Keeps the tenant PVC footprint at ~0 — a 2-5 GB
- * client PVC can't hold a retention window of full logical dumps, so we do not
- * let them persist. The predumps live in the bundle's files restic snapshot;
- * `databases-by-id` re-materialises them from there on restore. Best-effort:
- * if the file-manager pod can't be reached, the retention-window prune
- * (`exportDatabaseToPvc` pruneOlderThanDays) is the backstop that still bounds
- * accumulation.
+ * Delete THIS bundle's SQLite dumps from the live tenant PVC AFTER the files
+ * snapshot has captured them, so they never accumulate on the tenant's volume.
+ * Best-effort: the capture removes earlier dumps before it writes new ones
+ * (sqlite-predump.ts), which bounds what a failed clean-up leaves.
  */
 export async function deletePredumpsFromPvc(args: {
   namespace: string;
@@ -256,17 +22,13 @@ export async function deletePredumpsFromPvc(args: {
 }): Promise<void> {
   const safe = args.bundleId.replace(/[^A-Za-z0-9._-]/g, '_');
   try {
-    // The platform container: predumps sit in the protected database
-    // folder, which the file-manager container sees as empty (R48).
+    // The platform container: it sees the whole volume (R48).
     await execInPod(args.kubeconfigPath, args.namespace, args.fmPod, FM_PLATFORM_CONTAINER,
       ['sh', '-c', `find /data -type f -name 'predump-*-${safe}.*' -delete 2>/dev/null || true`]);
   } catch (err) {
-    // Best-effort — the retention-window prune bounds accumulation regardless.
+    // Best-effort — the next capture removes it regardless.
     console.warn(
       `[bundle ${args.bundleId}] predump cleanup failed in ${args.namespace}/${args.fmPod}: ${(err as Error).message}`,
     );
   }
 }
-
-// Re-export for orchestrator imports + ergonomic typing.
-export type { PreDumpDeploymentResult, Engine };

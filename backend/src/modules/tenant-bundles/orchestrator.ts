@@ -48,12 +48,14 @@ import {
   FilesComponentSkippedError,
   type FilesComponentResult,
 } from './components/files.js';
+import { deletePredumpsFromPvc } from './components/database-predump-orchestration.js';
 import {
-  runPreCaptureDatabaseDumps,
-  buildDatabaseDumpsSummary,
-  deletePredumpsFromPvc,
-  type PreDumpDeploymentResult,
-} from './components/database-predump-orchestration.js';
+  buildDatabaseSnapshotsSummary,
+  captureDatabaseSnapshots,
+  databaseArtifactName,
+  withDumpsUnrecorded,
+  type DatabaseSnapshotResult,
+} from './components/database-snapshots.js';
 import { removePartialSqliteDumps, runSqliteCapture } from './components/sqlite-predump.js';
 import { recordDatabaseBackupResults } from '../database-backup-status/recorder.js';
 import { leaseBundleFileManager, predumpsNeedCleanup } from './components/bundle-file-manager.js';
@@ -287,10 +289,10 @@ export async function runBundle(
   let configResult: ConfigComponentResult | undefined;
   let secretsResult: SecretsComponentResult | undefined;
   let mailboxesResult: import('./components/mailboxes.js').MailboxesComponentResult | undefined;
-  // Pre-dump results, lifted to orchestrator scope so the database-dump
-  // summary can be built after all component tasks settle. Assigned inside
-  // the files task (the dumps must land on the PVC before the files snapshot).
-  let dbPredumpResults: ReadonlyArray<PreDumpDeploymentResult> = [];
+  // Per-database snapshot results (the databases task, run beside files),
+  // lifted to orchestrator scope so the database-dump summary can be built
+  // after all component tasks settle.
+  let dbSnapshotResults: ReadonlyArray<DatabaseSnapshotResult> = [];
   // SQLite files discovered + logically dumped on the PVC (not a catalog DB
   // deployment). Folded into the database-dump summary as an 'sqlite' entry.
   let sqliteDump: Awaited<ReturnType<typeof runSqliteCapture>>['entry'] = null;
@@ -310,7 +312,6 @@ export async function runBundle(
   if (input.components.files) {
     tasks.push((async () => {
       if (!deps.k8s) {
-        databaseDumpsDidNotRun = 'the Kubernetes API was unavailable';
         sqliteDidNotRun = 'the Kubernetes API was unavailable';
         errors.push('files: kubernetes tenant unavailable');
         await markComponentFailed(deps.db, bundleId, 'files', 'archive.tar.gz', 'kubernetes tenant unavailable');
@@ -327,31 +328,11 @@ export async function runBundle(
         // resolveTenantPvc / component-registry.ts.
         const pvcName = `${namespace}-storage`;
 
-        // Phase 1 piece #6 (ADR-047): pre-capture DB dump hook. Walks
-        // every database deployment for the tenant and dispatches
-        // mysqldump/pg_dump INSIDE the live tenant DB pod via the
-        // existing SQL Manager primitive. Dumps land at /exports/...
-        // on the tenant PVC and are picked up by the tar stream below.
-        // Failures are per-deployment + per-database; never abort the
-        // bundle (the file-system snapshot is still valid even if
-        // logical dumps fail).
-        let predumpsRan = false;
+        // Standalone database instances are backed up by the databases task
+        // (one restic snapshot per database, nothing written to the volume).
+        // SQLite files still are dumped onto the volume here, via the file
+        // manager, so the files snapshot below carries their `.dump`.
         try {
-          dbPredumpResults = await runPreCaptureDatabaseDumps({
-            db: deps.db,
-            k8s: deps.k8s,
-            tenantId: input.tenantId,
-            namespace,
-            backupId: bundleId,
-            kubeconfigPath: deps.kubeconfigPath,
-          });
-          predumpsRan = true;
-          for (const r of dbPredumpResults) {
-            if (r.error) {
-              // eslint-disable-next-line no-console
-              console.warn(`[bundle ${bundleId}] pre-dump failed for ${r.deploymentName}: ${r.error}`);
-            }
-          }
           // SQLite files aren't catalog DB deployments — discover + dump them
           // via the file-manager pod so their `.dump` also lands on the PVC
           // before the snapshot. Best-effort: a failure here never aborts the
@@ -389,18 +370,15 @@ export async function runBundle(
             }
             // Nothing on the PVC to clean up after the capture → hand the file
             // manager back now instead of holding it through the capture.
-            if (!predumpsNeedCleanup(dbPredumpResults, sqliteDump)) {
+            if (!predumpsNeedCleanup(sqliteDump)) {
               await fmLease.release();
               fmLease = null;
             }
           }
         } catch (err) {
-          // Non-fatal — log and proceed with the FS snapshot anyway. The DB
-          // dump summary built after allSettled will still reflect whatever
-          // dbPredumpResults holds (empty on a total orchestration error).
+          // Non-fatal — log and proceed with the FS snapshot anyway.
           // eslint-disable-next-line no-console
-          console.warn(`[bundle ${bundleId}] pre-dump orchestration error: ${(err as Error).message}`);
-          if (!predumpsRan) databaseDumpsDidNotRun = `the pre-dump step failed: ${(err as Error).message}`;
+          console.warn(`[bundle ${bundleId}] sqlite pre-dump error: ${(err as Error).message}`);
           if (!sqliteCaptureComplete && !sqliteDump) sqliteDidNotRun ??= `the pre-dump step failed: ${(err as Error).message}`;
         }
 
@@ -481,6 +459,88 @@ export async function runBundle(
         }).catch(() => undefined);
       } finally {
         await fmLease?.release();
+      }
+    })());
+  }
+
+  // ── databases ──────────────────────────────────────────────────
+  // Every running standalone database instance: one restic snapshot per
+  // database (components/database-snapshots.ts), beside the files snapshot
+  // and part of the same request. A database that fails does not fail the
+  // bundle: the summary names it, and its standing status alerts.
+  if (input.components.files) {
+    tasks.push((async () => {
+      if (!deps.k8s) {
+        databaseDumpsDidNotRun = 'the Kubernetes API was unavailable';
+        return;
+      }
+      try {
+        const results = await captureDatabaseSnapshots({
+          db: deps.db,
+          k8s: deps.k8s,
+          kubeconfigPath: deps.kubeconfigPath,
+          namespace,
+          tenantId: input.tenantId,
+          bundleId,
+          secretsKeyHex: deps.secretsKeyHex,
+          platformBaseDomain: deps.platformBaseDomain ?? '',
+          ingressBaseDomain: deps.ingressBaseDomain ?? '',
+          platformVersion: deps.platformVersion,
+          globalMaxInFlight,
+        });
+        for (const r of results) {
+          if (r.error) {
+            // eslint-disable-next-line no-console
+            console.warn(`[bundle ${bundleId}] database backup failed for ${r.deploymentName}: ${r.error}`);
+          }
+        }
+        const dumps = results.flatMap((r) => r.databaseDumps.map((d) => ({
+          artifactName: databaseArtifactName(r.deploymentId, d.database),
+          snapshotId: d.snapshotId,
+          sizeBytes: d.sizeBytes,
+          addedBytes: d.addedBytes ?? null,
+        })));
+        // A snapshot counts once its row is recorded: what restore and
+        // retention read. Rows that could not be written leave the databases
+        // reported as not backed up rather than backed up with no way back.
+        try {
+          if (dumps.length > 0) await recordDatabaseComponentRows(deps.db, bundleId, dumps);
+          dbSnapshotResults = results;
+        } catch (err) {
+          dbSnapshotResults = withDumpsUnrecorded(results, `the backup was taken but could not be recorded: ${(err as Error).message}`);
+          throw err;
+        }
+        if (dumps.length === 0) return;
+        const totalBytes = dumps.reduce((n, d) => n + d.sizeBytes, 0);
+        componentInfos.databases = {
+          sizeBytes: totalBytes,
+          snapshots: Object.fromEntries(dumps.map((d) => [d.artifactName, d.snapshotId])),
+        };
+        try {
+          await recordResticSnapshotForComponent({
+            deps,
+            input,
+            bundleId,
+            component: 'databases',
+            snapshotId: dumps[dumps.length - 1]!.snapshotId,
+            sizeBytes: totalBytes,
+            dataAddedPacked: dumps.some((d) => d.addedBytes === null) ? null : dumps.reduce((n, d) => n + (d.addedBytes ?? 0), 0),
+          });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(`[bundle ${bundleId}] could not persist tenant_restic_repo_state for databases: ${(err as Error).message}`);
+        }
+      } catch (err) {
+        const msg = (err as Error).message ?? 'database backup failed';
+        // eslint-disable-next-line no-console
+        console.warn(`[bundle ${bundleId}] database backup could not run: ${msg}`);
+        databaseDumpsDidNotRun = `the database backup could not run: ${msg}`;
+        await recordResticRunFailed({
+          db: deps.db,
+          tenantId: input.tenantId,
+          component: 'databases',
+          runAt: new Date(),
+        }).catch(() => undefined);
       }
     })());
   }
@@ -728,7 +788,7 @@ export async function runBundle(
   // files weren't requested (the dumps live inside the files snapshot, so
   // there's nothing to summarise).
   const databaseDumps = input.components.files
-    ? buildDatabaseDumpsSummary(dbPredumpResults, sqliteDump ? [sqliteDump] : [])
+    ? buildDatabaseSnapshotsSummary(dbSnapshotResults, sqliteDump ? [sqliteDump] : [])
     : null;
 
   // Build + persist meta.json *only* if every requested non-mailbox
@@ -738,12 +798,13 @@ export async function runBundle(
     (filesResult?.sizeBytes ?? 0) +
     (configResult?.sizeBytes ?? 0) +
     (secretsResult?.sizeBytes ?? 0) +
-    (mailboxesResult?.sizeBytes ?? 0);
+    (mailboxesResult?.sizeBytes ?? 0) +
+    (componentInfos.databases?.sizeBytes ?? 0);
 
   // What this bundle actually ADDED to the restic repository — the "Restic
-  // Size" column, and the increment behind the per-tenant repo total. The two
-  // restic components (files, mailboxes) write to separate repos; their sum
-  // is what this bundle cost in storage.
+  // Size" column, and the increment behind the per-tenant repo total. The
+  // restic components (files, mailboxes, each database) each add their own;
+  // their sum is what this bundle cost in storage.
   //
   // A component that DIDN'T RUN contributes 0. A component that ran but
   // reported no figure makes the whole bundle's total UNKNOWN (null) — a
@@ -752,7 +813,9 @@ export async function runBundle(
   const resticAddedBytes = ((): number | null => {
     const parts = [filesResult, mailboxesResult]
       .filter((r): r is NonNullable<typeof r> => r != null)
-      .map((r) => r.dataAddedPacked);
+      .map((r) => r.dataAddedPacked)
+      // Each database's snapshot is an increment of its own.
+      .concat(dbSnapshotResults.flatMap((r) => r.databaseDumps.map((d) => d.addedBytes ?? null)));
     if (parts.some((v) => v == null)) return null;
     return parts.reduce((sum: number, v) => sum + (v ?? 0), 0);
   })();
@@ -1039,6 +1102,28 @@ export async function runBundle(
  * only used when a capture somehow produced no per-mailbox results, which the
  * component treats as a failure before reaching here.
  */
+/** One completed `databases` row per database snapshot. */
+async function recordDatabaseComponentRows(
+  db: Database,
+  bundleId: string,
+  dumps: ReadonlyArray<{ artifactName: string; snapshotId: string; sizeBytes: number }>,
+): Promise<void> {
+  const now = new Date();
+  for (let i = 0; i < dumps.length; i += 200) {
+    await db.insert(backupComponents).values(dumps.slice(i, i + 200).map((d) => ({
+      id: randomUUID(),
+      backupJobId: bundleId,
+      component: 'databases' as const,
+      artifactName: d.artifactName.slice(0, 255),
+      status: 'completed' as const,
+      sizeBytes: d.sizeBytes,
+      sha256: d.snapshotId,
+      startedAt: now,
+      finishedAt: now,
+    } satisfies NewBackupComponent)));
+  }
+}
+
 async function recordPerMailboxComponentRows(
   db: Database,
   bundleId: string,

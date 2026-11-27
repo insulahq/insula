@@ -511,6 +511,42 @@ describe('narrowAccounts', () => {
     expect(only.scripts[0]).toBe('REVOKE SELECT ON `mysql`.`user` FROM PUBLIC;\n');
   });
 
+  describe("a backup run's login", () => {
+    const now = Math.floor(Date.now() / 1000);
+    const fresh = `platform_bk_${now - 60}_abc123`;
+    const stale = `platform_bk_${now - 13 * 3600}_abc123`;
+    const withLogins = (dropFails = false) => fake(({ text }) => {
+      if (text.includes('information_schema.SCHEMATA')) return SCHEMATA;
+      if (text.includes('FROM mysql.user') && text.includes('IF(')) {
+        return [[fresh, '%'], [stale, '%'], [fresh, 'localhost']].map(([u, h]) => `${X(u!)}\t${X(h!)}\tU`).join('\n');
+      }
+      if (text.startsWith('DROP USER') && dropFails) return new DbExecError('ERROR 1396');
+      if (text === 'SHOW GRANTS FOR PUBLIC') return new DbExecError('ERROR 1064');
+      const m = /^SHOW GRANTS FOR (.*)$/.exec(text);
+      if (m) return `GRANT SHOW_ROUTINE ON *.* TO ${m[1]}\n`;
+      if (text.includes('performance_schema.persisted_variables')) return 'NULL';
+      if (text.includes('@@GLOBAL.mandatory_roles')) return '';
+      return undefined;
+    });
+
+    it('leaves a fresh one at % alone, drops one left behind, narrows one elsewhere', async () => {
+      const s = withLogins();
+      const changed = await narrowAccounts({ ctx: ctx('mysql'), run: s.run }, new Set(['dbadmin']));
+      expect(s.calls.map((c) => c.text)).toContain(`DROP USER \`${stale}\`@\`%\``);
+      expect(s.calls.some((c) => c.text === `SHOW GRANTS FOR \`${fresh}\`@\`%\``)).toBe(false);
+      expect(changed).toEqual([
+        `dropped ${stale}, a backup login left behind`,
+        `narrowed ${fresh}@localhost to its tenant databases (it held global or system-schema privileges)`,
+      ]);
+    });
+
+    it('narrows one that cannot be dropped like any other account', async () => {
+      const s = withLogins(true);
+      const changed = await narrowAccounts({ ctx: ctx('mysql'), run: s.run }, new Set(['dbadmin']));
+      expect(changed).toContain(`narrowed ${stale}@% to its tenant databases (it held global or system-schema privileges)`);
+    });
+  });
+
   it('MySQL has no PUBLIC to read', async () => {
     const s = server('mysql', grants);
     await narrowAccounts({ ctx: ctx('mysql'), run: s.run }, new Set(['dbadmin']));
