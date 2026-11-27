@@ -1025,7 +1025,7 @@ components:
     name: catalog database images (MariaDB, MySQL, MongoDB, PostgreSQL)
     tier: "C"
     kind: image
-    pinned: "mariadb:10.11/11.8/12.3, mysql:8.0/8.4/9.7, mongo:7.0, postgres:18"
+    pinned: "mariadb:10.11/11.8/12.3, mysql:8.0/8.4/9.7, mongo:7.0, postgres:18-trixie"
     pin_source: "insulahq/application-catalog: mariadb/, mysql/, mongodb-7/, postgresql/ (chart values)"
     repos: ["mariadb", "mysql", "mongo", "postgres"]
     pin_check: false
@@ -1035,7 +1035,10 @@ components:
     notes: >-
       Upstream official images the Official Catalog runs as tenant databases, on
       floating minor tags. Fixes arrive with upstream rebuilds; the weekly image scan
-      reports them (image-cve-scan.yml, the Official Catalog section).
+      reports them (image-cve-scan.yml, the Official Catalog section). Exact patch pins
+      were decided against (a bump and a test per upstream release, with no runtime test
+      setup); PostgreSQL alone pins its Debian release (18-trixie), because a silent move
+      to the next Debian can change the C library's sort order under existing indexes.
 
   - id: catalog-golang122
     name: catalog/golang-122 (tenant Go 1.22 runtime)
