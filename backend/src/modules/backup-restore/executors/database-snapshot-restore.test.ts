@@ -271,6 +271,31 @@ describe('restoreInstanceFromSnapshots', () => {
     expect(k8s.batch.createNamespacedJob).not.toHaveBeenCalled();
   });
 
+  it('MongoDB: two databases in one restore never land in one target', async () => {
+    mocks.readServerVersion.mockResolvedValue('7.0.12');
+    mocks.listDatabases.mockResolvedValue([{ name: 'shop' }, { name: 'orders' }]);
+    logs('DB_RESTORED nonce=NONCE index=0 objects=2 skipped=0');
+    // `orders` asks for the name `shop` gets by default (`shop_restored_<time>`), in a different case.
+    const shopDefault = defaultCopyName('shop');
+    const r = await restoreInstanceFromSnapshots(args('mongodb', 'copy', [
+      { source: 'shop', snapshotId: 'aaaaaaaa' },
+      { source: 'orders', snapshotId: 'bbbbbbbb', targetName: shopDefault.toUpperCase() },
+    ]));
+    expect(r.failed).toEqual([{ database: 'orders', error: `another database in this restore goes to ${shopDefault.toUpperCase()}: choose another name` }]);
+    expect(jobEnv()).toMatchObject({ COUNT: '1', SRC_0: 'shop' });
+  });
+
+  it('SQL engines tell target names apart by case', async () => {
+    logs('DB_RESTORED nonce=NONCE index=0 objects=1 skipped=0', 'DB_RESTORED nonce=NONCE index=1 objects=1 skipped=0');
+    mocks.listDatabases.mockResolvedValue([{ name: 'shop' }, { name: 'Shop' }]);
+    const r = await restoreInstanceFromSnapshots(args('mariadb', 'copy', [
+      { source: 'shop', snapshotId: 'aaaaaaaa', targetName: 'app' },
+      { source: 'Shop', snapshotId: 'bbbbbbbb', targetName: 'App' },
+    ]));
+    expect(r.failed).toEqual([]);
+    expect(jobEnv()).toMatchObject({ COUNT: '2', TARGET_0: 'app', TARGET_1: 'App' });
+  });
+
   it('MongoDB: a failed copy into a new name is dropped again', async () => {
     mocks.readServerVersion.mockResolvedValue('7.0.12');
     logs('DB_RESTORE_FAIL nonce=NONCE index=0 rc=1/0 reason=Failed: E11000');

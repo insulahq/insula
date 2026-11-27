@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { CreateCatalogRepoRequest } from '@insula/api-contracts';
+import type { CatalogRepoSettingsResponse, CreateCatalogRepoRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 export interface CatalogRepo {
@@ -99,6 +99,30 @@ export function useSetCatalogRepoAutoSync() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['catalog-repos'] });
+    },
+  });
+}
+
+/** Applications → Repositories settings: may repository URLs reach private networks. */
+export function useCatalogRepoSettings() {
+  return useQuery({
+    queryKey: ['catalog-repos', 'settings'],
+    queryFn: () => apiFetch<{ data: CatalogRepoSettingsResponse }>('/api/v1/admin/catalog-repos/settings'),
+    staleTime: 60_000,
+  });
+}
+
+export function useSetCatalogRepoSettings() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (allowPrivateAddresses: boolean) =>
+      apiFetch<{ data: CatalogRepoSettingsResponse }>('/api/v1/admin/catalog-repos/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ allow_private_addresses: allowPrivateAddresses }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['catalog-repos', 'settings'] });
     },
   });
 }

@@ -350,6 +350,24 @@ re-attaching all look exactly like "down" for a few seconds, and none of them is
 a fault. Only an outage that outlives the window is treated as one — which is
 also why the dashboard card stays absent during routine churn.
 
+A **rollout** holds the check back while Kubernetes reports it progressing: a
+new version, a configuration change or a resize replaces the pods, and an app
+that migrates its data on start (a Moodle or Nextcloud upgrade) can take many
+minutes to pass its readiness check. That applies only while the new pod may
+simply still be starting — it is not ready, or nothing says why. A volume that
+will not mount, a node that is down, a quota refusal, a crash or an image that
+cannot be pulled is judged during a rollout as at any other time. The hold ends
+when the rollout completes, stalls past its progress deadline (ten minutes by
+default), or after 30 minutes at most; an outage already open when the rollout
+started then gets a full window from the end of the hold.
+
+A workload that goes down again within an hour of recovering continues its
+earlier episode — a flapping workload keeps climbing the attempt budget and the
+alert ladder — but only when it is the same pods. When every pod of the workload
+was created after the episode cleared (it was upgraded, restarted or resized
+since), the new outage gets its own window; the attempt budget still carries
+over.
+
 One case does not get the full window. When Longhorn has just salvaged the
 tenant's volume (a **Tenant storage failover**, within the last 30 minutes) and
 the volume then will not attach or mount, the window is **three minutes**. A
@@ -384,7 +402,11 @@ re-staging it means briefly taking down the workloads in that namespace that are
 still healthy. That price is worth paying to clear a stuck mount. It buys nothing
 for a container image that cannot be pulled, a container crash-looping on
 startup, or a pod no node can schedule — each of those comes back in exactly the
-same state. Those causes are reported to you immediately instead, with no
+same state. Neither does it for a pod that **runs but is not ready** — its volume
+is mounted and its container started, so the app itself is not answering (a long
+migration, a configuration error, a database it cannot reach) — nor for a
+container that exits with an error, even while it is briefly up between two
+restarts. Those causes are reported to you immediately instead, with no
 disruption attempted.
 
 A recovery attempt is a real storage operation: it appears in the tenant's

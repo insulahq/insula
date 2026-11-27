@@ -12,6 +12,68 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+
+- **Only the Official Catalog syncs itself by default.** 2026.11.16 turned daily auto-sync on for
+  every catalog repository. A repository someone adds now starts with it off (the Add Repository
+  form has a **Sync once a day** box), because with it on, whoever controls that repository
+  changes the catalog — and, through automatic upgrades, the deployments made from it — without
+  anyone pressing Sync. The upgrade switches it off once for every repository but the Official
+  Catalog; none of them synced on a timer before 2026.11.16. `auto_sync_enabled` on
+  `POST /api/v1/admin/catalog-repos` now defaults to that rule instead of `true`.
+
+### Security
+
+- **Catalog repository URLs can no longer reach internal addresses.** The API server fetches a
+  repository's catalog.json and manifests, now every day on its own, and it can reach the
+  Kubernetes API, the platform database and the cloud metadata endpoint. A URL whose host is, or
+  resolves to, a loopback, link-local, private, CGNAT or unique-local address is now refused,
+  checked on the address each connection opens (no DNS rebinding) and with no redirect followed.
+  A catalog on the operator's own network needs **Allow repositories on private networks** on
+  Applications → Repositories (super admin; `PUT /api/v1/admin/catalog-repos/settings`); loopback,
+  cloud metadata and the cluster's pod and service networks stay refused even then; the switch
+  is audit-logged. An install that already syncs a repository from its own network (a private
+  IPv4 address, a single-label name, a .local/.internal/.lan/.home.arpa/.corp/.intranet name)
+  keeps working: the upgrade turns the setting on there. A catalog server's redirects are no longer followed: an HTTP repository that
+  relied on one (http to https, a trailing slash) needs its final address. A GitHub repository is
+  now one whose host is github.com, not any URL that contains `github.com/`. An entry's icon,
+  fetched from the repository when the sync did not store it, goes through the same check.
+- **A repository archive may hold only plain files.** A GitHub tarball is extracted without its
+  owners and modes, and its headers are read before anything is extracted: an archive holding a
+  link or a special file is refused (a manifest linked to a file of the API's pod could have
+  quoted part of it into the repository's last error), and so is one over 100 MB, one that
+  unpacks past 300 MB or holds more than 50,000 entries. The extracted tree is checked again.
+  Catalog files over 2 MB are refused, URLs in sync errors lose
+  their credentials and query, a stored error is cut at 1,000 characters, and the extraction
+  directory a GitHub sync left behind each time is removed.
+
+### Fixed
+
+- **Upgrading or restarting a tenant's app no longer gets the whole tenant restarted.** The
+  workload health check re-stages a tenant's volume — every workload on it, its database
+  included, scaled to 0 and back — when an app stays unavailable past an 8-minute grace window. A
+  workload that went down again within an hour of recovering was treated as the old outage
+  carrying on, with the old start time, so the brief unavailability of every upgrade, restart or
+  resize put it past the window at once. On lab DEV a Moodle upgrade was re-staged, database
+  included, 16 seconds after the Upgrade click, and again later. Now:
+  - while Kubernetes reports a rollout progressing (until its progress deadline, ten minutes by
+    default, and 30 minutes at most), a new pod that is not ready yet is not judged, so a first
+    start or an upgrade that migrates for minutes is left alone; a mount failure, a down node, a
+    quota refusal, a crash or a bad image is judged as before, and an outage already open when the
+    rollout started gets a full grace window after it;
+  - a relapse whose pods were all created after the earlier episode cleared is a new outage with
+    its own grace window (the attempt budget still carries over, so a flapping workload still
+    reaches the alert);
+  - a pod that runs but does not pass its readiness check is reported as such and alerted, never
+    re-staged, and so is a container that exited with an error in the last ten minutes, even while
+    it is briefly up between two restarts.
+
+- **A MongoDB restore no longer puts two databases into one.** MongoDB creates a database on its
+  first write, so the restore did not create copy targets first, and two databases of one request
+  given the same target — a name typed for one that another got by default, or two long names cut
+  to the same default — both passed the "exists already" check and were restored into one
+  database. The second is now refused (on MongoDB without regard to case, which it refuses too).
+
 ## [2026.11.16] - 2026-11-27
 
 ### BREAKING

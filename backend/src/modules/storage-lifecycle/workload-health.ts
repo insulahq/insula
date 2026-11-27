@@ -155,7 +155,7 @@ export interface WorkloadHealthResult {
 }
 
 export type HealReason = 'volume_attach' | 'quota_rejected' | 'unschedulable' | 'image' | 'crash'
-  | 'stranded_at_zero' | 'node_down' | 'unknown';
+  | 'stranded_at_zero' | 'node_down' | 'not_ready' | 'unknown';
 
 /**
  * The node a tenant is pinned to, when that node is down — or null.
@@ -239,6 +239,27 @@ export function classifyUnavailability(
 }
 
 /**
+ * classifyUnavailability, with what the pods themselves show. A workload whose
+ * pods all run, containers started, but are not ready has its volume mounted
+ * and its image pulled: the app is not answering (a long migration, a broken
+ * configuration). That is `not_ready`, which a volume re-stage cannot fix —
+ * not `unknown`, which earns one. Pure.
+ */
+export function notReadyOrClassified(
+  replicaFailure: string | null,
+  messages: readonly string[],
+  pod: WorkloadPodFacts | undefined,
+): { reason: HealReason; detail: string | null; label: string } {
+  const c = classifyUnavailability(replicaFailure, messages);
+  if (c.reason !== 'unknown') return c;
+  // A container that exits non-zero — on purpose (an app refusing a downgrade)
+  // or not — comes back the same after a re-stage.
+  if (pod?.crashing) return { reason: 'crash', detail: c.detail, label: REASON_LABELS.crash };
+  if (pod?.runningNotReady) return { reason: 'not_ready', detail: c.detail, label: REASON_LABELS.not_ready };
+  return c;
+}
+
+/**
  * Plain-language cause for a persisted reason slug.
  *
  * TOTAL over HealReason, deliberately. The alert used to fall back to
@@ -258,6 +279,7 @@ const REASON_LABELS: Record<HealReason, string> = {
   crash: 'the container keeps crashing on startup',
   stranded_at_zero: 'a storage operation scaled it down and never brought it back up',
   node_down: 'the node it is pinned to is down',
+  not_ready: 'the app runs but does not pass its readiness check',
   unknown: 'the pod did not become ready',
 };
 
@@ -287,6 +309,7 @@ export function isHealable(reason: HealReason): boolean {
     case 'crash':              // needs a code or limits change
     case 'unschedulable':      // needs capacity, a taint change or an unpin
     case 'node_down':          // needs the node back; a scale cycle cannot bring it
+    case 'not_ready':          // its volume is mounted and its container runs: the app itself is not answering
       return false;
   }
 }
@@ -330,6 +353,9 @@ export function recommendedAction(reason: HealReason, detail?: string | null, wo
       return 'Verify the image reference and registry credentials for this workload.';
     case 'crash':
       return 'The image starts and dies — read the container log; if it is OOMKilled, its memory limit is too low.';
+    case 'not_ready':
+      return 'The container runs but does not pass its readiness check: read its log. A long upgrade migration, '
+        + 'a configuration error or a database it cannot reach are the usual causes; restarting its storage would not help.';
     default:
       return 'Inspect the Deployment, its ReplicaSet conditions and its pod events in the tenant namespace.';
   }
@@ -342,6 +368,8 @@ interface DeploymentView {
   available: number;
   replicaFailure: string | null;
   held: boolean;
+  /** A rollout is under way and within its progress deadline (see rolloutInProgress). */
+  rollingOut: boolean;
   /**
    * Replica count recorded when quiesce scaled this Deployment down, read off
    * the hold annotation. `null` on a workload quiesced by a release that did not
@@ -366,10 +394,64 @@ export function parsePreQuiesceReplicas(raw: string | undefined): number | null 
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
+/** What a Deployment says about its rollout. */
+export interface RolloutFacts {
+  readonly metadata?: { readonly generation?: number };
+  readonly status?: {
+    readonly observedGeneration?: number;
+    readonly conditions?: ReadonlyArray<{
+      type?: string; status?: string; reason?: string; message?: string;
+      lastUpdateTime?: Date | string | null; lastTransitionTime?: Date | string | null;
+    }>;
+  };
+}
+
+/**
+ * The longest a rollout keeps the healer off, however long its progress
+ * deadline: a manifest may set `progressDeadlineSeconds` very high, and the
+ * controller also reports "progressing" after a plain scale-up (the heal's
+ * own included).
+ */
+export const ROLLOUT_HOLD_MAX_MS = 30 * 60 * 1000;
+
+/**
+ * Is a rollout of this Deployment under way and still within its progress
+ * deadline? Pure.
+ *
+ * A new version, a configuration change or a resize replaces the pods, and
+ * the new one is "not available" until it passes its readiness check: for an
+ * app that migrates its database on start (Moodle 5.0 → 5.3 on lab DEV) that
+ * is many minutes. Kubernetes tracks exactly this: Progressing stays True with
+ * reason ReplicaSetUpdated while the rollout advances, becomes
+ * NewReplicaSetAvailable when it completes, and turns False
+ * (ProgressDeadlineExceeded) when it stalls past `progressDeadlineSeconds`
+ * (default 10 minutes). Only the stalled or finished states are the healer's
+ * business; a spec the controller has not observed yet is a rollout starting.
+ */
+export function rolloutInProgress(d: RolloutFacts, nowMs: number = Date.now()): boolean {
+  const generation = d.metadata?.generation;
+  const observed = d.status?.observedGeneration;
+  if (generation !== undefined && observed !== undefined && observed < generation) return true;
+  const progressing = (d.status?.conditions ?? []).find((c) => c.type === 'Progressing');
+  if (progressing?.status !== 'True' || progressing.reason === 'NewReplicaSetAvailable') return false;
+  const stamp = progressing.lastUpdateTime ?? progressing.lastTransitionTime;
+  const at = stamp ? new Date(stamp).getTime() : NaN;
+  return Number.isFinite(at) && nowMs - at < ROLLOUT_HOLD_MAX_MS;
+}
+
+/**
+ * The causes a rollout holds back: those that may be no more than a new pod
+ * still starting. A mount that fails, a node that is down, a refusal, a crash
+ * or a bad image is judged during a rollout as at any other time.
+ */
+export function rolloutMayExplain(reason: HealReason): boolean {
+  return reason === 'unknown' || reason === 'not_ready';
+}
+
 async function listTenantDeployments(k8s: K8sClients): Promise<DeploymentView[]> {
   const list = await (k8s.apps as unknown as {
     listDeploymentForAllNamespaces: (a?: { labelSelector?: string }) => Promise<{
-      items?: Array<{
+      items?: Array<RolloutFacts & {
         metadata?: { name?: string; namespace?: string; annotations?: Record<string, string> };
         spec?: { replicas?: number };
         status?: { availableReplicas?: number; conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }> };
@@ -390,6 +472,7 @@ async function listTenantDeployments(k8s: K8sClients): Promise<DeploymentView[]>
       available: d.status?.availableReplicas ?? 0,
       replicaFailure: cond ? `${cond.reason ?? 'ReplicaFailure'}: ${(cond.message ?? '').slice(0, 300)}` : null,
       held: d.metadata?.annotations?.[STORAGE_QUIESCED_ANNOTATION] === 'true',
+      rollingOut: rolloutInProgress(d),
       preQuiesceReplicas: parsePreQuiesceReplicas(
         d.metadata?.annotations?.[STORAGE_PREQUIESCE_REPLICAS_ANNOTATION],
       ),
@@ -404,12 +487,71 @@ export interface EvidencePod {
     readonly uid?: string;
     readonly name?: string;
     readonly ownerReferences?: ReadonlyArray<{ readonly kind?: string; readonly name?: string }>;
+    readonly creationTimestamp?: Date | string | null;
+    readonly deletionTimestamp?: Date | string | null;
   };
   readonly status?: {
     readonly phase?: string;
     readonly conditions?: ReadonlyArray<{ type?: string; status?: string; reason?: string; message?: string }>;
-    readonly containerStatuses?: ReadonlyArray<{ state?: { waiting?: { reason?: string; message?: string } } }>;
+    readonly containerStatuses?: ReadonlyArray<{
+      ready?: boolean;
+      restartCount?: number;
+      state?: { waiting?: { reason?: string; message?: string }; running?: unknown; terminated?: { exitCode?: number } };
+      lastState?: { terminated?: { exitCode?: number; finishedAt?: Date | string | null } };
+    }>;
   };
+}
+
+/** What a workload's live pods say: when the oldest was created, and whether they run without being ready. */
+export interface WorkloadPodFacts {
+  /** Creation time of its oldest live pod (ms), or null when none is known. */
+  readonly oldestLiveMs: number | null;
+  /** Every live pod is Running with all containers running, and at least one is not ready. */
+  readonly runningNotReady: boolean;
+  /**
+   * A container of a live pod exited non-zero, now or within CRASH_RECENT_MS —
+   * between two CrashLoopBackOff waits it looks running.
+   */
+  readonly crashing: boolean;
+}
+
+/**
+ * Per Deployment, from the namespace's pod list. Pure. A pod that has finished
+ * or is being deleted is not live.
+ */
+/** A non-zero exit older than this is history (an OOM kill last night), not the present cause. */
+export const CRASH_RECENT_MS = 10 * 60 * 1000;
+
+export function workloadPodFacts(pods: readonly EvidencePod[], nowMs: number = Date.now()): Map<string, WorkloadPodFacts> {
+  const live = new Map<string, EvidencePod[]>();
+  for (const p of pods) {
+    if (p.status?.phase === 'Succeeded' || p.status?.phase === 'Failed' || p.metadata?.deletionTimestamp) continue;
+    const owner = deploymentOfPod(p);
+    if (owner) live.set(owner, [...(live.get(owner) ?? []), p]);
+  }
+  const out = new Map<string, WorkloadPodFacts>();
+  for (const [workload, list] of live) {
+    const created = list.map((p) => (p.metadata?.creationTimestamp ? new Date(p.metadata.creationTimestamp).getTime() : NaN));
+    const oldestLiveMs = created.every((t) => Number.isFinite(t)) ? Math.min(...created) : null;
+    const runs = (p: EvidencePod) => p.status?.phase === 'Running'
+      && (p.status.containerStatuses ?? []).length > 0
+      && (p.status.containerStatuses ?? []).every((c) => c.state?.running !== undefined);
+    const ready = (p: EvidencePod) => (p.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True');
+    const recently = (t: Date | string | null | undefined) => {
+      const ms = t ? new Date(t).getTime() : NaN;
+      return Number.isFinite(ms) && nowMs - ms < CRASH_RECENT_MS;
+    };
+    const exitedBadly = (p: EvidencePod) => (p.status?.containerStatuses ?? []).some((c) =>
+      (c.state?.terminated?.exitCode ?? 0) !== 0
+      || ((c.restartCount ?? 0) > 0 && (c.lastState?.terminated?.exitCode ?? 0) !== 0 && c.ready !== true
+        && recently(c.lastState?.terminated?.finishedAt)));
+    out.set(workload, {
+      oldestLiveMs,
+      runningNotReady: list.every(runs) && list.some((p) => !ready(p)),
+      crashing: list.some(exitedBadly),
+    });
+  }
+  return out;
 }
 
 /** A namespace event. The clients hand timestamps over as Date or string. */
@@ -528,13 +670,21 @@ export function evidenceFor(workload: string, evidence: readonly OwnedEvidence[]
   return evidence.filter((e) => e.owner === null || e.owner === workload).map((e) => e.msg).slice(0, 20);
 }
 
-/** The namespace's present pod states and events — where FailedMount/globalmount shows up. */
-async function podMessagesFor(k8s: K8sClients, namespace: string): Promise<OwnedEvidence[]> {
-  let pods: readonly EvidencePod[] = [];
-  let events: readonly EvidenceEvent[] = [];
+/** The namespace's pods, or none when they cannot be read (every use of them is best-effort). */
+async function listPods(k8s: K8sClients, namespace: string): Promise<readonly EvidencePod[]> {
   try {
-    pods = (await k8s.core.listNamespacedPod({ namespace } as never) as { items?: EvidencePod[] }).items ?? [];
-  } catch { /* best-effort enrichment only */ }
+    return (await k8s.core.listNamespacedPod({ namespace } as never) as { items?: EvidencePod[] }).items ?? [];
+  } catch (err) {
+    // Without the pods a relapse cannot be told from new pods, and a pod that
+    // runs but is not ready stays `unknown`: the old rules apply this tick.
+    console.warn(`[workload-health] ${namespace}: pod list failed, judged on the Deployment alone: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
+}
+
+/** The namespace's present pod states and events — where FailedMount/globalmount shows up. */
+async function podMessagesFor(k8s: K8sClients, namespace: string, pods: readonly EvidencePod[]): Promise<OwnedEvidence[]> {
+  let events: readonly EvidenceEvent[] = [];
   try {
     events = (await (k8s.core as unknown as {
       listNamespacedEvent: (a: { namespace: string }) => Promise<{ items?: EvidenceEvent[] }>;
@@ -1062,6 +1212,111 @@ async function dispatchRecoveries(db: Database, recovered: readonly AlertRow[]):
   }
 }
 
+/** One down workload, as the sweep found it. */
+export interface DownObservation {
+  readonly tenantId: string;
+  readonly workload: string;
+  readonly namespace: string;
+  readonly desired: number;
+  readonly available: number;
+  readonly reason: HealReason;
+  readonly detail: string | null;
+  /** Creation time of the workload's oldest live pod, when known (workloadPodFacts). */
+  readonly oldestLivePodAt: Date | null;
+}
+
+/**
+ * Open or refresh the workload's episode. `first_seen_at` is left alone on
+ * conflict — it is the hysteresis clock and must measure the OUTAGE, not the
+ * last tick — except where the CASEs below start a new outage.
+ */
+export async function recordDownEpisode(db: Database, e: DownObservation): Promise<boolean> {
+  const newPodsSince = e.oldestLivePodAt ? e.oldestLivePodAt.toISOString() : null;
+  const ins = await db.execute(sql`
+        INSERT INTO tenant_workload_health_events
+          (tenant_id, workload, namespace, desired_replicas, available_replicas, reason, detail)
+        VALUES (${e.tenantId}, ${e.workload}, ${e.namespace}, ${e.desired}, ${e.available}, ${e.reason}, ${e.detail})
+        ON CONFLICT (tenant_id, workload) DO UPDATE
+           SET last_seen_at = now(),
+               desired_replicas = EXCLUDED.desired_replicas,
+               available_replicas = EXCLUDED.available_replicas,
+               reason = EXCLUDED.reason,
+               detail = EXCLUDED.detail,
+               -- A workload that went down again shortly after being "healed" is
+               -- FLAPPING, not recovered. Resetting the counters on every reopen
+               -- meant such a tenant could cycle down/up indefinitely without ever
+               -- reaching MAX_HEAL_ATTEMPTS or the notify ladder — continuous real
+               -- instability that never alerted. Only a reopen after a decent
+               -- quiet period counts as a fresh incident; a fast re-break
+               -- CONTINUES the previous episode and keeps its counters.
+               --
+               -- NULL semantics are load-bearing and deliberate: for a row that
+               -- is still OPEN, cleared_at IS NULL, so the comparison against
+               -- now() minus the interval is NULL, the CASE takes the ELSE, and a
+               -- plain refresh
+               -- leaves every counter and the clock untouched. Three states, one
+               -- comparison: open -> keep, recently closed -> keep, long closed
+               -- -> reset.
+               --
+               -- The node coming BACK also restarts the clock: while it was
+               -- down the episode aged past the grace window, so the first
+               -- tick after its return (pods still re-attaching their volumes,
+               -- as every rebooted node's do) would scale the tenant down for
+               -- a heal at once. Lab staging: a heal fired two minutes after
+               -- the node returned. A cause that follows node_down gets its
+               -- own grace window and its own heal budget.
+               --
+               -- And so does a relapse of NEW pods: when every live pod of the
+               -- workload was created after the previous episode cleared, the
+               -- workload was restarted on purpose since (a new version, a
+               -- resize, a restart, a scale-up), and its pods coming up are not
+               -- the old outage carrying on. Inheriting the old clock put such a
+               -- workload far past the grace window the moment it rolled: lab
+               -- DEV, a Moodle upgrade re-staged (database included) seconds
+               -- after the click, twice. The heal budget and the notify ladder
+               -- still carry over, so a real flap keeps climbing them.
+               first_seen_at = CASE WHEN tenant_workload_health_events.cleared_at
+                                         < now() - ${FLAP_QUIET_SQL}::interval
+                                    THEN now()
+                                    WHEN tenant_workload_health_events.reason = 'node_down'
+                                         AND EXCLUDED.reason <> 'node_down'
+                                    THEN now()
+                                    WHEN tenant_workload_health_events.cleared_at IS NOT NULL
+                                         AND ${newPodsSince}::timestamptz > tenant_workload_health_events.cleared_at
+                                    THEN now()
+                                    ELSE tenant_workload_health_events.first_seen_at END,
+               heal_attempts = CASE WHEN tenant_workload_health_events.cleared_at
+                                         < now() - ${FLAP_QUIET_SQL}::interval
+                                    THEN 0
+                                    WHEN tenant_workload_health_events.reason = 'node_down'
+                                         AND EXCLUDED.reason <> 'node_down'
+                                    THEN 0
+                                    ELSE tenant_workload_health_events.heal_attempts END,
+               notify_count = CASE WHEN tenant_workload_health_events.cleared_at
+                                        < now() - ${FLAP_QUIET_SQL}::interval
+                                   THEN 0 ELSE tenant_workload_health_events.notify_count END,
+               last_notified_at = CASE WHEN tenant_workload_health_events.cleared_at
+                                         < now() - ${FLAP_QUIET_SQL}::interval
+                                       THEN NULL ELSE tenant_workload_health_events.last_notified_at END,
+               -- A REOPENED episode has not been healed at all, so the previous
+               -- episode's heal outcome must not survive into it. Observed on DEV:
+               -- a reopened row kept last_heal_error from the prior outage while
+               -- heal_attempts was correctly reset to 0, and the dashboard card --
+               -- which decides "tried and failed" from last_heal_error -- rendered
+               -- "0 heal attempt(s) failed". Reset the pair together or the two
+               -- fields disagree about the same episode.
+               last_heal_error = CASE WHEN tenant_workload_health_events.cleared_at
+                                         < now() - ${FLAP_QUIET_SQL}::interval
+                                      THEN NULL ELSE tenant_workload_health_events.last_heal_error END,
+               last_heal_at = CASE WHEN tenant_workload_health_events.cleared_at
+                                         < now() - ${FLAP_QUIET_SQL}::interval
+                                   THEN NULL ELSE tenant_workload_health_events.last_heal_at END,
+               healed_at = NULL,
+               cleared_at = NULL
+      `);
+  return (ins.rowCount ?? 0) > 0;
+}
+
 export async function reconcileTenantWorkloadHealth(
   db: Database,
   k8s: K8sClients,
@@ -1116,6 +1371,8 @@ export async function reconcileTenantWorkloadHealth(
   };
 
   const downByNs = new Map<string, DeploymentView[]>();
+  // `namespace/workload` of the workloads mid-rollout: not judged this tick.
+  const rollingOut = new Set<string>();
 
   for (const d of deployments) {
     const tenant = byNs.get(d.namespace);
@@ -1174,9 +1431,14 @@ export async function reconcileTenantWorkloadHealth(
   for (const [namespace, downs] of downByNs) {
     const tenant = byNs.get(namespace)!;
     const nowMs = Date.now();
+    // The pod list is read on every tick: whether a relapse is new pods or the
+    // old outage carrying on is decided from it, and a cached list would
+    // predate a restart. The evidence keeps its slower refresh.
+    const podList = await listPods(k8s, namespace);
+    const pods = workloadPodFacts(podList, nowMs);
     let seen = evidenceSeen.get(namespace);
     if (!seen || evidenceIsStale(seen, nowMs)) {
-      seen = { since: seen?.since ?? nowMs, at: nowMs, msgs: await podMessagesFor(k8s, namespace) };
+      seen = { since: seen?.since ?? nowMs, at: nowMs, msgs: await podMessagesFor(k8s, namespace, podList) };
       evidenceSeen.set(namespace, seen);
     }
     const podMsgs = seen.msgs;
@@ -1192,81 +1454,33 @@ export async function reconcileTenantWorkloadHealth(
               detail: 'Deployment is at 0 replicas with the storage-quiesce hold still set — '
                 + 'a storage operation scaled it down and never successfully scaled it back up.',
             }
-          : classifyUnavailability(d.replicaFailure, evidenceFor(d.name, podMsgs));
+          : notReadyOrClassified(d.replicaFailure, evidenceFor(d.name, podMsgs), pods.get(d.name));
       // Open or refresh. `first_seen_at` is left alone on conflict — it is the
       // hysteresis clock and must measure the OUTAGE, not the last tick.
       // Same isolation as the clear path: one tenant must not abort the sweep.
+      // A rollout within its progress deadline is not judged for a cause that
+      // may be no more than its new pod starting (rolloutMayExplain): not
+      // opened, and not acted on. An episode already open restarts its clock,
+      // so the rollout ending is followed by a full grace window, not by the
+      // age of an outage from before it.
+      if (d.rollingOut && rolloutMayExplain(reason)) {
+        rollingOut.add(`${namespace}/${d.name}`);
+        try {
+          await db.execute(sql`
+            UPDATE tenant_workload_health_events SET first_seen_at = now(), last_seen_at = now()
+             WHERE tenant_id = ${tenant.id} AND workload = ${d.name} AND cleared_at IS NULL`);
+        } catch (err) {
+          console.warn(`[workload-health] holding episode ${namespace}/${d.name} during its rollout failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        continue;
+      }
       try {
-      const ins = await db.execute(sql`
-        INSERT INTO tenant_workload_health_events
-          (tenant_id, workload, namespace, desired_replicas, available_replicas, reason, detail)
-        VALUES (${tenant.id}, ${d.name}, ${namespace}, ${d.desired}, ${d.available}, ${reason}, ${detail})
-        ON CONFLICT (tenant_id, workload) DO UPDATE
-           SET last_seen_at = now(),
-               desired_replicas = EXCLUDED.desired_replicas,
-               available_replicas = EXCLUDED.available_replicas,
-               reason = EXCLUDED.reason,
-               detail = EXCLUDED.detail,
-               -- A workload that went down again shortly after being "healed" is
-               -- FLAPPING, not recovered. Resetting the counters on every reopen
-               -- meant such a tenant could cycle down/up indefinitely without ever
-               -- reaching MAX_HEAL_ATTEMPTS or the notify ladder — continuous real
-               -- instability that never alerted. Only a reopen after a decent
-               -- quiet period counts as a fresh incident; a fast re-break
-               -- CONTINUES the previous episode and keeps its counters.
-               --
-               -- NULL semantics are load-bearing and deliberate: for a row that
-               -- is still OPEN, cleared_at IS NULL, so the comparison against
-               -- now() minus the interval is NULL, the CASE takes the ELSE, and a
-               -- plain refresh
-               -- leaves every counter and the clock untouched. Three states, one
-               -- comparison: open -> keep, recently closed -> keep, long closed
-               -- -> reset.
-               --
-               -- The node coming BACK also restarts the clock: while it was
-               -- down the episode aged past the grace window, so the first
-               -- tick after its return (pods still re-attaching their volumes,
-               -- as every rebooted node's do) would scale the tenant down for
-               -- a heal at once. Lab staging: a heal fired two minutes after
-               -- the node returned. A cause that follows node_down gets its
-               -- own grace window and its own heal budget.
-               first_seen_at = CASE WHEN tenant_workload_health_events.cleared_at
-                                         < now() - ${FLAP_QUIET_SQL}::interval
-                                    THEN now()
-                                    WHEN tenant_workload_health_events.reason = 'node_down'
-                                         AND EXCLUDED.reason <> 'node_down'
-                                    THEN now()
-                                    ELSE tenant_workload_health_events.first_seen_at END,
-               heal_attempts = CASE WHEN tenant_workload_health_events.cleared_at
-                                         < now() - ${FLAP_QUIET_SQL}::interval
-                                    THEN 0
-                                    WHEN tenant_workload_health_events.reason = 'node_down'
-                                         AND EXCLUDED.reason <> 'node_down'
-                                    THEN 0
-                                    ELSE tenant_workload_health_events.heal_attempts END,
-               notify_count = CASE WHEN tenant_workload_health_events.cleared_at
-                                        < now() - ${FLAP_QUIET_SQL}::interval
-                                   THEN 0 ELSE tenant_workload_health_events.notify_count END,
-               last_notified_at = CASE WHEN tenant_workload_health_events.cleared_at
-                                         < now() - ${FLAP_QUIET_SQL}::interval
-                                       THEN NULL ELSE tenant_workload_health_events.last_notified_at END,
-               -- A REOPENED episode has not been healed at all, so the previous
-               -- episode's heal outcome must not survive into it. Observed on DEV:
-               -- a reopened row kept last_heal_error from the prior outage while
-               -- heal_attempts was correctly reset to 0, and the dashboard card --
-               -- which decides "tried and failed" from last_heal_error -- rendered
-               -- "0 heal attempt(s) failed". Reset the pair together or the two
-               -- fields disagree about the same episode.
-               last_heal_error = CASE WHEN tenant_workload_health_events.cleared_at
-                                         < now() - ${FLAP_QUIET_SQL}::interval
-                                      THEN NULL ELSE tenant_workload_health_events.last_heal_error END,
-               last_heal_at = CASE WHEN tenant_workload_health_events.cleared_at
-                                         < now() - ${FLAP_QUIET_SQL}::interval
-                                   THEN NULL ELSE tenant_workload_health_events.last_heal_at END,
-               healed_at = NULL,
-               cleared_at = NULL
-      `);
-      if ((ins.rowCount ?? 0) > 0) episodesOpened += 1;
+        const pod = pods.get(d.name);
+        const opened = await recordDownEpisode(db, {
+          tenantId: tenant.id, workload: d.name, namespace, desired: d.desired, available: d.available,
+          reason, detail, oldestLivePodAt: pod?.oldestLiveMs != null ? new Date(pod.oldestLiveMs) : null,
+        });
+        if (opened) episodesOpened += 1;
       } catch (err) {
         console.warn(`[workload-health] recording episode ${namespace}/${d.name} failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -1335,6 +1549,7 @@ export async function reconcileTenantWorkloadHealth(
   const claimed: Array<{ row: AlertRow; notifyCount: number; lastNotifiedAt: string | null }> = [];
 
   for (const row of due.rows ?? []) {
+    if (rollingOut.has(`${row.namespace}/${row.workload}`)) continue;
     const reason = row.reason as HealReason;
     const quota = reason === 'quota_rejected' ? await quotaVerdictFor(row.namespace) : null;
     const healable = healableNow(reason, quota);

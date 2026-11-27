@@ -7,8 +7,9 @@
 
 import { eq, and, ilike, sql, desc, asc, lt, gt, or, isNull, notInArray } from 'drizzle-orm';
 import { likePattern } from '../../shared/like-pattern.js';
-import { catalogRepositories, catalogEntries, catalogEntryVersions } from '../../db/schema.js';
+import { catalogRepositories, catalogEntries, catalogEntryVersions, clusterTrustedProxyRanges, platformSettings } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import type { InternalAccessPolicy } from '../../shared/ssrf-guard.js';
 import { join } from 'node:path';
 import {
   parseRepoUrl, buildCatalogFileUrl, fetchJson,
@@ -383,7 +384,7 @@ export async function getCatalogRepoById(db: Database, id: string) {
 export async function createCatalogRepo(db: Database, input: CreateCatalogRepoInput) {
   const branch = input.branch ?? 'main';
 
-  await validateRepoAccess(input.url, branch, input.auth_token);
+  await validateRepoAccess(input.url, branch, input.auth_token, await catalogFetchPolicy(db));
 
   const id = crypto.randomUUID();
 
@@ -393,7 +394,9 @@ export async function createCatalogRepo(db: Database, input: CreateCatalogRepoIn
     url: input.url,
     branch,
     authToken: input.auth_token ?? null,
-    autoSyncEnabled: input.auto_sync_enabled ?? true,
+    // Daily sync is on for the Official Catalog; a repository someone adds is
+    // trusted to change the catalog on its own only when they switch it on.
+    autoSyncEnabled: input.auto_sync_enabled ?? isOfficialCatalogUrl(input.url),
     status: 'active',
   });
 
@@ -497,41 +500,19 @@ export async function restoreDefaultRepo(db: Database) {
 
 // ─── Repo Validation ────────────────────────────────────────────────────────
 
-async function validateRepoAccess(url: string, branch: string, authToken?: string | null): Promise<void> {
+async function validateRepoAccess(url: string, branch: string, authToken: string | null | undefined, policy: InternalAccessPolicy): Promise<void> {
   const source = parseRepoUrl(url);
   const catalogUrl = buildCatalogFileUrl(source, branch, 'catalog.json');
 
-  let response: Response;
+  let catalogData: unknown;
   try {
-    const headers: Record<string, string> = { 'Accept': 'application/json' };
-    if (authToken) {
-      headers['Authorization'] = `token ${authToken}`;
-    }
-    response = await fetch(catalogUrl, { headers, signal: AbortSignal.timeout(15_000) });
+    catalogData = await fetchJson<unknown>(catalogUrl, authToken, policy);
   } catch (error) {
+    if (error instanceof ApiError && error.code === 'CATALOG_URL_REFUSED') throw error;
     const errorMessage = error instanceof Error ? error.message : String(error);
     throw new ApiError(
       'REPO_VALIDATION_FAILED',
       `Cannot access repository: ${errorMessage}. Verify the URL and auth token.`,
-      400,
-    );
-  }
-
-  if (!response.ok) {
-    throw new ApiError(
-      'REPO_VALIDATION_FAILED',
-      `Cannot access repository: ${response.status} ${response.statusText}. Verify the URL and auth token.`,
-      400,
-    );
-  }
-
-  let catalogData: unknown;
-  try {
-    catalogData = await response.json();
-  } catch {
-    throw new ApiError(
-      'INVALID_CATALOG',
-      'Repository has no valid catalog.json.',
       400,
     );
   }
@@ -544,6 +525,44 @@ async function validateRepoAccess(url: string, branch: string, authToken?: strin
       400,
     );
   }
+}
+
+// ─── Network policy for repository fetches ──────────────────────────────────
+
+/** platform_settings key: may a repository URL reach the operator's private networks. */
+export const CATALOG_ALLOW_PRIVATE_SETTING = 'catalog_repos_allow_private_hosts';
+/** k3s's default pod and service networks, refused even when no bootstrap value is recorded. */
+const K3S_DEFAULT_CLUSTER_CIDRS = ['10.42.0.0/16', '10.43.0.0/16'] as const;
+
+/**
+ * What a repository fetch may reach. Default: public addresses only. With the
+ * setting on, private ranges too — never loopback, cloud metadata, or the
+ * cluster's own pod and service networks (the bootstrap ranges the
+ * trusted-proxies reconciler records, and k3s's defaults).
+ */
+export async function catalogFetchPolicy(db: Database): Promise<InternalAccessPolicy> {
+  const [row] = await db.select({ value: platformSettings.value }).from(platformSettings)
+    .where(eq(platformSettings.key, CATALOG_ALLOW_PRIVATE_SETTING));
+  if (row?.value !== 'true') return {};
+  const ranges = await db.select({ cidr: clusterTrustedProxyRanges.cidr }).from(clusterTrustedProxyRanges)
+    .where(eq(clusterTrustedProxyRanges.source, 'bootstrap'));
+  return { allowPrivate: true, deniedCidrs: [...K3S_DEFAULT_CLUSTER_CIDRS, ...ranges.map((r) => r.cidr)] };
+}
+
+export async function getCatalogRepoSettings(db: Database): Promise<{ allowPrivateAddresses: boolean }> {
+  return { allowPrivateAddresses: (await catalogFetchPolicy(db)).allowPrivate === true };
+}
+
+export async function setCatalogRepoSettings(db: Database, input: { allow_private_addresses: boolean }): Promise<{ allowPrivateAddresses: boolean }> {
+  const value = input.allow_private_addresses ? 'true' : 'false';
+  await db.insert(platformSettings).values({ key: CATALOG_ALLOW_PRIVATE_SETTING, value })
+    .onConflictDoUpdate({ target: platformSettings.key, set: { value } });
+  return getCatalogRepoSettings(db);
+}
+
+/** The Official Catalog, however its URL was typed. */
+export function isOfficialCatalogUrl(url: string): boolean {
+  return url.trim().toLowerCase().replace(/\/+$/, '').replace(/\.git$/, '') === DEFAULT_CATALOG_URL;
 }
 
 // ─── Sync ───────────────────────────────────────────────────────────────────
@@ -591,7 +610,7 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
       // HTTP source: no tarball, fall back to per-file fetch. The fetched
       // files go to the same per-repository cache as a tarball, so a daily
       // sync replaces them instead of leaving a directory behind each time.
-      localRoot = await persistCatalogCache(await syncViaPerFileFetch(source, repo.branch, repo.authToken), repoId);
+      localRoot = await persistCatalogCache(await syncViaPerFileFetch(source, repo.branch, repo.authToken, await catalogFetchPolicy(db)), repoId);
     }
 
     // Read catalog.json from local files
@@ -922,7 +941,7 @@ export async function syncCatalogRepo(db: Database, repoId: string): Promise<Syn
     const errorMessage = error instanceof Error ? error.message : String(error);
     await db
       .update(catalogRepositories)
-      .set({ status: 'error', lastError: errorMessage })
+      .set({ status: 'error', lastError: errorMessage.slice(0, 1000) })
       .where(eq(catalogRepositories.id, repoId));
     throw error;
   }
@@ -965,7 +984,8 @@ export async function markEntriesRemovedFromSource(
 async function syncViaPerFileFetch(
   source: RepoSource,
   branch: string,
-  authToken?: string | null,
+  authToken: string | null | undefined,
+  policy: InternalAccessPolicy,
 ): Promise<string> {
   const { mkdtemp, writeFile, mkdir, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
@@ -973,7 +993,7 @@ async function syncViaPerFileFetch(
   const tempDir = await mkdtemp(join(tmpdir(), 'catalog-http-'));
   try {
     const catalogUrl = buildCatalogFileUrl(source, branch, 'catalog.json');
-    const catalogRaw = await fetchJson<CatalogJson>(catalogUrl, authToken);
+    const catalogRaw = await fetchJson<CatalogJson>(catalogUrl, authToken, policy);
 
     await writeFile(join(tempDir, 'catalog.json'), JSON.stringify(catalogRaw));
 
@@ -983,7 +1003,7 @@ async function syncViaPerFileFetch(
     for (const code of codes.filter((c): c is string => typeof c === 'string' && VALID_ENTRY_NAME.test(c))) {
       const manifestUrl = buildCatalogFileUrl(source, branch, `${code}/manifest.json`);
       try {
-        const manifest = await fetchJson<Record<string, unknown>>(manifestUrl, authToken);
+        const manifest = await fetchJson<Record<string, unknown>>(manifestUrl, authToken, policy);
         await mkdir(join(tempDir, code), { recursive: true });
         await writeFile(join(tempDir, code, 'manifest.json'), JSON.stringify(manifest));
       } catch {
