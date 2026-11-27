@@ -7,6 +7,7 @@ import {
   useDeleteCatalogRepo,
   useSyncCatalogRepo,
   useRestoreDefaultCatalogRepo,
+  useSetCatalogRepoAutoSync,
 } from '@/hooks/use-catalog-repos';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -31,6 +32,7 @@ export default function CatalogRepoSettings() {
   const deleteRepo = useDeleteCatalogRepo();
   const syncRepo = useSyncCatalogRepo();
   const restoreDefault = useRestoreDefaultCatalogRepo();
+  const setAutoSync = useSetCatalogRepoAutoSync();
 
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
@@ -40,6 +42,7 @@ export default function CatalogRepoSettings() {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<{ id: string; message: string } | null>(null);
+  const [autoSyncError, setAutoSyncError] = useState<{ id: string; message: string } | null>(null);
 
   const repos = response?.data ?? [];
   const { sortedData: sortedRepos, sortKey, sortDirection, onSort } = useSortable(repos, 'name');
@@ -87,6 +90,16 @@ export default function CatalogRepoSettings() {
       setSyncError({ id, message });
     } finally {
       setSyncingId(null);
+    }
+  };
+
+  const handleAutoSync = async (id: string, enabled: boolean) => {
+    setAutoSyncError(null);
+    try {
+      await setAutoSync.mutateAsync({ id, enabled });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not change auto-sync';
+      setAutoSyncError({ id, message });
     }
   };
 
@@ -239,6 +252,7 @@ export default function CatalogRepoSettings() {
                 <SortableHeader label="Branch" sortKey="branch" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
                 <SortableHeader label="Last Synced" sortKey="lastSyncedAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
                 <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+                <th className="px-4 py-3" title="When on, the repository is synced once a day">Auto-sync</th>
                 <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
@@ -264,6 +278,34 @@ export default function CatalogRepoSettings() {
                     {syncError?.id === repo.id && (
                       <p className="mt-1 max-w-xs truncate text-xs text-red-500 dark:text-red-400" data-testid={`sync-error-${repo.id}`} title={syncError.message}>
                         {syncError.message}
+                      </p>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={repo.autoSyncEnabled}
+                      aria-label={`Sync ${repo.name} once a day`}
+                      title={repo.autoSyncEnabled ? 'Synced once a day — click to turn off' : 'Not synced automatically — click to sync once a day'}
+                      disabled={setAutoSync.isPending && setAutoSync.variables?.id === repo.id}
+                      onClick={() => handleAutoSync(repo.id, !repo.autoSyncEnabled)}
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 disabled:cursor-not-allowed disabled:opacity-60 ${
+                        repo.autoSyncEnabled ? 'bg-brand-500' : 'bg-gray-300 dark:bg-gray-600'
+                      }`}
+                      data-testid={`auto-sync-repo-${repo.id}`}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition-transform ${
+                          repo.autoSyncEnabled ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{repo.autoSyncEnabled ? 'Daily' : 'Off'}</p>
+                    {autoSyncError?.id === repo.id && (
+                      <p className="mt-1 max-w-xs truncate text-xs text-red-500 dark:text-red-400" data-testid={`auto-sync-error-${repo.id}`} title={autoSyncError.message}>
+                        {autoSyncError.message}
                       </p>
                     )}
                   </td>
@@ -322,7 +364,7 @@ export default function CatalogRepoSettings() {
               ))}
               {repos.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                  <td colSpan={7} className="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
                     No catalog repositories configured. Add one to get started.
                   </td>
                 </tr>

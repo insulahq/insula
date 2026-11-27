@@ -259,7 +259,7 @@ spec:
 │ url (UQ)                 │ ← GitHub repo URL
 │ branch                   │ ← default 'main'
 │ auth_token               │ ← nullable, for private repos
-│ sync_interval_minutes    │ ← default 60
+│ auto_sync_enabled        │ ← default true (synced once a day)
 │ last_synced_at           │
 │ status                   │ ← 'active', 'syncing', 'error'
 │ last_error               │
@@ -314,7 +314,7 @@ spec:
 │ url (UQ)                 │ ← GitHub repo URL
 │ branch                   │ ← default 'main'
 │ auth_token               │ ← nullable
-│ sync_interval_minutes    │
+│ auto_sync_enabled        │
 │ last_synced_at           │
 │ status                   │
 │ last_error               │
@@ -799,7 +799,7 @@ CREATE TABLE workload_repositories (
   url VARCHAR(500) NOT NULL COMMENT 'GitHub repo URL (https://github.com/owner/repo)',
   branch VARCHAR(100) NOT NULL DEFAULT 'main',
   auth_token VARCHAR(500) COMMENT 'GitHub token for private repos (nullable)',
-  sync_interval_minutes INT NOT NULL DEFAULT 60,
+  auto_sync_enabled BOOLEAN NOT NULL DEFAULT TRUE,
   last_synced_at TIMESTAMP NULL,
   status ENUM('active', 'error', 'syncing') NOT NULL DEFAULT 'active',
   last_error TEXT,
@@ -1518,7 +1518,7 @@ CREATE TABLE application_repositories (
   url VARCHAR(500) NOT NULL,
   branch VARCHAR(100) NOT NULL DEFAULT 'main',
   auth_token VARCHAR(500) DEFAULT NULL,
-  sync_interval_minutes INT NOT NULL DEFAULT 60,
+  auto_sync_enabled BOOLEAN NOT NULL DEFAULT TRUE,
   last_synced_at TIMESTAMP NULL,
   status ENUM('active', 'error', 'syncing') NOT NULL DEFAULT 'active',
   last_error TEXT,

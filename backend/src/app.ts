@@ -3177,6 +3177,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         }
       })();
 
+      // Daily sync of every repository with auto-sync on (hourly tick, one
+      // replica). onClose is registered now: addHook after listen throws.
+      let catalogAutoSyncHandle: { stop: () => void } | null = null;
+      app.addHook('onClose', () => catalogAutoSyncHandle?.stop());
+      void import('./modules/catalog/auto-sync.js').then(({ startCatalogAutoSync }) => {
+        catalogAutoSyncHandle = startCatalogAutoSync(app.db, app.log);
+      }).catch((err) => {
+        app.log.warn({ err }, 'catalog-auto-sync: scheduler start failed');
+      });
+
       app.addHook('onClose', async () => { await closeRedis(); });
     });
   }

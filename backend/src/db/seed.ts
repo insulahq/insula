@@ -182,7 +182,6 @@ await db.insert(catalogRepositories).values([{
   name: 'Official Catalog',
   url: 'https://github.com/insulahq/application-catalog',
   branch: 'main',
-  syncIntervalMinutes: 60,
   status: 'active',
 }]).onConflictDoUpdate({ target: catalogRepositories.url, set: { name: sql`excluded.name` } });
 console.log('  Seeded catalog repositories');
