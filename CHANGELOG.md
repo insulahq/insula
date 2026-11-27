@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.11.16-rc.2] - 2026-11-27
-
 ### BREAKING
 
 > **Before upgrading:** tell tenants whose apps or tools log in to a standalone database
@@ -21,6 +19,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 > new `dbadmin` account or a Database Users account instead. The upgrade itself restarts no
 > database, except a MongoDB instance (once, for its new root password), an instance with extra
 > mounts and an instance on a custom or legacy data path (once each).
+>
+> **Measured on lab staging** (three servers, 2026.11.15 → 2026.11.16-rc.2, applied by hand from
+> the Upgrades API after automatic updates had held it as BREAKING and notified the admins). The
+> servers took the release and the host migrations in about three minutes; the first server's
+> converge, with the Flux upgrade, took 45 seconds. The services rolled within four minutes of the
+> start. A probe every two seconds of each server's ingress, the API and SMTP saw no failed request
+> through the whole upgrade, and the platform database did not restart. Of four seeded tenant
+> database instances, MariaDB, MySQL and PostgreSQL kept running; MongoDB restarted once. Each was
+> converted (`dbadmin` ready) within four minutes of the new API starting; their data, a re-owned
+> view and their backups and restores worked, and the root password the tenant knew was refused
+> over the network on all four. An upgrade from 2026.11.14 also runs 2026.11.15's steps: see that
+> release for its Traefik roll and its two restarts of the platform database.
 
 - **Tenant databases: root belongs to the platform, and tenants get their own administrator
   account.** The platform managed every catalog database (MariaDB, MySQL,
