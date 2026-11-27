@@ -67,7 +67,7 @@ export interface SnapshotRestoreRequest {
 }
 
 export interface SnapshotRestoreOutcome {
-  readonly restored: ReadonlyArray<{ readonly source: string; readonly target: string; readonly objects: number | null }>;
+  readonly restored: ReadonlyArray<{ readonly source: string; readonly target: string; readonly objects: number | null; readonly skipped?: number }>;
   readonly failed: ReadonlyArray<{ readonly database: string; readonly error: string }>;
   readonly skipped: readonly string[];
 }
@@ -105,7 +105,8 @@ export function buildDatabaseFetchScript(): string {
     'while [ "$i" -lt "$COUNT" ]; do',
     '  eval "snap=\\${SNAP_$i}; file=\\${FILE_$i}"',
     '  w=0',
-    '  while [ ! -e $P/$i.ready ]; do [ ! -e $P/abort ] || idle; sleep 1; w=$((w+1)); [ "$w" -lt 900 ] || fail "the restore side never asked for database $i"; done',
+    '  while [ ! -e $P/$i.ready ] && [ ! -e $P/$i.skip ]; do [ ! -e $P/abort ] || idle; sleep 1; w=$((w+1)); [ "$w" -lt 900 ] || fail "the restore side never asked for database $i"; done',
+    '  if [ ! -e $P/$i.ready ]; then i=$((i+1)); continue; fi',
     '  touch $P/$i.opening',
     '  restic dump --no-cache "$snap" "/$file" > $P/$i.fifo 2>$P/$i.err',
     '  echo $? > $P/$i.rc.tmp; mv $P/$i.rc.tmp $P/$i.rc',
@@ -137,7 +138,7 @@ function restoreParts(engine: Engine): { readonly prelude: string; readonly load
         // keep their owners (the app roles, of which the administrator is a
         // member); a copy or test belongs to the administrator ($OWNER_OPT):
         // the owners' grants on the new database do not exist yet.
-        load: 'pg_restore $OWNER_OPT --clean --if-exists --single-transaction --exit-on-error -d "$conn"',
+        load: 'pg_restore -L /tmp/use $OWNER_OPT --clean --if-exists --single-transaction --exit-on-error -d "$conn"',
         count: `psql -X -tA -d "$conn" -c "SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname <> 'information_schema' AND n.nspname !~ '^pg_'"`,
       };
     case 'mongodb':
@@ -150,50 +151,79 @@ function restoreParts(engine: Engine): { readonly prelude: string; readonly load
 }
 
 /**
- * The restore side. Items come in as COUNT and TARGET_<i>, CONN_<i>, SRC_<i>
- * (read with `eval` on the variable NAME only). For each: make the pipe, say
- * it is ready, replay what arrives, then read how the fetch ended. One result
- * line per item, printed with printf and carrying the run's NONCE:
- * `DB_RESTORED nonce=<n> index=<i> objects=<n>` or
+ * Which archive entries a PostgreSQL restore leaves out (awk over
+ * `pg_restore -l`, the kept entries to stdout, the count left out to
+ * /tmp/skipped). Never: event triggers — only a superuser creates or drops
+ * one, and hardening keeps them disabled. In place, also what the
+ * administrator cannot drop and create again: extensions, anything the
+ * server's superuser owns, and the functions an event trigger uses
+ * (/tmp/evtf, one `schema name(args)` per line). Those stay as they are.
+ */
+export const PG_TOC_FILTER_AWK = [
+  'BEGIN { n = 0; while ((getline f < "/tmp/evtf") > 0) if (f != "") evtf[f] = 1 }',
+  '/^;/ { print; next }',
+  '{',
+  '  s = 0',
+  '  if ($0 ~ /^[0-9]+; [0-9]+ [0-9]+ (EVENT TRIGGER|COMMENT - EVENT TRIGGER) /) s = 1',
+  '  if (mode == "replace") {',
+  '    if ($0 ~ /^[0-9]+; [0-9]+ [0-9]+ (EXTENSION|COMMENT - EXTENSION) /) s = 1',
+  '    if (NF > 3 && $NF == su) s = 1',
+  '    for (f in evtf) if (index($0, " FUNCTION " f " ") > 0) s = 1',
+  '  }',
+  '  if (s) n++; else print',
+  '}',
+  'END { print n > "/tmp/skipped" }',
+].join('\n');
+
+/**
+ * The restore side. Items come in as COUNT and TARGET_<i>, CONN_<i>, SRC_<i>,
+ * FD_<i> (the fetch entry of its dump) and, for PostgreSQL, FL_<i> (a first
+ * fetch of the same dump, read for its table of contents only) — read with
+ * `eval` on the variable NAME only. Per pipe: make it, say it is ready,
+ * read what arrives, then how the fetch ended. One result line per item,
+ * printed with printf and carrying the run's NONCE:
+ * `DB_RESTORED nonce=<n> index=<i> objects=<n> skipped=<n>` or
  * `DB_RESTORE_FAIL nonce=<n> index=<i> rc=<rc> reason=<text>`.
  */
 export function buildDatabaseRestoreScript(engine: Engine): string {
   const { prelude, load, count } = restoreParts(engine);
+  const fail = `printf 'DB_RESTORE_FAIL nonce=%s index=%s rc=%s reason=%s\\n' "$NONCE" "$i" "$rc/$drc" "${ONE_LINE_WHY}"`;
   return [
     'set -u',
     `Q=${PIPE_DIR}`,
     'trap "touch $Q/abort" EXIT',
     `U="$(cat ${LOGIN_MOUNT_PATH}/username)"; P="$(cat ${LOGIN_MOUNT_PATH}/password)"`,
     prelude,
+    // Pipe $1: made and asked for. Opening it waits for its writer: should
+    // the fetch fail before it writes, an empty write of our own ends the wait.
+    'prep() { rm -f $Q/$1.fifo; mkfifo $Q/$1.fifo && touch $Q/$1.ready; ( k=0; while [ ! -e $Q/$1.opening ]; do if [ -e $Q/fetch-failed ] || [ "$k" -ge 900 ]; then : > $Q/$1.fifo; exit 0; fi; sleep 1; k=$((k+1)); done ) & dog=$!; }',
+    // How the fetch of pipe $1 ended: its exit code, or "fetch" when it is gone.
+    "fin() { kill $dog 2>/dev/null; wait $dog 2>/dev/null; w=0; while [ ! -e $Q/$1.rc ] && [ ! -e $Q/fetch-failed ] && [ \"$w\" -lt 300 ]; do sleep 1; w=$((w+1)); done; drc=$(cat $Q/$1.rc 2>/dev/null | tr -dc '0-9' | cut -c1-4); [ -n \"$drc\" ] || drc=fetch; }",
+    // Whichever side failed first: a fetch that failed starves the client,
+    // and a client that failed breaks the fetch's pipe ("broken pipe").
+    'why_of() { fwhy=$(tail -n 3 $Q/$1.err 2>/dev/null); [ -n "$fwhy" ] || fwhy=$(cat $Q/fetch-failed 2>/dev/null); cwhy=$(grep -iE "error|fail|denied" /tmp/err | tail -n 4); [ -n "$cwhy" ] || cwhy=$(tail -n 4 /tmp/err); if [ "$drc" != 0 ] && [ -n "$fwhy" ] && ! printf "%s" "$fwhy" | grep -qi "broken pipe"; then why=$fwhy; else why=$cwhy; [ -n "$why" ] || why=$fwhy; fi; }',
     'i=0',
     'while [ "$i" -lt "$COUNT" ]; do',
-    '  eval "target=\\${TARGET_$i}; conn=\\${CONN_$i}; src=\\${SRC_$i}"',
+    '  eval "target=\\${TARGET_$i}; conn=\\${CONN_$i}; src=\\${SRC_$i}; fd=\\${FD_$i}; fl=\\${FL_$i:-}; evtf=\\${EVTF_$i:-}"',
+    '  rc=0; drc=0; skipped=0',
     // The fetch is gone: every item left fails, at once.
     '  if [ -e $Q/fetch-failed ]; then why=$(cat $Q/fetch-failed)',
     `    printf 'DB_RESTORE_FAIL nonce=%s index=%s rc=%s reason=%s\\n' "$NONCE" "$i" "fetch" "${ONE_LINE_WHY}"; i=$((i+1)); continue; fi`,
-    '  rm -f $Q/$i.fifo; mkfifo $Q/$i.fifo && touch $Q/$i.ready',
-    // Opening the pipe waits for its writer: should the fetch fail before it
-    // writes, an empty write of our own ends the wait.
-    '  ( k=0; while [ ! -e $Q/$i.opening ]; do if [ -e $Q/fetch-failed ] || [ "$k" -ge 900 ]; then : > $Q/$i.fifo; exit 0; fi; sleep 1; k=$((k+1)); done ) &',
-    '  dog=$!',
+    '  if [ -n "$fl" ]; then',
+    // The table of contents only: the fetch's broken pipe after it is expected.
+    '    prep $fl; pg_restore -l < $Q/$fl.fifo > /tmp/toc 2>/tmp/err; rc=$?; fin $fl',
+    '    if [ "$rc" != 0 ]; then why_of $fl; touch $Q/$fd.skip',
+    `      ${fail}; i=$((i+1)); continue; fi`,
+    `    printf '%s\\n' "$evtf" > /tmp/evtf; awk -v su="$SUPERUSER" -v mode="$MODE" "$TOC_AWK" /tmp/toc > /tmp/use; skipped=$(cat /tmp/skipped 2>/dev/null || printf 0)`,
+    '  fi',
     // A group, so the pipe feeds the whole pipeline (MariaDB/MySQL: the
     // rewrite first), not only its last command.
-    `  { ${load}; } < $Q/$i.fifo >/tmp/out 2>/tmp/err`,
-    '  rc=$?',
-    '  kill $dog 2>/dev/null; wait $dog 2>/dev/null',
-    // The fetch ends right after the client read its end (or broke it off).
-    '  w=0; while [ ! -e $Q/$i.rc ] && [ ! -e $Q/fetch-failed ] && [ "$w" -lt 300 ]; do sleep 1; w=$((w+1)); done',
-    "  drc=$(cat $Q/$i.rc 2>/dev/null | tr -dc '0-9' | cut -c1-4); [ -n \"$drc\" ] || drc=fetch",
+    `  prep $fd; { ${load}; } < $Q/$fd.fifo >/tmp/out 2>/tmp/err; rc=$?; fin $fd`,
     '  if [ "$drc" = 0 ] && [ "$rc" = 0 ]; then',
     `    n=$(${count} 2>/dev/null | tr -dc '0-9' | cut -c1-12)`,
-    `    printf 'DB_RESTORED nonce=%s index=%s objects=%s\\n' "$NONCE" "$i" "\${n:--}"`,
+    `    printf 'DB_RESTORED nonce=%s index=%s objects=%s skipped=%s\\n' "$NONCE" "$i" "\${n:--}" "$(printf '%s' "$skipped" | tr -dc '0-9' | cut -c1-9)"`,
     '  else',
-    // Whichever side failed first: a fetch that failed starves the client,
-    // and a client that failed breaks the fetch's pipe ("broken pipe").
-    '    fwhy=$(tail -n 3 $Q/$i.err 2>/dev/null); [ -n "$fwhy" ] || fwhy=$(cat $Q/fetch-failed 2>/dev/null)',
-    '    cwhy=$(grep -iE "error|fail|denied" /tmp/err | tail -n 4); [ -n "$cwhy" ] || cwhy=$(tail -n 4 /tmp/err)',
-    '    if [ "$drc" != 0 ] && [ -n "$fwhy" ] && ! printf "%s" "$fwhy" | grep -qi "broken pipe"; then why=$fwhy; else why=$cwhy; [ -n "$why" ] || why=$fwhy; fi',
-    `    printf 'DB_RESTORE_FAIL nonce=%s index=%s rc=%s reason=%s\\n' "$NONCE" "$i" "$rc/$drc" "${ONE_LINE_WHY}"`,
+    `    why_of $fd; ${fail}`,
     '  fi',
     '  i=$((i+1))',
     'done',
@@ -202,7 +232,7 @@ export function buildDatabaseRestoreScript(engine: Engine): string {
 }
 
 export type RestoreLineResult =
-  | { readonly kind: 'restored'; readonly objects: number | null }
+  | { readonly kind: 'restored'; readonly objects: number | null; readonly skipped: number }
   | { readonly kind: 'failed'; readonly error: string };
 
 /** Only lines carrying this run's nonce, and the first per item. */
@@ -211,8 +241,11 @@ export function parseDatabaseRestoreLines(log: string, nonce: string): { readonl
   let setupFailed: string | null = null;
   const n = nonce.replace(/[^0-9a-f]/g, '');
   for (const line of log.split('\n')) {
-    const ok = new RegExp(`^DB_RESTORED nonce=${n} index=(\\d+) objects=(\\d+|-)$`).exec(line);
-    if (ok) { if (!results.has(Number(ok[1]))) results.set(Number(ok[1]), { kind: 'restored', objects: ok[2] === '-' ? null : Number(ok[2]) }); continue; }
+    const ok = new RegExp(`^DB_RESTORED nonce=${n} index=(\\d+) objects=(\\d+|-) skipped=(\\d*)$`).exec(line);
+    if (ok) {
+      if (!results.has(Number(ok[1]))) results.set(Number(ok[1]), { kind: 'restored', objects: ok[2] === '-' ? null : Number(ok[2]), skipped: Number(ok[3] || 0) });
+      continue;
+    }
     const failed = new RegExp(`^DB_RESTORE_FAIL nonce=${n} index=(\\d+) rc=(\\S+) reason=(.*)$`).exec(line);
     if (failed) { if (!results.has(Number(failed[1]))) results.set(Number(failed[1]), { kind: 'failed', error: (failed[3] ?? '').trim() || `the restore exited ${failed[2]}` }); continue; }
     const setup = new RegExp(`^DB_SETUP_FAILED nonce=${n} (.*)$`).exec(line);
@@ -226,6 +259,8 @@ export interface RestoreJobItem {
   readonly fileName: string;
   readonly target: string;
   readonly source: string;
+  /** PostgreSQL in place: the functions the target's event triggers use (`schema name(args)`), left as they are. */
+  readonly eventTriggerFunctions?: readonly string[];
 }
 
 export interface DatabaseRestoreJobInput {
@@ -244,6 +279,8 @@ export interface DatabaseRestoreJobInput {
   readonly mode: DatabaseRestoreMode;
   readonly items: readonly RestoreJobItem[];
   readonly nonce: string;
+  /** The server's superuser: what it owns, a PostgreSQL restore in place leaves as it is. */
+  readonly superuser: string;
   /** Node constraint and priority class (database-job.ts databaseJobPlacement). */
   readonly placement: Readonly<Record<string, unknown>>;
 }
@@ -256,15 +293,25 @@ export function buildDatabaseRestoreJobSpec(input: DatabaseRestoreJobInput): Rec
     'platform.io/restore-id': input.restoreId.slice(0, 63),
     'platform.io/restore-databases': input.deploymentId,
   };
-  const count = { name: 'COUNT', value: String(input.items.length) };
+  // The fetch's entries: per item its dump, and for PostgreSQL the same dump
+  // once more before it, read for its table of contents only.
+  const fetches: Array<{ snapshotId: string; fileName: string }> = [];
+  const entries = input.items.map((it) => {
+    const fl = input.engine === 'postgresql' ? fetches.push(it) - 1 : null;
+    const fd = fetches.push(it) - 1;
+    return { fl, fd };
+  });
   const fetchEnv = [
-    count,
+    { name: 'COUNT', value: String(fetches.length) },
     { name: 'HOME', value: '/tmp' },
     { name: 'TMPDIR', value: '/tmp' },
-    ...input.items.flatMap((it, i) => [{ name: `SNAP_${i}`, value: it.snapshotId }, { name: `FILE_${i}`, value: it.fileName }]),
+    ...fetches.flatMap((f, i) => [{ name: `SNAP_${i}`, value: f.snapshotId }, { name: `FILE_${i}`, value: f.fileName }]),
   ];
   const restoreEnv = [
-    count,
+    { name: 'COUNT', value: String(input.items.length) },
+    { name: 'MODE', value: input.mode },
+    { name: 'SUPERUSER', value: input.superuser },
+    { name: 'TOC_AWK', value: PG_TOC_FILTER_AWK },
     { name: 'SVC_HOST', value: input.serviceHost },
     { name: 'SVC_PORT', value: String(input.servicePort) },
     { name: 'NONCE', value: input.nonce },
@@ -276,6 +323,9 @@ export function buildDatabaseRestoreJobSpec(input: DatabaseRestoreJobInput): Rec
       { name: `TARGET_${i}`, value: it.target },
       { name: `CONN_${i}`, value: pgDbConnInfo(it.target) },
       { name: `SRC_${i}`, value: it.source },
+      { name: `FD_${i}`, value: String(entries[i]!.fd) },
+      ...(entries[i]!.fl !== null ? [{ name: `FL_${i}`, value: String(entries[i]!.fl) }] : []),
+      ...(it.eventTriggerFunctions?.length ? [{ name: `EVTF_${i}`, value: it.eventTriggerFunctions.join('\n') }] : []),
     ]),
   ];
   return {
@@ -383,6 +433,18 @@ async function countObjects(x: Exec, database: string): Promise<number | null> {
   }
 }
 
+/** PostgreSQL: the functions `database`'s event triggers use, as `schema name(args)` (how `pg_restore -l` names them). */
+async function eventTriggerFunctionsIn(x: Exec, database: string): Promise<string[]> {
+  try {
+    const out = await sh(x, pgSuperuser(x.ctx,
+      "SELECT DISTINCT n.nspname || ' ' || p.proname || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')' FROM pg_catalog.pg_event_trigger e JOIN pg_catalog.pg_proc p ON p.oid = e.evtfoid JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace",
+      database));
+    return out.split('\n').map((l) => l.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 /** Hands a database the platform created to the tenant's administrator (PostgreSQL owns by database; the others grant on create). */
 async function handToTenantAdmin(x: Exec, database: string, admin: string): Promise<void> {
   if (x.ctx.engine !== 'postgresql') return;
@@ -446,7 +508,8 @@ async function prepareTargets(
         continue;
       }
     }
-    items.push({ snapshotId: r.snapshotId, fileName: dumpFileName(ctx.engine, r.source), target, source: r.source, created });
+    const eventTriggerFunctions = ctx.engine === 'postgresql' && mode === 'replace' && existing.has(target) ? await eventTriggerFunctionsIn(x, target) : [];
+    items.push({ snapshotId: r.snapshotId, fileName: dumpFileName(ctx.engine, r.source), target, source: r.source, created, eventTriggerFunctions });
   }
   return items;
 }
@@ -455,7 +518,7 @@ async function prepareTargets(
 export async function restoreInstanceFromSnapshots(args: RestoreInstanceArgs): Promise<SnapshotRestoreOutcome> {
   const { ctx, mode } = args;
   const x: Exec = { ctx, run: execInDbPod };
-  const restored: Array<{ source: string; target: string; objects: number | null }> = [];
+  const restored: Array<{ source: string; target: string; objects: number | null; skipped?: number }> = [];
   const failed: Array<{ database: string; error: string }> = [];
   const skipped: string[] = [];
   const redact = (s: string): string => redactRepository(s, args.resticCreds.repo_uri);
@@ -480,7 +543,7 @@ export async function restoreInstanceFromSnapshots(args: RestoreInstanceArgs): P
       spec: buildDatabaseRestoreJobSpec({
         jobName, namespace: args.namespace, tenantId: args.tenantId, restoreId: args.restoreId, deploymentId: args.deploymentId,
         engine: ctx.engine, image, toolsImage: args.toolsImage, serviceHost, servicePort: ENGINE_CONFIG[ctx.engine].port,
-        credsSecretName, loginSecretName, mode, items, nonce, placement: args.placement,
+        credsSecretName, loginSecretName, mode, items, nonce, placement: args.placement, superuser: ctx.rootUsername,
       }),
       secrets: [
         { name: credsSecretName, data: args.resticCreds },
@@ -493,7 +556,7 @@ export async function restoreInstanceFromSnapshots(args: RestoreInstanceArgs): P
     const parsed = parseDatabaseRestoreLines(run.log, nonce);
     for (const [i, it] of items.entries()) {
       const r = parsed.results.get(i);
-      if (r?.kind === 'restored') restored.push({ source: it.source, target: it.target, objects: (await countObjects(x, it.target)) ?? r.objects });
+      if (r?.kind === 'restored') restored.push({ source: it.source, target: it.target, objects: (await countObjects(x, it.target)) ?? r.objects, skipped: r.skipped });
       else failed.push({ database: it.source, error: redact(r?.kind === 'failed' ? r.error : parsed.setupFailed ?? (run.outcome === 'failed' ? 'the restore Job failed before this database' : 'no result for this database')) });
     }
   } catch (err) {

@@ -40,6 +40,7 @@
  *                                         `type='database'` catalog deployment)
  */
 
+import { deletePredumpsFromPvc } from '../../tenant-bundles/components/database-predump-orchestration.js';
 import { loadDatabaseSnapshotRows, restoreDatabasesFromSnapshots } from './databases-from-snapshots.js';
 import type { FastifyInstance } from 'fastify';
 import { loadTenantAdminAccount, tenantAdminReady } from '../../deployments/tenant-admin-store.js';
@@ -427,10 +428,12 @@ export function formatSummary(summary: DatabasesRestoreSummary): string {
   const parts = summary.deployments.map((d) => {
     if (d.status === 'imported') {
       const extra = d.skipped.length > 0 ? `, ${d.skipped.length} skipped` : '';
-      return `${d.deploymentName}: imported ${d.imported.length} db(s)${extra}`;
+      return `${d.deploymentName}: imported ${d.imported.length} db(s) (${d.imported.join(', ')})${extra}`;
     }
     if (d.status === 'failed') {
-      return `${d.deploymentName}: FAILED ${d.failed.length} import(s)${d.imported.length ? ` (${d.imported.length} ok)` : ''}`;
+      // Which database, and why: a count alone sends the reader to the logs.
+      const why = d.failed.map((f) => `${f.database}: ${f.error}`).join('; ');
+      return `${d.deploymentName}: FAILED ${d.failed.length} import(s)${d.imported.length ? ` (${d.imported.length} ok)` : ''} — ${why}`;
     }
     return d.skipped[0] ?? `${d.deploymentName}: skipped`;
   });
@@ -585,12 +588,15 @@ export async function execDatabasesByIdItem(args: {
   // One hold on the file manager for the whole item: listing the predumps and
   // every import exec into it, and without a hold the idle loop scales an
   // idle tenant's file manager down between (or during) those steps.
-  const summary = await withFileManagerLease(k8s, namespace, 'db-restore', () => restoreDatabasesForDeployments(
-    targets,
-    item.bundleId,
-    deps,
-    (msg) => setProgress(app, item, msg),
-  ));
+  const summary = await withFileManagerLease(k8s, namespace, 'db-restore', async (fmPod) => {
+    try {
+      return await restoreDatabasesForDeployments(targets, item.bundleId, deps, (msg) => setProgress(app, item, msg));
+    } finally {
+      // The pre-dumps fetched back for this restore have done their work:
+      // nothing prunes them from the tenant's volume any more. Never throws.
+      await deletePredumpsFromPvc({ namespace, fmPod, bundleId: item.bundleId, kubeconfigPath });
+    }
+  });
 
   await setProgress(app, item, formatSummary(summary));
 

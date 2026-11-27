@@ -27,7 +27,11 @@ vi.mock('../../deployments/backup-login.js', async (orig) => ({
 vi.mock('../../deployments/tenant-admin.js', () => ({ trustRoutineCreators: mocks.trustRoutineCreators }));
 vi.mock('../../storage-lifecycle/job-log-tail.js', () => ({ readJobLogTail: mocks.readJobLogTail, tailJobLog: vi.fn(async () => '') }));
 
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
+  PG_TOC_FILTER_AWK,
   buildDatabaseFetchScript,
   buildDatabaseRestoreJobSpec,
   buildDatabaseRestoreScript,
@@ -55,7 +59,7 @@ describe('buildDatabaseRestoreScript', () => {
     const script = buildDatabaseRestoreScript(engine);
     const check = spawnSync('sh', ['-n', '-c', script], { encoding: 'utf8' });
     expect(check.status, check.stderr).toBe(0);
-    expect(script).toContain('eval "target=\\${TARGET_$i}; conn=\\${CONN_$i}; src=\\${SRC_$i}"');
+    expect(script).toContain('eval "target=\\${TARGET_$i}; conn=\\${CONN_$i}; src=\\${SRC_$i}; fd=\\${FD_$i}; fl=\\${FL_$i:-}; evtf=\\${EVTF_$i:-}"');
     // The client side never holds the store's credentials.
     expect(script).not.toMatch(/restic|RESTIC_|AWS_/);
     expect(script).not.toMatch(/\becho\b/);
@@ -75,12 +79,55 @@ describe('buildDatabaseRestoreScript', () => {
   it('the restore side never waits on a pipe the fetch will not write', () => {
     const script = buildDatabaseRestoreScript('postgresql');
     expect(script).toContain('if [ -e $Q/fetch-failed ]; then why=$(cat $Q/fetch-failed)');
-    expect(script).toContain(': > $Q/$i.fifo; exit 0');
+    expect(script).toContain(': > $Q/$1.fifo; exit 0');
+    // A table of contents that cannot be read: its dump pass is called off, not left waiting.
+    expect(script).toContain('touch $Q/$fd.skip');
   });
   it('MariaDB/MySQL: the tenant import rewrite; PostgreSQL: one transaction', () => {
     expect(buildDatabaseRestoreScript('mariadb')).toContain('sed -E "$IMPORT_SED"');
-    expect(buildDatabaseRestoreScript('postgresql')).toContain('pg_restore $OWNER_OPT --clean --if-exists --single-transaction --exit-on-error -d "$conn"');
+    expect(buildDatabaseRestoreScript('postgresql')).toContain('pg_restore -L /tmp/use $OWNER_OPT --clean --if-exists --single-transaction --exit-on-error -d "$conn"');
+    expect(buildDatabaseRestoreScript('postgresql')).toContain('pg_restore -l < $Q/$fl.fifo > /tmp/toc');
     expect(buildDatabaseRestoreScript('mongodb')).toContain('--nsFrom="$src.*" --nsTo="$target.*"');
+  });
+});
+
+describe('PG_TOC_FILTER_AWK', () => {
+  const TOC = [
+    ';',
+    '; Archive created at 2026-11-27',
+    '2; 3079 16386 EXTENSION - pgcrypto ',
+    '3482; 0 0 COMMENT - EXTENSION pgcrypto ',
+    '258; 1255 16424 FUNCTION public evf() dbadmin',
+    '259; 1255 16425 FUNCTION public keep(integer, text) app',
+    '220; 1259 16426 TABLE public t app',
+    '221; 1259 16427 TABLE public su_table postgres',
+    '3475; 0 16426 TABLE DATA public t app',
+    '3327; 3466 16425 EVENT TRIGGER - evt postgres',
+  ].join('\n');
+  const run = (mode: string, evtf = ''): { kept: string[]; skipped: string } => {
+    const dir = mkdtempSync(join(tmpdir(), 'toc-'));
+    try {
+      // The program reads its fixed paths: run it with /tmp mapped to the scratch dir.
+      const prog = PG_TOC_FILTER_AWK.replaceAll('/tmp/', `${dir}/`);
+      writeFileSync(join(dir, 'evtf'), evtf);
+      const r = spawnSync('awk', ['-v', 'su=postgres', '-v', `mode=${mode}`, prog], { input: TOC, encoding: 'utf8' });
+      return { kept: r.stdout.split('\n').filter((l) => l && !l.startsWith(';')), skipped: readFileSync(join(dir, 'skipped'), 'utf8').trim() };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  };
+  it('a copy or test leaves out only the event trigger', () => {
+    const r = run('copy');
+    expect(r.skipped).toBe('1');
+    expect(r.kept.some((l) => l.includes('EVENT TRIGGER'))).toBe(false);
+    expect(r.kept.some((l) => l.includes('EXTENSION - pgcrypto'))).toBe(true);
+  });
+  it('in place also leaves extensions, what the superuser owns and the event trigger\'s function', () => {
+    const r = run('replace', 'public evf()\n');
+    expect(r.kept).toEqual([
+      '259; 1255 16425 FUNCTION public keep(integer, text) app',
+      '220; 1259 16426 TABLE public t app',
+      '3475; 0 16426 TABLE DATA public t app',
+    ]);
+    expect(r.skipped).toBe('5');
   });
 });
 
@@ -88,13 +135,13 @@ describe('parseDatabaseRestoreLines', () => {
   it('restored, failed, setup — only with the run\'s nonce', () => {
     const N = 'aabbccddeeff0011';
     const p = parseDatabaseRestoreLines([
-      `DB_RESTORED nonce=${N} index=0 objects=4`, `DB_RESTORED nonce=${N} index=1 objects=-`,
+      `DB_RESTORED nonce=${N} index=0 objects=4 skipped=0`, `DB_RESTORED nonce=${N} index=1 objects=- skipped=2`,
       `DB_RESTORE_FAIL nonce=${N} index=2 rc=1/0 reason=ERROR 1419`, `DB_SETUP_FAILED nonce=${N} no pg_restore`,
-      'DB_RESTORED nonce=0000000000000000 index=3 objects=1', `DB_RESTORED nonce=${N} index=2 objects=9`,
+      'DB_RESTORED nonce=0000000000000000 index=3 objects=1 skipped=0', `DB_RESTORED nonce=${N} index=2 objects=9 skipped=0`,
     ].join('\n'), N);
     expect(p.results.has(3)).toBe(false);
-    expect(p.results.get(0)).toEqual({ kind: 'restored', objects: 4 });
-    expect(p.results.get(1)).toEqual({ kind: 'restored', objects: null });
+    expect(p.results.get(0)).toEqual({ kind: 'restored', objects: 4, skipped: 0 });
+    expect(p.results.get(1)).toEqual({ kind: 'restored', objects: null, skipped: 2 });
     expect(p.results.get(2)).toEqual({ kind: 'failed', error: 'ERROR 1419' });
     expect(p.setupFailed).toBe('no pg_restore');
   });
@@ -105,8 +152,15 @@ describe('buildDatabaseRestoreJobSpec', () => {
     jobName: 'rs', namespace: 'ns', tenantId: 't', restoreId: 'r', deploymentId: 'd', engine: 'postgresql' as const, image: 'pg', toolsImage: 'tools',
     serviceHost: 'pg.ns.svc', servicePort: 5432, credsSecretName: 'c', loginSecretName: 'l',
     items: [{ snapshotId: 'aaaaaaaa', fileName: '73686f70.pgdump', target: 'we"ird', source: 'shop' }],
-    nonce: 'aabbccddeeff0011', placement: { priorityClassName: 'platform-tenant-overhead' },
+    nonce: 'aabbccddeeff0011', placement: { priorityClassName: 'platform-tenant-overhead' }, superuser: 'postgres',
   };
+  it('PostgreSQL: each dump is fetched twice, its table of contents first', () => {
+    const pod = (buildDatabaseRestoreJobSpec({ ...base, mode: 'replace', items: [...base.items, { ...base.items[0]!, target: 'b', source: 'b', eventTriggerFunctions: ['public evf()'] }] }) as Spec).spec.template.spec;
+    const fetch = Object.fromEntries(pod.initContainers[0].env.map((e: { name: string; value: string }) => [e.name, e.value]));
+    const restore = Object.fromEntries(pod.containers[0].env.map((e: { name: string; value: string }) => [e.name, e.value]));
+    expect(fetch.COUNT).toBe('4');
+    expect(restore).toMatchObject({ COUNT: '2', FL_0: '0', FD_0: '1', FL_1: '2', FD_1: '3', EVTF_1: 'public evf()', MODE: 'replace', SUPERUSER: 'postgres' });
+  });
   type Spec = { metadata: { labels: Record<string, string> }; spec: { template: { spec: Record<string, any> } } };
   const env = (mode: 'replace' | 'copy' | 'test') => {
     const spec = buildDatabaseRestoreJobSpec({ ...base, mode }) as Spec;
@@ -174,9 +228,9 @@ describe('restoreInstanceFromSnapshots', () => {
   });
 
   it('in place: into the same name; routines allowed first on MariaDB/MySQL', async () => {
-    logs('DB_RESTORED nonce=NONCE index=0 objects=3');
+    logs('DB_RESTORED nonce=NONCE index=0 objects=3 skipped=0');
     const r = await restoreInstanceFromSnapshots(args('mariadb', 'replace', [{ source: 'shop', snapshotId: 'aaaaaaaa' }]));
-    expect(r.restored).toEqual([{ source: 'shop', target: 'shop', objects: 3 }]);
+    expect(r.restored).toEqual([{ source: 'shop', target: 'shop', objects: 3, skipped: 0 }]);
     expect(jobEnv()).toMatchObject({ TARGET_0: 'shop', SRC_0: 'shop', SNAP_0: 'aaaaaaaa', FILE_0: '73686f70.sql', COUNT: '1' });
     expect(mocks.trustRoutineCreators).toHaveBeenCalled();
     expect(mocks.createDatabase).not.toHaveBeenCalled();
@@ -194,18 +248,18 @@ describe('restoreInstanceFromSnapshots', () => {
 
   it('PostgreSQL copy: the new database goes to the tenant administrator', async () => {
     mocks.readServerVersion.mockResolvedValue('17.6');
-    logs('DB_RESTORED nonce=NONCE index=0 objects=2');
+    logs('DB_RESTORED nonce=NONCE index=0 objects=2 skipped=0');
     await restoreInstanceFromSnapshots(args('postgresql', 'copy', [{ source: 'shop', snapshotId: 'aaaaaaaa', targetName: 'shop_copy' }]));
     const statements = mocks.sh.mock.calls.map((c) => JSON.stringify(c[1]));
     expect(statements.some((s) => s.includes('ALTER DATABASE \\"shop_copy\\" OWNER TO \\"dbadmin\\"'))).toBe(true);
   });
 
   it('test: a scratch database, always dropped, the original untouched', async () => {
-    logs('DB_RESTORED nonce=NONCE index=0 objects=7');
+    logs('DB_RESTORED nonce=NONCE index=0 objects=7 skipped=0');
     const r = await restoreInstanceFromSnapshots(args('mariadb', 'test', [{ source: 'shop', snapshotId: 'aaaaaaaa' }]));
     const target = jobEnv().TARGET_0!;
     expect(target).toMatch(/^restoretest_[0-9a-f]{8}$/);
-    expect(r.restored).toEqual([{ source: 'shop', target, objects: 7 }]);
+    expect(r.restored).toEqual([{ source: 'shop', target, objects: 7, skipped: 0 }]);
     expect(mocks.dropDatabase).toHaveBeenCalledWith(expect.anything(), target);
     expect(mocks.dropDatabase).not.toHaveBeenCalledWith(expect.anything(), 'shop');
   });
@@ -233,7 +287,7 @@ describe('restoreInstanceFromSnapshots', () => {
   });
 
   it('a scratch database that cannot be dropped is reported', async () => {
-    logs('DB_RESTORED nonce=NONCE index=0 objects=1');
+    logs('DB_RESTORED nonce=NONCE index=0 objects=1 skipped=0');
     mocks.dropDatabase.mockRejectedValue(new Error('in use'));
     const r = await restoreInstanceFromSnapshots(args('mariadb', 'test', [{ source: 'shop', snapshotId: 'aaaaaaaa' }]));
     expect(r.failed[0]!.error).toMatch(/scratch database restoretest_[0-9a-f]{8} could not be dropped \(in use\): drop it by hand/);

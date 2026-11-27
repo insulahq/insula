@@ -62,10 +62,11 @@ export function requestsFor(
   return { requests, missing };
 }
 
-function describe(mode: DatabaseRestoreMode, r: { source: string; target: string; objects: number | null }): string {
-  if (mode === 'replace') return r.source;
-  if (mode === 'copy') return `${r.source} → ${r.target}`;
-  return `${r.source} (test restore: ${r.objects ?? 'unknown'} tables/collections, scratch copy dropped)`;
+function describe(mode: DatabaseRestoreMode, r: { source: string; target: string; objects: number | null; skipped?: number }): string {
+  const left = r.skipped ? ` — ${r.skipped} object(s) only the server's superuser can manage (event triggers${mode === 'replace' ? ', extensions, what it owns' : ''}) left as they are` : '';
+  if (mode === 'replace') return `${r.source}${left}`;
+  if (mode === 'copy') return `${r.source} → ${r.target}${left}`;
+  return `${r.source} (test restore: ${r.objects ?? 'unknown'} tables/collections, scratch copy dropped)${left}`;
 }
 
 export interface FromSnapshotsArgs {

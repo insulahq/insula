@@ -275,12 +275,16 @@ How to read it:
     is gone): the tables, views and routines in the backup are recreated over what
     is there; anything made since stays. PostgreSQL runs `pg_restore --clean
     --single-transaction`: all of it, or nothing changes, and objects keep their
-    owners. MariaDB/MySQL replay the dump table by table, MongoDB `mongorestore
-    --drop` collection by collection: a failure part-way leaves a mix.
+    owners. What only the server's superuser can drop and create again stays as
+    it is in the database and is counted in the result: extensions, objects the
+    superuser owns, event triggers and the functions they use. MariaDB/MySQL
+    replay the dump table by table, MongoDB `mongorestore --drop` collection by
+    collection: a failure part-way leaves a mix.
   - `copy` — into a new database the platform creates and hands to the tenant's
     administrator (`targetName`, or `<name>_restored_<yyyymmddhhmm>`); the
     original is not touched. PostgreSQL loads it `--no-owner`: the copy belongs to
-    the administrator.
+    the administrator. Event triggers are left out (only a superuser creates
+    one; hardening keeps them disabled anyway).
   - `test` — into a scratch database `restoretest_<hex>`, counts the tables or
     collections that came back, and drops it. Changes nothing.
 
