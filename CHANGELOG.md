@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.17] - 2026-11-27
+
 > **Measured on lab staging** (three servers, 2026.11.16 → 2026.11.17-rc.1, applied from the
 > Upgrades API). The upgrade took about four minutes and runs no host migrations. Only the platform
 > API and the two panels restarted: the platform database, mail and every tenant workload kept
