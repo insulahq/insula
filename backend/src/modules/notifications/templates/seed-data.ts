@@ -2263,6 +2263,69 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     ],
   },
   {
+    categoryId: 'admin.tenant_database_access_lost',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'The platform cannot log in to {{count}} tenant database instance(s)',
+    bodyTemplate: emailMjml(
+      'Tenant database login lost',
+      'The platform can no longer log in as administrator to these database instances, so their SQL '
+        + 'Manager, logical backups and restores fail. Each entry says why. Where the login was refused, '
+        + 'open the instance and choose Repair database access: the database restarts once and comes back '
+        + 'with the platform\'s login. Where the database has not answered for an hour, check its pod — a '
+        + 'repair does not help there. The instances and what failed: {{tenantList}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'count', type: 'string', required: true },
+      { name: 'tenantList', type: 'list', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.tenant_database_access_lost',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Platform cannot log in to {{count}} tenant database(s)',
+    bodyTemplate: 'A refused login: Repair database access (restarts the database once). No answer for an hour: check the pod. {{tenantList}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'count', type: 'string', required: true },
+      { name: 'tenantList', type: 'list', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.tenant_database_access_restored',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'The platform can log in to {{count}} tenant database instance(s) again',
+    bodyTemplate: emailMjml(
+      'Tenant database login restored',
+      'The platform can log in as administrator to these database instances again; their SQL Manager, '
+        + 'backups and restores work again: {{tenantList}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'count', type: 'string', required: true },
+      { name: 'tenantList', type: 'list', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.tenant_database_access_restored',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Platform login to {{count}} tenant database(s) restored',
+    bodyTemplate: 'Backups and the SQL Manager work again: {{tenantList}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'count', type: 'string', required: true },
+      { name: 'tenantList', type: 'list', required: true },
+    ],
+  },
+  {
     categoryId: 'admin.tenant_workloads_recovered',
     channel: 'email',
     locale: 'en',
@@ -2320,6 +2383,133 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'workloads', type: 'list', required: true },
       { name: 'downSince', type: 'string', required: true },
+    ],
+  },
+  // Database backups overdue / working again. `databases` is one item per
+  // database — tenant (admin copy only), instance, database, last good backup
+  // or "never", and the last attempt's error — as a list on every channel.
+  {
+    categoryId: 'admin.database_backup_stale',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Database backups overdue: {{databaseCount}} database(s){{#if tenantName}} of "{{tenantName}}"{{/if}}',
+    bodyTemplate: emailMjml(
+      'Tenant database backups overdue',
+      'These databases had no good backup in the scheduled backup run of {{missedRun}} '
+        + '({{databaseCount}} database(s) in {{tenantCount}} tenant(s)): {{databases}} '
+        + 'The files snapshot still copies each database\'s own files, but from the running server, '
+        + 'so those copies are not guaranteed to restore. Fix the reason given for each database, '
+        + 'then run a backup of the tenant.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'databases', type: 'list', required: true },
+      { name: 'databaseCount', type: 'string', required: true },
+      { name: 'tenantCount', type: 'string', required: true },
+      { name: 'missedRun', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.database_backup_stale',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Database backups overdue: {{databaseCount}} database(s){{#if tenantName}} of "{{tenantName}}"{{/if}}',
+    bodyTemplate: 'No good backup in the scheduled run of {{missedRun}}: {{databases}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'databases', type: 'list', required: true },
+      { name: 'databaseCount', type: 'string', required: true },
+      { name: 'tenantCount', type: 'string', required: true },
+      { name: 'missedRun', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.database_backup_recovered',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Database backups working again: {{databaseCount}} database(s){{#if tenantName}} of "{{tenantName}}"{{/if}}',
+    bodyTemplate: emailMjml(
+      'Tenant database backups working again',
+      'These databases that were reported overdue have been backed up again: {{databases}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'databases', type: 'list', required: true },
+      { name: 'databaseCount', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.database_backup_recovered',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Database backups working again: {{databaseCount}} database(s){{#if tenantName}} of "{{tenantName}}"{{/if}}',
+    bodyTemplate: 'Backed up again: {{databases}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'databases', type: 'list', required: true },
+      { name: 'databaseCount', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'tenant.database_backup_stale',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Your database backups are overdue',
+    bodyTemplate: emailMjml(
+      'Your database backups are overdue',
+      'These databases were not backed up successfully in the scheduled backup run of {{missedRun}}: {{databases}} '
+        + 'Our operators have been alerted at the same time. If the reason given is one you can fix '
+        + 'in your database, fixing it lets the next nightly backup succeed.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'databases', type: 'list', required: true },
+      { name: 'missedRun', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'tenant.database_backup_stale',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Your database backups are overdue',
+    bodyTemplate: 'Not backed up successfully in the scheduled run of {{missedRun}}: {{databases}} Our operators are alerted.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'databases', type: 'list', required: true },
+      { name: 'missedRun', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'tenant.database_backup_recovered',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Your database backups are working again',
+    bodyTemplate: emailMjml(
+      'Your database backups are working again',
+      'These databases have been backed up again: {{databases}} You do not need to do anything.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'databases', type: 'list', required: true },
+    ],
+  },
+  {
+    categoryId: 'tenant.database_backup_recovered',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Your database backups are working again',
+    bodyTemplate: 'Backed up again: {{databases}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'databases', type: 'list', required: true },
     ],
   },
   {

@@ -126,13 +126,23 @@ describe('deployment name validation', () => {
       catalog_entry_id: '550e8400-e29b-41d4-a716-446655440000',
       name: 'my-db',
       storage_mode: 'custom',
-      storage_path: 'database/mariadb/existing-folder',
+      storage_path: 'uploads/old-mariadb-data',
     });
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.storage_mode).toBe('custom');
-      expect(result.data.storage_path).toBe('database/mariadb/existing-folder');
+      expect(result.data.storage_path).toBe('uploads/old-mariadb-data');
     }
+  });
+
+  it('createDeploymentSchema refuses a storage_path in the protected database folder (R48)', () => {
+    const result = createDeploymentSchema.safeParse({
+      catalog_entry_id: '550e8400-e29b-41d4-a716-446655440000',
+      name: 'my-db',
+      storage_mode: 'custom',
+      storage_path: 'database/mariadb/existing-folder',
+    });
+    expect(result.success).toBe(false);
   });
 
   it('createDeploymentSchema defaults storage_mode to default', () => {

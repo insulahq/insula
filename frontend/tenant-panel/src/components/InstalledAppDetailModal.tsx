@@ -48,6 +48,7 @@ function compareSemver(a: string, b: string): number {
 import DatabaseManagementModal from './DatabaseManagementModal';
 import LogViewer from './LogViewer';
 import ChangeStoragePathModal from './ChangeStoragePathModal';
+import DatabaseDataModal from './DatabaseDataModal';
 import WebTerminal from './WebTerminal';
 import ErrorPanel from './ErrorPanel';
 import { describeDeploymentError } from '@/lib/describe-deployment-error';
@@ -256,6 +257,7 @@ export default function InstalledAppDetailModal({
   const avail = availability.data?.data;
   const [showLogs, setShowLogs] = useState(false);
   const [changingStoragePath, setChangingStoragePath] = useState(false);
+  const [databaseDataOpen, setDatabaseDataOpen] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
   // Fetched for anything not being deleted, as the list's Disk column is: a
   // stopped app still occupies its volume, and gating this on `running`
@@ -549,7 +551,31 @@ export default function InstalledAppDetailModal({
               <span className="text-xs font-medium text-gray-500 dark:text-gray-400">K8s Name</span>
               <p className="font-mono text-gray-900 dark:text-gray-100">{deployment.name}</p>
             </div>
-            {deployment.storagePath && (
+            {isDatabase && (deployment.storagePath || deployment.dataDetachedPath) && (
+              <div>
+                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Data</span>
+                <div className="flex flex-wrap items-center gap-2">
+                  {deployment.dataDetachedPath ? (
+                    <p className="text-amber-700 dark:text-amber-300" data-testid="database-data-detached">
+                      Detached to <span className="font-mono">{absPath(deployment.dataDetachedPath)}</span>
+                    </p>
+                  ) : (
+                    <p className="font-mono text-gray-900 dark:text-gray-100" title="The protected database folder: the file manager and SFTP cannot reach it">
+                      {absPath(deployment.storagePath)}
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setDatabaseDataOpen(true)}
+                    className="shrink-0 rounded-md border border-gray-200 dark:border-gray-700 px-2 py-0.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                    data-testid={deployment.dataDetachedPath ? 'attach-data-button' : 'detach-data-button'}
+                  >
+                    {deployment.dataDetachedPath ? 'Attach data' : 'Detach data'}
+                  </button>
+                </div>
+              </div>
+            )}
+            {!isDatabase && deployment.storagePath && (
               <div>
                 <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Storage Path</span>
                 <div className="flex items-center gap-2">
@@ -1314,6 +1340,16 @@ export default function InstalledAppDetailModal({
           catalogEntry={catalogEntry}
           tenantId={tenantId}
           onClose={() => setDbModalOpen(false)}
+        />
+      )}
+
+      {databaseDataOpen && (
+        <DatabaseDataModal
+          tenantId={tenantId}
+          deploymentId={deployment.id}
+          deploymentName={deployment.name}
+          detachedPath={deployment.dataDetachedPath ?? null}
+          onClose={() => setDatabaseDataOpen(false)}
         />
       )}
 

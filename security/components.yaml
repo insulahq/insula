@@ -219,7 +219,7 @@ components:
     name: OWASP ModSecurity Core Rule Set (WAF sidecar)
     tier: "0"
     kind: image
-    pinned: "4.30.0-nginx-alpine-202610180210"
+    pinned: "4.30.0-nginx-alpine-202611190211"
     pin_source: k8s/base/modsecurity-crs/deployment.yaml
     pin_check: true
     repos: [owasp/modsecurity-crs]
@@ -316,11 +316,11 @@ components:
     name: Bulwark webmail (JMAP-native SPA)
     tier: "0"
     kind: image
-    pinned: "sha256:037b85b1433233d2d7eebb83f928df5ecc3b4adc91dc7e4c55f0a2f69024e754"
+    pinned: "sha256:54e914a229529fe90fd8f0ae3e9e97d671806ac09fbfe3f421a1c4fb14495a74"
     pin_source: k8s/base/bulwark/deployment.yaml
     pin_check: true
     repos: [bulwarkmail/webmail]
-    watch: { type: github_releases, repo: bulwarkmail/webmail, advisories: bulwarkmail/webmail, pinned_version: "1.21.2" }
+    watch: { type: github_releases, repo: bulwarkmail/webmail, advisories: bulwarkmail/webmail, pinned_version: "1.21.3" }
     scan: trivy
     owner: platform
     notes: Internet-facing webmail, handles mail creds/content. Digest-pinned (good). Upstream advisories sparse → also watch manually.
@@ -372,7 +372,7 @@ components:
     name: Flux v2 (GitOps reconciler — supply chain)
     tier: "1"
     kind: binary
-    pinned: "2.10.0"
+    pinned: "2.10.1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: fluxcd/flux2, advisories: fluxcd/flux2 }
@@ -723,7 +723,7 @@ components:
     name: Valkey (cache)
     tier: "1"
     kind: image
-    pinned: "9.1.3-alpine"
+    pinned: "9.2.0-alpine"
     pin_source: k8s/base/valkey/statefulset.yaml
     pin_check: true
     repos: [valkey/valkey]
@@ -782,7 +782,7 @@ components:
     name: Stakater Reloader (rollout on ConfigMap/Secret change)
     tier: "2"
     kind: image
-    pinned: "v1.4.24"
+    pinned: "v1.4.25"
     pin_source: k8s/base/reloader/reloader.yaml
     pin_check: true
     repos: [stakater/reloader]

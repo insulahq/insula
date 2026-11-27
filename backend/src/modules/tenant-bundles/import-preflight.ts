@@ -169,6 +169,10 @@ export function deriveImportUnits(
     }
   }
 
+  if (components.databases) {
+    warnings.push('The databases\' own backups in this bundle are not imported: their raw data files come back with the files. To load a database from its dump (components/databases/ in the export), import it into a running database instance in the SQL Manager.');
+  }
+
   for (const component of ['config', 'secrets'] as const) {
     const c = components[component];
     if (!c) continue;

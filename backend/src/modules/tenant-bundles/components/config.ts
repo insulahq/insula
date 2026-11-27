@@ -107,6 +107,7 @@ export const CONFIG_DUMP_TABLES = [
 export const CONFIG_DUMP_EXCLUDED_CLIENT_FK_TABLES: ReadonlyMap<string, string> = new Map([
   // Audit / billing / metric — owned by the platform, not the tenant.
   ['usageMetrics', 'platform-owned metric, regenerated server-side'],
+  ['databaseBackupStatus', 'derived from backup_jobs, rewritten by the next bundle; restoring it would replay stale verdicts'],
   ['subscriptionBillingCycles', 'platform-owned billing record, never restored'],
   ['wafLogs', 'audit log, owned by platform'],
   ['sftpAuditLog', 'audit log, owned by platform'],

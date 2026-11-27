@@ -19,6 +19,7 @@
  * and restic alike, so the export can carry what the bundle actually holds.
  */
 
+import { parseDatabaseArtifactName } from './components/database-snapshots.js';
 import type { FastifyInstance } from 'fastify';
 import { and, eq } from 'drizzle-orm';
 
@@ -34,6 +35,11 @@ import { MAILBOX_CAPTURE_ROOT, addressDirName } from './components/mailboxes-res
 import type { Readable } from 'node:stream';
 
 const SNAPSHOT_RE = /^[0-9a-f]{64}$/;
+
+/** A database name as one path segment of the export. */
+function exportSafeName(name: string): string {
+  return name.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '_').slice(0, 100) || '_';
+}
 
 /**
  * The little the resolver needs. Deliberately NOT a FastifyInstance: the
@@ -67,7 +73,7 @@ export interface ObjectExportSource {
 /** A component that exists only as a restic snapshot. */
 export interface ResticExportSource {
   readonly kind: 'restic';
-  readonly component: 'files' | 'mailboxes';
+  readonly component: 'files' | 'mailboxes' | 'databases';
   /** Entry prefix inside the export, e.g. `archive` or an address. */
   readonly name: string;
   readonly snapshotId: string;
@@ -117,8 +123,23 @@ export async function resolveExportSources(
     ));
 
   for (const row of rows) {
-    if (row.component !== 'files' && row.component !== 'mailboxes') continue;
     if (typeof row.sha256 !== 'string' || !SNAPSHOT_RE.test(row.sha256)) continue;
+    if (row.component === 'databases') {
+      // One snapshot per database holding its dump alone; the export reads
+      // `components/databases/<deployment>/<database>/<hex>.<sql|pgdump|archive.gz>`.
+      const parsed = parseDatabaseArtifactName(row.artifactName);
+      if (!parsed || !/^[0-9a-f-]{36}$/.test(parsed.deploymentId)) continue;
+      sources.push({
+        kind: 'restic',
+        component: 'databases',
+        name: `${parsed.deploymentId}/${exportSafeName(parsed.database)}`,
+        snapshotId: row.sha256,
+        dumpPath: '/',
+        stripPrefix: '',
+      });
+      continue;
+    }
+    if (row.component !== 'files' && row.component !== 'mailboxes') continue;
     // An object artifact for the same component means a pre-restic bundle —
     // it is already covered above and must not be exported twice.
     if (sources.some((s) => s.kind === 'artifact' && s.component === row.component)) continue;
@@ -208,7 +229,7 @@ export type ExportEntrySource =
   | { readonly kind: 'artifact'; readonly component: 'files' | 'mailboxes' | 'config' | 'secrets'; readonly name: string }
   | {
     readonly kind: 'restic';
-    readonly component: 'files' | 'mailboxes';
+    readonly component: 'files' | 'mailboxes' | 'databases';
     readonly name: string;
     readonly stripPrefix: string;
     readonly open: () => Promise<Readable>;

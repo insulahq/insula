@@ -112,11 +112,80 @@ export type DeploymentsSelector = z.infer<typeof deploymentsSelectorSchema>;
  * only meaningful AFTER a `files-paths` restore has landed the `.sql`
  * on the tenant PVC.
  */
+/**
+ * How a database comes back (bundles with per-database snapshots):
+ *  - `replace` — into the database of the same name, over what is there: the
+ *    tables, collections and objects in the backup are recreated (PostgreSQL
+ *    in one transaction, all or nothing); anything made since stays. The
+ *    default, and the only mode for bundles taken before per-database
+ *    snapshots.
+ *  - `copy` — into a new database (`targetName`, or `<name>_restored_<time>`);
+ *    the original is not touched.
+ *  - `test` — into a scratch database that is dropped again: proves the backup
+ *    restores, changes nothing.
+ */
+export const databaseRestoreModeSchema = z.enum(['replace', 'copy', 'test']);
+export type DatabaseRestoreMode = z.infer<typeof databaseRestoreModeSchema>;
+
+/** A database name as the engines allow it (MySQL 64, PostgreSQL 63 bytes; no NUL). */
+const databaseNameField = z.string().min(1).max(64).refine((v) => !v.includes('\u0000'), 'a database name cannot hold a NUL byte');
+
+/** A database a copy restore creates: letters, digits, underscores, from a letter or underscore. */
+export const restoreTargetDatabaseNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,62}$/, 'letters, digits and underscores, starting with a letter or underscore (at most 63)');
+
 export const databasesSelectorSchema = z.union([
-  z.object({ kind: z.literal('all') }),
-  z.object({ kind: z.literal('ids'), deploymentIds: z.array(uuidField).min(1).max(100) }),
-]);
+  z.object({ kind: z.literal('all'), mode: databaseRestoreModeSchema.optional() }),
+  z.object({ kind: z.literal('ids'), deploymentIds: z.array(uuidField).min(1).max(100), mode: databaseRestoreModeSchema.optional() }),
+  // Chosen databases of one instance.
+  z.object({
+    kind: z.literal('databases'),
+    deploymentId: uuidField,
+    databases: z.array(z.object({
+      name: databaseNameField,
+      /** copy only: the new database's name. */
+      targetName: restoreTargetDatabaseNameSchema.optional(),
+    })).min(1).max(100),
+    mode: databaseRestoreModeSchema.optional(),
+  }),
+]).superRefine((sel, ctx) => {
+  if (sel.kind !== 'databases') return;
+  if (sel.mode !== 'copy' && sel.databases.some((d) => d.targetName !== undefined)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'targetName is only for a copy restore', path: ['databases'] });
+  }
+  const names = sel.databases.map((d) => d.name);
+  if (new Set(names).size !== names.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'a database is listed twice', path: ['databases'] });
+  }
+  const targets = sel.databases.map((d) => d.targetName).filter((t): t is string => Boolean(t));
+  if (new Set(targets.map((t) => t.toLowerCase())).size !== targets.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'two databases are restored to the same name', path: ['databases'] });
+  }
+});
 export type DatabasesSelector = z.infer<typeof databasesSelectorSchema>;
+
+/**
+ * What a bundle holds of the tenant's databases (the cart's databases picker).
+ * `perDatabase` false: a bundle from before per-database snapshots — its
+ * instances restore whole, in place, only.
+ */
+export const browseDatabasesResponseSchema = z.object({
+  bundleId: z.string(),
+  perDatabase: z.boolean(),
+  instances: z.array(z.object({
+    deploymentId: z.string(),
+    deploymentName: z.string(),
+    engine: z.string().nullable(),
+    /** The instance still exists to restore into; else why not. */
+    available: z.boolean(),
+    unavailableReason: z.string().nullable(),
+    databases: z.array(z.object({
+      name: z.string(),
+      sizeBytes: z.number().int().nonnegative(),
+      serverVersion: z.string().nullable(),
+    })),
+  })),
+});
+export type BrowseDatabasesResponse = z.infer<typeof browseDatabasesResponseSchema>;
 
 export const domainsSelectorSchema = z.union([
   z.object({ kind: z.literal('all') }),

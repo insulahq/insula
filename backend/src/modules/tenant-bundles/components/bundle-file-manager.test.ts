@@ -4,29 +4,18 @@ import { leaseBundleFileManager, predumpsNeedCleanup } from './bundle-file-manag
 const k8s = {} as never;
 
 describe('predumpsNeedCleanup', () => {
-  const dep = (dumps: number, failures: number) => ({
-    deploymentId: 'd', deploymentName: 'db', namespace: 'tenant-a', engine: null, durationMs: 1,
-    databaseDumps: Array.from({ length: dumps }, (_, i) => ({ database: `db${i}`, pvcPath: '/x', sizeBytes: 1 })),
-    databaseFailures: Array.from({ length: failures }, (_, i) => ({ database: `f${i}`, error: 'x', benign: false })),
-  });
   const sqlite = (...statuses: Array<'dumped' | 'degraded' | 'failed'>) => ({
     deploymentId: '', deploymentName: '(sqlite files)', engine: 'sqlite' as const,
     databases: statuses.map((status, i) => ({ name: `/data/${i}.db`, status, sizeBytes: 0 })),
   });
 
-  it('is false for the common tenant — no database, no SQLite file', () => {
-    expect(predumpsNeedCleanup([], null)).toBe(false);
-    expect(predumpsNeedCleanup([dep(0, 0)], null)).toBe(false);
-  });
-
-  it('is true when any database dump was attempted — a failed one can leave a partial file', () => {
-    expect(predumpsNeedCleanup([dep(1, 0)], null)).toBe(true);
-    expect(predumpsNeedCleanup([dep(0, 1)], null)).toBe(true);
+  it('is false with no SQLite file', () => {
+    expect(predumpsNeedCleanup(null)).toBe(false);
   });
 
   it('is true only for SQLite dumps that were written', () => {
-    expect(predumpsNeedCleanup([], sqlite('degraded', 'failed') as never)).toBe(false);
-    expect(predumpsNeedCleanup([], sqlite('degraded', 'dumped') as never)).toBe(true);
+    expect(predumpsNeedCleanup(sqlite('degraded', 'failed') as never)).toBe(false);
+    expect(predumpsNeedCleanup(sqlite('degraded', 'dumped') as never)).toBe(true);
   });
 });
 

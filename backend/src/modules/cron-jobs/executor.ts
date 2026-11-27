@@ -406,6 +406,7 @@ async function resolveDeployment(
       status: deployments.status,
       namespace: tenants.kubernetesNamespace,
       entryCode: catalogEntries.code,
+      entryType: catalogEntries.type,
       tenantNode: tenants.nodeName,
     })
     .from(deployments)
@@ -416,6 +417,11 @@ async function resolveDeployment(
     .where(and(eq(deployments.id, job.deploymentId), eq(deployments.tenantId, job.tenantId)));
 
   if (!row) return { error: 'the deployment this cron job points at no longer exists' };
+  // A command in a database container runs as its OS root — which is the
+  // platform's administrator login there (deployments/db-admin-access.ts).
+  if (row.entryType === 'database') {
+    return { error: 'a database instance does not run cron commands: its administrator login belongs to the platform — use the SQL Manager, or run the job in an application' };
+  }
   if (!row.namespace) return { error: 'the tenant has no Kubernetes namespace yet' };
 
   return {

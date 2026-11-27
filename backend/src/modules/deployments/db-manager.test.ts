@@ -36,6 +36,7 @@ import {
   importSql,
   exportDatabaseToPvc,
   dropDatabase,
+  refuseSystemDatabaseExport,
 } from './db-manager.js';
 
 function createMockK8s(pods: Array<{ name: string; phase: string }>): K8sClients {
@@ -433,6 +434,7 @@ describe('db-manager', () => {
         containerName: 'mariadb',
         engine: 'mariadb' as const,
         rootPassword: 'pw',
+        rootUsername: 'root',
       };
 
       await expect(createUser(ctx, 'user-name', 'pass')).rejects.toThrow('Invalid username');
@@ -447,6 +449,7 @@ describe('db-manager', () => {
         containerName: 'mariadb',
         engine: 'mariadb' as const,
         rootPassword: 'pw',
+        rootUsername: 'root',
       };
 
       // The grant names an EXISTING database, so any name it holds is fine — quoted.
@@ -467,6 +470,7 @@ describe('db-manager', () => {
         containerName: 'mariadb',
         engine: 'mariadb' as const,
         rootPassword: 'pw',
+        rootUsername: 'root',
       };
 
       await expect(createUser(ctx, 'new_user', 'pass123', 'mydb')).resolves.toBeUndefined();
@@ -489,8 +493,19 @@ describe('db-manager', () => {
       expect(sql).toContain('FLUSH PRIVILEGES');
     });
 
-    it('grants on *.* when no database is given (the panel\'s "All databases")', async () => {
-      setupExecSuccess('');
+    it('grants ALL on each tenant database and on the db_ prefix — never *.* — when no database is given (the panel\'s "All databases")', async () => {
+      const hex = (n: string): string => Buffer.from(n).toString('hex');
+      mockExecFn.mockImplementation((
+        _ns: string, _pod: string, _c: string, command: string[],
+        out: NodeJS.WritableStream, _err: NodeJS.WritableStream, _in: null, _tty: boolean,
+        cb: (s: Record<string, unknown>) => void,
+      ) => {
+        const sql = command[command.indexOf('-e') + 1] ?? '';
+        // information_schema and mysql are the server's own; `my_app` has a wildcard in its name.
+        if (sql.includes('information_schema.SCHEMATA')) out.write(Buffer.from(['information_schema', 'mysql', 'shop', 'my_app'].map(hex).join('\n')));
+        setTimeout(() => cb({ status: 'Success' }), 0);
+        return Promise.resolve({});
+      });
       const ctx = {
         kubeconfigPath: '/tmp/kc',
         namespace: 'ns',
@@ -498,6 +513,7 @@ describe('db-manager', () => {
         containerName: 'mariadb',
         engine: 'mariadb' as const,
         rootPassword: 'pw',
+        rootUsername: 'root',
       };
 
       await expect(createUser(ctx, 'all_user', 'pass123')).resolves.toBeUndefined();
@@ -505,12 +521,106 @@ describe('db-manager', () => {
       // Omitting the database used to fall through granting NOTHING, leaving
       // `GRANT USAGE ON *.*` — which means no privileges — so the account could
       // authenticate and then be denied on every database.
-      const sql = mockExecFn.mock.calls
-        .map((c: unknown[]) => c.map(a => (typeof a === 'function' ? '' : JSON.stringify(a))).join(' '))
-        .join('\n');
-      expect(sql).toContain("GRANT ALL PRIVILEGES ON *.* TO 'all_user'@'%'");
-      expect(sql).toContain('FLUSH PRIVILEGES');
+      const statements = mockExecFn.mock.calls.map((c: unknown[]) => { const argv = c[3] as string[]; return argv[argv.indexOf('-e') + 1]!; });
+      const grant = statements.find((s) => s.startsWith('GRANT'))!;
+      // `ALL ON *.*` includes CREATE USER and the system schema: such an
+      // account could change root itself.
+      expect(statements.join('\n')).not.toContain('ON *.*');
+      expect(statements.join('\n')).not.toContain('CREATE ROLE');
+      expect(grant.split('; ')).toEqual([
+        "GRANT ALL PRIVILEGES ON `db\\_%`.* TO 'all_user'@'%'",
+        "GRANT ALL PRIVILEGES ON `shop`.* TO 'all_user'@'%'",
+        "GRANT ALL PRIVILEGES ON `my\\_app`.* TO 'all_user'@'%'",
+      ]);
+      expect(statements.at(-1)).toBe('FLUSH PRIVILEGES');
     });
+
+    it.each([
+      ['root', 'mariadb', 'root'],
+      ['ROOT', 'mariadb', 'root'],
+      ['dbadmin', 'mariadb', 'root'],
+      ['dbadmin_insula', 'mariadb', 'root'],
+      ['dbadmin_abc123', 'mariadb', 'root'],
+      ['insula_socket_probe', 'mysql', 'root'],
+      ['healthcheck', 'mariadb', 'root'],
+      ['postgres', 'postgresql', 'myapp'],
+      ['myapp', 'postgresql', 'myapp'],
+      ['rootadm', 'mongodb', 'rootadm'],
+    ] as const)('refuses to create %s (%s) with 409 RESERVED_ACCOUNT_NAME', async (username, engine, rootUsername) => {
+      setupExecSuccess('');
+      const ctx = { kubeconfigPath: undefined, namespace: 'ns', podName: 'pod', containerName: 'c', engine, rootPassword: 'pw', rootUsername };
+      await expect(createUser(ctx, username, 'pass')).rejects.toMatchObject({ code: 'RESERVED_ACCOUNT_NAME', status: 409 });
+      expect(mockExecFn).not.toHaveBeenCalled();
+    });
+
+    it('does not take an ordinary name that merely starts like a reserved one', async () => {
+      setupExecSuccess('');
+      const ctx = { kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'c', engine: 'mariadb' as const, rootPassword: 'pw', rootUsername: 'root' };
+      await expect(createUser(ctx, 'dbadministrator', 'pass', 'mydb')).resolves.toBeUndefined();
+      await expect(createUser(ctx, 'rooted', 'pass', 'mydb')).resolves.toBeUndefined();
+    });
+
+    it.each([['mariadb', 'mysql'], ['mysql', 'sys'], ['mariadb', 'information_schema'], ['mariadb', 'PERFORMANCE_SCHEMA'], ['postgresql', 'template1'], ['mongodb', 'admin']] as const)(
+      'refuses to grant on the server\'s own database (%s / %s) in createUser',
+      async (engine, database) => {
+        setupExecSuccess('');
+        const ctx = { kubeconfigPath: undefined, namespace: 'ns', podName: 'pod', containerName: 'c', engine, rootPassword: 'pw', rootUsername: 'root' };
+        await expect(createUser(ctx, 'app_user', 'pass', database)).rejects.toMatchObject({ code: 'RESERVED_DATABASE_NAME', status: 400 });
+        expect(mockExecFn).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  describe('refuseSystemDatabaseExport', () => {
+    it.each([['mariadb', 'mysql'], ['mysql', 'Performance_Schema'], ['postgresql', 'template1'], ['postgresql', 'template0'], ['mongodb', 'admin'], ['mongodb', 'config']])(
+      'refuses %s / %s', (engine, name) => {
+        expect(() => refuseSystemDatabaseExport(engine, name)).toThrow(expect.objectContaining({ code: 'RESERVED_DATABASE_NAME' }));
+      });
+
+    it('PostgreSQL\'s postgres is a plain database that may hold tenant data: it exports', () => {
+      expect(() => refuseSystemDatabaseExport('postgresql', 'postgres')).not.toThrow();
+      expect(() => refuseSystemDatabaseExport('postgresql', 'POSTGRES')).not.toThrow();
+    });
+
+    it('ordinary names pass', () => {
+      expect(() => refuseSystemDatabaseExport('mariadb', 'shop')).not.toThrow();
+    });
+  });
+
+  describe('reserved accounts and databases elsewhere', () => {
+    it.each([['mariadb', 'mysql'], ['postgresql', 'postgres'], ['mongodb', 'admin']] as const)('dropDatabase refuses the server\'s own database (%s / %s)', async (engine, name) => {
+      setupExecSuccess('');
+      const c = { kubeconfigPath: undefined, namespace: 'ns', podName: 'pod', containerName: 'c', engine, rootPassword: 'pw', rootUsername: 'root' };
+      await expect(dropDatabase(c, name)).rejects.toMatchObject({ code: 'RESERVED_DATABASE_NAME' });
+      expect(mockExecFn).not.toHaveBeenCalled();
+    });
+
+    const base = { kubeconfigPath: undefined, namespace: 'ns', podName: 'pod', containerName: 'c', rootPassword: 'pw' };
+
+    it.each([
+      ['dropUser', (c: Parameters<typeof dropUser>[0]) => dropUser(c, 'dbadmin')],
+      ['setUserPassword', (c: Parameters<typeof setUserPassword>[0]) => setUserPassword(c, 'root', 'x')],
+    ])('%s refuses a reserved account before running anything', async (_n, call) => {
+      setupExecSuccess('');
+      await expect(call({ ...base, engine: 'mariadb', rootUsername: 'root' })).rejects.toMatchObject({ code: 'RESERVED_ACCOUNT_NAME', status: 409 });
+      expect(mockExecFn).not.toHaveBeenCalled();
+    });
+
+    it('refuses the PostgreSQL superuser by its configured name', async () => {
+      setupExecSuccess('');
+      await expect(setUserPassword({ ...base, engine: 'postgresql', rootUsername: 'myapp' }, 'MyApp', 'x'))
+        .rejects.toMatchObject({ code: 'RESERVED_ACCOUNT_NAME' });
+      expect(mockExecFn).not.toHaveBeenCalled();
+    });
+
+    it.each([['mariadb', 'MySQL'], ['mysql', 'sys'], ['postgresql', 'postgres'], ['postgresql', 'template0'], ['mongodb', 'local'], ['mongodb', 'config']] as const)(
+      'createDatabase refuses the server\'s own database (%s / %s)',
+      async (engine, name) => {
+        setupExecSuccess('');
+        await expect(createDatabase({ ...base, engine, rootUsername: 'root' }, name)).rejects.toMatchObject({ code: 'RESERVED_DATABASE_NAME', status: 400 });
+        expect(mockExecFn).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('dropUser', () => {
@@ -522,6 +632,7 @@ describe('db-manager', () => {
         containerName: 'mariadb',
         engine: 'mariadb' as const,
         rootPassword: 'pw',
+        rootUsername: 'root',
       };
 
       await expect(dropUser(ctx, 'invalid-user')).rejects.toThrow('Invalid username');
@@ -537,6 +648,7 @@ describe('db-manager', () => {
         containerName: 'mariadb',
         engine: 'mariadb' as const,
         rootPassword: 'pw',
+        rootUsername: 'root',
       };
 
       await expect(dropUser(ctx, 'old_user')).resolves.toBeUndefined();
@@ -555,6 +667,7 @@ describe('db-manager', () => {
         containerName: 'mariadb',
         engine: 'mariadb' as const,
         rootPassword: 'pw',
+        rootUsername: 'root',
       };
 
       await expect(setUserPassword(ctx, 'app_user', 'new_pass')).resolves.toBeUndefined();
@@ -572,6 +685,7 @@ describe('db-manager', () => {
         containerName: 'postgresql',
         engine: 'postgresql' as const,
         rootPassword: '',
+        rootUsername: 'postgres',
       };
 
       await expect(setUserPassword(ctx, 'app_user', 'new_pass')).resolves.toBeUndefined();
@@ -1370,7 +1484,8 @@ describe('db-manager', () => {
 
   describe('countRows', () => {
     it('should count rows in a mysql table', async () => {
-      setupExecSuccess('42');
+      // The count goes through the console path: a header row, then the rows.
+      setupExecSuccess('COUNT(*)\n42');
 
       const ctx = {
         kubeconfigPath: '/tmp/kc',
@@ -1402,7 +1517,7 @@ describe('db-manager', () => {
     });
 
     it('should return 0 for empty table', async () => {
-      setupExecSuccess('0');
+      setupExecSuccess('COUNT(*)\n0');
 
       const ctx = {
         kubeconfigPath: '/tmp/kc',
@@ -1418,14 +1533,15 @@ describe('db-manager', () => {
     });
 
     it('counts rows of a hyphenated table', async () => {
-      setupExecSuccess('1000');
+      setupExecSuccess('COUNT(*)\n1000');
       const ctx = {
         kubeconfigPath: '/tmp/kc', namespace: 'ns', podName: 'pod', containerName: 'mariadb',
         engine: 'mariadb' as const, rootPassword: 'pw',
       };
 
       expect(await countRows(ctx, 'school', '1-StudentsTb')).toBe(1000);
-      expect(mockExecFn.mock.calls[0][3]).toContain('SELECT COUNT(*) FROM `school`.`1-StudentsTb`');
+      const argv = mockExecFn.mock.calls[0][3] as string[];
+      expect(argv[argv.indexOf('-e') + 1]).toContain('USE `school`; SELECT COUNT(*) FROM `1-StudentsTb`');
     });
 
     it('reports a missing table as 404 TABLE_NOT_FOUND', async () => {
@@ -1555,7 +1671,8 @@ describe('db-manager', () => {
 
       await exportDatabaseToPvc(ctx, 'host=elsewhere', 'predump-x.sql', 'databases/p', { moveToExports: false });
 
-      expect(shCommand(0)).toContain(`pg_dump -U postgres '--dbname=dbname='\\''host=elsewhere'\\'''`);
+      // The superuser is the one the image was initialised with (POSTGRES_USER).
+      expect(shCommand(0)).toContain(`pg_dump -U "\${POSTGRES_USER:-postgres}" '--dbname=dbname='\\''host=elsewhere'\\'''`);
     });
 
     it('dumps a MongoDB database with --db=, so a leading hyphen is not an option', async () => {

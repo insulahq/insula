@@ -194,3 +194,40 @@ describe('editing resources of a custom container', () => {
     expect(screen.queryByTestId('resources-edit-in-custom-containers')).not.toBeInTheDocument();
   });
 });
+
+describe('a database instance whose root password is no longer in its configuration', () => {
+  // The platform keeps a catalog database's root / superuser password to
+  // itself: every deployment read leaves it out of `configuration`. The modal
+  // must render the rest as before — no crash, no empty "secret" row for the
+  // key the catalog still lists as generated.
+  const mariadb = {
+    name: 'MariaDB', type: 'database',
+    components: [{ name: 'mariadb', type: 'statefulset', image: 'mariadb:11', database: 'mariadb' }],
+    parameters: [
+      { key: 'MARIADB_DATABASE', type: 'string' },
+      { key: 'MARIADB_USER', type: 'string' },
+      { key: 'MARIADB_PASSWORD', type: 'secret' },
+    ],
+    envVars: {
+      configurable: ['MARIADB_DATABASE', 'MARIADB_USER', 'MARIADB_PASSWORD'],
+      generated: ['MARIADB_ROOT_PASSWORD'],
+    },
+  };
+
+  it('lists only the keys it has, with no row for the root password', () => {
+    renderModal(
+      deployment({ configuration: { MARIADB_DATABASE: 'app', MARIADB_USER: 'app', MARIADB_PASSWORD: 'app-pw' } }),
+      mariadb,
+    );
+    expect(screen.getByText('MARIADB_DATABASE')).toBeInTheDocument();
+    expect(screen.getByTestId('toggle-secret-MARIADB_PASSWORD')).toBeInTheDocument();
+    expect(screen.queryByText('MARIADB_ROOT_PASSWORD')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('toggle-secret-MARIADB_ROOT_PASSWORD')).not.toBeInTheDocument();
+  });
+
+  it('renders an empty configuration (only root keys were ever set) without a crash', () => {
+    renderModal(deployment({ configuration: {} }), { ...mariadb, parameters: [], envVars: { generated: ['MARIADB_ROOT_PASSWORD'] } });
+    expect(screen.getByText('No custom configuration')).toBeInTheDocument();
+    expect(screen.queryByText('MARIADB_ROOT_PASSWORD')).not.toBeInTheDocument();
+  });
+});

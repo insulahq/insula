@@ -13,8 +13,14 @@
     "outDir": "dist",
     "rootDir": "src",
     "jsx": "react-jsx",
-    "lib": ["ES2022", "DOM"]
+    "lib": ["ES2022", "DOM"],
+    // This checkout's contracts, not node_modules (a worktree's node_modules
+    // is the main checkout's; same fix as backend/tsconfig.json).
+    "paths": {
+      "@insula/api-contracts": ["../api-contracts/dist/index.d.ts"]
+    }
   },
+  "references": [{ "path": "../api-contracts" }],
   "include": ["src"],
   "exclude": ["**/*.test.ts", "**/*.test.tsx"]
 }

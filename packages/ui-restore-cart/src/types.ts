@@ -9,7 +9,7 @@
  * and a backend shape change can't drift between panels.
  */
 
-export type ComponentName = 'config' | 'secrets' | 'files' | 'mailboxes';
+export type ComponentName = 'config' | 'secrets' | 'files' | 'mailboxes' | 'databases';
 
 export type ComponentStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
 

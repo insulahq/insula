@@ -10,7 +10,7 @@ import ParameterForm from './ParameterForm';
 import ExtraMountsEditor, { extraMountErrors, type ExtraMountRow } from './ExtraMountsEditor';
 import ResourceRequirementCheck from './ResourceRequirementCheck';
 import StorageFolderPicker from './StorageFolderPicker';
-import { folderProblem } from '@insula/api-contracts';
+import { KEPT_DATABASES_ROOT, folderProblem } from '@insula/api-contracts';
 
 interface DeployWorkloadModalProps {
   readonly open: boolean;
@@ -78,6 +78,8 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
   const domains = domainsData?.data ?? [];
 
   const selectedImage = useMemo(() => images.find(i => i.id === selectedImageId), [images, selectedImageId]);
+  // R48: a database's data lives in the protected folder; a picked folder is moved there.
+  const isDatabaseEntry = selectedImage?.type === 'database';
 
   // Multi-host is offered at CREATE so the instance comes up with its mounts
   // already in place — turning it on later rewrites the pod template and
@@ -643,8 +645,8 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
                 className={INPUT_CLASS}
                 data-testid="deploy-storage-mode-select"
               >
-                <option value="default">Use Default Path</option>
-                <option value="custom">Use Custom Folder</option>
+                <option value="default">{isDatabaseEntry ? 'New, empty data' : 'Use Default Path'}</option>
+                <option value="custom">{isDatabaseEntry ? 'Use an existing data folder' : 'Use Custom Folder'}</option>
               </select>
 
               {storageMode === 'default' && (
@@ -652,19 +654,24 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
                   <p className="text-sm text-gray-600 dark:text-gray-400 font-mono">
                     /{selectedImage?.type}/{selectedImage?.code}/{name || '...'}/
                   </p>
+                  {isDatabaseEntry && (
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400" data-testid="deploy-protected-folder-note">
+                      In the protected database folder: the file manager and SFTP cannot reach it while the instance uses it.
+                    </p>
+                  )}
                 </div>
               )}
 
               {storageMode === 'custom' && (
                 <div className="mt-3 space-y-2">
                   <p className="text-xs text-gray-500 dark:text-gray-400">
-                    Pick any folder on your storage, or create a new one. Browsing
-                    starts in this app&apos;s default location — you are not limited
-                    to it.
+                    {isDatabaseEntry
+                      ? `Pick the folder with the database's data — for example one in /${KEPT_DATABASES_ROOT}. It moves into the protected database folder, and the instance starts on it.`
+                      : 'Pick any folder on your storage, or create a new one. Browsing starts in this app\u2019s default location — you are not limited to it.'}
                   </p>
                   <StorageFolderPicker
                     tenantId={tenantId ?? undefined}
-                    seedPath={selectedImage ? `${selectedImage.type}/${selectedImage.code}` : ''}
+                    seedPath={isDatabaseEntry ? KEPT_DATABASES_ROOT : selectedImage ? `${selectedImage.type}/${selectedImage.code}` : ''}
                     value={selectedFolderPath}
                     onChange={setSelectedFolderPath}
                     testIdPrefix="deploy-folder-picker"

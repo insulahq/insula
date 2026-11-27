@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DATABASE_ROOT_PROBLEM, isUnderDatabaseRoot } from './database-folders.js';
 
 // ─── Input Schemas ──────────────────────────────────────────────────────────
 
@@ -6,7 +7,7 @@ export const createSftpUserSchema = z.object({
   auth_method: z.enum(['password', 'ssh_key']),
   ssh_key_ids: z.array(z.string()).optional(),
   description: z.string().min(1, 'Description is required').max(255),
-  home_path: z.string().max(512).regex(/^[a-zA-Z0-9/_.-]*$/, 'home_path must not contain ".." or special characters').refine((v) => !v.includes('..'), 'home_path must not contain ".."').optional(),
+  home_path: z.string().max(512).regex(/^[a-zA-Z0-9/_.-]*$/, 'home_path must not contain ".." or special characters').refine((v) => !v.includes('..'), 'home_path must not contain ".."').refine((v) => !isUnderDatabaseRoot(v), DATABASE_ROOT_PROBLEM).optional(),
   allow_write: z.boolean().optional(),
   allow_delete: z.boolean().optional(),
   ip_whitelist: z.string().max(2000).nullable().optional(),
@@ -17,7 +18,7 @@ export const createSftpUserSchema = z.object({
 export const updateSftpUserSchema = z.object({
   description: z.string().max(255).optional(),
   enabled: z.boolean().optional(),
-  home_path: z.string().max(512).regex(/^[a-zA-Z0-9/_.-]*$/, 'home_path must not contain ".." or special characters').refine((v) => !v.includes('..'), 'home_path must not contain ".."').optional(),
+  home_path: z.string().max(512).regex(/^[a-zA-Z0-9/_.-]*$/, 'home_path must not contain ".." or special characters').refine((v) => !v.includes('..'), 'home_path must not contain ".."').refine((v) => !isUnderDatabaseRoot(v), DATABASE_ROOT_PROBLEM).optional(),
   allow_write: z.boolean().optional(),
   allow_delete: z.boolean().optional(),
   ip_whitelist: z.string().max(2000).nullable().optional(),

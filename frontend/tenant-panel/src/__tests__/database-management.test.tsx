@@ -1,13 +1,23 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import DatabaseManagementModal from '../components/DatabaseManagementModal';
 import type { Deployment, CatalogEntry } from '@/types/api';
+import type { DeploymentCredentialsResponse } from '@insula/api-contracts';
+import { apiFetch, ApiError } from '@/lib/api-client';
+import { ADMIN_ACCOUNT_PENDING_WAIT_MS } from '@/hooks/use-credentials-awaiting-admin';
+
+// The rotate hook runs for real against a mocked apiFetch, so its pending /
+// error / success states are the ones the panel actually gets.
+vi.mock('@/lib/api-client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api-client')>()),
+  apiFetch: vi.fn(),
+}));
+const mockApiFetch = vi.mocked(apiFetch);
 
 // Mock all deployment hooks
 const mockUseDeploymentCredentials = vi.fn();
-const mockUseRegenerateCredentials = vi.fn();
 const mockUseRestartDeployment = vi.fn();
 const mockUseDbDatabases = vi.fn();
 const mockUseCreateDbDatabase = vi.fn();
@@ -22,7 +32,6 @@ vi.mock('../hooks/use-deployments', async (importOriginal) => {
   return {
     ...actual,
     useDeploymentCredentials: (...args: unknown[]) => mockUseDeploymentCredentials(...args),
-    useRegenerateCredentials: (...args: unknown[]) => mockUseRegenerateCredentials(...args),
     useRestartDeployment: (...args: unknown[]) => mockUseRestartDeployment(...args),
     useDbDatabases: (...args: unknown[]) => mockUseDbDatabases(...args),
     useCreateDbDatabase: (...args: unknown[]) => mockUseCreateDbDatabase(...args),
@@ -74,7 +83,29 @@ const mockDatabaseEntry: CatalogEntry = {
   code: 'mariadb',
   name: 'MariaDB',
   type: 'database',
+  components: [{ name: 'mariadb', type: 'statefulset', image: 'mariadb:11', database: 'mariadb' }],
 } as CatalogEntry;
+
+const ADMIN_PASSWORD = 'Adm1n-Pw-xyz';
+const mockRefetchCredentials = vi.fn();
+
+function credentialsWith(over: Partial<DeploymentCredentialsResponse> = {}) {
+  return {
+    refetch: mockRefetchCredentials,
+    data: {
+      data: {
+        // The platform's root keys are never in here any more.
+        credentials: {},
+        connectionInfo: { host: 'my-mariadb.tenant-1.svc.cluster.local', port: 3306, database: 'mydb', username: 'admin' },
+        generatedKeys: [],
+        adminAccount: { username: 'dbadmin', password: ADMIN_PASSWORD },
+        adminAccountStatus: 'ready' as const,
+        ...over,
+      },
+    },
+    isLoading: false,
+  };
+}
 
 const mockNonDatabaseEntry: CatalogEntry = {
   id: 'entry-2',
@@ -84,17 +115,7 @@ const mockNonDatabaseEntry: CatalogEntry = {
 } as CatalogEntry;
 
 function setupDefaultMocks() {
-  mockUseDeploymentCredentials.mockReturnValue({
-    data: {
-      data: {
-        credentials: { MARIADB_ROOT_PASSWORD: 'secret123' },
-        connectionInfo: { host: 'my-mariadb.tenant-1.svc.cluster.local', port: 3306, database: 'mydb', username: 'admin' },
-        generatedKeys: ['MARIADB_ROOT_PASSWORD'],
-      },
-    },
-    isLoading: false,
-  });
-  mockUseRegenerateCredentials.mockReturnValue({ mutate: vi.fn(), isPending: false, isSuccess: false });
+  mockUseDeploymentCredentials.mockReturnValue(credentialsWith());
   mockUseRestartDeployment.mockReturnValue({ mutate: vi.fn(), isPending: false, isSuccess: false });
   mockUseDbDatabases.mockReturnValue({
     data: { data: [{ name: 'app_db' }, { name: 'test_db' }] },
@@ -500,5 +521,238 @@ describe('DatabaseManagementModal', () => {
     );
 
     expect(screen.getByTestId('db-users-error')).toBeInTheDocument();
+  });
+});
+
+// ─── The tenant's administrator account (root is the platform's) ─────────────
+
+function renderOpen(deployment: Deployment = mockDeployment, entry: CatalogEntry = mockDatabaseEntry) {
+  return renderWithProviders(
+    <DatabaseManagementModal
+      open={true}
+      deployment={deployment}
+      catalogEntry={entry}
+      tenantId="tenant-1"
+      onClose={vi.fn()}
+    />,
+  );
+}
+
+describe('DatabaseManagementModal — root is never shown', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupDefaultMocks();
+  });
+
+  it('renders no root / superuser row, whatever the user list says', () => {
+    // Even a list that (wrongly) contained root must not bring the old row back.
+    mockUseDbUsers.mockReturnValue({
+      data: { data: [{ username: 'reader', host: '%' }] },
+      isLoading: false,
+      isError: false,
+    });
+    renderOpen();
+    expect(screen.queryByTestId('user-row-root')).not.toBeInTheDocument();
+    expect(screen.queryByText(/superuser/i)).not.toBeInTheDocument();
+    const users = screen.getByTestId('db-users-card');
+    expect(within(users).queryByText('root')).not.toBeInTheDocument();
+  });
+
+  it('builds the connection URL with the application user, never root', () => {
+    renderOpen();
+    const card = screen.getByTestId('connection-info-card');
+    expect(card).toHaveTextContent('mysql://admin:***@my-mariadb.tenant-1.svc.cluster.local:3306/mydb');
+    expect(card.textContent).not.toMatch(/root/);
+  });
+
+  it('uses the administrator account in the URL when there is no application user', () => {
+    mockUseDeploymentCredentials.mockReturnValue(credentialsWith({
+      connectionInfo: { host: 'my-mariadb.tenant-1.svc.cluster.local', port: 3306, database: null, username: null },
+    }));
+    renderOpen();
+    expect(screen.getByTestId('connection-info-card')).toHaveTextContent('mysql://dbadmin:***@my-mariadb.tenant-1.svc.cluster.local:3306');
+  });
+});
+
+describe('DatabaseManagementModal — administrator account', () => {
+  let writeText: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupDefaultMocks();
+    writeText = vi.fn();
+    Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true });
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, 'isSecureContext', { value: false, configurable: true });
+  });
+
+  it('shows the username and keeps the password masked until revealed', () => {
+    renderOpen();
+    const card = screen.getByTestId('admin-account-card');
+    expect(within(card).getByTestId('admin-account-username')).toHaveTextContent('dbadmin');
+    expect(screen.getByTestId('admin-account-password-value')).not.toHaveTextContent(ADMIN_PASSWORD);
+    expect(screen.queryByText(ADMIN_PASSWORD)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('toggle-admin-password'));
+    expect(screen.getByTestId('admin-account-password-value')).toHaveTextContent(ADMIN_PASSWORD);
+
+    fireEvent.click(screen.getByTestId('toggle-admin-password'));
+    expect(screen.queryByText(ADMIN_PASSWORD)).not.toBeInTheDocument();
+  });
+
+  it('copies the password and the username without revealing them', () => {
+    renderOpen();
+    fireEvent.click(screen.getByTestId('copy-admin-password'));
+    expect(writeText).toHaveBeenCalledWith(ADMIN_PASSWORD);
+    fireEvent.click(screen.getByTestId('copy-admin-username'));
+    expect(writeText).toHaveBeenCalledWith('dbadmin');
+    expect(screen.queryByText(ADMIN_PASSWORD)).not.toBeInTheDocument();
+  });
+
+  it('says what the account can do — and that users are added under Database Users', () => {
+    renderOpen();
+    const scope = screen.getByTestId('admin-account-scope');
+    expect(scope).toHaveTextContent(/all your databases/i);
+    expect(scope).toHaveTextContent('db_');
+    expect(scope).toHaveTextContent(/Database Users/);
+  });
+
+  it('says "being set up" and asks the hook to re-poll while the account is not there yet', () => {
+    mockUseDeploymentCredentials.mockReturnValue(credentialsWith({ adminAccount: null, adminAccountStatus: 'pending' }));
+    renderOpen();
+    expect(screen.getByTestId('admin-account-pending')).toHaveTextContent(/being set up/i);
+    expect(screen.queryByTestId('admin-account-username')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('admin-password-new')).not.toBeInTheDocument();
+    expect(mockUseDeploymentCredentials).toHaveBeenLastCalledWith('tenant-1', 'dep-1', { pollWhileAdminPending: true });
+  });
+
+  it('stops asking after a while, says it is taking too long, and "Check again" asks once more', async () => {
+    vi.useFakeTimers();
+    try {
+      mockUseDeploymentCredentials.mockReturnValue(credentialsWith({ adminAccount: null, adminAccountStatus: 'pending' }));
+      renderOpen();
+      expect(screen.getByTestId('admin-account-pending')).toBeInTheDocument();
+
+      await act(async () => { vi.advanceTimersByTime(ADMIN_ACCOUNT_PENDING_WAIT_MS); });
+      expect(screen.getByTestId('admin-account-slow')).toHaveTextContent(/taking longer than it should/i);
+      expect(mockUseDeploymentCredentials).toHaveBeenLastCalledWith('tenant-1', 'dep-1', { pollWhileAdminPending: false });
+
+      fireEvent.click(screen.getByTestId('admin-account-check-again'));
+      expect(mockRefetchCredentials).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('admin-account-pending')).toBeInTheDocument();
+      expect(mockUseDeploymentCredentials).toHaveBeenLastCalledWith('tenant-1', 'dep-1', { pollWhileAdminPending: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['restricted', /only a tenant administrator/i],
+    ['unavailable', /no administrator account here/i],
+    ['lost', /lost its administrator access[\s\S]*operator has been notified/i],
+  ] as const)('says why there is no account when it is %s, and shows no password or rotate button', (status, text) => {
+    mockUseDeploymentCredentials.mockReturnValue(credentialsWith({ adminAccount: null, adminAccountStatus: status }));
+    renderOpen();
+    expect(screen.getByTestId(`admin-account-${status}`)).toHaveTextContent(text);
+    expect(screen.queryByTestId('admin-account-pending')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('admin-account-username')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('admin-password-new')).not.toBeInTheDocument();
+  });
+
+  it('does not poll for a stopped instance, and says why the account is not there', () => {
+    mockUseDeploymentCredentials.mockReturnValue(credentialsWith({ adminAccount: null, adminAccountStatus: 'pending' }));
+    renderOpen({ ...mockDeployment, status: 'stopped' } as Deployment);
+    expect(screen.getByTestId('admin-account-waiting')).toHaveTextContent(/once the database is running/i);
+    expect(screen.queryByTestId('admin-account-pending')).not.toBeInTheDocument();
+    expect(mockUseDeploymentCredentials).toHaveBeenLastCalledWith('tenant-1', 'dep-1', { pollWhileAdminPending: false });
+  });
+
+  it('does not wait for an account on a database entry with no managed engine', () => {
+    mockUseDeploymentCredentials.mockReturnValue(credentialsWith({ adminAccount: null, adminAccountStatus: 'pending' }));
+    renderOpen(mockDeployment, { ...mockDatabaseEntry, components: [] } as CatalogEntry);
+    expect(screen.queryByTestId('admin-account-card')).not.toBeInTheDocument();
+    expect(mockUseDeploymentCredentials).toHaveBeenLastCalledWith('tenant-1', 'dep-1', { pollWhileAdminPending: false });
+  });
+
+  it('asks before setting a new password, and says tools using the old one must be updated', () => {
+    renderOpen();
+    fireEvent.click(screen.getByTestId('admin-password-new'));
+    expect(screen.getByTestId('admin-password-confirm')).toHaveTextContent(/stops connecting until you update it/i);
+    expect(mockApiFetch).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('admin-password-cancel'));
+    expect(screen.queryByTestId('admin-password-confirm')).not.toBeInTheDocument();
+    expect(mockApiFetch).not.toHaveBeenCalled();
+  });
+
+  it('sets a new password: POSTs once, shows a spinner while pending, closes the confirm and reveals the result', async () => {
+    let resolve!: (v: unknown) => void;
+    mockApiFetch.mockImplementation(() => new Promise((r) => { resolve = r; }) as never);
+    renderOpen();
+
+    fireEvent.click(screen.getByTestId('admin-password-new'));
+    fireEvent.click(screen.getByTestId('admin-password-confirm-button'));
+
+    await waitFor(() => expect(screen.getByTestId('admin-password-confirm-button')).toBeDisabled());
+    expect(screen.getByTestId('admin-password-confirm-button').querySelector('.animate-spin')).not.toBeNull();
+    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      '/api/v1/tenants/tenant-1/deployments/dep-1/admin-account/password',
+      { method: 'POST' },
+    );
+    expect(screen.getByTestId('admin-password-cancel')).toBeDisabled();
+
+    resolve({ data: { username: 'dbadmin', password: 'N3w-Pw-abc' } });
+
+    await waitFor(() => expect(screen.queryByTestId('admin-password-confirm')).not.toBeInTheDocument());
+    expect(screen.getByTestId('admin-password-rotated')).toHaveTextContent(/Update every tool/i);
+    // Revealed so it can be copied straight away.
+    expect(screen.getByTestId('admin-account-password-value')).not.toHaveTextContent('•');
+  });
+
+  it('shows why setting a new password failed, in an error panel, and keeps the confirm open', async () => {
+    mockApiFetch.mockRejectedValue(new ApiError(409, 'ADMIN_ACCOUNT_PENDING', 'The administrator account is still being set up'));
+    renderOpen();
+
+    fireEvent.click(screen.getByTestId('admin-password-new'));
+    fireEvent.click(screen.getByTestId('admin-password-confirm-button'));
+
+    expect(await screen.findByTestId('admin-password-error')).toHaveTextContent('The administrator account is still being set up');
+    expect(screen.getByTestId('admin-password-confirm')).toBeInTheDocument();
+    expect(screen.queryByTestId('admin-password-rotated')).not.toBeInTheDocument();
+  });
+});
+
+describe('DatabaseManagementModal — "All databases" for a new user', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupDefaultMocks();
+  });
+
+  it('says it covers databases created later, not the whole server', () => {
+    renderOpen();
+    fireEvent.click(screen.getByTestId('show-create-user-form'));
+    const select = screen.getByTestId('create-user-database') as HTMLSelectElement;
+    const all = within(select).getByRole('option', { name: /All databases/ });
+    expect(all).toHaveTextContent('All databases (including ones created later)');
+    expect(select.textContent).not.toMatch(/full access to this server/i);
+
+    fireEvent.change(select, { target: { value: '__all__' } });
+    expect(screen.getByTestId('create-user-all-databases-hint')).toHaveTextContent('db_');
+    expect(screen.getByTestId('create-user-all-databases-hint')).toHaveTextContent(/No user or server administration/);
+  });
+
+  it('is honest for PostgreSQL: only the databases that exist now', () => {
+    renderOpen(mockDeployment, {
+      ...mockDatabaseEntry,
+      code: 'postgresql',
+      components: [{ name: 'postgresql', type: 'statefulset', image: 'postgres:18', database: 'postgresql' }],
+    } as CatalogEntry);
+    fireEvent.click(screen.getByTestId('show-create-user-form'));
+    const select = screen.getByTestId('create-user-database');
+    expect(within(select).getByRole('option', { name: /All databases/ })).toHaveTextContent('All databases that exist now');
   });
 });

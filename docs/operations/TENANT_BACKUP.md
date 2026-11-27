@@ -32,10 +32,13 @@ by the presence of `meta.json` on the off-site target.
 > **Add-on databases live inside `files`, and their replay is a separate step.**
 > Tenant MariaDB/PostgreSQL deployments mount the tenant PVC under a
 > `databases/<name>-<suffix>` subPath, so `files` captures their on-disk data
-> directory. Because that directory is copied while the database is *running*,
-> it is crash-consistent rather than dump-consistent — which is why an ADR-047
-> pre-capture hook also writes a clean logical
-> `predump-<db>-<bundleId>.sql` into the same PVC. Replaying that dump is the
+> directory. Because restic copies that directory file by file while the
+> database is *running*, with no volume snapshot, the copy is not even
+> crash-consistent and may not restore — which is why an ADR-047 pre-capture
+> hook writes a clean logical `predump-<db>-<bundleId>.sql` into the same PVC.
+> That dump is the database's backup: each database's last good dump is
+> recorded, and an overdue one is alerted on
+> ([DATABASE_RECOVERY.md §1](DATABASE_RECOVERY.md)). Replaying that dump is the
 > `databases-by-id` restore item; **it is not part of a bundle-wide restore or
 > of `recreateTenantFromBundle`**, so a DR-recovered or migrated tenant needs it
 > added to the restore cart explicitly. Tracked as

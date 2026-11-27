@@ -160,12 +160,12 @@ describe('restoreDatabasesForDeployments', () => {
     expect(summary.totalImported).toBe(2);
     expect(summary.totalFailed).toBe(0);
     expect(importSql).toHaveBeenCalledTimes(2);
-    // (ctx, database, filePath, deploymentSubPath)
+    // (ctx, database, filePath, deploymentSubPath, deploymentId)
     expect(importSql).toHaveBeenNthCalledWith(
-      1, { pod: 'db-0' }, 'app', `database/mariadb/maria-a/predump-app${SUFFIX}`, 'database/mariadb/maria-a',
+      1, { pod: 'db-0' }, 'app', `database/mariadb/maria-a/predump-app${SUFFIX}`, 'database/mariadb/maria-a', 'd1',
     );
     expect(importSql).toHaveBeenNthCalledWith(
-      2, { pod: 'db-0' }, 'shop', `database/mariadb/maria-a/predump-shop${SUFFIX}`, 'database/mariadb/maria-a',
+      2, { pod: 'db-0' }, 'shop', `database/mariadb/maria-a/predump-shop${SUFFIX}`, 'database/mariadb/maria-a', 'd1',
     );
     expect(summary.deployments[0]!.status).toBe('imported');
   });
@@ -183,7 +183,7 @@ describe('restoreDatabasesForDeployments', () => {
     const summary = await restoreDatabasesForDeployments([dep('d1', 'maria-a')], BUNDLE_ID, deps);
     expect(importSql).toHaveBeenCalledTimes(1);
     expect(importSql).toHaveBeenCalledWith(
-      { pod: 'db-0' }, 'app', `database/mariadb/maria-a/predump-app${SUFFIX}`, 'database/mariadb/maria-a',
+      { pod: 'db-0' }, 'app', `database/mariadb/maria-a/predump-app${SUFFIX}`, 'database/mariadb/maria-a', 'd1',
     );
     expect(summary.totalImported).toBe(1);
   });
@@ -277,7 +277,7 @@ describe('restoreDatabasesForDeployments', () => {
     await restoreDatabasesForDeployments([dep('d1', 'maria-a')], BUNDLE_ID, deps);
     // Import must target the REAL name, from the SANITISED file.
     expect(importSql).toHaveBeenCalledWith(
-      { pod: 'db-0' }, 'my db', `database/mariadb/maria-a/predump-my_db${SUFFIX}`, 'database/mariadb/maria-a',
+      { pod: 'db-0' }, 'my db', `database/mariadb/maria-a/predump-my_db${SUFFIX}`, 'database/mariadb/maria-a', 'd1',
     );
   });
 
@@ -310,9 +310,9 @@ describe('restoreDatabasesForDeployments', () => {
     const summary = await restoreDatabasesForDeployments([dep('d1', 'mongo-a', 'mongodb')], BUNDLE_ID, deps);
     expect(importSql).not.toHaveBeenCalled();
     expect(importMongoArchive).toHaveBeenCalledTimes(1);
-    // (ctx, filePath, deploymentSubPath) — no db-name arg for mongo.
+    // (ctx, filePath, deploymentSubPath, deploymentId) — no db-name arg for mongo.
     expect(importMongoArchive).toHaveBeenCalledWith(
-      { pod: 'db-0' }, `database/mongodb/mongo-a/predump-appdb${MONGO_SUFFIX}`, 'database/mongodb/mongo-a',
+      { pod: 'db-0' }, `database/mongodb/mongo-a/predump-appdb${MONGO_SUFFIX}`, 'database/mongodb/mongo-a', 'd1',
     );
     expect(summary.totalImported).toBe(1);
     expect(summary.deployments[0]!.status).toBe('imported');

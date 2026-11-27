@@ -43,6 +43,9 @@ export const DEFAULT_TENANT_RESTORE_POLICY: TenantRestorePolicy = {
     'deployments-by-id',
     'domains-by-id',
     'config-tables',
+    // The tenant's own database instances only (selectTargetDeployments),
+    // restored as the tenant's administrator, never as root.
+    'databases-by-id',
   ]),
   deniedTables: new Set<string>([
     // ── Billing / plan / quota ──────────────────────────

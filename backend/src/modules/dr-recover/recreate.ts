@@ -66,6 +66,7 @@ const ARTIFACT_NAME: Readonly<Record<BackupComponentName, string>> = {
   files: 'archive.tar.gz',
   mailboxes: 'mailboxes',
   secrets: 'tls.json.gz.enc',
+  databases: 'databases',
 };
 
 export interface ResolvedBundleStore {
@@ -294,7 +295,7 @@ export async function recreateTenantFromBundle(
   });
 
   const componentRows: Array<typeof backupComponents.$inferInsert> = [];
-  for (const name of ['config', 'files', 'mailboxes', 'secrets'] as const) {
+  for (const name of ['config', 'files', 'mailboxes', 'secrets', 'databases'] as const) {
     const c = meta.components[name];
     if (!c) continue;
 
@@ -305,9 +306,12 @@ export async function recreateTenantFromBundle(
     // mailboxes snapshot at all — mail would be silently unrecoverable on the
     // exact path DR exists for. Emit one row per address, keyed by address,
     // which is what the executor resolves against.
-    const perMailbox = name === 'mailboxes' && 'snapshots' in c
+    // Per-database snapshots are recorded the same way, keyed
+    // `<deploymentId>:<database>` (components/database-snapshots.ts).
+    const perMailbox = (name === 'mailboxes' || name === 'databases') && 'snapshots' in c
       ? (c.snapshots as Record<string, string> | undefined)
       : undefined;
+    if (name === 'databases' && !(perMailbox && Object.keys(perMailbox).length > 0)) continue;
     if (perMailbox && Object.keys(perMailbox).length > 0) {
       const addresses = Object.keys(perMailbox).sort();
       // meta records the component's total; split it evenly only for display —

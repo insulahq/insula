@@ -17,6 +17,7 @@ import PlacementSection from './PlacementSection';
 import { StorageLifecycleCard } from './StorageLifecycleCard';
 import { PvcPlacementSection } from './PvcPlacementSection';
 import { TenantBundlesSummary, BackupsTab } from './TenantBackups';
+import DatabaseBackupsCard from './DatabaseBackupsCard';
 import { useTenantBundles } from '@/hooks/use-tenant-bundles';
 import { Card, Chip, formatGb } from './ui';
 import TenantPanelLink from './TenantPanelLink';
@@ -52,6 +53,8 @@ export default function StorageTab({ tenant, tenantId }: { readonly tenant: Tena
           />
         </div>
       </Card>
+
+      <DatabaseBackupsCard tenantId={tenantId} />
 
       <SnapshotsCard tenantId={tenantId} />
     </div>

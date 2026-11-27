@@ -13,6 +13,7 @@
 // storagePath subtree, and a shared folder lives outside it.
 
 import { z } from 'zod';
+import { DATABASE_ROOT_PROBLEM, isUnderDatabaseRoot } from './database-folders.js';
 
 /** Max extra mounts per deployment. Each one is a subPath mount + an mkdir in
  *  the init container, so the cap keeps pod specs and startup bounded. */
@@ -96,6 +97,10 @@ export function folderProblem(folder: string): string | null {
   if (segs.some((s) => !SEGMENT.test(s))) {
     return 'Folder segments may use letters, digits, dots, hyphens and underscores, and must start with a letter or digit.';
   }
+  // The protected database folder: nothing a tenant names may point into it —
+  // an extra mount, a storage path, a site folder or a container volume would
+  // each hand a running instance's raw files to a container the tenant controls.
+  if (isUnderDatabaseRoot(folder)) return DATABASE_ROOT_PROBLEM;
   return null;
 }
 

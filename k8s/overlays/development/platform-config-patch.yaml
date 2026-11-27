@@ -18,7 +18,7 @@ data:
   public-url: "https://admin.${DOMAIN}"
   cors-origins: "https://admin.${DOMAIN},https://tenant.${DOMAIN}"
   # Per-tenant sidecar image — pull from GHCR on real clusters.
-  file-manager-image: "ghcr.io/insulahq/insula/file-manager:1ecaefa@sha256:babdf9ebb99198591af94f0482966b3f5c27e570502f846aacfca6f883981691"
+  file-manager-image: "ghcr.io/insulahq/insula/file-manager:4b5bee7@sha256:6f47f669cdab9c25e5b07060481d3f73edf201b06d742fbc276c703616c4770e"
   # Private Worker — clients dial in to this WSS host with their token.
   # The wildcard A record `tunnels.${DOMAIN}` must point at cluster
   # ingress (set up at install time, no per-tenant DNS work needed).
@@ -30,7 +30,7 @@ data:
   # CI-MANAGED (pin-config-image.sh) — do not hand-edit; the next build of each
   # image overwrites these with `:<tag>@sha256:<digest>`.
   tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:e0f6dea@sha256:a1d9419105b5ef1150309a692671d570799cac3f447a5cea8627ee99e3f4983f"
-  migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:786a4a4@sha256:72d1eb70fd5a1e1b03536c991929f97d4ed55f0436db752b511052ed21178656"
+  migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:efd83d9@sha256:8311f3155b5593728dd916f5ba6c8059ffa819124a3a4229bda486e043d2cd4a"
   claim-validator-image: "ghcr.io/insulahq/insula/claim-validator:e0f6dea@sha256:5c13925e7f686e0eb2e75166f9de478b53bd1832a2da37bca60dcb90463f1f87"
   node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:e0f6dea@sha256:debc211ad209b3eef54bf159d737dee1abf577f6cf14931f3215674aa8b42e5d"
   # Longhorn dashboard URL for the Storage Configuration iframe.

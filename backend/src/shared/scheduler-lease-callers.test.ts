@@ -56,6 +56,12 @@ const STARTED_ELSEWHERE: Readonly<Record<string, string>> = {
   'stalwart-domain-reconciler modules/mail-admin/stalwart-domain-reconciler.ts#runStalwartDomainReconcile <- modules/webmail-settings/routes.ts': 'run-lock',
   'storage-policy-advisor modules/platform-storage-policy/service.ts#applyPolicy <- modules/platform-storage-policy/routes.ts': 'run-lock',
 
+  // R48: Detach data / Attach data stop and redeploy an instance the way the
+  // tick's one-time move does.
+  'database-admin-access modules/deployments/service.ts#databaseInstanceControl <- modules/deployments/routes.ts':
+    'builds the stop/redeploy pair only; every move that uses it runs under the instance\'s own database-admin:<id> lock '
+    + '(database-data.ts withInstanceLock), which the tick\'s move and the reconciler take too',
+
   // ── "Run now" buttons ──
   'namespace-integrity modules/namespace-integrity/service.ts#sweepFleetIntegrity <- modules/namespace-integrity/routes.ts': 'run-lock',
   'node-health-monitor modules/node-health/scheduler.ts#reconcileNodeHealth <- modules/node-health/routes.ts': 'run-lock',

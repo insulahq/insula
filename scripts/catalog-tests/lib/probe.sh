@@ -161,10 +161,13 @@ probe_db_protocol() {
   while (( i < 90 )); do
     case "$engine" in
       mariadb|mysql)
+        # Is the server answering on its TCP port? `ping` exits 0 even when the
+        # login is refused (the server answered), so no credentials are needed:
+        # root logs in by socket only and has no network login to use here.
         if kctl -n "$ns" exec "$pod" -c "$engine" -- sh -c \
-           'mariadb-admin --protocol=tcp -h 127.0.0.1 -uroot -p"$MARIADB_ROOT_PASSWORD" ping 2>/dev/null \
-            || mysqladmin --protocol=tcp -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" ping 2>/dev/null' \
-           2>/dev/null | grep -qi "alive\|mysqld is alive"; then
+           'mariadb-admin --protocol=tcp -h 127.0.0.1 ping >/dev/null 2>&1 \
+            || mysqladmin --protocol=tcp -h 127.0.0.1 ping >/dev/null 2>&1' \
+           2>/dev/null; then
           ok "${engine} responding (pod=${pod}, after ${i}s)"; return 0
         fi
         ;;

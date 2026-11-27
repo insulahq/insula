@@ -28,6 +28,7 @@ vi.mock('../hooks/use-tenant-backups', () => ({
   useRunBundleNow: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false, error: null })),
   useDeleteRestoreCart: vi.fn(() => deleteState),
   downloadTenantDataExport: vi.fn(),
+  useTenantDatabaseBackups: vi.fn(() => ({ data: { pages: [] }, isLoading: false, isError: false })),
 }));
 
 vi.mock('@/hooks/use-tenant-context', () => ({ useTenantContext: () => ({ tenantId: 't1' }) }));

@@ -48,6 +48,7 @@ export type {
   BrowseDeploymentsData,
   BrowseDomainsData,
   BrowseMailboxesData,
+  BrowseDatabasesData,
   BrowseFilesData,
   BrowseFilesEntry,
 } from './restore-cart-types.js';

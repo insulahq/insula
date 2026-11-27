@@ -32,6 +32,7 @@ const mockCatalogEntry = {
   name: 'MariaDB',
   type: 'database',
   runtime: 'mariadb',
+  components: [{ name: 'mariadb', type: 'statefulset', image: 'mariadb:11', database: 'mariadb' }],
 } as unknown as CatalogEntry;
 
 interface MockQuery {
@@ -161,5 +162,26 @@ describe('SQL Manager error surface', () => {
 
     expect(await screen.findByTestId('database-selector')).toBeTruthy();
     expect(screen.queryByTestId('database-list-error')).toBeNull();
+  });
+});
+
+describe('SQL Manager — "All databases" for a new user', () => {
+  beforeEach(() => {
+    databasesQuery = { ...idleQuery, data: { data: [{ name: 'app' }] } };
+    usersQuery = { ...idleQuery, data: { data: [] } };
+    tablesQuery = { ...idleQuery, data: { data: [] } };
+    passwordMutation = { ...idleMutation };
+    dropUserMutation = { ...idleMutation };
+  });
+
+  it('says it covers databases created later (a role), not the whole server', async () => {
+    await renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: /^Users$/ }));
+    fireEvent.click(await screen.findByTestId('toggle-users-section'));
+    fireEvent.click(await screen.findByTestId('add-user-button'));
+
+    const select = await screen.findByTestId('new-user-database-select');
+    expect(within(select).getByRole('option', { name: /All databases/ })).toHaveTextContent('All databases (including ones created later)');
+    expect(screen.getByTestId('new-user-all-databases-hint')).toHaveTextContent('db_');
   });
 });

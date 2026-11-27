@@ -20,7 +20,8 @@
       // against the MAIN checkout's api-contracts (same fix as
       // backend/tsconfig.json, PR #33). Requires contracts built via
       // tsc --build --force (see AGENTS.md).
-      "@insula/api-contracts": ["../../packages/api-contracts/dist/index.d.ts"]
+      "@insula/api-contracts": ["../../packages/api-contracts/dist/index.d.ts"],
+      "@insula/ui-restore-cart": ["../../packages/ui-restore-cart/dist/index.d.ts"]
     }
   },
   "include": ["src"]

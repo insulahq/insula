@@ -105,8 +105,8 @@ export type BackupTarget =
  * `config` and `secrets` stay full each run and never use restic, so
  * they are deliberately excluded.
  */
-export type ResticComponent = 'files' | 'mailboxes';
-const ALLOWED_COMPONENTS: ReadonlySet<string> = new Set<ResticComponent>(['files', 'mailboxes']);
+export type ResticComponent = 'files' | 'mailboxes' | 'databases';
+const ALLOWED_COMPONENTS: ReadonlySet<string> = new Set<ResticComponent>(['files', 'mailboxes', 'databases']);
 
 /** Permissive but bounded shape for tenantIds. The platform schema uses
  *  UUIDs / kebab-style IDs; this regex rejects path traversal and shell

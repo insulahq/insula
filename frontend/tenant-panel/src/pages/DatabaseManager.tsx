@@ -29,6 +29,7 @@ import {
 } from '@/hooks/use-deployments';
 import type { DbUser } from '@/hooks/use-deployments';
 import { useCatalog } from '@/hooks/use-catalog';
+import { allDatabasesHint, allDatabasesOptionLabel, managedDbEngineOf } from '@/lib/database-admin';
 import {
   useExecuteQuery,
   useListTables,
@@ -1658,11 +1659,18 @@ export default function DatabaseManager() {
                         className="w-full rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 text-xs text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                         data-testid="new-user-database-select"
                       >
-                        <option value="">All databases</option>
+                        {/* Every database of the instance — on MariaDB/MySQL through a
+                            role that also covers databases added later, never `ALL ON *.*`. */}
+                        <option value="">{allDatabasesOptionLabel(managedDbEngineOf(selectedCatalogEntry))}</option>
                         {databases.map((db) => (
                           <option key={db.name} value={db.name}>{db.name}</option>
                         ))}
                       </select>
+                      {newUserDatabase === '' && (
+                        <p className="text-xs text-gray-500 dark:text-gray-400" data-testid="new-user-all-databases-hint">
+                          {allDatabasesHint(managedDbEngineOf(selectedCatalogEntry))}
+                        </p>
+                      )}
                       <p className="text-xs text-gray-500 dark:text-gray-400">
                         A secure password will be generated automatically.
                       </p>

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { isValidDbName, mysqlDatabasesOf, parseDbResults, buildDbSyncJob } from './db-sync.js';
+import { MYSQL_TENANT_IMPORT_SED } from '../deployments/import-rewrite.js';
 import type { PleskSubscription } from '@insula/api-contracts';
 
 function sub(databases: PleskSubscription['databases']): PleskSubscription {
@@ -79,5 +80,15 @@ describe('buildDbSyncJob (hardening)', () => {
     expect(env.DB_NAMES).toBe('wp_a shop_b');
     expect(env.PLESK_HOST).toBe('plesk.example.test');
     expect(job.spec.backoffLimit).toBe(0); // never retry a partial import
+  });
+
+  it('imports as the tenant administrator through the DEFINER rewrite — never as root', () => {
+    const job = buildDbSyncJob({ jobName: 'j', secretName: 'sec', namespace: 'tenant-x', source, dbHost: 'h', dbNames: ['wp_a'] }) as any;
+    const c = job.spec.template.spec.containers[0];
+    const env = Object.fromEntries(c.env.map((e: { name: string; value: string }) => [e.name, e.value]));
+    expect(env.IMPORT_REWRITE_SED).toBe(MYSQL_TENANT_IMPORT_SED);
+    const creds = job.spec.template.spec.volumes.find((v: { name: string }) => v.name === 'db-creds');
+    expect(creds.secret.items).toEqual([{ key: 'db-username', path: 'username' }, { key: 'db-password', path: 'password' }]);
+    expect(JSON.stringify(job)).not.toMatch(/root-password|ROOT_PASSWORD/);
   });
 });

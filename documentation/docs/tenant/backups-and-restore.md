@@ -45,6 +45,29 @@ centrally by your admins.
     still notify you. Every run's outcome is on this page either way, and your
     provider is alerted when a scheduled run fails.
 
+### Database backups
+
+Each backup also dumps every database you have (MariaDB, MySQL, PostgreSQL,
+MongoDB, and SQLite files on your storage). The **Database backups** card on the
+Backups page lists each one with its **last good backup**, its **last attempt**
+and, when that attempt failed, **what kind of failure** it was (for example,
+the database was not running, or the volume was full). A database marked
+**Overdue** was not backed up by the latest scheduled nightly backup. A
+database you have stopped is marked **Stopped**: it is not backed up while it
+is stopped, and it is not reported overdue. A bundle in which not every
+database dumped says so under its status.
+
+!!! warning "A database without a good dump is not reliably backed up"
+    A bundle also copies your databases' own data files, but it copies them
+    while the database is running, so that copy may not restore. The dump is
+    the database's backup.
+
+You are notified once when a database's backups become overdue, and again
+when it has been backed up again. Your provider is alerted at the same time
+and sees the full error. If the reason shown is something you can fix in your
+database — starting it, freeing space on your volume — fixing it lets the next
+nightly backup succeed.
+
 ## Run a backup on demand
 
 Want a fresh snapshot right now — say, before a risky change?

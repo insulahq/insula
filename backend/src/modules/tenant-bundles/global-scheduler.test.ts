@@ -68,6 +68,7 @@ function makeApp(opts: {
     innerJoin: (..._args: unknown[]) => SelectChain & PromiseLike<unknown>;
     where: (cond: unknown) => SelectChain & PromiseLike<unknown>;
     limit: (..._args: unknown[]) => SelectChain & PromiseLike<unknown>;
+    orderBy: (..._args: unknown[]) => SelectChain & PromiseLike<unknown>;
     then: (resolve: (v: unknown) => void) => void;
   };
 
@@ -91,6 +92,7 @@ function makeApp(opts: {
       return makeChain(state) as SelectChain & PromiseLike<unknown>;
     },
     limit: () => makeChain(state) as SelectChain & PromiseLike<unknown>,
+    orderBy: () => makeChain(state) as SelectChain & PromiseLike<unknown>,
     then: (resolve: (v: unknown) => void) => {
       resolve(state.joined ? opts.eligibleTenants : scheduleResult());
     },
