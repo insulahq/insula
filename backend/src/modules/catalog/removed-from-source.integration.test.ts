@@ -15,11 +15,14 @@ import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { closeTestDb, cleanTables, getTestDb, isDbAvailable, runMigrations } from '../../test-helpers/db.js';
 import { seedPlan, seedRegion, seedTenant } from '../../test-helpers/fixtures.js';
-import { catalogEntries, catalogRepositories } from '../../db/schema.js';
+import { catalogEntries, catalogRepositories, platformSettings } from '../../db/schema.js';
+import { privateIPv4 } from '../../test-helpers/private-address.js';
 import { getCatalogEntryByCode, listCatalogEntries, markEntriesRemovedFromSource, syncCatalogRepo } from './service.js';
 import { createDeployment } from '../deployments/service.js';
 
 const dbAvailable = await isDbAvailable();
+// The fake repository is on this machine's private address: loopback is never fetched.
+const lanIp = privateIPv4();
 
 /** A manifest that passes every sync validation. */
 const manifest = (code: string) => ({
@@ -33,7 +36,7 @@ const manifest = (code: string) => ({
   volumes: [],
 });
 
-describe.skipIf(!dbAvailable)('catalog entries removed from their repository (integration)', () => {
+describe.skipIf(!dbAvailable || !lanIp)('catalog entries removed from their repository (integration)', () => {
   const db = () => getTestDb();
   // What the fake repository serves: catalog.json plus `<code>/manifest.json`.
   let listed: string[] = [];
@@ -53,8 +56,8 @@ describe.skipIf(!dbAvailable)('catalog entries removed from their repository (in
       if (m && !unreadable.has(m[1])) return send(manifest(m[1]));
       res.writeHead(m ? 500 : 404); res.end();
     });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    await new Promise<void>((resolve) => server.listen(0, lanIp!, resolve));
+    baseUrl = `http://${lanIp}:${(server.address() as AddressInfo).port}`;
   });
   afterAll(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -62,6 +65,7 @@ describe.skipIf(!dbAvailable)('catalog entries removed from their repository (in
   });
   beforeEach(async () => {
     await cleanTables();
+    await db().insert(platformSettings).values({ key: 'catalog_repos_allow_private_hosts', value: 'true' }).onConflictDoUpdate({ target: platformSettings.key, set: { value: 'true' } });
     listed = [];
     unreadable = new Set();
     repoId = randomUUID();

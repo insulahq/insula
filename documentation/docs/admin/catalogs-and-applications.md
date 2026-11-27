@@ -78,11 +78,23 @@ on the row.
 The **Auto-sync** switch on each row syncs the repository once a day: a
 repository whose last good sync is a day old is synced again within the
 hour, and one whose sync failed is tried again every hour until it works.
-It is on for every repository, new or existing; turn it off for a
-repository you want to change only when you press **sync** — for example to
-hold a catalog at what you have tested. New versions a sync brings in show
-up on the **Upgrades** tab; deployments with automatic upgrades on move to
-them by themselves. Entries from all repositories merge into one catalog; the
+It is on for the Official Catalog. A repository you add starts with it off
+unless you tick **Sync once a day** in the form: with it on, whoever controls
+that repository can change your catalog without anyone pressing **sync**.
+New versions a sync brings in show up on the **Upgrades** tab; deployments
+with automatic upgrades on move to them by themselves.
+
+### Catalogs on your own network
+
+The platform refuses a repository URL that points at an internal address,
+because the API server fetches it. To serve a catalog from your own
+network (a Git server or web server on a private address), a super admin
+turns on **Allow repositories on private networks** at the top of the
+Repositories tab. It opens the private ranges for repository fetches, your
+servers' own private addresses included, so turn it on only when you need it.
+Loopback, cloud metadata addresses and the cluster's own pod and service
+networks stay refused even then. The platform does not
+follow redirects from a catalog server: give the final address. Entries from all repositories merge into one catalog; the
 **type** filter on the Catalog tab separates runtimes, databases/services,
 and full applications.
 

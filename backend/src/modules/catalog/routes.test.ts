@@ -136,4 +136,28 @@ describe('catalog badge routes', () => {
     expect(res.json().error.code).toBe('INVALID_FIELD_VALUE');
     expect(lastUpdateSet).toBeNull();
   });
+
+  it('PUT /admin/catalog-repos/settings is for a super admin only', async () => {
+    const adminOnly = app.jwt.sign({ sub: 'u2', role: 'admin', panel: 'admin', iat: Math.floor(Date.now() / 1000) });
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/admin/catalog-repos/settings',
+      headers: { authorization: `Bearer ${adminOnly}` },
+      payload: { allow_private_addresses: true },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('PUT /admin/catalog-repos/settings refuses an unknown or non-boolean field', async () => {
+    for (const payload of [{ allow_private_addresses: 'yes' }, { allow_private_addresses: true, extra: 1 }]) {
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/v1/admin/catalog-repos/settings',
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload,
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error.code).toBe('INVALID_FIELD_VALUE');
+    }
+  });
 });

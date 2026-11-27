@@ -25,7 +25,8 @@ export const createCatalogRepoSchema = z.object({
   url: z.string().url().max(500),
   branch: z.string().max(100).default('main'),
   auth_token: z.string().max(500).optional(),
-  auto_sync_enabled: z.boolean().default(true),
+  /** Default: on for the Official Catalog, off for any other repository. */
+  auto_sync_enabled: z.boolean().optional(),
 });
 
 export const updateCatalogRepoSchema = z.object({
@@ -35,6 +36,18 @@ export const updateCatalogRepoSchema = z.object({
   auth_token: z.string().max(500).nullable().optional(),
   auto_sync_enabled: z.boolean().optional(),
 });
+
+/** Applications → Repositories settings. */
+export const catalogRepoSettingsResponseSchema = z.object({
+  /** Repository URLs may reach the operator's private networks (never loopback, metadata or the cluster's own). */
+  allowPrivateAddresses: z.boolean(),
+});
+export type CatalogRepoSettingsResponse = z.infer<typeof catalogRepoSettingsResponseSchema>;
+
+export const updateCatalogRepoSettingsSchema = z.object({
+  allow_private_addresses: z.boolean(),
+}).strict();
+export type UpdateCatalogRepoSettingsInput = z.infer<typeof updateCatalogRepoSettingsSchema>;
 
 // ─── Catalog Entry ───────────────────────────────────────────────────────────
 

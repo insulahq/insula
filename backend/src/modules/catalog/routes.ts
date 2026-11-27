@@ -4,8 +4,9 @@ import { readFile } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { authenticate, requireRole } from '../../middleware/auth.js';
-import { createCatalogRepoSchema, updateCatalogRepoSchema } from './schema.js';
-import { catalogRepositories } from '../../db/schema.js';
+import { createCatalogRepoSchema, updateCatalogRepoSchema, updateCatalogRepoSettingsSchema } from './schema.js';
+import { guardedFetch } from '../../shared/ssrf-guard.js';
+import { auditLogs, catalogRepositories } from '../../db/schema.js';
 import * as service from './service.js';
 import { success, paginated } from '../../shared/response.js';
 import { parseBody } from '../../shared/validate-body.js';
@@ -116,15 +117,17 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    // Fallback: proxy from remote manifestUrl
+    // Fallback: proxy from remote manifestUrl. The URL derives from the
+    // repository URL an admin typed, so it goes through the same guard as a
+    // sync: no internal address, no redirect.
     if (entry.manifestUrl) {
       const iconUrl = entry.manifestUrl.replace(/manifest\.json$/, 'icon.png');
       try {
-        const response = await fetch(iconUrl, { signal: AbortSignal.timeout(10_000) });
-        if (response.ok) {
+        const res = await guardedFetch(iconUrl, { timeoutMs: 10_000, maxBytes: 1024 * 1024, policy: await service.catalogFetchPolicy(app.db) });
+        if (res.status === 200 && !res.truncated) {
           reply.header('Content-Type', 'image/png');
           reply.header('Cache-Control', 'public, max-age=86400');
-          reply.send(Buffer.from(await response.arrayBuffer()));
+          reply.send(res.bytes);
           return;
         }
       } catch {
@@ -243,6 +246,37 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string };
     await service.deleteCatalogRepo(app.db, id);
     reply.status(204).send();
+  });
+
+  // GET /api/v1/admin/catalog-repos/settings
+  app.get('/admin/catalog-repos/settings', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin')],
+    schema: { tags: ['Catalog Repos'], summary: 'Repository settings (private-network access)', security: [{ bearerAuth: [] }] },
+  }, async () => success(await service.getCatalogRepoSettings(app.db)));
+
+  // PUT /api/v1/admin/catalog-repos/settings — a security boundary: super_admin only.
+  app.put('/admin/catalog-repos/settings', {
+    onRequest: [authenticate, requireRole('super_admin')],
+    schema: { tags: ['Catalog Repos'], summary: 'Allow or refuse repository URLs on private networks', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const parsed = updateCatalogRepoSettingsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      const firstError = parsed.error.issues[0];
+      throw new ApiError('INVALID_FIELD_VALUE', `Validation error: ${firstError.message} (${firstError.path.join('.')})`, 400, { field: firstError.path.join('.') });
+    }
+    const before = await service.getCatalogRepoSettings(app.db);
+    const after = await service.setCatalogRepoSettings(app.db, parsed.data);
+    await app.db.insert(auditLogs).values({
+      id: crypto.randomUUID(),
+      actorId: (request.user as { sub?: string } | undefined)?.sub ?? 'system',
+      actorType: 'user',
+      actionType: 'catalog_repos.settings.update',
+      resourceType: 'catalog_repos_settings',
+      resourceId: 'allow_private_addresses',
+      changes: { allowPrivateAddresses: { from: before.allowPrivateAddresses, to: after.allowPrivateAddresses } },
+      httpStatus: 200,
+    });
+    return success(after);
   });
 
   // POST /api/v1/admin/catalog-repos/:id/sync

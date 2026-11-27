@@ -9,21 +9,31 @@ const repo = (id: string, autoSyncEnabled: boolean) => ({
   lastSyncedAt: '2026-11-26T10:00:00Z', status: 'active' as const, lastError: null, createdAt: '2026-11-01T00:00:00Z',
 });
 const setAutoSync = vi.fn();
+const setPrivate = vi.fn();
+const addRepo = vi.fn();
 const idle = { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false, error: null };
+let role = 'super_admin';
+let allowPrivate = false;
+
+vi.mock('@/hooks/use-auth', () => ({
+  useAuth: vi.fn((select: (s: { user: { role: string } }) => unknown) => select({ user: { role } })),
+}));
 
 vi.mock('@/hooks/use-catalog-repos', () => ({
   useCatalogRepos: vi.fn(() => ({ data: { data: [repo('a', true), repo('b', false)] }, isLoading: false, isError: false, error: null })),
-  useAddCatalogRepo: vi.fn(() => idle),
+  useAddCatalogRepo: vi.fn(() => ({ ...idle, mutateAsync: addRepo })),
   useDeleteCatalogRepo: vi.fn(() => idle),
   useSyncCatalogRepo: vi.fn(() => idle),
   useRestoreDefaultCatalogRepo: vi.fn(() => idle),
   useSetCatalogRepoAutoSync: vi.fn(() => ({ mutateAsync: setAutoSync, isPending: false, variables: undefined })),
+  useCatalogRepoSettings: vi.fn(() => ({ data: { data: { allowPrivateAddresses: allowPrivate } }, isLoading: false })),
+  useSetCatalogRepoSettings: vi.fn(() => ({ mutate: setPrivate, isPending: false, error: null })),
 }));
 
 const { default: CatalogRepoSettings } = await import('../components/CatalogRepoSettings');
 
 describe('CatalogRepoSettings — auto-sync', () => {
-  beforeEach(() => { setAutoSync.mockReset(); });
+  beforeEach(() => { setAutoSync.mockReset(); setPrivate.mockReset(); addRepo.mockReset(); role = 'super_admin'; allowPrivate = false; });
 
   it('shows each repository\'s switch in its state', () => {
     render(<CatalogRepoSettings />);
@@ -48,5 +58,34 @@ describe('CatalogRepoSettings — auto-sync', () => {
     render(<CatalogRepoSettings />);
     fireEvent.click(screen.getByTestId('auto-sync-repo-a'));
     expect(await screen.findByTestId('auto-sync-error-a')).toHaveTextContent('Repository not found');
+  });
+
+  it('a super admin switches private-network repositories on', () => {
+    render(<CatalogRepoSettings />);
+    const sw = screen.getByTestId('repo-private-setting-toggle');
+    expect(sw).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(sw);
+    expect(setPrivate).toHaveBeenCalledWith(true);
+  });
+
+  it('anyone else sees the setting but cannot change it', () => {
+    role = 'admin';
+    allowPrivate = true;
+    render(<CatalogRepoSettings />);
+    const sw = screen.getByTestId('repo-private-setting-toggle');
+    expect(sw).toHaveAttribute('aria-checked', 'true');
+    expect(sw).toBeDisabled();
+    expect(screen.getByText(/Only a super admin can change this/)).toBeInTheDocument();
+  });
+
+  it('a new repository is added with daily sync off unless it is ticked', async () => {
+    addRepo.mockResolvedValue({ data: repo('c', false) });
+    render(<CatalogRepoSettings />);
+    fireEvent.click(screen.getByTestId('add-repo-button'));
+    expect(screen.getByTestId('repo-auto-sync-input')).not.toBeChecked();
+    fireEvent.change(screen.getByTestId('repo-name-input'), { target: { value: 'mine' } });
+    fireEvent.change(screen.getByTestId('repo-url-input'), { target: { value: 'https://catalog.example.test/c' } });
+    fireEvent.click(screen.getByTestId('submit-repo-button'));
+    await waitFor(() => expect(addRepo).toHaveBeenCalledWith(expect.objectContaining({ name: 'mine', auto_sync_enabled: false })));
   });
 });
