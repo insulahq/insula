@@ -372,7 +372,7 @@ components:
     name: Flux v2 (GitOps reconciler — supply chain)
     tier: "1"
     kind: binary
-    pinned: "2.10.0"
+    pinned: "2.10.1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: fluxcd/flux2, advisories: fluxcd/flux2 }

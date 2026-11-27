@@ -282,6 +282,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Security
 
+- **Flux moves to 2.10.1, up from 2.10.0.** Its kustomize-controller (v1.10.2) ships openssh
+  10.3_p1-r2, which fixes CVE-2026-123158; the CVE was recorded as not reachable, because the image
+  carries only the SSH client, not the server. The release also fixes cached credentials after a
+  username change, registry logins after a same-host redirect (ORAS 2.7.0), and Git checkouts that
+  removed the target of a relative symlink. `flux install --export` renders the same objects for
+  both versions except the four controller images and their version labels. Existing clusters get
+  it from host migration `2026.11.16/0002`, the same procedure as `2026.11.3/0002`: the four Flux
+  controllers roll and GitOps pauses for seconds, while workloads keep running. On lab DEV the
+  migration took 69 seconds, and a second run changed nothing.
+
 - **A database password quoted in a dump command no longer survives into a backup error.** The
   errors from tenant database commands strip the password from the command line before it is
   stored or shown, but they ended the password at the first space or quote: `-p'a b'`, a

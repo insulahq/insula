@@ -524,8 +524,8 @@ LONGHORN_VERSION="v1.13.0"               # V1 engine only (no V2/SPDK). 1.13 add
 # fluxcd.io/install.sh shipped that day, so two nodes bootstrapped a
 # week apart could run different reconciler behaviour (R15 lesson —
 # unpinned drift is how the ssa-policy surprise class happens).
-# Existing clusters: host-migration 2026.11.3/0002.
-FLUX_VERSION="2.10.0"
+# Existing clusters: host-migration 2026.11.16/0002.
+FLUX_VERSION="2.10.1"
 # Existing clusters: host-migration 2026.11.15/0001.
 TRAEFIK_CHART_VERSION="42.4.1"           # app v3.7.19; verify: helm search repo traefik/traefik
 
