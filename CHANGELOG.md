@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.11.16] - 2026-11-27
+
 ### BREAKING
 
 > **Before upgrading:** tell tenants whose apps or tools log in to a standalone database
