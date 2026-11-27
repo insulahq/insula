@@ -19,7 +19,7 @@ export const backupJobStatusSchema = z.enum([
 ]);
 export type BackupJobStatus = z.infer<typeof backupJobStatusSchema>;
 
-export const backupComponentNameSchema = z.enum(['files', 'mailboxes', 'config', 'secrets']);
+export const backupComponentNameSchema = z.enum(['files', 'mailboxes', 'config', 'secrets', 'databases']);
 export type BackupComponentName = z.infer<typeof backupComponentNameSchema>;
 
 export const backupComponentStatusSchema = z.enum([
@@ -95,7 +95,17 @@ export const backupMetaComponentSecretsSchema = z.object({
   encryptionKeyId: z.string().regex(/^k\d+$/), // 'k1', 'k2', ...
 });
 
+/**
+ * Per-database restic snapshots, keyed `<deploymentId>:<database>` — so DR and
+ * a cross-cluster import can rebuild the component rows from meta.json alone.
+ */
+export const backupMetaComponentDatabasesSchema = z.object({
+  sizeBytes: z.number().int().nonnegative(),
+  snapshots: z.record(z.string(), z.string().regex(/^[0-9a-f]{8,64}$/)),
+});
+
 export const backupMetaComponentsSchema = z.object({
+  databases: backupMetaComponentDatabasesSchema.optional(),
   files: backupMetaComponentFilesSchema.optional(),
   mailboxes: backupMetaComponentMailboxesSchema.optional(),
   config: backupMetaComponentConfigSchema.optional(),
@@ -242,22 +252,21 @@ export type BackupComponentInfo = z.infer<typeof backupComponentInfoSchema>;
 
 // ─── Database logical-dump summary (per-bundle, operator surface) ────────────
 //
-// The bundle's `files` component ALWAYS captures each add-on database's raw
-// on-disk directory (crash-consistent — every engine recovers from it), so a
-// bundle is never without a recoverable copy of a database. On TOP of that
-// floor, the capture takes a per-database LOGICAL dump (mysqldump / pg_dump /
-// mongodump / sqlite .dump) for portable, cross-version restore. This block
-// records the outcome of that logical layer so a degraded dump is VISIBLE to
-// the operator WITHOUT blocking the (raw-files-based) restore.
+// The capture takes a per-database LOGICAL dump (mysqldump / pg_dump /
+// mongodump / sqlite .dump): that is the database's backup. The bundle's
+// `files` component also copies each add-on database's on-disk directory, but
+// it reads the live volume while the server runs, over minutes — that copy is
+// NOT crash-consistent and is not guaranteed to restore. This block records
+// the outcome per database; it is kept per database (database_backup_status)
+// and an overdue one is alerted on.
 //
 // Per-database status:
 //   - 'dumped'   → fresh consistent logical dump captured.
-//   - 'degraded' → dump skipped for a benign, recoverable reason (dump tool
-//                  absent in a bring-your-own image, PVC too full to write the
-//                  dump safely, engine unsupported for logical dump). The raw
-//                  crash-consistent directory is still in the files snapshot;
-//                  only the portable logical dump is absent.
-//   - 'failed'   → the dump command errored unexpectedly. Same floor applies.
+//   - 'degraded' → dump skipped for an expected reason (dump tool absent in a
+//                  bring-your-own image, PVC too full to write the dump
+//                  safely, engine unsupported for logical dump). The database
+//                  still has no logical backup in this bundle.
+//   - 'failed'   → the dump command errored unexpectedly.
 export const backupDatabaseDumpStatusSchema = z.enum(['dumped', 'degraded', 'failed']);
 export type BackupDatabaseDumpStatus = z.infer<typeof backupDatabaseDumpStatusSchema>;
 
@@ -268,6 +277,14 @@ export const backupDatabaseDumpEntrySchema = z.object({
   sizeBytes: z.number().int().nonnegative().default(0),
   /** Present for degraded/failed — plain-English reason + remediation hint. */
   error: z.string().nullable().optional(),
+  /**
+   * The database's own restic snapshot (bundles from per-database snapshots
+   * on). Absent for SQLite files and older bundles, whose dumps rode on the
+   * files snapshot.
+   */
+  snapshotId: z.string().regex(/^[0-9a-f]{8,64}$/).optional(),
+  /** The server's version when it was dumped (`SELECT VERSION()`, …). */
+  serverVersion: z.string().max(200).optional(),
 });
 
 export const backupDatabaseDumpDeploymentSchema = z.object({
@@ -281,8 +298,8 @@ export const backupDatabaseDumpDeploymentSchema = z.object({
 
 export const backupDatabaseDumpsSchema = z.object({
   // 'ok'       → every discovered database has a fresh logical dump.
-  // 'degraded' → at least one dump is degraded/failed; the raw-files floor
-  //              still covers those databases.
+  // 'degraded' → at least one dump is degraded/failed: those databases have
+  //              no reliable backup in this bundle.
   // 'none'     → the tenant has no add-on databases (nothing to dump).
   status: z.enum(['ok', 'degraded', 'none']),
   deployments: z.array(backupDatabaseDumpDeploymentSchema),
@@ -360,8 +377,9 @@ export const bundleSummarySchema = z.object({
   /**
    * Per-database logical-dump outcome (null on bundles captured before this
    * field existed). Independent of `status`: a bundle can be `completed`
-   * while `databaseDumps.status='degraded'` — the raw-files floor keeps it
-   * restorable; the operator sees the logical-layer gap here.
+   * while `databaseDumps.status='degraded'`, and then the degraded databases
+   * have no reliable backup in it (their data files are copied from the
+   * running server). Recorded per database and alerted on when overdue.
    */
   databaseDumps: backupDatabaseDumpsSchema.nullable(),
   createdAt: z.string(),

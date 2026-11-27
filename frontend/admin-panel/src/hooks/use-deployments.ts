@@ -1,6 +1,6 @@
 import type { ApplicationUsage } from '@insula/api-contracts';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { CreateDeploymentRequest } from '@insula/api-contracts';
+import type { CreateDeploymentRequest, RepairDatabaseAccessResponse } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import type { PaginatedResponse } from '@/types/api';
 
@@ -57,6 +57,8 @@ export interface AdminDeployment extends Deployment {
   readonly catalogEntryName: string | null;
   readonly catalogEntryCode: string | null;
   readonly catalogEntryType: string | null;
+  /** A database instance: how the platform reaches its administrator login (`locked` = lost; null = not checked yet). */
+  readonly databaseAccessMode?: string | null;
 }
 
 interface AdminDeploymentsResponse {
@@ -244,6 +246,26 @@ export function useBulkRestartDeployments() {
         body: JSON.stringify(body),
       });
     },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['deployments'] });
+    },
+  });
+}
+
+/**
+ * The platform lost its own administrator login to a tenant's database
+ * instance (the admin notification "Platform lost its login to a tenant
+ * database"): redeploy it with a reset that restores the login. The database
+ * restarts once.
+ */
+export function useRepairDatabaseAccess() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (deploymentId: string) =>
+      apiFetch<{ data: RepairDatabaseAccessResponse }>(
+        `/api/v1/admin/deployments/${deploymentId}/repair-database-access`,
+        { method: 'POST' },
+      ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments'] });
     },

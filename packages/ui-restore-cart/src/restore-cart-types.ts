@@ -15,6 +15,7 @@
 
 import type {
   AddRestoreItemInput,
+  BrowseDatabasesResponse,
   RestoreItemInfo,
   RestoreJobDetail,
   RestoreJobStatus,
@@ -59,6 +60,8 @@ export interface BrowseDomainsData {
   readonly bundleId: string;
   readonly domains: ReadonlyArray<{ readonly id: string; readonly hostname: string }>;
 }
+
+export type BrowseDatabasesData = BrowseDatabasesResponse;
 
 export interface BrowseMailboxesData {
   readonly bundleId: string;
@@ -133,6 +136,7 @@ export interface RestoreCartHooks {
   useBrowseConfigTables(bundleId: string | null): RestoreCartQueryResult<BrowseConfigTablesData>;
   useBrowseDeployments(bundleId: string | null): RestoreCartQueryResult<BrowseDeploymentsData>;
   useBrowseDomains(bundleId: string | null): RestoreCartQueryResult<BrowseDomainsData>;
+  useBrowseDatabases(bundleId: string | null): RestoreCartQueryResult<BrowseDatabasesData>;
   useBrowseMailboxes(bundleId: string | null): RestoreCartQueryResult<BrowseMailboxesData>;
   // Lazy tree browse: `path` is the directory to list (null/'' = root).
   // One directory level per call.

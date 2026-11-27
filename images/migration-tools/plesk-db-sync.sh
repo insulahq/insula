@@ -23,12 +23,20 @@ BEGIN='===DBSYNC-BEGIN==='
 END='===DBSYNC-END==='
 
 : "${PLESK_HOST:?}" "${PLESK_PORT:=22}" "${PLESK_USER:=root}" "${DB_HOST:?}" "${DB_PORT:=3306}"
-ROOTPW_FILE=/etc/db-creds/root-password
+# The tenant's database administrator (backend deployments/tenant-admin.ts):
+# root logs in by socket only, from inside the database pod, so this Job
+# imports as the tenant's own account over TCP.
+DBUSER_FILE=/etc/db-creds/username
+DBPW_FILE=/etc/db-creds/password
 
 is_name() { printf '%s' "$1" | grep -Eqx '[A-Za-z0-9_][A-Za-z0-9_-]*'; }
 
-[ -r "$ROOTPW_FILE" ] || { echo "FATAL: missing db root-password mount" >&2; exit 2; }
-ROOTPW=$(cat "$ROOTPW_FILE")
+[ -r "$DBUSER_FILE" ] && [ -r "$DBPW_FILE" ] || { echo "FATAL: missing database login mount" >&2; exit 2; }
+DBUSER=$(cat "$DBUSER_FILE")
+DBPW=$(cat "$DBPW_FILE")
+# DEFINER clauses and replication SETs the account may not run, removed on
+# the way in — the same program a tenant's own import uses (import-rewrite.ts).
+: "${IMPORT_REWRITE_SED:?}"
 
 # SSH transport: key (-i) or password (sshpass -e, SSHPASS env). accept-new =
 # trust-on-first-use (same bounded posture as the discovery Job);
@@ -71,7 +79,7 @@ for db in $DB_NAMES; do
   # defence-in-depth for the remote shell evaluation.
   db_q=$(printf '%q' "$db")
   remote="MYSQL_PWD=\$(cat /etc/psa/.psa.shadow) exec mysqldump --single-transaction --quick --no-tablespaces --routines --triggers --add-drop-table -uadmin -- ${db_q}"
-  if $SSH "$remote" 2>/tmp/dumperr | MYSQL_PWD="$ROOTPW" mariadb --protocol=TCP -h "$DB_HOST" -P "$DB_PORT" -uroot "$db" 2>/tmp/imperr; then
+  if $SSH "$remote" 2>/tmp/dumperr | sed -E "$IMPORT_REWRITE_SED" | MYSQL_PWD="$DBPW" mariadb --protocol=TCP -h "$DB_HOST" -P "$DB_PORT" -u"$DBUSER" "$db" 2>/tmp/imperr; then
     echo "DBRESULT ${db} ok imported"
   else
     msg=$(head -c 200 /tmp/dumperr /tmp/imperr 2>/dev/null | tr '\n' ' ' | tr -d '\r')

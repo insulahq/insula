@@ -28,6 +28,7 @@
 // Re-apply semantics: createOrReplace per resource. Idempotent.
 
 import { MERGE_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { DATABASE_ROOT_PROBLEM, isUnderDatabaseRoot } from '@insula/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { k8sPullSecretName } from './pat-store.js';
 import { describeK8sApplyError } from './k8s-apply-error.js';
@@ -538,7 +539,11 @@ function buildContainerEnv(
  * the deployment's own `<storageSubPath>/<volume>`.
  */
 export function volumeSubPath(input: Pick<DeployCustomInput, 'storageSubPath' | 'spec'>, volumeName: string): string {
-  return input.spec.volumes[volumeName]?.folder ?? `${input.storageSubPath}/${volumeName}`;
+  const folder = input.spec.volumes[volumeName]?.folder;
+  // R48: a spec saved before the protected folder existed may still name it;
+  // the stack is refused rather than handed a database's live files.
+  if (folder !== undefined && isUnderDatabaseRoot(folder)) throw new Error(`volume '${volumeName}': ${DATABASE_ROOT_PROBLEM}`);
+  return folder ?? `${input.storageSubPath}/${volumeName}`;
 }
 
 function buildVolumeMounts(

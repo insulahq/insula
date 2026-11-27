@@ -345,6 +345,43 @@ separately because they need different actions.
     longer does. A backup that has never run has never worked, and looking
     for what changed will waste your time.
 
+### Tenant database backups overdue
+
+A tenant bundle can complete while a database dump inside it failed, so the
+bundle's status cannot tell you that a database is unprotected. Each bundle
+therefore records, per database, the **last attempt** and the **last good
+backup** (a dump that the bundle's files snapshot kept).
+
+A database is **overdue** when the latest scheduled backup run that has had
+time to finish did not back it up. *Time to finish* is how long the last
+scheduled run took, plus an hour; a run still in progress is never judged, and
+a weekday-only schedule is not called overdue over the weekend. Only tenants
+the scheduled run covers and running database instances are judged: a stopped
+instance shows **Stopped** and is not overdue.
+
+You get **one notification** (*Tenant database backups overdue*) listing every
+newly overdue database with its tenant, its last good backup and the last
+error; each affected tenant gets its own notice at the same time, naming only
+the kind of failure. A database that alerted in the last 12 hours does not
+alert again straight away. When a database is backed up again, both get a
+*working again* notice — only for databases that alerted. If a tenant is
+suspended or its instance stopped while overdue, the alert ends without a
+notice.
+
+Where to look:
+
+- **Tenant → Storage & backups → Database backups** — every database of the
+  tenant, with its last good backup, its last attempt, the kind of failure
+  and the full error.
+- **Backups → Tenant Backups → Backups** — every overdue database across
+  tenants, shown only when there is one.
+
+!!! warning "The raw data files are not a fallback"
+    The files snapshot also copies each database's data directory, but it reads
+    the live volume file by file over minutes, with no volume snapshot. That
+    copy may not restore. A database without a good dump has no reliable backup
+    in that bundle.
+
 ## Retention
 
 Every backup class follows one rule:

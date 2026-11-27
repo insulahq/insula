@@ -26,6 +26,9 @@ import { tenants, deployments as deploymentsTable, pleskSources } from '../../db
 import { getCatalogEntryByCode } from '../catalog/service.js';
 import { createDeployment, getDeploymentById } from '../deployments/service.js';
 import { buildDbContext, createDatabase } from '../deployments/db-manager.js';
+import { reconcileDatabaseAdminFor } from '../deployments/db-admin-reconciler.js';
+import { loadTenantAdminAccount } from '../deployments/tenant-admin-store.js';
+import { MYSQL_TENANT_IMPORT_SED } from '../deployments/import-rewrite.js';
 import { sourceAuthSecretData, sourceAuthEnv, sourceAuthKeyVolume } from './ssh-auth.js';
 import type { PleskSubscription } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
@@ -149,10 +152,20 @@ export async function runDatabaseLeg(
   }
   if (toSync.length === 0) return items;
 
-  // 3. Stream the data in via a migration-tools Job.
-  const rootPassword = String((deployment.configuration as Record<string, unknown>)?.MARIADB_ROOT_PASSWORD ?? '');
+  // 3. Stream the data in via a migration-tools Job, as the tenant's own
+  // database administrator: root logs in by socket only, from inside the
+  // database pod (db-admin-access.ts), so the Job cannot use it — and a
+  // migration is the tenant's data, imported like any other (DEFINER clauses
+  // rewritten, import-rewrite.ts). A new instance's account is set up first.
+  const login = await tenantAdminLoginForSync(db, k8s, kubeconfigPath, deployment.id);
+  if (!login) {
+    for (const name of toSync) {
+      items.push({ name, status: 'failed', message: 'the database administrator account is not set up yet — retry this step in a minute' });
+    }
+    return items;
+  }
   const dbHost = `${deployment.name}.${namespace}.svc.cluster.local`;
-  const results = await spawnDbSyncJob({ k8s, namespace, source, dbHost, rootPassword, dbNames: toSync, logger });
+  const results = await spawnDbSyncJob({ k8s, namespace, source, dbHost, login, dbNames: toSync, logger });
 
   for (const name of toSync) {
     const r = results.get(name);
@@ -160,6 +173,21 @@ export async function runDatabaseLeg(
     else items.push({ name, status: 'failed', message: r?.message || 'sync job produced no result for this database' });
   }
   return items;
+}
+
+/** The tenant administrator's login, setting the account up first if it is new. Null when it cannot be had. */
+async function tenantAdminLoginForSync(
+  db: Database,
+  k8s: K8sClients,
+  kubeconfigPath: string | undefined,
+  deploymentId: string,
+): Promise<{ username: string; password: string } | null> {
+  const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY;
+  if (!encryptionKey) return null;
+  const existing = await loadTenantAdminAccount(db, deploymentId, encryptionKey);
+  if (existing) return existing;
+  await reconcileDatabaseAdminFor({ db, k8s, kubeconfigPath, encryptionKey }, deploymentId);
+  return loadTenantAdminAccount(db, deploymentId, encryptionKey);
 }
 
 /** Create a database, retrying through the MariaDB first-boot init window. */
@@ -237,14 +265,15 @@ interface SpawnArgs {
   namespace: string;
   source: SourceRow;
   dbHost: string;
-  rootPassword: string;
+  /** The tenant administrator: the Job imports as it, over TCP. */
+  login: { readonly username: string; readonly password: string };
   dbNames: string[];
   logger: MigrationLogger;
 }
 
 /** Spawn the migration-tools Job, wait, parse per-db results, clean up. */
 async function spawnDbSyncJob(args: SpawnArgs): Promise<Map<string, { ok: boolean; message: string }>> {
-  const { k8s, namespace, source, dbHost, rootPassword, dbNames, logger } = args;
+  const { k8s, namespace, source, dbHost, login, dbNames, logger } = args;
   const core = k8s.core as unknown as CoreApi;
   const batch = k8s.batch as unknown as BatchApi;
   const short = source.id.slice(0, 8);
@@ -254,14 +283,14 @@ async function spawnDbSyncJob(args: SpawnArgs): Promise<Map<string, { ok: boolea
 
   try {
     // backup-coverage: excluded:transient-migration-job
-    // (operator SSH key + tenant DB root password for a short-lived sync
-    //  Job; deleted in the finally block — nothing to back up.)
+    // (operator SSH key + the tenant database administrator's login for a
+    //  short-lived sync Job; deleted in the finally block — nothing to back up.)
     await core.createNamespacedSecret({
       namespace,
       body: {
         metadata: { name: secretName, namespace, labels: { 'app.kubernetes.io/managed-by': 'platform-api', 'app.kubernetes.io/name': 'plesk-db-sync' } },
         type: 'Opaque',
-        stringData: { ...sourceAuthSecretData(source), 'root-password': rootPassword },
+        stringData: { ...sourceAuthSecretData(source), 'db-username': login.username, 'db-password': login.password },
       },
     });
     await batch.createNamespacedJob({ namespace, body: buildDbSyncJob({ jobName, secretName, namespace, source, dbHost, dbNames }) });
@@ -333,6 +362,8 @@ export function buildDbSyncJob({ jobName, secretName, namespace, source, dbHost,
               { name: 'DB_HOST', value: dbHost },
               { name: 'DB_PORT', value: '3306' },
               { name: 'DB_NAMES', value: dbNames.join(' ') },
+              // The same rewrite a tenant's own import gets (import-rewrite.ts).
+              { name: 'IMPORT_REWRITE_SED', value: MYSQL_TENANT_IMPORT_SED },
               { name: 'HOME', value: '/tmp' },
               ...sourceAuthEnv(source, secretName),
             ],
@@ -346,7 +377,7 @@ export function buildDbSyncJob({ jobName, secretName, namespace, source, dbHost,
           }],
           volumes: [
             ...sourceAuthKeyVolume(source, secretName).volumes,
-            { name: 'db-creds', secret: { secretName, items: [{ key: 'root-password', path: 'root-password' }] } },
+            { name: 'db-creds', secret: { secretName, items: [{ key: 'db-username', path: 'username' }, { key: 'db-password', path: 'password' }] } },
             { name: 'tmp', emptyDir: { sizeLimit: TENANT_EMPTYDIR_SIZE_LIMIT } },
           ],
         },

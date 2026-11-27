@@ -27,7 +27,7 @@ test('parses WRAPPED busybox output (Longhorn PVC — the production case)', () 
     '/dev/longhorn/pvc-00dd3bb7-3afb-4bc5-bf52-6f460be2af7a',
     '                     2080374784  73768960 2006605824   4% /data',
   ].join('\n');
-  assert.deepEqual(parseDf(out), { totalBytes: 2080374784, availableBytes: 2006605824 });
+  assert.deepEqual(parseDf(out), { totalBytes: 2080374784, availableBytes: 2006605824, usedBytes: 73768960 });
 });
 
 test('parses UNWRAPPED output (short device name)', () => {
@@ -35,7 +35,7 @@ test('parses UNWRAPPED output (short device name)', () => {
     'Filesystem     1B-blocks      Used Available Use% Mounted on',
     '/dev/sda1     10737418240 1073741824 9663676416  10% /data',
   ].join('\n');
-  assert.deepEqual(parseDf(out), { totalBytes: 10737418240, availableBytes: 9663676416 });
+  assert.deepEqual(parseDf(out), { totalBytes: 10737418240, availableBytes: 9663676416, usedBytes: 1073741824 });
 });
 
 test('parses a mount point containing no spaces after a wrap', () => {
@@ -44,19 +44,29 @@ test('parses a mount point containing no spaces after a wrap', () => {
     '/dev/mapper/a-very-long-device-mapper-name-that-wraps',
     '                       1048576    524288    524288  50% /data',
   ].join('\n');
-  assert.deepEqual(parseDf(out), { totalBytes: 1048576, availableBytes: 524288 });
+  assert.deepEqual(parseDf(out), { totalBytes: 1048576, availableBytes: 524288, usedBytes: 524288 });
 });
 
 test('reports zeroes rather than NaN on unusable output', () => {
-  assert.deepEqual(parseDf(''), { totalBytes: 0, availableBytes: 0 });
+  assert.deepEqual(parseDf(''), { totalBytes: 0, availableBytes: 0, usedBytes: 0 });
   assert.deepEqual(parseDf('Filesystem 1-blocks Used Available Use% Mounted on'),
-    { totalBytes: 0, availableBytes: 0 });
+    { totalBytes: 0, availableBytes: 0, usedBytes: 0 });
 });
 
 test('never returns NaN (which JSON-serialises to null and breaks the UI)', () => {
   for (const out of ['', 'garbage', 'a\nb', 'Filesystem\n/dev/x\n   1 2 3 4% /d']) {
-    const { totalBytes, availableBytes } = parseDf(out);
+    const { totalBytes, availableBytes, usedBytes } = parseDf(out);
     assert.equal(Number.isFinite(totalBytes), true, `totalBytes for ${JSON.stringify(out)}`);
     assert.equal(Number.isFinite(availableBytes), true, `availableBytes for ${JSON.stringify(out)}`);
+    assert.equal(Number.isFinite(usedBytes) && usedBytes >= 0, true, `usedBytes for ${JSON.stringify(out)}`);
   }
+});
+
+test('used is what the volume has spent: total minus available, never negative', () => {
+  // A volume whose reserved blocks make Used + Available < total still fills
+  // the bar to exactly 100% when nothing is available.
+  const full = 'Filesystem 1B-blocks Used Available Use% Mounted on\n/dev/sdb 1000 990 0 100% /data';
+  assert.deepEqual(parseDf(full), { totalBytes: 1000, availableBytes: 0, usedBytes: 1000 });
+  const odd = 'Filesystem 1B-blocks Used Available Use% Mounted on\n/dev/sdb 10 0 20 0% /data';
+  assert.equal(parseDf(odd).usedBytes, 0);
 });

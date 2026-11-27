@@ -31,6 +31,7 @@ import UploadProgressModal from '@/components/files/UploadProgressModal';
 import type { FileEntry } from '@/hooks/use-file-manager';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import TrashPanel from '@/components/files/TrashPanel';
+import ProtectedDatabaseFolder from '@/components/files/ProtectedDatabaseFolder';
 import { PermanentDeleteToggle, DeleteConsequence } from '@/components/files/PermanentDeleteToggle';
 import UndoBar, { type UndoState } from '@/components/files/UndoBar';
 import { useRestoreFromTrash } from '@/hooks/use-trash';
@@ -40,7 +41,7 @@ import { ApiError } from '@/lib/api-client';
 import { useFileManagerError, clearFileManagerError } from '@/hooks/use-file-manager-errors';
 import FolderPickerDialog, { joinPath } from '@/components/FolderPickerDialog';
 import { placeMenu, type MenuAnchor, type MenuPlacement } from '@/lib/menu-placement';
-import type { OperatorError } from '@insula/api-contracts';
+import { KEPT_DATABASES_ROOT, isUnderDatabaseRoot, type OperatorError } from '@insula/api-contracts';
 import { config } from '@/lib/runtime-config';
 import CloneSiteModal from '@/components/CloneSiteModal';
 import { resourceBarColor } from '@/lib/resource-usage';
@@ -165,6 +166,8 @@ export default function Files() {
   const fmStatus = useFileManagerStatus();
   const startFm = useStartFileManager();
   const dirListing = useDirectoryListing(currentPath, fmStatus.data?.ready === true);
+  // R48: the protected folder of the database instances — empty and read-only here.
+  const inProtectedFolder = isUnderDatabaseRoot(currentPath);
   const createDir = useCreateDirectory();
   const createFile = useWriteFile();
   const renameFile = useRenameFile();
@@ -564,6 +567,7 @@ export default function Files() {
           >
             <Trash2 size={14} /> Recycle Bin
           </button>
+          {!inProtectedFolder && (<>
           <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) uploadFiles(e.target.files, currentPath); e.target.value = ''; }} />
           <button onClick={() => fileInputRef.current?.click()} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
             <Upload size={14} /> Upload
@@ -598,6 +602,7 @@ export default function Files() {
           <button onClick={() => { setNewDirOpen(true); setNewDirName(''); }} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600">
             <FolderPlus size={14} /> New Folder
           </button>
+          </>)}
         </div>
       </div>
 
@@ -691,13 +696,17 @@ export default function Files() {
         </div>
       )}
 
+      {inProtectedFolder && (
+        <ProtectedDatabaseFolder tenantId={tenantId ?? undefined} onOpenKept={() => setCurrentPath(`/${KEPT_DATABASES_ROOT}`)} />
+      )}
+
       {/* File list with drag-and-drop */}
       <div
         className={`rounded-xl border-2 ${dragging ? 'border-dashed border-brand-400 bg-brand-50 dark:bg-brand-900/20' : 'border-gray-200 dark:border-gray-700'} bg-white dark:bg-gray-800 shadow-sm overflow-hidden transition-colors`}
-        onDragEnter={handleDragEnter}
+        onDragEnter={inProtectedFolder ? undefined : handleDragEnter}
         onDragOver={(e) => e.preventDefault()}
         onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
+        onDrop={inProtectedFolder ? (e) => e.preventDefault() : handleDrop}
       >
         {dragging && (
           <div className="flex items-center justify-center gap-2 py-6 text-sm font-medium text-brand-600 dark:text-brand-400 pointer-events-none">

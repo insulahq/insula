@@ -57,6 +57,7 @@
 | [R42](#r42--retire-roundcube) | Retire Roundcube | P3 | Started 2026-10-04 — Bulwark is the default and recommended engine; Roundcube is labelled legacy, receives security updates only, and UI/bootstrap text is engine-neutral. Removal not started |
 | [R43](#r43--drop-the-retired-plan-ai-budget-column) | Drop the retired plan AI-budget column | P3 | ✅ **Done on `development` 2026-10-06** — migration 0150 drops the column; ships in the next release (upgrade through v2026.10.6, see the entry) |
 | [R44](#r44--one-upgrade-procedure-nodes-first-pushed-done-means-done) | One upgrade procedure: nodes first, pushed, "done" means done | P1 | In progress (ADR-064) — P0 truthful status shipped in v2026.10.7-rc.2; P1 node push + hosts-first order (upgrade runs) lands for v2026.10.7-rc.3; P2 UX, P3 auto-update + parity, P4 Kubernetes step open |
+| [R48](#r48--database-data-directories-are-reachable-through-the-file-manager-and-sftp) | Database data directories are reachable through the file manager and SFTP | P2 | ✅ **Done on `development` 2026-11-26** — one protected `database/` folder, masked in the file manager; Detach/Attach for raw access. Ships in the next release |
 
 ---
 
@@ -2345,3 +2346,92 @@ email-domain reads until the rollout has replaced them.
 `email_domains` is in the tenant bundle `config` dump, so both columns are in
 `RETIRED_BUNDLE_COLUMNS`; keep that entry for as long as bundles taken before
 the drop can be restored.
+
+## R48 — Database data directories are reachable through the file manager and SFTP
+
+**Done on `development` 2026-11-26** (ships in the next release). Found while making a tenant database's root login the platform's
+(`deployments/db-admin-access.ts`, `docs/operations/DATABASE_RECOVERY.md` §5).
+
+A database instance keeps its data on the tenant volume (`storagePath`, or a
+stack component's volume under the app's), and the file manager mounts the
+whole volume as root with `DAC_OVERRIDE`; SFTP serves the same tree. So a
+tenant can still edit a running instance's files — `pg_hba.conf` and
+`postgresql.auto.conf`, the MariaDB/MySQL system schema, MongoDB's `admin`
+files — and take its own instance's administrator login back. Nothing outside
+that instance is reachable this way, and the platform notices (the login is
+reported lost; Repair restores it — on PostgreSQL by putting the platform's
+local rules ahead of whatever pg_hba.conf says), but the platform's login is
+only as safe as those files. (Extra mounts into a database container, the
+other way to put tenant files in it, are refused and removed.) Two things the
+"reported lost" net does not catch: an edit that adds a second way in rather
+than locking the platform out (a pg_hba rule the hardening pass has not seen
+yet — it runs daily and in every new pod), and the platform's own root-run
+file operations in a data directory (`cp`/`rm`/`cat`/`>` of import and dump
+files), which follow a symlink the tenant planted there.
+
+**Plan (agreed).** Everything stays on the one tenant volume, so quotas,
+accounting and backups do not change. Rejected: a separate volume for databases
+(a second quota, its own accounting and backup logic) and per-path rules in the
+file manager (rsync and legacy scp run unchrooted as root in the file-manager
+pod, an app's extra mount can name a database folder, and kubelet follows
+symlinks inside the volume when it resolves a subPath — four surfaces to keep
+in step).
+
+1. **One protected folder.** Every standalone database instance keeps its data
+   at `database/<engine>/<name>` (already the default path). Instances on a
+   custom path or the legacy `databases/<name>` are moved there once — a
+   rename on the same volume, one restart — and the old path is kept on the row
+   so a bundle taken before the move still finds its pre-dumps. A folder shared
+   with an app (an extra mount, or nested in or around another deployment's
+   folder) is not moved; the operator is told.
+2. **The file manager cannot see into it.** The file-manager pod mounts an
+   empty read-only volume over `/data/database`. The HTTP API, SFTP, rsync and
+   scp all run in that container, so all of them see an empty folder that
+   cannot be written, renamed or removed; the container has no `CAP_SYS_ADMIN`,
+   so nothing in it can unmount it. An init container makes sure `database` is
+   a real directory before the mask is mounted.
+3. **The platform's own file work moves to a platform-only container** in the
+   same pod (`platform-files`): the same image and volume without the mask,
+   never exec'd by the SFTP gateway or the console. Imports, exports, pre-dump
+   listing and clean-up, the volume-usage measure behind a shrink, and every
+   move below run there. A file a tenant asks to import must resolve outside
+   `database/`.
+4. **Moves in and out** (all in `platform-files`, under the instance's lock,
+   with the database stopped; a moved-in folder is a real directory, not a
+   symlink, its hard links are broken, and no deployment mounts it):
+   - creating a database on an existing folder moves it in;
+   - a permanent delete that keeps the data moves it out to
+     `kept-databases/<name>`; one that deletes the data moves it there and
+     then into the recycle bin;
+   - **Detach data** stops the instance and moves its folder to
+     `kept-databases/<name>` for raw access; **Attach data** moves a folder
+     (that one or any other) back and starts the instance. Starting a detached
+     instance is refused. The reset init container takes the platform's login
+     back on the next start and the hardening pass cleans up what changed;
+   - a folder under `database/` that belongs to no instance (live or recently
+     deleted) is listed in the file manager's view of the folder and moved
+     out to `kept-databases/` on request.
+   A folder moved in has the PostgreSQL settings that run commands, load code
+   or include files removed from its configuration files, and MySQL's
+   persisted settings dropped, before its first start.
+   Soft-deleted instances keep their folder; Restore works as before.
+5. **File restores** of anything under `database/` land in
+   `kept-databases/<name>-restored-<time>` instead of over a running instance,
+   and the restore Job itself sees `database/` read-only, so a symlink left in
+   a restored path cannot write into it. Whole-volume snapshot restores are
+   unchanged.
+6. **Refused:** extra mounts, custom storage paths and SFTP home paths at or
+   under `database/`, and re-pointing a database's storage path directly
+   (Detach/Attach replaces it).
+7. **Panel.** Entering `database` in the file manager explains the folder and
+   lists the instances with their data sizes (measured by `platform-files`);
+   the instance's detail view offers Detach/Attach.
+
+**Accepted residual.** A tenant who deliberately plants a symlink (or a hard
+link, or keeps a file open across an Attach) and points an extra mount or an
+app's folder at it can still get its own database files into one of its
+containers. That reaches only its own instance, and the safety net from the
+root-ownership work catches it: a lost platform login alerts within 5 minutes
+and Repair restores it; the hardening pass (daily and in every new pod)
+removes a second way in.
+

@@ -71,6 +71,9 @@ ALLOW_LIST=(
   # Dashboard Backups & DR card: reads backup_schedules.subsystem =
   # 'tenant_bundle' for the tenant class's cadence. A subsystem name.
   "backend/src/modules/dashboard/backup-classes.ts"
+  # The overdue-database-backup sweep reads backup_schedules.subsystem =
+  # 'tenant_bundle' to derive how old a good backup may be. A subsystem name.
+  "backend/src/modules/database-backup-status/sweep.ts"
   # The shared retention rule and its apply-now dispatcher key on
   # backup_schedules.subsystem ('tenant_bundle'). Subsystem names.
   "backend/src/modules/backup-schedules/retention-policy.ts"

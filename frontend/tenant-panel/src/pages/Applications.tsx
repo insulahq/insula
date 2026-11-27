@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import { KEPT_DATABASES_ROOT } from '@insula/api-contracts';
 import { API_BASE } from '@/lib/api-client';
 import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, Eye, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check, LayoutGrid, List, ArrowUpCircle } from 'lucide-react';
 import ResourceRequirementCheck from '@/components/ResourceRequirementCheck';
@@ -1933,6 +1934,17 @@ function InstalledTab({ atLimit }: { readonly atLimit: boolean }) {
                 Also remove data folder <code className="rounded bg-gray-100 dark:bg-gray-700 px-1 py-0.5 text-xs">/{allDeployments.find(d => d.id === permanentDeleteConfirm.id)?.storagePath ?? permanentDeleteConfirm.name}</code>
               </span>
             </label>
+            {/* R48: a database's data sits in the protected folder; kept, it
+                moves out to where the file manager can reach it. */}
+            {!deleteDataFolder && (() => {
+              const d = allDeployments.find((x) => x.id === permanentDeleteConfirm.id);
+              const isDb = d?.catalogEntryId ? catalogMap.get(d.catalogEntryId)?.type === 'database' : false;
+              return isDb ? (
+                <p className="-mt-4 mb-6 ml-6 text-xs text-gray-500 dark:text-gray-400" data-testid="delete-keeps-database-data">
+                  The data is kept: it moves to <code className="rounded bg-gray-100 dark:bg-gray-700 px-1 py-0.5">/{KEPT_DATABASES_ROOT}/{permanentDeleteConfirm.name}</code>, where the file manager and SFTP can reach the raw files.
+                </p>
+              ) : null;
+            })()}
             {/* The deployment row is destroyed regardless — only the FILES are
                 recoverable, and only while they sit in the bin. Said plainly
                 because a data folder can be many GB and it keeps counting

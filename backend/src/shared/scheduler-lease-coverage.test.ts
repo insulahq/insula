@@ -52,6 +52,7 @@ const LEASED: ReadonlyArray<{ file: string; job: string; timers?: number }> = [
   { file: 'modules/storage/image-pressure-watcher.ts', job: 'image-pressure-watcher' },
   { file: 'modules/storage/image-prune-scheduler.ts', job: 'daily-image-prune' },
   { file: 'modules/crowdsec-autoban/scheduler.ts', job: 'crowdsec-autoban' },
+  { file: 'modules/deployments/db-admin-reconciler.ts', job: 'database-admin-access' },
   { file: 'modules/domains/verification-cron.ts', job: 'domain-verification' },
   { file: 'modules/dns-apex-drift/scheduler.ts', job: 'dns-route-drift-scan' },
   // Pollers of the Kubernetes API. Not unsafe to run three times, but three
@@ -79,6 +80,9 @@ const LEASED: ReadonlyArray<{ file: string; job: string; timers?: number }> = [
   // not a constraint, so replicas ticking together each send it.
   { file: 'modules/backup-health/freshness-sweep.ts', job: 'backup-freshness' },
   { file: 'modules/backup-health/scheduler.ts', job: 'backup-job-health' },
+  // Opens and alerts overdue-backup episodes by a read-then-write; two
+  // replicas sweeping together would each announce them.
+  { file: 'modules/database-backup-status/scheduler.ts', job: 'database-backup-status' },
   { file: 'modules/private-workers/connection-poller.ts', job: 'private-worker-connections' },
   { file: 'modules/ingress-auth/scheduler.ts', job: 'sign-in-gate-reconcile' },
   { file: 'modules/cnpg-backup-health/scheduler.ts', job: 'cnpg-backup-health' },

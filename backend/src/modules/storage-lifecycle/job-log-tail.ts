@@ -13,7 +13,7 @@ export async function readJobLogTail(
   k8s: K8sClients,
   namespace: string,
   jobName: string,
-  options: { tailLines?: number } = {},
+  options: { tailLines?: number; container?: string } = {},
 ): Promise<string | null> {
   const tailLines = options.tailLines ?? 200;
   try {
@@ -32,6 +32,8 @@ export async function readJobLogTail(
       name: podName,
       namespace,
       tailLines,
+      // A pod with more than one container needs it named.
+      ...(options.container ? { container: options.container } : {}),
     });
     if (typeof log !== 'string' || log.length === 0) return null;
     return log;

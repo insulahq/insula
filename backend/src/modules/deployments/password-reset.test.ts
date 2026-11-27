@@ -9,6 +9,27 @@ describe('buildPasswordResetInitContainer', () => {
     memoryRequest: '400Mi',
   };
 
+  it('starts the temporary MySQL-family server lean, inside the instance\'s memory limit (engine defaults OOM a 300Mi MySQL 8)', () => {
+    const mysql = buildPasswordResetInitContainer({ ...baseArgs, catalogCode: 'mysql', image: 'mysql:8.0', passwordEnvVar: 'MYSQL_ROOT_PASSWORD' })!.command[2]!;
+    const maria = buildPasswordResetInitContainer({ ...baseArgs, catalogCode: 'mariadb', image: 'mariadb:11', passwordEnvVar: 'MARIADB_ROOT_PASSWORD' })!.command[2]!;
+    for (const script of [mysql, maria]) {
+      expect(script).toMatch(/--skip-grant-tables[^\n]*--performance-schema=OFF --innodb-buffer-pool-size=32M --innodb-log-buffer-size=4M --max-connections=10/);
+    }
+    // MySQL-only: MariaDB refuses an option it does not know.
+    expect(mysql).toContain('--temptable-max-ram=16M');
+    expect(maria).not.toContain('--temptable-max-ram');
+  });
+
+  it('starts every engine\'s temporary server no bigger than the server itself', () => {
+    const maria = buildPasswordResetInitContainer({ ...baseArgs, catalogCode: 'mariadb', image: 'mariadb:11', passwordEnvVar: 'MARIADB_ROOT_PASSWORD' })!.command[2]!;
+    expect(maria).toContain('--aria-pagecache-buffer-size=8M --key-buffer-size=8M');
+    const pg = buildPasswordResetInitContainer({ ...baseArgs, catalogCode: 'postgresql', image: 'postgres:18', passwordEnvVar: 'POSTGRES_PASSWORD' })!.command[2]!;
+    // Small buffers, and no library loaded or WAL archived while the login is put back.
+    expect(pg).toContain("-c listen_addresses='' -c shared_buffers=16MB -c max_connections=10 -c work_mem=1MB -c maintenance_work_mem=16MB -c shared_preload_libraries= -c archive_mode=off");
+    const mongo = buildPasswordResetInitContainer({ ...baseArgs, catalogCode: 'mongodb-7', image: 'mongo:7.0', passwordEnvVar: 'MONGO_INITDB_ROOT_PASSWORD', passwordEnvVarUser: 'MONGO_INITDB_ROOT_USERNAME' })!.command[2]!;
+    expect(mongo).toContain('--wiredTigerCacheSizeGB 0.25');
+  });
+
   describe('MariaDB', () => {
     it('returns init container for mariadb with correct image and ALTER USER', () => {
       const result = buildPasswordResetInitContainer({
@@ -25,8 +46,10 @@ describe('buildPasswordResetInitContainer', () => {
       expect(result!.command[2]).toContain('mariadbd');
       expect(result!.command[2]).toContain('--skip-networking');
       expect(result!.command[2]).toContain('--skip-grant-tables');
-      expect(result!.command[2]).toContain('ALTER USER');
-      expect(result!.command[2]).toContain('MARIADB_ROOT_PASSWORD');
+      // root by socket only — no password to re-stamp, none to go stale.
+      expect(result!.command[2]).toContain("ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket");
+      expect(result!.command[2]).not.toContain('MARIADB_ROOT_PASSWORD');
+      expect(result!.command[2]).not.toContain('IDENTIFIED BY');
     });
 
     it('mounts the PVC at the correct path', () => {
@@ -69,7 +92,11 @@ describe('buildPasswordResetInitContainer', () => {
       expect(result!.command[2]).toContain('mysqld');
       expect(result!.command[2]).toContain('--skip-networking');
       expect(result!.command[2]).toContain('--skip-grant-tables');
-      expect(result!.command[2]).toContain('MYSQL_ROOT_PASSWORD');
+      // auth_socket: loaded by option in the temporary server, registered for the real one.
+      expect(result!.command[2]).toContain('--plugin-load-add=auth_socket.so');
+      expect(result!.command[2]).toContain("INSERT IGNORE INTO mysql.plugin (name, dl) VALUES ('auth_socket', 'auth_socket.so')");
+      expect(result!.command[2]).toContain("ALTER USER 'root'@'localhost' IDENTIFIED WITH auth_socket");
+      expect(result!.command[2]).not.toContain('MYSQL_ROOT_PASSWORD');
     });
   });
 
@@ -87,7 +114,9 @@ describe('buildPasswordResetInitContainer', () => {
       expect(result!.image).toBe('postgres:18');
       expect(result!.command[2]).toContain('pg_hba.conf');
       expect(result!.command[2]).toContain('trust');
-      expect(result!.command[2]).toContain('ALTER USER');
+      // The configured superuser, whatever its name, loses its password.
+      expect(result!.command[2]).toContain('SU="${POSTGRES_USER:-postgres}"');
+      expect(result!.command[2]).toContain('ALTER ROLE CURRENT_USER PASSWORD NULL');
       expect(result!.command[2]).toContain('pg_ctl');
     });
 
@@ -120,6 +149,14 @@ describe('buildPasswordResetInitContainer', () => {
       expect(result!.command[2]).toContain('mongod');
       expect(result!.command[2]).toContain('--bind_ip 127.0.0.1');
       expect(result!.command[2]).toContain('createUser');
+    });
+
+    it('recreates root restricted to logins from inside the pod', () => {
+      const result = buildPasswordResetInitContainer({
+        storagePath: 'database/mongodb-7/my-db', catalogCode: 'mongodb-7', image: 'mongo:7', volumeMountName: 'data',
+        passwordEnvVar: 'MONGO_INITDB_ROOT_PASSWORD', passwordEnvVarUser: 'MONGO_INITDB_ROOT_USERNAME', cpuRequest: '100m', memoryRequest: '256Mi',
+      });
+      expect(result!.command[2]).toContain('authenticationRestrictions: [{ clientSource: ["127.0.0.1", "::1"] }]');
     });
 
     it('detects existing data via WiredTiger file', () => {
@@ -184,13 +221,14 @@ describe('buildPasswordResetInitContainer', () => {
       });
     }
 
-    it('mariadb/mysql tolerate a datadir with no root@% account', () => {
+    it('mariadb/mysql recreate root@localhost if missing and drop every other root account', () => {
       for (const engine of [ENGINES[0], ENGINES[1]]) {
         const script = buildPasswordResetInitContainer({ ...baseArgs, ...engine })!.command[2];
         // A bare `ALTER USER 'root'@'%'` errors out when the account was
         // dropped, which used to abort the whole reset.
-        expect(script).toContain("ALTER USER IF EXISTS 'root'@'%'");
         expect(script).toContain("CREATE USER IF NOT EXISTS 'root'@'localhost'");
+        expect(script).toContain("SELECT Host FROM mysql.user WHERE User = 'root' AND Host <> 'localhost'");
+        expect(script).toContain("DROP USER IF EXISTS 'root'@'$H'");
       }
     });
 

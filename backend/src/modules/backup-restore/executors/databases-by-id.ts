@@ -1,11 +1,12 @@
 /**
  * Restore executor: `databases-by-id` (gap G4).
  *
- * Recovers a tenant's add-on database(s) from the per-database `.sql`
- * dump captured INSIDE the files snapshot (ADR-047). The pre-capture
- * hook (`tenant-bundles/components/database-predump.ts` →
- * `db-manager.ts:exportDatabaseToPvc`) dumps each database into the DB pod's
- * OWN storage subPath on the tenant PVC:
+ * Recovers a tenant's add-on database(s). A bundle with per-database
+ * snapshots restores from them (databases-from-snapshots.ts); an older one
+ * from the per-database `.sql` dump captured INSIDE the files snapshot
+ * (ADR-047), described below. The pre-capture hook those bundles were taken
+ * with (since removed; `db-manager.ts:exportDatabaseToPvc`) dumped each
+ * database into the DB pod's OWN storage subPath on the tenant PVC:
  *
  *     database/<engine>/<name>/predump-<db>-<bundleId>.sql   (standalone DB)
  *
@@ -39,7 +40,10 @@
  *                                         `type='database'` catalog deployment)
  */
 
+import { deletePredumpsFromPvc } from '../../tenant-bundles/components/database-predump-orchestration.js';
+import { loadDatabaseSnapshotRows, restoreDatabasesFromSnapshots } from './databases-from-snapshots.js';
 import type { FastifyInstance } from 'fastify';
+import { loadTenantAdminAccount, tenantAdminReady } from '../../deployments/tenant-admin-store.js';
 import { and, eq, inArray } from 'drizzle-orm';
 import {
   databasesSelectorSchema,
@@ -67,6 +71,7 @@ import {
   type DbManagerContext,
 } from '../../deployments/db-manager.js';
 import { withFileManagerLease } from '../../file-manager/lease.js';
+import { FM_PLATFORM_CONTAINER } from '../../file-manager/protected-folder.js';
 import { execInPod } from '../../../shared/k8s-exec.js';
 import { buildFilesPathsJobSpec, resolveRestoreJobNode, waitForJob } from './files-paths.js';
 import { resolveTenantBundleReadTarget, sourceShimJobLabels } from '../../backup-source-shim/service.js';
@@ -130,7 +135,7 @@ export interface DatabasesRestoreSummary {
 /**
  * Injected side-effect surface. `Ctx` is the per-deployment DB context
  * threaded from `buildDbContext` into the other calls (opaque to the
- * orchestration — mirrors `database-predump.ts` so tests can stub the
+ * orchestration — so tests can stub the
  * k8s exec without a live cluster).
  */
 export interface DatabasesRestoreDeps<Ctx> {
@@ -146,6 +151,8 @@ export interface DatabasesRestoreDeps<Ctx> {
     database: string,
     filePath: string,
     deploymentSubPath: string,
+    /** The deployment restored into: picks the login the import runs as. */
+    deploymentId?: string,
   ) => Promise<{ readonly success: boolean; readonly error?: string }>;
   /**
    * Restore a MongoDB `.archive.gz` dump (mongorestore --archive --drop).
@@ -157,6 +164,8 @@ export interface DatabasesRestoreDeps<Ctx> {
     ctx: Ctx,
     filePath: string,
     deploymentSubPath: string,
+    /** The deployment restored into: picks the login the restore runs as. */
+    deploymentId?: string,
   ) => Promise<{ readonly success: boolean; readonly error?: string }>;
 }
 
@@ -164,7 +173,7 @@ export interface DatabasesRestoreDeps<Ctx> {
 
 /**
  * Replicate the pre-dump filename char-sanitisation so a database name
- * maps to the same token the capture wrote. `database-predump.ts`
+ * maps to the same token the capture wrote. The capture
  * applies this to the whole filename; only the `<db>` segment can hold
  * chars outside the allowlist (the literal parts + the `bkp-<uuid>`
  * bundle id are already safe), so sanitising the name alone is faithful.
@@ -197,9 +206,16 @@ export function isPodNotRunning(err: unknown): boolean {
  * Resolve the selector to the concrete set of database deployments.
  *
  * - `kind: 'all'` → every database deployment already fetched for the tenant.
- * - `kind: 'ids'` → each requested id, validated against `requestedById`:
+ * - `kind: 'ids'` / `'databases'` → each requested id, validated against `requestedById`:
  *     missing / foreign tenant → 404; non-database catalog type → 400.
  */
+/** The deployments a selector names (none for `all`). */
+export function requestedIds(selector: DatabasesSelector): readonly string[] {
+  if (selector.kind === 'ids') return selector.deploymentIds;
+  if (selector.kind === 'databases') return [selector.deploymentId];
+  return [];
+}
+
 export function selectTargetDeployments(
   selector: DatabasesSelector,
   tenantId: string,
@@ -210,7 +226,7 @@ export function selectTargetDeployments(
     return [...tenantDbDeployments];
   }
   const out: TargetDeployment[] = [];
-  for (const id of selector.deploymentIds) {
+  for (const id of requestedIds(selector)) {
     const row = requestedById.get(id);
     if (!row || row.tenantId !== tenantId) {
       throw new ApiError(
@@ -340,7 +356,7 @@ export async function restoreDatabasesForDeployments<Ctx>(
           skipped.push(`mongo dump '${sanitizedDb}' in ${dep.deploymentName} skipped — mongorestore path unavailable in this executor`);
           continue;
         }
-        const res = await deps.importMongoArchive(ctx, p, dirName(p));
+        const res = await deps.importMongoArchive(ctx, p, dirName(p), dep.deploymentId);
         if (res.success) imported.push(sanitizedDb);
         else failed.push({ database: sanitizedDb, error: res.error ?? 'mongorestore failed' });
         continue;
@@ -358,7 +374,7 @@ export async function restoreDatabasesForDeployments<Ctx>(
         continue;
       }
       const realDb = reals[0]!;
-      const res = await deps.importSql(ctx, realDb, p, dirName(p));
+      const res = await deps.importSql(ctx, realDb, p, dirName(p), dep.deploymentId);
       if (res.success) {
         imported.push(realDb);
       } else {
@@ -412,10 +428,12 @@ export function formatSummary(summary: DatabasesRestoreSummary): string {
   const parts = summary.deployments.map((d) => {
     if (d.status === 'imported') {
       const extra = d.skipped.length > 0 ? `, ${d.skipped.length} skipped` : '';
-      return `${d.deploymentName}: imported ${d.imported.length} db(s)${extra}`;
+      return `${d.deploymentName}: imported ${d.imported.length} db(s) (${d.imported.join(', ')})${extra}`;
     }
     if (d.status === 'failed') {
-      return `${d.deploymentName}: FAILED ${d.failed.length} import(s)${d.imported.length ? ` (${d.imported.length} ok)` : ''}`;
+      // Which database, and why: a count alone sends the reader to the logs.
+      const why = d.failed.map((f) => `${f.database}: ${f.error}`).join('; ');
+      return `${d.deploymentName}: FAILED ${d.failed.length} import(s)${d.imported.length ? ` (${d.imported.length} ok)` : ''} — ${why}`;
     }
     return d.skipped[0] ?? `${d.deploymentName}: skipped`;
   });
@@ -462,6 +480,22 @@ export async function execDatabasesByIdItem(args: {
     ?? process.env.KUBECONFIG_PATH ?? process.env.KUBECONFIG;
   const k8s: K8sClients = createK8sClients(kubeconfigPath);
 
+  const encryptionKey = ((app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined) ?? process.env.PLATFORM_ENCRYPTION_KEY;
+  const NOT_READY = 'the database administrator account is still being set up — run the restore again in a few minutes';
+  /**
+   * The login a restore runs as: a standalone instance's tenant
+   * administrator, and nothing else — not set up yet means not now, never
+   * root (the dump's code would run with the platform's privileges). An app
+   * stack's database restores as its own root, which the tenant holds.
+   */
+  const restoreLogin = async (deploymentId: string | undefined): Promise<{ username: string; password: string } | null | 'not-ready'> => {
+    if (!deploymentId) return null;
+    const [row] = await app.db.select({ type: catalogEntries.type }).from(deployments)
+      .innerJoin(catalogEntries, eq(catalogEntries.id, deployments.catalogEntryId)).where(eq(deployments.id, deploymentId));
+    if (row?.type !== 'database') return null;
+    if (!encryptionKey || !(await tenantAdminReady(app.db, deploymentId))) return 'not-ready';
+    return (await loadTenantAdminAccount(app.db, deploymentId, encryptionKey)) ?? 'not-ready';
+  };
   const deps: DatabasesRestoreDeps<DbManagerContext> = {
     buildDbContext: (dep) => buildDbContext(
       k8s,
@@ -473,15 +507,56 @@ export async function execDatabasesByIdItem(args: {
     ),
     listDumpFiles: (_ctx, deploymentName) => listPredumpFiles(k8s, kubeconfigPath, namespace, deploymentName),
     listDatabaseNames: async (ctx) => (await listDatabases(ctx)).map((d) => d.name),
-    importSql: async (ctx, database, filePath, deploymentSubPath) => {
-      const result = await importSqlFromPvcFile(ctx, database, '', filePath, deploymentSubPath);
+    // As the tenant's administrator where the instance has one: the dump is
+    // the tenant's own data and objects, and replayed as root/the superuser
+    // its functions, constraints and definers would run with the platform's
+    // privileges. An app stack's database has none and restores as before.
+    importSql: async (ctx, database, filePath, deploymentSubPath, deploymentId) => {
+      const login = await restoreLogin(deploymentId);
+      if (login === 'not-ready') return { success: false, error: NOT_READY };
+      const result = await importSqlFromPvcFile(ctx, database, '', filePath, deploymentSubPath, { ...(login ? { as: login } : {}), fromOwnFolder: true });
       return { success: result.success, error: result.error };
     },
-    importMongoArchive: async (ctx, filePath, deploymentSubPath) => {
-      const result = await importMongoArchiveFromPvcFile(ctx, filePath, deploymentSubPath);
+    importMongoArchive: async (ctx, filePath, deploymentSubPath, deploymentId) => {
+      const login = await restoreLogin(deploymentId);
+      if (login === 'not-ready') return { success: false, error: NOT_READY };
+      const result = await importMongoArchiveFromPvcFile(ctx, filePath, deploymentSubPath, { ...(login ? { as: login } : {}), fromOwnFolder: true });
       return { success: result.success, error: result.error };
     },
   };
+
+  // A bundle with per-database snapshots restores from them, in the mode the
+  // item asks for; an older one from the pre-dumps its files snapshot holds,
+  // in place only.
+  const snapshotRows = await loadDatabaseSnapshotRows(app, item.bundleId);
+  if (snapshotRows.length > 0) {
+    if (!encryptionKey) throw new ApiError('CONFIG_INVALID', 'PLATFORM_ENCRYPTION_KEY not configured', 500);
+    const fromSnapshots = await restoreDatabasesFromSnapshots({
+      app, k8s, kubeconfigPath, namespace, tenantId: job.tenantId, bundleId: item.bundleId, restoreId: item.restoreJobId,
+      selector, targets, rows: snapshotRows, secretsKeyHex: encryptionKey,
+      loginFor: (id) => restoreLogin(id),
+      onProgress: (msg) => setProgress(app, item, msg),
+    });
+    await setProgress(app, item, formatSummary(fromSnapshots));
+    if (fromSnapshots.totalFailed > 0) {
+      throw new ApiError(
+        'DB_RESTORE_IMPORT_FAILED',
+        `database restore had ${fromSnapshots.totalFailed} failure(s)`,
+        500,
+        { imported: fromSnapshots.totalImported, skipped: fromSnapshots.totalSkipped, failed: fromSnapshots.totalFailed },
+      );
+    }
+    return;
+  }
+  if ((selector.mode ?? 'replace') !== 'replace' || selector.kind === 'databases') {
+    throw new ApiError(
+      'DB_RESTORE_MODE_UNAVAILABLE',
+      'This bundle was taken before databases were backed up one by one: it can only restore whole instances, in place.',
+      400,
+      { mode: selector.mode ?? 'replace', kind: selector.kind },
+      'Restore the whole instance in place, or pick a newer bundle.',
+    );
+  }
 
   // Snapshot-restore: predumps no longer persist on the live PVC (capture
   // deletes them after the files snapshot to keep the tenant PVC footprint at
@@ -497,7 +572,13 @@ export async function execDatabasesByIdItem(args: {
     namespace,
     tenantId: job.tenantId,
     bundleId: item.bundleId,
-    storagePaths: targets.map((t) => t.storagePath).filter((s): s is string => Boolean(s)),
+    // A bundle taken before an instance's data moved into the protected
+    // folder (R48) has its predumps under the old path.
+    storagePaths: [
+      ...targets.map((t) => t.storagePath),
+      ...(await app.db.select({ from: deployments.storageRelocatedFrom }).from(deployments)
+        .where(inArray(deployments.id, targets.map((t) => t.deploymentId)))).map((r) => r.from),
+    ].filter((s): s is string => Boolean(s)),
     cartId: item.restoreJobId,
     itemId: item.id,
   }).catch(async (err) => {
@@ -507,12 +588,15 @@ export async function execDatabasesByIdItem(args: {
   // One hold on the file manager for the whole item: listing the predumps and
   // every import exec into it, and without a hold the idle loop scales an
   // idle tenant's file manager down between (or during) those steps.
-  const summary = await withFileManagerLease(k8s, namespace, 'db-restore', () => restoreDatabasesForDeployments(
-    targets,
-    item.bundleId,
-    deps,
-    (msg) => setProgress(app, item, msg),
-  ));
+  const summary = await withFileManagerLease(k8s, namespace, 'db-restore', async (fmPod) => {
+    try {
+      return await restoreDatabasesForDeployments(targets, item.bundleId, deps, (msg) => setProgress(app, item, msg));
+    } finally {
+      // The pre-dumps fetched back for this restore have done their work:
+      // nothing prunes them from the tenant's volume any more. Never throws.
+      await deletePredumpsFromPvc({ namespace, fmPod, bundleId: item.bundleId, kubeconfigPath });
+    }
+  });
 
   await setProgress(app, item, formatSummary(summary));
 
@@ -573,7 +657,7 @@ async function resolveTargetDeployments(
     })
     .from(deployments)
     .leftJoin(catalogEntries, eq(deployments.catalogEntryId, catalogEntries.id))
-    .where(inArray(deployments.id, [...selector.deploymentIds]));
+    .where(inArray(deployments.id, [...requestedIds(selector)]));
 
   const requestedById = new Map<string, RequestedDeploymentRow>();
   for (const r of rows) {
@@ -665,6 +749,8 @@ async function fetchPredumpsFromSnapshot(args: {
       jobName, namespace, pvcName, tenantId, cartId: args.cartId, itemId: args.itemId,
       credsSecretName, snapshotId: comp.sha256, includePaths,
       jobImage: TOOLS_IMAGE_DEFAULT, pinToNode, activeDeadlineSeconds: 10 * 60,
+      // The predumps go back into each instance's own folder, for the import.
+      protectedFolder: 'in-place',
       extraLabels: sourceShimJobLabels(read),
     });
     const createdJob = await (k8s.batch as unknown as {
@@ -708,7 +794,9 @@ async function listPredumpFiles(
   namespace: string,
   _deploymentName: string,
 ): Promise<string[]> {
-  const res = await withFileManagerLease(k8s, namespace, 'db-restore-list', (fmPod) => execInPod(kubeconfigPath, namespace, fmPod, 'file-manager',
+  // The platform container: the file-manager container sees the protected
+  // database folder (where each instance's predumps land) as empty (R48).
+  const res = await withFileManagerLease(k8s, namespace, 'db-restore-list', (fmPod) => execInPod(kubeconfigPath, namespace, fmPod, FM_PLATFORM_CONTAINER,
     ['find', '/data', '-type', 'f', '(', '-name', 'predump-*.sql', '-o', '-name', 'predump-*.archive.gz', ')']));
   if (res.exitCode !== 0) return [];
   return res.stdout.split('\n').map((s) => s.trim()).filter(Boolean)

@@ -9,6 +9,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type {
+  BrowseDatabasesResponse,
   RestoreJobDetail,
   RestoreJobSummary,
   RestoreItemInfo,
@@ -134,6 +135,14 @@ export function useBrowseConfigTables(bundleId: string | null) {
     queryKey: ['restore-browse', 'config-tables', bundleId],
     enabled: !!bundleId,
     queryFn: () => apiFetch<BrowseConfigTablesResponse>(`/api/v1/admin/tenant-bundles/${bundleId}/browse/config-tables`),
+  });
+}
+
+export function useBrowseDatabases(bundleId: string | null) {
+  return useQuery({
+    queryKey: ['restore-browse', 'databases', bundleId],
+    enabled: !!bundleId,
+    queryFn: () => apiFetch<{ readonly data: BrowseDatabasesResponse }>(`/api/v1/admin/tenant-bundles/${bundleId}/browse/databases`),
   });
 }
 

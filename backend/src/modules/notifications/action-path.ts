@@ -51,6 +51,10 @@ const TENANT_SCOPED_ADMIN = new Set<string>([
  * row these fall back to their static page below.
  */
 const TENANT_TAB_ADMIN: Readonly<Record<string, string>> = {
+  // Overdue database backups of ONE tenant open its Storage tab, where its
+  // database backups are listed; several tenants fall back to the fleet page.
+  'admin.database_backup_stale': 'storage',
+  'admin.database_backup_recovered': 'storage',
   'admin.email_quota_exceeded': 'email',
   'admin.email_abuse_warning': 'email',
   'admin.email_abuse_critical': 'email',
@@ -91,6 +95,8 @@ const STATIC_PATHS: Record<string, string> = {
   'admin.backup_failed': '/backups',
   'admin.backup_stale': '/backups',
   'admin.backup_never_run': '/backups',
+  'admin.database_backup_stale': '/backups/tenants/backups',
+  'admin.database_backup_recovered': '/backups/tenants/backups',
   'admin.backup_target_unreachable': '/backups/targets',
   'admin.wal_archive_failing': '/backups',
   'admin.wal_archive_auto_disabled': '/backups',
@@ -150,6 +156,10 @@ const STATIC_PATHS: Record<string, string> = {
   // the tenant the alert already named.
   'admin.tenant_workloads_down': '/tenants',
   'admin.tenant_workloads_recovered': '/tenants',
+  // Several instances of several tenants at once: the tenant list, where each
+  // tenant's databases are one click away.
+  'admin.tenant_database_access_lost': '/tenants',
+  'admin.tenant_database_access_restored': '/tenants',
   // Tenant side: the page that lists their applications and shows which is down.
   'tenant.workloads_down': '/applications',
   'tenant.workloads_recovered': '/applications',
@@ -157,6 +167,8 @@ const STATIC_PATHS: Record<string, string> = {
   'tenant.workload_disk_limit': '/applications',
   'tenant.domain_verification': '/domains',
   'tenant.backup_event': '/backups',
+  'tenant.database_backup_stale': '/backups',
+  'tenant.database_backup_recovered': '/backups',
   'tenant.mail_event': '/email',
   // The migration panel lives on the tenant Email page. There is no
   // per-mailbox deep link for it, so this is the closest honest target.

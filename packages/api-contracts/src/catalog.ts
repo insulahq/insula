@@ -258,6 +258,12 @@ export const deploymentResponseSchema = z.object({
   memoryRequest: z.string(),
   configuration: z.record(z.string(), z.unknown()).nullable(),
   storagePath: z.string().nullable(),
+  /**
+   * A standalone database instance whose data is detached for raw access (R48):
+   * the folder the data was moved to. The instance cannot start until the data
+   * is attached again. Null otherwise.
+   */
+  dataDetachedPath: z.string().nullable().optional(),
   helmReleaseName: z.string().nullable(),
   installedVersion: z.string().nullable(),
   targetVersion: z.string().nullable(),

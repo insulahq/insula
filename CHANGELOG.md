@@ -12,6 +12,315 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### BREAKING
+
+> **Before upgrading:** tell tenants whose apps or tools log in to a standalone database
+> instance as root (MariaDB, MySQL, PostgreSQL, MongoDB) that this stops working: they use the
+> new `dbadmin` account or a Database Users account instead. The upgrade itself restarts no
+> database, except a MongoDB instance (once, for its new root password), an instance with extra
+> mounts and an instance on a custom or legacy data path (once each).
+
+- **Tenant databases: root belongs to the platform, and tenants get their own administrator
+  account.** The platform managed every catalog database (MariaDB, MySQL,
+  PostgreSQL, MongoDB) as root, with the root password it generated at create time. The
+  tenant had the same password: the panel showed it, every deployment read returned it, a
+  configuration save could overwrite it, the SQL console ran as root, and "All databases" in
+  Database Users granted `ALL ON *.*`, which includes the right to change root. Anything that
+  changed root's password left the platform locked out of the SQL Manager, the nightly dumps
+  and restores, without anyone noticing. A restore of an older data directory did the same.
+  Now the platform's login is no longer a password:
+  - **MariaDB:** `root@localhost` logs in by socket only (`unix_socket`), and `root@'%'` and
+    every other root account are removed.
+  - **MySQL:** the same with `auth_socket`.
+  - **PostgreSQL:** a standalone instance's superuser has no password; the platform uses the
+    image's local trust, under the superuser name the instance was created with (the SQL
+    Manager used to assume `postgres`).
+  - **MongoDB:** `root` may only log in from inside the database pod.
+
+  Only the platform can run a command inside the pod, so nothing is left to go stale. This
+  applies to standalone database instances; a database inside an app stack keeps its root
+  password, which its app may use, and is only checked. Each standalone instance gets a
+  `dbadmin` account instead, shown in the panel (to tenant administrators) with a "New
+  password" action. On MariaDB/MySQL it has full rights on every tenant database, can create
+  databases named `db_…` in SQL, and can see the process list. On PostgreSQL it is a
+  non-superuser that owns the tenant databases the superuser owned and can create new ones.
+  On MongoDB it reads and writes every database. It cannot change root or create accounts;
+  Database Users in the panel does that, and refuses to create, re-password or drop root, the
+  PostgreSQL superuser, MongoDB's root or `dbadmin`, and to grant the server's own databases
+  (`mysql`, `postgres`, `admin`, …). "All databases" in Database Users now means ALL on every
+  tenant database and on new `db_…` ones, granted directly (MariaDB and MySQL 8.0 do not
+  apply a definer's roles inside its views and triggers), not `ALL ON *.*`.
+
+  What a tenant ran in the platform's name now runs as `dbadmin`, in a client that cannot
+  leave SQL: the SQL console, table browsing and row counts (reading a view runs the tenant's
+  code in it), and imports. The client runs as an unprivileged user with no environment, and
+  each engine's own commands are switched off (`--binary-mode` for MariaDB/MySQL; psql
+  refuses every backslash command of an imported file with `\restrict`, which needs psql
+  from 18.0, 17.6, 16.10, 15.14, 14.19 or 13.22 — an older instance refuses plain-SQL imports
+  until it is updated, custom-format dumps still work). `DEFINER` clauses and replication
+  `SET`s from other servers' dumps are rewritten on the way in. Restores of a standalone
+  instance's databases from a backup run as `dbadmin` too; an app stack's database uses the
+  stack's own root login, which the tenant holds. The container terminal and cron jobs no
+  longer run in a database container for tenants (the terminal still does for platform
+  staff), and a database instance takes no extra mounts: a tenant folder mounted over
+  `/usr/local/bin` would be the tenant's code running as the container's root. **An instance
+  that has extra mounts loses them and restarts once.** MongoDB passwords no longer appear on
+  any command line in the pod.
+
+  A tenant held root until now, and root can leave a way back in. On the first check, and
+  daily after, the platform closes what it finds:
+  - **MariaDB/MySQL:** accounts with global privileges, a grant reaching the system schema, a
+    PROXY grant, or (MySQL) root granted as a role keep the same privileges on each tenant
+    database and lose the rest. Routines, triggers (in their order), views and events that
+    ran as root run as `dbadmin` — the old SQL Manager imported every dump as root, so most of
+    these are a dump's own views and triggers; one that cannot be moved, or that sits in the
+    server's own schema, is removed (its definition goes to the platform log). Anonymous
+    accounts, and other accounts by the tenant administrator's name, are removed. On MySQL,
+    the settings root persisted and server accounts in `mandatory_roles` are removed.
+  - **PostgreSQL:** other superusers, CREATEROLE/REPLICATION/BYPASSRLS roles and memberships
+    in the superuser or in `pg_execute_server_program` and the file-access roles are taken
+    back. Event triggers are disabled, write grants on the catalogs and on server-only catalog
+    functions revoked, functions in untrusted languages made outside an extension and
+    `file_fdw` tables locked to the platform, and what the superuser owned in tenant schemas
+    handed to the database's owner. Shell commands in the configuration (`archive_command`,
+    …) are cleared and `pg_hba.conf` rules trusting the network disabled. The platform's own
+    sessions pin `search_path` and, from 17, turn event triggers off.
+  - **MongoDB:** users holding root-like roles keep read/write on every database and lose the
+    rest. Root's password is replaced, once, by one only the platform knows — **the instance
+    restarts once for it**, so its own reset at every start keeps the new one.
+
+  A reconciler converts existing instances after the upgrade and checks every instance every
+  ten minutes (a full check hourly; the ticks between only prove the logins still work), four
+  instances at a time, each within a time limit. It proves the socket login works before it
+  removes a password, and leaves the password where it cannot. The panel shows `dbadmin` once
+  the first pass over the instance has finished. If the platform has lost its login to an
+  instance for five minutes, or the database has not answered for an hour, admins get one
+  alert ("Platform lost its login to a tenant database", saying which) and later a notice when
+  it is back; the panel tells the tenant too. "Repair database access" restores the login by
+  restarting the database once — on PostgreSQL ahead of whatever `pg_hba.conf` says — and is
+  offered, and accepted, only for an instance whose login the platform lost. The reset container that runs after a restore now restores this login
+  instead of a password. The Plesk migration imports as `dbadmin`. **For tenants:** a tool or
+  app connecting as root with the old password stops working; use `dbadmin` or a Database
+  Users account. A standalone instance's root keys no longer appear in any deployment
+  response or credentials view. The credentials route is refused to tenant-audience agents,
+  like every route that hands out a password.
+
+  Tested locally against MariaDB 10.11 and 12.3, MySQL 8.0, 8.4 and 9.7, PostgreSQL 13, 16.9
+  and 18 (default and custom superuser) and MongoDB 7 and 8, each seeded with the leftovers
+  above:
+  - the conversion from an image's default accounts, run twice;
+  - a stored password that drifted before and after conversion;
+  - the reset container on a restored data directory with a password `root@'%'` and
+    `root@127.0.0.1`, run twice;
+  - what `dbadmin`, and each leftover account, can and cannot do afterwards;
+  - that the tenant's routines, triggers, views, aggregates and data keep working;
+  - socket logins accepting any supplied password, so the SQL Manager's commands work before
+    and after.
+
+- **Tenant databases: their data folders leave the file manager.** A standalone
+  database instance keeps its data in one protected folder, `database/<engine>/<name>`, which
+  the file manager, SFTP, rsync and scp now see as empty and read-only. The file manager could
+  read and change a running instance's files as root, so a tenant could take the instance's
+  administrator login back by editing them. The file-manager pod mounts an empty read-only
+  volume over that folder (its container holds no right to unmount it); the platform's own file
+  work moves to a second container in the pod. Opening `database` in the file manager explains
+  the folder and lists the instances with their data sizes. For raw access, **Detach data**
+  (the instance's detail view) stops the instance and moves its data to
+  `kept-databases/<name>`; **Attach data** moves that folder, or any other, back and starts the
+  instance on it, with the platform's login restored on that start. What else changes:
+  - an instance on a custom or legacy (`databases/<name>`) path is moved into the protected
+    folder once, **restarting it once**; a folder another deployment also uses is left where it
+    is and the operator is told;
+  - creating a database on an existing folder moves that folder in;
+  - a permanent delete moves the folder to `kept-databases/` (or from there into the recycle
+    bin, or removes it) instead of leaving it where nothing can see it; a folder there with no
+    instance is listed in the file manager's view of the folder, with a button that moves it
+    out;
+  - a folder attached or moved in loses the PostgreSQL settings that run commands or load code
+    (and MySQL's persisted settings) before its first start;
+  - restoring files from a bundle puts anything from the protected folder into
+    `kept-databases/<name>-restored-<time>` instead of over a running instance, so those
+    instances no longer stop for a file restore; the restore cannot write into the protected
+    folder at all, not even through a symlink left in a restored path;
+  - extra mounts, storage paths, site folders, container volumes and SFTP home paths cannot
+    name the protected folder, and a database's storage path can no longer be re-pointed
+    directly;
+  - an import refuses a file that resolves into the protected folder.
+  A tenant who deliberately mounts its own database's files through a symlink can still reach
+  them; the platform's lost-login alert and the daily hardening pass cover that case.
+  Recovery steps: `docs/operations/DATABASE_RECOVERY.md` §7.
+
+### Added
+
+- **Every database is backed up on its own, straight into the backup store, and restores on its
+  own: in place, as a copy, or as a test.** A bundle used to dump each database onto the tenant's
+  volume before the files snapshot took it, so a nearly full volume skipped the dump and a large
+  dump could fill the volume of the live database. Now each running database instance gets one
+  Job per bundle that streams every database's dump into the tenant's restic repository, one
+  snapshot per database, logged in with an account made for that run and dropped after it.
+  Nothing is written to the volume. The bundle records each snapshot, and retention, deleting a
+  bundle and disaster recovery handle them like the files and mailbox snapshots. The restore cart
+  in both panels has a **Databases** tab: pick an instance or single databases and restore them
+  **as a copy** next to the original (named by you or `<name>_restored_<time>`), as a **test**
+  into a scratch database that is counted and dropped, or **in place**. A restore runs as the
+  tenant's database administrator, never as root, and a backup from a newer server than the
+  instance runs is refused. Tenants can now restore their own databases. In the restore Job the
+  backup store's credentials and the database client sit in separate containers, so a dump's
+  content never runs next to those credentials. A data export carries each database's dump.
+  PostgreSQL before 14 is not backed up this way (only a superuser could read everything) and is
+  reported until the instance is updated; the catalog ships 18. Bundles from before this restore
+  whole instances in place, as before. See `docs/operations/DATABASE_RECOVERY.md`.
+
+- **A database whose backups keep failing is now reported, to the operator and to the tenant.**
+  Each nightly bundle dumps every tenant database, but it recorded the outcome only on the bundle
+  itself, and nothing read it again. On production one tenant's seven MariaDB databases failed to
+  dump every night for at least two weeks while every bundle said `completed`, and nobody was
+  told. Now every bundle records, per database, the last attempt and the last good backup: a dump
+  that the bundle's files snapshot kept. A database is overdue when the latest scheduled bundle
+  run that has had time to finish did not back it up: the run counts once its wave has had the
+  last scheduled wave's duration plus an hour (at least two hours), a wave still running is
+  never judged, and a tenant bundled at the end of a long wave is not called overdue in the
+  meantime. Only tenants the wave covers and running database instances are judged: a stopped
+  instance shows "Stopped", a deleted one is not dumped and its rows are removed, and when a
+  tenant leaves the wave (suspended, archived, schedule disabled) its alert ends without a
+  notice. A sweep every 15 minutes announces each overdue database once: one notification to
+  the admins listing every newly overdue database with its tenant, last good backup and the
+  operator diagnosis, and one to each affected tenant listing its own with only the kind of
+  failure (not running, volume full, could not log in, timed out, tool missing, …), never the
+  error text. A database that alerted in the last 12 hours does not alert again until the
+  window has passed. When a database is backed up again, both get a "working again" notice,
+  only for databases that alerted. When the dump step did not run at all, every database is
+  marked failed and keeps its last good backup; a database is dropped from the status only when
+  it is shown to be gone, never because one bundle failed to list it. A tenant keeps at most
+  500 rows (the rest of an instance's databases fold into one row) and names are capped. The
+  status is shown on the admin tenant page (Storage & backups → Database backups), on the admin
+  Tenant Backups page (every overdue database, when there is one), and on the tenant's Backups
+  page, where a bundle in which not every database dumped is also marked. API, cursor-paginated:
+  `GET /api/v1/admin/tenants/:tenantId/database-backups`,
+  `GET /api/v1/admin/database-backups/overdue` and `GET /api/v1/tenant/backups/databases`.
+
+### Changed
+
+- **Bulwark webmail 1.21.3, up from 1.21.2.** The mail view is served at `/mail` again: 1.21.2's
+  release shipped the build that puts it under `/en/`, and old `/en/…` links still open. A
+  message's sender verdict is shown only when its Authentication-Results header was written by
+  the platform's own mail server, so mail imported from another server shows none; on lab DEV a
+  message delivered over port 25 carries a matching header, so arriving mail keeps its verdict.
+  Request bodies held at once are capped at 128 MB. The admin "log in as" into webmail passes all
+  26 checks of its integration test. Rolling back to 1.21.2 is safe.
+
+- **Reloader 1.4.25 and Valkey 9.2.0.** Reloader's two fixes concern options the platform does not
+  set; on lab DEV a changed Secret still rolls the workloads that name it. Valkey is not deployed
+  by default; 9.2.0 replicates with 9.1.3 in both directions, and its Sentinel starts with the
+  platform's configuration.
+
+- **Backups no longer claim the raw database files are a safe fallback.** The bundle summary,
+  its remediation text and the database recovery runbook said a database whose dump failed was
+  still covered by a "crash-consistent" copy of its data files. It is not: the files snapshot
+  reads the live volume file by file over minutes, with no volume snapshot, so the copy may not
+  restore. They now say a database without a good dump has no reliable backup in that bundle.
+
+- **A CloudNativePG operator update no longer restarts the platform database.** Until now every
+  operator update restarted each database instance once, to load the new instance manager (the
+  process in each database pod that runs Postgres). The operator now uses CloudNativePG's in-place
+  updates (`ENABLE_INSTANCE_MANAGER_INPLACE_UPDATES`): it sends its own instance manager to each
+  pod, which checks it and swaps itself in, while Postgres and its connections keep running.
+  Fresh installs get the setting from `bootstrap.sh`, existing clusters from host migration
+  `2026.11.16/0001`, which restarts only the operator itself. On lab staging, the operator was
+  moved from 1.30.2 to 1.30.1 and back, the second step by the unchanged 2026.11.15 update
+  procedure. This was done with three database instances and again with one. Each time, every
+  instance had the new instance manager within two seconds of the new operator starting, and the
+  swap took half a second. Through the migration and the operator changes, a new database
+  connection every second, a session held open throughout, and an API request that reads the
+  database every second all kept working: 1,070 database samples and 1,039 API requests, none
+  failed. The database pods, the Postgres processes, the replicas' streaming sessions and the
+  API's pooled connections were the same before and after. WAL archiving went on working. Before
+  this change, the same update on one instance stopped the database for about 30 to 50 seconds.
+  Two kinds of change still restart the database: a new
+  PostgreSQL image, and an operator update that also changes how the database pods are built.
+  `upgrade-cnpg.sh` now passes the same settings as `bootstrap.sh`. Before, it dropped this
+  setting and the operator's reconcile limit (3) whenever it ran.
+- **The Files page's "used" figure now comes from the volume itself.** It used to add up every
+  file with `du`, after every upload, delete and trash action. Now it is the volume's size minus
+  its free space, the figure that reaches 100% exactly when writes start failing. It can read a
+  little higher than before, because it counts the file system's own metadata. On a test volume
+  of 300,000 empty files the two differed by 250 MB of 2 GB; on ordinary volumes the difference
+  is small. The walk was also a memory risk: on lab DEV, `du` over 300,000 files charged 116 MiB
+  of metadata cache to the file manager's 256 MiB limit, the same failure the backup hit (see
+  Fixed).
+
+### Fixed
+
+- **On MySQL the tenant's database administrator can create routines and triggers.** MySQL logs
+  binary by default, and then only an account with SUPER may create a function, procedure or
+  trigger — which the administrator does not hold, so it could not, and a restore of a dump that
+  holds one failed. The platform now keeps `log_bin_trust_function_creators` on for MySQL
+  instances: a standalone server replicates nothing, and the setting lets an account create
+  routines only as itself.
+
+- **A database with a small memory limit now comes back after a restart.** On every start of a
+  database pod whose data already exists, an init container restores the platform's
+  administrator login, running a temporary server inside the database's own memory limit. It
+  started that server with the engine's defaults, not the lean options the catalog gives the
+  database itself: at 300Mi MySQL 8 was OOM-killed in that init container on every start and the
+  database never came up again (seen on DEV after a node restart). The temporary server now
+  starts lean on every engine — MySQL and MariaDB with performance schema off and small buffers,
+  PostgreSQL with small buffers and no preloaded library or WAL archiving, MongoDB with the
+  smallest WiredTiger cache it accepts. Checked at each catalog minimum: MariaDB 10.11/11.8/12.3
+  (256Mi), MySQL 8.0/8.4/9.7 (512Mi; also 300Mi), PostgreSQL 16/17/18 (128Mi) and MongoDB 7.0
+  (256Mi). MongoDB below 256Mi cannot run its reset at all (mongod and mongosh share the limit),
+  so **a database instance can no longer be created or resized below its catalog entry's minimum
+  memory** — the panel already offered that floor, the API now enforces it
+  (`MEMORY_BELOW_MINIMUM`). An existing instance keeps its template until its next redeploy with
+  the reset (Attach data, Repair, a restore).
+- **The nightly backup no longer gets a tenant's file manager killed for memory on a volume with
+  many files, and a cut-short SQLite dump is no longer reported as complete.** To find SQLite
+  files, the backup searched the whole volume inside the file manager with busybox `find`, which
+  reads every file's metadata. The kernel caches that metadata and counts it against the file
+  manager's 256 MiB limit; a later write to the volume cannot free that cache, so the kernel
+  killed the file manager instead. On production, a volume with 481,000 files filled 239 MB of
+  the limit, and the file manager was killed while dumping the third of 21 SQLite files. On lab
+  DEV, busybox `find` over 300,000 files charged 116 MiB. The backup then listed the two dumps
+  that had finished and silently left out the other 19. Now the file manager image ships GNU
+  `find`, which only reads directories here. The backup announces every SQLite file before
+  dumping any, so a file whose dump is cut short is reported as failed, with the exit code. A
+  partial dump never takes the final name and is removed before the files snapshot. The search
+  and the dumps are bounded in time, and a dump that would push the volume past 90% is skipped
+  and reported. The dump also hardens what runs as root over files the tenant controls: the dump
+  directory must be a plain directory on the volume, and the script enters it before writing.
+  Temporary files are created in one exclusive open, never through a planted symlink. Paths
+  containing a newline are skipped. A database with a pending rollback journal is skipped
+  instead of replayed. Databases without a write-ahead log are opened read-only. Two paths that
+  flatten to the same name no longer overwrite each other's dump.
+
+### Security
+
+- **The WAF sidecar no longer carries the four CRITICAL nginx CVEs and the Brotli CVE recorded
+  as not reachable last release.** It moves to the ModSecurity CRS image build
+  `4.30.0-nginx-alpine-202611190211`, with nginx 1.30.7 and brotli-libs 1.2.1; the rule set (CRS
+  4.30.0) and libmodsecurity 3.0.17 are unchanged. The build's new options (client certificate
+  checks, a TLS redirect port) are off by default. Both of the platform's exclusion files load,
+  and on lab DEV both replicas started without an error, passed a normal API request and blocked
+  a script and a path-traversal payload with 403.
+
+- **Flux moves to 2.10.1, up from 2.10.0.** Its kustomize-controller (v1.10.2) ships openssh
+  10.3_p1-r2, which fixes CVE-2026-123158; the CVE was recorded as not reachable, because the image
+  carries only the SSH client, not the server. The release also fixes cached credentials after a
+  username change, registry logins after a same-host redirect (ORAS 2.7.0), and Git checkouts that
+  removed the target of a relative symlink. `flux install --export` renders the same objects for
+  both versions except the four controller images and their version labels. Existing clusters get
+  it from host migration `2026.11.16/0002`, the same procedure as `2026.11.3/0002`: the four Flux
+  controllers roll and GitOps pauses for seconds, while workloads keep running. On lab DEV the
+  migration took 69 seconds, and a second run changed nothing.
+
+- **A database password quoted in a dump command no longer survives into a backup error.** The
+  errors from tenant database commands strip the password from the command line before it is
+  stored or shown, but they ended the password at the first space or quote: `-p'a b'`, a
+  password with an escaped `'`, `--password='a b'` or mongodump's `-p '…'` left the rest of the
+  password in the error, and `MYSQL_PWD=` was not stripped at all. These errors are written to the
+  per-database backup status and the admin notifications. The whole shell word is now removed,
+  quoted or not, on every line of the error.
+
 ## [2026.11.15] - 2026-11-25
 
 ### Fixed

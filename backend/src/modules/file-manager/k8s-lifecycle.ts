@@ -14,6 +14,9 @@ import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
 import { deriveFmSecret } from './internal-secret.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import {
+  databaseMaskMount, databaseMaskVolume, platformFilesContainer, protectedFolderDrift, protectedFolderInitContainer,
+} from './protected-folder.js';
+import {
   readPvcVolumeName, readVolumeAttachedNode, readVolumeReplicaNodes, resolveTenantDataNode,
 } from '../tenant-placement/data-node.js';
 
@@ -287,6 +290,8 @@ export async function ensureFileManagerRunning(
                   }],
                 },
               },
+              // R48: `database` must be a real directory before the mask lands.
+              initContainers: [protectedFolderInitContainer(image)],
               containers: [{
                 name: FM_NAME,
                 image,
@@ -435,6 +440,9 @@ export async function ensureFileManagerRunning(
                   // emptyDir and no nested /jail/home mount any more — the
                   // tenant's "/" IS their own data.
                   { name: 'tenant-storage', mountPath: '/data' },
+                  // R48: the protected database folder reads as empty and
+                  // read-only to everything this container runs.
+                  databaseMaskMount,
                 ],
                 livenessProbe: {
                   httpGet: { path: '/health', port: FM_PORT },
@@ -449,12 +457,17 @@ export async function ensureFileManagerRunning(
                   // passes, so a slow period directly adds to cold-start latency.
                   periodSeconds: 1,
                 },
-              }],
+              },
+              // R48: the platform's own file work on database folders. Must
+              // stay after the file-manager container (the drift check below
+              // reads containers[0]).
+              platformFilesContainer(image)],
               volumes: [
                 {
                   name: 'tenant-storage',
                   persistentVolumeClaim: { claimName: `${namespace}-storage` },
                 },
+                databaseMaskVolume,
               ],
             },
           },
@@ -556,7 +569,11 @@ export async function ensureFileManagerRunning(
     // retry onto a different node moves the pod (else the RWO PVC can't mount).
     const nodeSelectorMismatch = Boolean(targetNode) && existingNodeHost !== targetNode;
 
-    if (pvcMismatch || capsMismatch || imageMismatch || resourcesMismatch || pullPolicyMismatch || nodeSelectorMismatch) {
+    // R48: a template without the masked database folder (every file manager
+    // created before it) is recreated once onto one that has it.
+    const protectedFolderMismatch = protectedFolderDrift(templateSpec as Parameters<typeof protectedFolderDrift>[0], image) !== null;
+
+    if (pvcMismatch || capsMismatch || imageMismatch || resourcesMismatch || pullPolicyMismatch || nodeSelectorMismatch || protectedFolderMismatch) {
       // Spec mismatch — delete and recreate (K8s doesn't allow spec.selector changes)
       //
       // Recreate at whichever is HIGHER: what the caller asked for, or what was

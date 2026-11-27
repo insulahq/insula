@@ -46,7 +46,7 @@ IMG_MIGRATE=ghcr.io/stalwartlabs/stalwart-migrate:1.0.4
 IMG_PG=ghcr.io/cloudnative-pg/postgresql:18.7-202611160820-minimal-trixie  # = k8s/base/database.yaml
 IMG_PY=docker.io/library/python:3.15.2-slim-trixie
 IMG_RCLONE=docker.io/rclone/rclone:1.76.0               # = the platform's rclone pin
-IMG_VALKEY=docker.io/valkey/valkey:9.1.3-alpine         # = k8s/base/valkey
+IMG_VALKEY=docker.io/valkey/valkey:9.2.0-alpine         # = k8s/base/valkey
 IMG_MEILI=docker.io/getmeili/meilisearch:v1.56.0
 STALWART_CPU=${STALWART_CPU:-1000m}
 STALWART_MEM=${STALWART_MEM:-2Gi}

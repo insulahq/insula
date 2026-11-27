@@ -28,6 +28,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
+import { DATABASE_ROOT, KEPT_DATABASES_ROOT, isUnderDatabaseRoot } from '@insula/api-contracts';
 import { eq, and } from 'drizzle-orm';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
 import { resolveBundleRepoLayout } from '../../tenant-bundles/repo-layout.js';
@@ -66,6 +67,8 @@ const TOOLS_IMAGE_DEFAULT = resolvePlatformImage('tenant-backup-tools');
 const CREDS_MOUNT_PATH = '/var/run/restic-creds';
 const RESTIC_SNAPSHOT_ID_RE = /^[0-9a-f]{8,64}$/;
 const RESTORE_TMP = '/restore-tmp';
+/** The read-only empty volume over the protected database folder in a tenant restore (R48). */
+const PROTECTED_MASK_VOLUME = 'database-mask';
 
 export async function execFilesPathsItem(args: {
   app: FastifyInstance;
@@ -299,8 +302,16 @@ export function buildFilesPathsJobSpec(input: {
   activeDeadlineSeconds?: number;
   /** On the Job: the source shim it reads through (`sourceShimJobLabels`). */
   extraLabels?: Readonly<Record<string, string>>;
+  /**
+   * 'redirect' (the default, every tenant restore): files from the protected
+   * database folder land in kept-databases/ instead (R48). 'in-place': the
+   * platform's own pre-dump fetch, which restores dump files into each
+   * instance's folder for the import that follows.
+   */
+  protectedFolder?: 'redirect' | 'in-place';
 }): Record<string, unknown> {
-  const script = buildScript({ snapshotId: input.snapshotId, includePaths: input.includePaths });
+  const redirect = input.protectedFolder !== 'in-place';
+  const script = buildScript({ snapshotId: input.snapshotId, includePaths: input.includePaths, redirectProtected: redirect });
   const podSpec: Record<string, unknown> = {
     restartPolicy: 'Never',
     priorityClassName: 'platform-tenant-overhead',
@@ -315,6 +326,10 @@ export function buildFilesPathsJobSpec(input: {
       },
       volumeMounts: [
         { name: 'source', mountPath: FILES_CAPTURE_ROOT, readOnly: false },
+        // R48: a tenant restore cannot write into the protected folder — not
+        // even through a symlink the tenant left in a restored path (cp
+        // follows a destination link). The platform's pre-dump fetch can.
+        ...(redirect ? [{ name: PROTECTED_MASK_VOLUME, mountPath: `${FILES_CAPTURE_ROOT}/${DATABASE_ROOT}`, readOnly: true }] : []),
         { name: 'restore-tmp', mountPath: RESTORE_TMP },
         { name: 'scratch', mountPath: '/tmp' },
         { name: 'restic-creds', mountPath: CREDS_MOUNT_PATH, readOnly: true },
@@ -322,6 +337,7 @@ export function buildFilesPathsJobSpec(input: {
     }],
     volumes: [
       { name: 'source', persistentVolumeClaim: { claimName: input.pvcName } },
+      ...(redirect ? [{ name: PROTECTED_MASK_VOLUME, emptyDir: { sizeLimit: '1Mi' } }] : []),
       // restic stages the restore tree here before the cp -a overlay.
       { name: 'restore-tmp', emptyDir: { sizeLimit: '50Gi' } },
       { name: 'scratch', emptyDir: { sizeLimit: '2Gi' } },
@@ -372,7 +388,40 @@ export function buildFilesPathsJobSpec(input: {
   };
 }
 
-function buildScript(opts: { snapshotId: string; includePaths: ReadonlyArray<string> }): string {
+/**
+ * R48: restored files from the protected database folder never land over a
+ * running instance. Each `database/<engine>/<name>` folder goes to
+ * `kept-databases/<name>-restored-<time>` (anything else from under
+ * `database/` to `kept-databases/restored-<time>/`), where the tenant can look
+ * at it and attach it to an instance. `kept-databases` is made a real
+ * directory first, so a link there cannot steer the files back in.
+ */
+export function protectedFolderRedirectScript(stagedRoot: string, liveRoot: string): string {
+  const src = `${stagedRoot}/${DATABASE_ROOT}`;
+  const kept = `${liveRoot}/${KEPT_DATABASES_ROOT}`;
+  return [
+    `if [ -d '${src}' ] && [ ! -L '${src}' ]; then`,
+    '  STAMP=$(date -u +%Y%m%d-%H%M%S)',
+    `  if [ -L '${kept}' ] || { [ -e '${kept}' ] && [ ! -d '${kept}' ]; }; then mv '${kept}' '${kept}.moved-'"$STAMP"; fi`,
+    `  mkdir -p '${kept}'`,
+    `  for d in '${src}'/*/*; do`,
+    '    [ -d "$d" ] && [ ! -L "$d" ] || continue',
+    '    n=$(basename "$d"); i=1',
+    `    dest='${kept}/'"$n-restored-$STAMP"`,
+    `    while [ -e "$dest" ] || [ -L "$dest" ]; do i=$((i+1)); dest='${kept}/'"$n-restored-$STAMP-$i"; done`,
+    '    cp -a "$d" "$dest" && rm -rf "$d"',
+    '    echo "PROTECTED_FOLDER_REDIRECT $n -> ${dest#' + liveRoot + '/}"',
+    '  done',
+    `  if [ -n "$(find '${src}' \\( -type f -o -type l \\) 2>/dev/null | head -n 1)" ]; then`,
+    `    [ -L '${kept}' ] && { echo "ERROR: ${KEPT_DATABASES_ROOT} became a link"; exit 1; }`,
+    `    rest=$(mktemp -d '${kept}/'"restored-$STAMP-XXXXXX") && cp -a '${src}/.' "$rest/"`,
+    '  fi',
+    `  rm -rf '${src}'`,
+    'fi',
+  ].join('\n');
+}
+
+function buildScript(opts: { snapshotId: string; includePaths: ReadonlyArray<string>; redirectProtected: boolean }): string {
   // --include paths come from validated DISPLAY paths (control chars + `..`
   // + leading `/` rejected) mapped to /source/<p>. Real filenames may hold
   // shell metacharacters (`$ ( ) [ ] ' "` …), so single-quote-wrap each arg
@@ -396,9 +445,11 @@ function buildScript(opts: { snapshotId: string; includePaths: ReadonlyArray<str
     // restic lands files under <target>/source/<...> (capture root was
     // /source). Overlay them onto the live PVC. If nothing matched the
     // includes, the staged tree is empty and cp -a is a no-op.
-    `if [ -d ${RESTORE_TMP}${FILES_CAPTURE_ROOT} ]; then cp -a ${RESTORE_TMP}${FILES_CAPTURE_ROOT}/. ${FILES_CAPTURE_ROOT}/; fi`,
-    // Count restored entries for the progress line (best-effort).
+    // Count restored entries for the progress line (best-effort) — before the
+    // protected folder's files move to kept-databases/, so they count too.
     `COUNT=$(find ${RESTORE_TMP}${FILES_CAPTURE_ROOT} -type f 2>/dev/null | wc -l | tr -d ' ')`,
+    ...(opts.redirectProtected ? [protectedFolderRedirectScript(`${RESTORE_TMP}${FILES_CAPTURE_ROOT}`, FILES_CAPTURE_ROOT)] : []),
+    `if [ -d ${RESTORE_TMP}${FILES_CAPTURE_ROOT} ]; then cp -a ${RESTORE_TMP}${FILES_CAPTURE_ROOT}/. ${FILES_CAPTURE_ROOT}/; fi`,
     'echo "FILES_RESTORED count=${COUNT:-0}"',
   ].join('\n');
 }
@@ -466,6 +517,9 @@ async function resolveAffectedDbDeployments(
   for (const r of rows) {
     const sp = (r.storagePath ?? '').replace(/^\/+/, '').replace(/\/+$/, '');
     if (!sp) continue; // no datadir subpath → can't reason about overlap; skip
+    // R48: restored files from the protected folder go to kept-databases/,
+    // never over the instance, so it keeps running.
+    if (isUnderDatabaseRoot(sp)) continue;
     if (isFull || pathsOverlap(displayPaths, sp)) {
       out.push({ name: r.name, replicas: r.replicas ?? 1, storagePath: sp });
     }

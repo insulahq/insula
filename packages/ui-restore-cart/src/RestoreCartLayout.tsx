@@ -30,9 +30,12 @@ import {
   Globe,
   Box,
   Database,
+  HardDrive,
   RotateCcw,
 } from 'lucide-react';
 
+import { AddBtn, PickerError, PickerSkeleton, formatSize } from './picker-parts.js';
+import { DatabasesPicker } from './DatabasesPicker.js';
 import type {
   BrowseFilesEntry,
   RestoreCartHooks,
@@ -46,7 +49,7 @@ import type {
 // RestoreItemInfo, but the layout passes typed selectors at add-time.
 // Cast helpers keep call sites readable without `as unknown as`.
 
-export type Tab = 'config-tables' | 'deployments' | 'domains' | 'mailboxes' | 'files';
+export type Tab = 'config-tables' | 'deployments' | 'domains' | 'databases' | 'mailboxes' | 'files';
 
 export interface RestoreCartLayoutProps {
   readonly hooks: RestoreCartHooks;
@@ -135,6 +138,7 @@ export function RestoreCartLayout(p: RestoreCartLayoutProps) {
             <TabButton active={tab === 'config-tables'} onClick={() => setTab('config-tables')} icon={<Database className="h-4 w-4" />}>Tables</TabButton>
             <TabButton active={tab === 'deployments'} onClick={() => setTab('deployments')} icon={<Box className="h-4 w-4" />}>Deployments</TabButton>
             <TabButton active={tab === 'domains'} onClick={() => setTab('domains')} icon={<Globe className="h-4 w-4" />}>Domains</TabButton>
+            <TabButton active={tab === 'databases'} onClick={() => setTab('databases')} icon={<HardDrive className="h-4 w-4" />}>Databases</TabButton>
             <TabButton active={tab === 'mailboxes'} onClick={() => setTab('mailboxes')} icon={<Mail className="h-4 w-4" />}>Mailboxes</TabButton>
             <TabButton active={tab === 'files'} onClick={() => setTab('files')} icon={<FileText className="h-4 w-4" />}>Files</TabButton>
           </nav>
@@ -142,6 +146,7 @@ export function RestoreCartLayout(p: RestoreCartLayoutProps) {
             {tab === 'config-tables' && <ConfigTablesPicker hooks={hooks} bundleId={bundleId} cartReady={!!cartId} addItem={addItem} />}
             {tab === 'deployments' && <DeploymentsPicker hooks={hooks} bundleId={bundleId} cartReady={!!cartId} addItem={addItem} />}
             {tab === 'domains' && <DomainsPicker hooks={hooks} bundleId={bundleId} cartReady={!!cartId} addItem={addItem} />}
+            {tab === 'databases' && <DatabasesPicker hooks={hooks} bundleId={bundleId} cartReady={!!cartId} addItem={addItem} />}
             {tab === 'mailboxes' && <MailboxesPicker hooks={hooks} bundleId={bundleId} cartReady={!!cartId} addItem={addItem} />}
             {tab === 'files' && <FilesPicker hooks={hooks} bundleId={bundleId} cartReady={!!cartId} addItem={addItem} />}
           </div>
@@ -263,6 +268,7 @@ function itemTypeLabel(type: RestoreItemType): string {
     case 'domains-by-id': return 'Domain(s)';
     case 'mailboxes-by-address': return 'Mailbox(es)';
     case 'files-paths': return 'File(s)';
+    case 'databases-by-id': return 'Database(s)';
     default: return type;
   }
 }
@@ -345,7 +351,7 @@ function TabButton(props: { active: boolean; onClick: () => void; icon: ReactNod
   );
 }
 
-interface PickerProps {
+export interface PickerProps {
   hooks: RestoreCartHooks;
   bundleId: string;
   cartReady: boolean;
@@ -560,40 +566,3 @@ function FilesPicker({ hooks, bundleId, cartReady, addItem }: PickerProps) {
   );
 }
 
-function AddBtn(props: { onClick: () => void; disabled: boolean }) {
-  return (
-    <button
-      type="button"
-      onClick={props.onClick}
-      disabled={props.disabled}
-      className="rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
-    >
-      <Plus className="h-3.5 w-3.5" />
-    </button>
-  );
-}
-
-function PickerSkeleton() {
-  return (
-    <div className="space-y-2 py-4">
-      {[0, 1, 2, 3].map((i) => (
-        <div key={i} className="h-7 animate-pulse rounded bg-gray-100 dark:bg-gray-700" />
-      ))}
-    </div>
-  );
-}
-
-function PickerError({ msg }: { msg: string }) {
-  return (
-    <div className="rounded-md bg-red-50 p-3 text-sm text-red-800 dark:bg-red-950 dark:text-red-200">
-      <AlertCircle className="mr-1 inline h-4 w-4" /> {msg}
-    </div>
-  );
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)}GB`;
-}

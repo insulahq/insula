@@ -923,6 +923,34 @@ export async function notifyAdminTenantWorkloadsRecovered(
   return dispatchReporting(db, 'admin.tenant_workloads_recovered', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+export interface AdminTenantDatabaseAccessPayload {
+  readonly count: string;
+  /** "Tenant — instance (engine): what failed", one per instance. Rendered as a list. */
+  readonly tenantList: readonly string[];
+}
+/**
+ * The platform lost its administrator login to tenant database instances
+ * (db-admin-reconciler.ts). True when it reached someone — the caller records
+ * the alert, and owes a "restored" notice, only then.
+ */
+export async function notifyAdminTenantDatabaseAccessLost(
+  db: Database,
+  payload: AdminTenantDatabaseAccessPayload,
+  dedupeKey: string,
+): Promise<boolean> {
+  const res = await dispatchReporting(db, 'admin.tenant_database_access_lost', { kind: 'admin' }, payload, undefined, { dedupeKey });
+  return res.ok;
+}
+
+/** Closes a "login lost" alert. Sent only for an incident that alerted. */
+export async function notifyAdminTenantDatabaseAccessRestored(
+  db: Database,
+  payload: AdminTenantDatabaseAccessPayload,
+  dedupeKey: string,
+): Promise<void> {
+  await dispatchReporting(db, 'admin.tenant_database_access_restored', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface TenantWorkloadsRecoveredPayload {
   /** What is running again. Rendered as a list. */
   readonly workloads: readonly string[];
@@ -936,6 +964,81 @@ export async function notifyTenantWorkloadsRecovered(
   dedupeKey: string,
 ): Promise<{ ok: boolean; error?: string }> {
   return dispatchReporting(db, 'tenant.workloads_recovered', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
+export interface AdminDatabaseBackupStalePayload {
+  /**
+   * One item per database whose last good backup is older than the schedule
+   * allows: tenant, instance, database, when it last backed up (or "never")
+   * and why the last attempt failed. Rendered as a list.
+   */
+  readonly databases: readonly string[];
+  readonly databaseCount: string;
+  readonly tenantCount: string;
+  /** The scheduled run they had no good backup in, as "YYYY-MM-DD HH:MM UTC". */
+  readonly missedRun: string;
+}
+/**
+ * Tenant databases with no good backup for longer than the schedule allows.
+ *
+ * Every bundle recorded its dumps' outcome on itself and nothing read it: a
+ * production tenant's databases failed to dump every night for at least two
+ * weeks while every bundle said `completed`. One notification per sweep lists
+ * every newly overdue database; `tenantId` is passed only when they all belong
+ * to one tenant, so the link opens that tenant instead of the fleet page.
+ */
+export async function notifyAdminDatabaseBackupStale(
+  db: Database,
+  tenantId: string | undefined,
+  payload: AdminDatabaseBackupStalePayload,
+  dedupeKey: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return dispatchReporting(db, 'admin.database_backup_stale', { kind: 'admin' }, payload, tenantId, { dedupeKey });
+}
+
+export interface AdminDatabaseBackupRecoveredPayload {
+  /** The databases backed up again, each with when. Rendered as a list. */
+  readonly databases: readonly string[];
+  readonly databaseCount: string;
+}
+/** The end of a stale-backup alert. Sent only for episodes that alerted. */
+export async function notifyAdminDatabaseBackupRecovered(
+  db: Database,
+  tenantId: string | undefined,
+  payload: AdminDatabaseBackupRecoveredPayload,
+  dedupeKey: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return dispatchReporting(db, 'admin.database_backup_recovered', { kind: 'admin' }, payload, tenantId, { dedupeKey });
+}
+
+export interface TenantDatabaseBackupStalePayload {
+  /** The tenant's overdue databases, each with its last good backup and what went wrong. Rendered as a list. */
+  readonly databases: readonly string[];
+  /** The scheduled run they had no good backup in. */
+  readonly missedRun: string;
+}
+/** The tenant's own copy: these databases of yours have no recent backup. */
+export async function notifyTenantDatabaseBackupStale(
+  db: Database,
+  tenantId: string,
+  payload: TenantDatabaseBackupStalePayload,
+  dedupeKey: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return dispatchReporting(db, 'tenant.database_backup_stale', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
+export interface TenantDatabaseBackupRecoveredPayload {
+  /** The tenant's databases backed up again. Rendered as a list. */
+  readonly databases: readonly string[];
+}
+/** The tenant's copy of "backed up again", after an overdue notice. */
+export async function notifyTenantDatabaseBackupRecovered(
+  db: Database,
+  tenantId: string,
+  payload: TenantDatabaseBackupRecoveredPayload,
+  dedupeKey: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return dispatchReporting(db, 'tenant.database_backup_recovered', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
 }
 
 export interface AdminNodeDownPayload {

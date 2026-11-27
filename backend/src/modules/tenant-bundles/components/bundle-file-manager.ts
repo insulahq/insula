@@ -18,24 +18,14 @@
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import type { BackupDatabaseDumps } from '@insula/api-contracts';
 import type { FileManagerLease } from '../../file-manager/lease.js';
-import type { PreDumpDeploymentResult } from './database-predump.js';
 
 type DumpDeployment = BackupDatabaseDumps['deployments'][number];
 
 export type AcquireLease = (k8s: K8sClients, namespace: string, purpose: string) => Promise<FileManagerLease>;
 
-/**
- * Did this bundle leave predump files on the live PVC? Any attempted database
- * dump counts — a failed one can leave a partial file — and any SQLite dump
- * that was written. Pure.
- */
-export function predumpsNeedCleanup(
-  dbResults: ReadonlyArray<PreDumpDeploymentResult>,
-  sqlite: DumpDeployment | null,
-): boolean {
-  const dbAttempted = dbResults.some((r) => r.databaseDumps.length + r.databaseFailures.length > 0);
-  const sqliteWritten = (sqlite?.databases ?? []).some((d) => d.status === 'dumped');
-  return dbAttempted || sqliteWritten;
+/** Did this bundle leave SQLite dumps on the live PVC? Only those that were written. Pure. */
+export function predumpsNeedCleanup(sqlite: DumpDeployment | null): boolean {
+  return (sqlite?.databases ?? []).some((d) => d.status === 'dumped');
 }
 
 /**

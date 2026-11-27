@@ -127,6 +127,7 @@ import { backupsV2Routes } from './modules/tenant-bundles/routes.js';
 import { backupsV2InternalUploadRoutes } from './modules/tenant-bundles/internal-upload-route.js';
 import { backupsV2InternalDownloadRoutes } from './modules/tenant-bundles/internal-download-route.js';
 import { backupsV2ClientRoutes } from './modules/tenant-bundles/tenant-routes.js';
+import { databaseBackupStatusAdminRoutes, databaseBackupStatusTenantRoutes } from './modules/database-backup-status/routes.js';
 import { bundleImportAdminRoutes, bundleImportTenantRoutes } from './modules/tenant-bundles/import-routes.js';
 import { backupRestoreRoutes } from './modules/backup-restore/routes.js';
 import { drRecoverRoutes } from './modules/dr-recover/routes.js';
@@ -766,6 +767,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(backupsV2InternalUploadRoutes, { prefix: '/api/v1' });
   await app.register(backupsV2InternalDownloadRoutes, { prefix: '/api/v1' });
   await app.register(backupsV2ClientRoutes, { prefix: '/api/v1' });
+  await app.register(databaseBackupStatusAdminRoutes, { prefix: '/api/v1' });
+  await app.register(databaseBackupStatusTenantRoutes, { prefix: '/api/v1' });
   await app.register(bundleImportAdminRoutes, { prefix: '/api/v1' });
   await app.register(bundleImportTenantRoutes, { prefix: '/api/v1' });
   await app.register(backupRestoreRoutes, { prefix: '/api/v1' });
@@ -1843,6 +1846,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'tenant-bundle global scheduler: startup skipped');
       }
 
+      // Database backups overdue / working again: one alert per episode to
+      // the admins and the tenant, from the status every bundle records
+      // (database-backup-status/). 15-minute sweep on one replica.
+      try {
+        const { startDatabaseBackupStatusScheduler } = await import('./modules/database-backup-status/scheduler.js');
+        const stopDbBackupSweep = startDatabaseBackupStatusScheduler(app.db);
+        app.addHook('onClose', () => stopDbBackupSweep());
+      } catch (err) {
+        app.log.warn({ err }, 'database-backup-status: scheduler startup skipped');
+      }
+
       // System Backup sweeper (Phase 2.4c) — orphan-pending flip
       // (>10 min) + 90-day retention purge of failed pg_dump rows.
       try {
@@ -2499,6 +2513,24 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           batch: k8sForImapsync.batch,
         });
         app.addHook('onClose', () => backupHealthStop());
+
+        // Tenant database logins: the platform's administrator login (socket-only
+        // root, trust, pod-local Mongo root) and the tenant's own administrator
+        // account, converted once and kept in shape every ten minutes
+        // (deployments/db-admin-reconciler.ts).
+        const encryptionKeyForDbAdmin = app.config?.PLATFORM_ENCRYPTION_KEY ?? process.env.PLATFORM_ENCRYPTION_KEY;
+        if (encryptionKeyForDbAdmin) {
+          const { startDatabaseAdminScheduler } = await import('./modules/deployments/db-admin-reconciler.js');
+          const databaseAdminStop = startDatabaseAdminScheduler({
+            db: app.db,
+            k8s: k8sForImapsync,
+            kubeconfigPath: (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined,
+            encryptionKey: encryptionKeyForDbAdmin,
+          });
+          app.addHook('onClose', () => databaseAdminStop());
+        } else {
+          app.log.warn('[database-admin] PLATFORM_ENCRYPTION_KEY unset — tenant database logins are not reconciled');
+        }
 
         // Private workers: which are connected, from each tenant's frps status
         // API (nothing else reports it), after a startup reconcile that brings

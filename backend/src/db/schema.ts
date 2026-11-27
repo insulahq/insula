@@ -19,6 +19,7 @@ import {
   doublePrecision,
 } from 'drizzle-orm/pg-core';
 import { sql, isNotNull } from 'drizzle-orm';
+import type { BackupDatabaseDumps } from '@insula/api-contracts';
 
 // PostgreSQL bytea — Drizzle has no first-class bytea helper, so we
 // declare a custom type that maps Buffer ↔ bytea. Used for WebAuthn
@@ -744,6 +745,11 @@ export const deployments = pgTable('deployments', {
   memoryRequest: varchar('memory_request', { length: 20 }).notNull().default('256Mi'),
   configuration: jsonb('configuration').$type<Record<string, unknown> | null>(),
   storagePath: varchar('storage_path', { length: 500 }),
+  /** R48: set while a standalone database's data is detached — the folder it was moved to. */
+  dataDetachedPath: varchar('data_detached_path', { length: 500 }),
+  dataDetachedAt: timestamp('data_detached_at', { withTimezone: true }),
+  /** R48: the storage path before the data moved into the protected folder (old bundles' pre-dumps). */
+  storageRelocatedFrom: varchar('storage_relocated_from', { length: 500 }),
   /**
    * Tenant-defined extra volume mounts (migration 0093). Array of
    * `{ folder, mount_path, read_only }` validated by `extraMountsSchema`.
@@ -824,6 +830,65 @@ export const deployments = pgTable('deployments', {
 //    (image_reference, registry_host, current_tag); the tenant panel's
 //    lazy-load "Updates available?" pill reads this. Stale rows are
 //    served immediately and a background refresh fires.
+
+/**
+ * How the platform reaches each tenant database instance's administrator
+ * account, and the lockout incident (migration 0189, db-admin-access.ts).
+ */
+export const databaseAdminState = pgTable('database_admin_state', {
+  deploymentId: varchar('deployment_id', { length: 36 })
+    .primaryKey()
+    .references(() => deployments.id, { onDelete: 'cascade' }),
+  tenantId: varchar('tenant_id', { length: 36 })
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  engine: varchar('engine', { length: 16 }).notNull(),
+  /** socket | trust | restricted | password | locked | open | unreachable */
+  mode: varchar('mode', { length: 16 }).notNull(),
+  detail: text('detail'),
+  lastChanges: text('last_changes'),
+  checkedAt: timestamp('checked_at', { withTimezone: true }).notNull().defaultNow(),
+  /** When the instance first reached its target login. */
+  convertedAt: timestamp('converted_at', { withTimezone: true }),
+  lockedSince: timestamp('locked_since', { withTimezone: true }),
+  /** Set once the lockout alert reached someone; drives the recovery notice. */
+  alertedAt: timestamp('alerted_at', { withTimezone: true }),
+  /** The last pass over what a tenant could have left while it held root. */
+  hardenedAt: timestamp('hardened_at', { withTimezone: true }),
+  /** The pod that pass ran in: a new pod (a restore, a re-point) is hardened again at once. */
+  hardenedPod: varchar('hardened_pod', { length: 253 }),
+  /** The last full check; between two, a tick only proves the logins still work. */
+  shapedAt: timestamp('shaped_at', { withTimezone: true }),
+  /** Since when the instance has not answered (an incident once it lasts an hour). */
+  unreachableSince: timestamp('unreachable_since', { withTimezone: true }),
+  /** Since when its set-up (the hardening pass) keeps failing — the tenant administrator stays hidden meanwhile. */
+  stuckSince: timestamp('stuck_since', { withTimezone: true }),
+  /** The last try of a hardening pass that did not finish: tried again hourly. */
+  hardenTriedAt: timestamp('harden_tried_at', { withTimezone: true }),
+  /** MongoDB: the root password the platform set (encrypted), kept to put a configuration that lost it right. */
+  rootSecretCipher: text('root_secret_cipher'),
+  /** MongoDB: when root's password was replaced by one only the platform knows. */
+  rootRotatedAt: timestamp('root_rotated_at', { withTimezone: true }),
+}, (table) => [
+  index('database_admin_state_tenant_idx').on(table.tenantId),
+]);
+
+/**
+ * The tenant's administrator account on each database instance (migration
+ * 0189, tenant-admin.ts). The password is AES-256-GCM-encrypted with
+ * PLATFORM_ENCRYPTION_KEY; only the credentials view decrypts it.
+ */
+export const databaseAdminAccounts = pgTable('database_admin_accounts', {
+  deploymentId: varchar('deployment_id', { length: 36 })
+    .primaryKey()
+    .references(() => deployments.id, { onDelete: 'cascade' }),
+  username: varchar('username', { length: 64 }).notNull(),
+  passwordCipher: text('password_cipher').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  rotatedAt: timestamp('rotated_at', { withTimezone: true }),
+  /** When the account was first set up in the database: the panel shows it from then on. */
+  readyAt: timestamp('ready_at', { withTimezone: true }),
+});
 
 export const customDeploymentImageCredentials = pgTable('custom_deployment_image_credentials', {
   id: varchar('id', { length: 36 }).primaryKey(),
@@ -4095,6 +4160,7 @@ export const backupComponentNameEnum = pgEnum('backup_component_name', [
   'mailboxes',
   'config',
   'secrets',
+  'databases',
 ]);
 
 export const backupComponentStatusEnum = pgEnum('backup_component_status', [
@@ -4171,16 +4237,7 @@ export const backupJobs = pgTable('backup_jobs', {
   // @insula/api-contracts). Null on bundles captured before the column
   // existed. Independent of `status` — a `completed` bundle may carry a
   // `degraded` dump summary (the raw-files floor keeps it restorable).
-  databaseDumps: jsonb('database_dumps').$type<{
-    status: 'ok' | 'degraded' | 'none';
-    deployments: Array<{
-      deploymentId: string;
-      deploymentName: string;
-      engine: string | null;
-      databases: Array<{ name: string; status: 'dumped' | 'degraded' | 'failed'; sizeBytes: number; error?: string | null }>;
-    }>;
-    remediation?: string | null;
-  } | null>(),
+  databaseDumps: jsonb('database_dumps').$type<BackupDatabaseDumps | null>(),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
@@ -4684,6 +4741,40 @@ export const nodeHealthState = pgTable('node_health_state', {
 
 export type NodeHealthState = typeof nodeHealthState.$inferSelect;
 export type NewNodeHealthState = typeof nodeHealthState.$inferInsert;
+
+/**
+ * One row per tenant database: its last backup attempt and its last good one
+ * (migration 0187). Written after every bundle from its `database_dumps`
+ * summary (database-backup-status/recorder.ts); read by the stale-backup sweep
+ * and by both panels. `subjectKey` is the deployment id, or 'sqlite' for
+ * SQLite files on the tenant volume.
+ */
+export const databaseBackupStatus = pgTable('database_backup_status', {
+  tenantId: varchar('tenant_id', { length: 36 })
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  subjectKey: varchar('subject_key', { length: 64 }).notNull(),
+  databaseName: text('database_name').notNull(),
+  deploymentId: varchar('deployment_id', { length: 36 }),
+  deploymentName: varchar('deployment_name', { length: 255 }).notNull(),
+  engine: varchar('engine', { length: 32 }),
+  lastAttemptAt: timestamp('last_attempt_at', { withTimezone: true }).notNull(),
+  lastAttemptBundleId: varchar('last_attempt_bundle_id', { length: 64 }).notNull(),
+  /** 'dumped' | 'degraded' | 'failed' (CHECK in the migration). */
+  lastStatus: varchar('last_status', { length: 16 }).notNull(),
+  lastError: text('last_error'),
+  lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
+  lastSuccessBundleId: varchar('last_success_bundle_id', { length: 64 }),
+  lastSuccessSizeBytes: bigint('last_success_size_bytes', { mode: 'number' }),
+  staleSince: timestamp('stale_since', { withTimezone: true }),
+  alertedAt: timestamp('alerted_at', { withTimezone: true }),
+  /** When this database last caused an overdue alert; survives the episode (migration 0188). */
+  lastAlertedAt: timestamp('last_alerted_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.tenantId, table.subjectKey, table.databaseName] }),
+  index('database_backup_status_stale_idx').on(table.staleSince).where(sql`stale_since IS NOT NULL`),
+]);
 
 // Migration 0133 — per-tenant resource-saturation EPISODES.
 //

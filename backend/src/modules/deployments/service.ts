@@ -7,7 +7,8 @@
 import { eq, and, ne, desc, asc, lt, gt, sql, isNotNull } from 'drizzle-orm';
 import { deployments, catalogEntries, catalogEntryVersions, tenants, clusterNodes, hostingPlans, ingressRoutes, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import { normalizeMountPath } from '@insula/api-contracts';
+import { DATABASE_ROOT, canonicalDatabasePath, isUnderDatabaseRoot, normalizeMountPath } from '@insula/api-contracts';
+import { adoptFolderForNewDatabase, refuseDetachedData, releaseDatabaseFolderOnDelete, type InstanceControl } from './database-data.js';
 import { InsufficientResourceBudgetError } from './resource-allocator.js';
 import { findAdminPasswordEnvVar } from './password-reset.js';
 import { capabilityOf, deleteDeploymentSites, multihostMountsFor, loadSiteFoldersFor } from '../multihost/reconciler.js';
@@ -65,6 +66,7 @@ import type { Database } from '../../db/index.js';
 import type { CreateDeploymentInput, UpdateDeploymentInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
 import { assertApplicationRoom, refuseDeleted, withApplicationSlot } from './application-limit.js';
+import { isPlatformOnlyConfigKey, withoutPlatformOnlyConfig, withStoredPlatformOnlyConfig } from './platform-only-config.js';
 
 // ─── Error Helpers ──────────────────────────────────────────────────────────
 
@@ -106,6 +108,55 @@ export function generateSecurePassword(length: number): string {
  * form is gone. The Zod schema cannot catch this: it only sees the tenant's
  * own list, never the manifest's volumes.
  */
+/**
+ * A standalone database instance takes no extra mounts. A folder of the
+ * tenant's mounted over /usr/local/bin or /etc/mysql/conf.d would run the
+ * tenant's code as the container's root — the platform's administrator login
+ * there (db-admin-access.ts). Refused on create and edit, and left out of
+ * every render (stored ones from before are cleared by the reconciler).
+ */
+function refuseExtraMountsOnDatabase(
+  entryType: string | null | undefined,
+  extraMounts: ReadonlyArray<unknown> | null | undefined,
+): void {
+  if (entryType !== 'database' || !extraMounts || extraMounts.length === 0) return;
+  throw new ApiError('EXTRA_MOUNTS_NOT_ALLOWED', 'A database instance cannot mount extra folders', 400, { field: 'extra_mounts' },
+    'Import files through the SQL Manager instead; it reads them from your file storage.');
+}
+
+/**
+ * A database instance may not run below its catalog entry's minimum memory.
+ * The panel already offers that floor, but the API took anything — and below
+ * it the instance's own reset init container is OOM-killed on every start
+ * (MongoDB's below 256Mi: mongod and mongosh share the limit), so it never
+ * comes back after a restart.
+ */
+export async function refuseMemoryBelowDatabaseMinimum(
+  entry: { readonly type: string | null; readonly name?: string | null; readonly resources: unknown } | undefined,
+  memoryRequest: string | undefined,
+): Promise<void> {
+  if (!entry || entry.type !== 'database' || !memoryRequest) return;
+  const minimum = parseJsonField<{ minimum?: { memory?: string } }>(entry.resources as never)?.minimum?.memory;
+  if (!minimum) return;
+  const { parseResourceValue } = await import('../../shared/resource-parser.js');
+  if (parseResourceValue(memoryRequest, 'memory') < parseResourceValue(minimum, 'memory')) {
+    throw new ApiError('MEMORY_BELOW_MINIMUM', `${entry.name ?? 'This database'} needs at least ${minimum} of memory.`, 400,
+      { field: 'memory_request', minimum });
+  }
+}
+
+/** The extra mounts a render applies: none for a standalone database instance, none into the protected folder. */
+export function renderedExtraMounts<T extends { folder?: unknown }>(entryType: string | null | undefined, extraMounts: T[] | null | undefined): T[] | undefined {
+  if (entryType === 'database') return undefined;
+  // R48: an extra mount saved before the protected folder existed may still
+  // name it; it would hand a database's live files to this container.
+  const kept = (extraMounts ?? []).filter((m) => !(typeof m.folder === 'string' && isUnderDatabaseRoot(m.folder)));
+  if (extraMounts && kept.length < extraMounts.length) {
+    console.warn(`[deployments] left out ${extraMounts.length - kept.length} extra mount(s) into the protected ${DATABASE_ROOT}/ folder`);
+  }
+  return extraMounts ? kept : undefined;
+}
+
 function assertExtraMountsDoNotCollide(
   extraMounts: ReadonlyArray<{ folder: string; mount_path: string }> | null | undefined,
   volumes: ReadonlyArray<{ container_path: string }>,
@@ -489,6 +540,7 @@ export async function createDeployment(
   // message ("enable Allow Custom Host Ports on … in System Settings").
   // Returns the firewall block (or null) so we can pass it through to
   // deployCatalogEntry without re-parsing the manifest.
+  refuseExtraMountsOnDatabase(entry.type, input.extra_mounts);
   assertExtraMountsDoNotCollide(input.extra_mounts, volumes);
 
   const firewall = await enforceHostPortGate(db, entry, components, tenant.nodeName);
@@ -497,6 +549,7 @@ export async function createDeployment(
   const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
   const catalogManifestCpu = resources?.recommended?.cpu ?? resources?.minimum?.cpu ?? '0.1';
   const catalogMemory = resources?.recommended?.memory ?? resources?.minimum?.memory ?? '256Mi';
+  await refuseMemoryBelowDatabaseMinimum(entry, input.memory_request);
   /**
    * ★ A tiered tenant's new workload asks for a SHARE, not a reservation.
    *
@@ -549,19 +602,43 @@ export async function createDeployment(
   }
 
   // Merge: fixed env vars + user config + generated secrets (generated cannot be overridden by user)
+  // A new MariaDB/MySQL instance initialises root on localhost only, so a
+  // root@'%' never exists to be reached over the network (db-admin-access.ts
+  // then makes root@localhost socket-only). The images read it on first start
+  // only; it rides along with this first deploy's env, and a later render
+  // without it changes nothing.
+  // Standalone instances only: an app stack's app may connect as root over
+  // the network, and its root stays as the app expects.
+  const standaloneDatabase = entry.type === 'database';
+  const dbEngineOfEntry = (components as Array<{ database?: string }>).find((c) => typeof c.database === 'string')?.database;
+  const rootHostEnv: Record<string, string> = !standaloneDatabase ? {}
+    : dbEngineOfEntry === 'mariadb' ? { MARIADB_ROOT_HOST: 'localhost' }
+    : dbEngineOfEntry === 'mysql' ? { MYSQL_ROOT_HOST: 'localhost' } : {};
+
+  // The tenant's input never sets a standalone instance's administrator login
+  // or the images' root switches (platform-only-config.ts).
   const finalConfiguration: Record<string, unknown> = {
     ...fixedEnvVars,
-    ...(input.configuration ?? {}),
+    ...rootHostEnv,
+    ...(standaloneDatabase ? withoutPlatformOnlyConfig(input.configuration ?? {}) : (input.configuration ?? {})),
     ...generatedSecrets,
   };
 
   // Build envVars object for the deployer — merged fixed so deployer treats them uniformly
-  const finalEnvVars = { fixed: fixedEnvVars };
+  const finalEnvVars = { fixed: { ...fixedEnvVars, ...rootHostEnv } };
 
   const id = crypto.randomUUID();
-  const storagePath = input.storage_mode === 'custom' && input.storage_path
+  // A standalone database always keeps its data in the protected folder
+  // (R48); a folder the tenant picked is moved there once the row exists.
+  const isStandaloneDatabase = entry.type === 'database';
+  const adoptFolder = isStandaloneDatabase && input.storage_mode === 'custom' && input.storage_path
     ? input.storage_path
-    : `${entry.type}/${entry.code}/${input.name}`;
+    : null;
+  const storagePath = isStandaloneDatabase
+    ? canonicalDatabasePath(entry.code, input.name)
+    : input.storage_mode === 'custom' && input.storage_path
+      ? input.storage_path
+      : `${entry.type}/${entry.code}/${input.name}`;
 
   // Pre-flight: distinguish "active duplicate" from "soft-deleted with same name".
   // Soft-deleted rows still hold the (tenant_id, name) slot deliberately so a
@@ -635,6 +712,17 @@ export async function createDeployment(
       );
     }
     throw err;
+  }
+
+  // R48: the picked folder becomes the instance's data, moved into the
+  // protected folder before the first start. A failed move leaves no instance.
+  if (adoptFolder && k8s && namespace) {
+    try {
+      await adoptFolderForNewDatabase({ db, k8s }, tenantId, namespace, adoptFolder, storagePath);
+    } catch (err) {
+      await db.delete(deployments).where(eq(deployments.id, id));
+      throw err;
+    }
   }
 
   // Deploy to K8s if cluster is available
@@ -886,16 +974,48 @@ export async function updateDeployment(
   // Every edit, not only a status change: a configuration or replica edit
   // redeploys the Kubernetes objects of the row it changes.
   refuseDeleted(deployment, input.status === 'stopped' ? 'stop' : input.status !== undefined ? 'start' : 'change');
+  if (input.status === 'running') refuseDetachedData(deployment, 'start');
+  // R48: a standalone database's folder is the platform's — Detach data and
+  // Attach data move it; re-pointing it here would run the database on a
+  // folder the file manager can edit.
+  if (input.storage_path !== undefined && deployment.catalogEntryId) {
+    const [e] = await db.select({ type: catalogEntries.type }).from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId));
+    if (e?.type === 'database') {
+      throw new ApiError('DATABASE_FOLDER_MANAGED', 'A database instance\'s data folder is managed by the platform. Use Detach data and Attach data instead.', 409);
+    }
+  }
 
   const updateValues: Record<string, unknown> = {};
   if (input.name !== undefined) updateValues.name = input.name;
   if (input.replica_count !== undefined) updateValues.replicaCount = input.replica_count;
   if (input.cpu_request !== undefined) updateValues.cpuRequest = input.cpu_request;
+  if (input.memory_request !== undefined && deployment.catalogEntryId) {
+    const [entryForMemory] = await db.select().from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId));
+    await refuseMemoryBelowDatabaseMinimum(entryForMemory, input.memory_request);
+  }
   if (input.memory_request !== undefined) updateValues.memoryRequest = input.memory_request;
-  if (input.configuration !== undefined) updateValues.configuration = input.configuration;
+  // The panel never sees the platform's keys, so a save keeps the stored
+  // values — and a save that sends its own cannot change them.
+  const storedConfiguration = parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
+  const [entryOfDeployment] = input.configuration !== undefined && deployment.catalogEntryId
+    ? await db.select({ type: catalogEntries.type }).from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId))
+    : [];
+  const nextConfiguration = input.configuration === undefined ? undefined
+    // No catalog entry (a custom container): not a database instance. An entry
+    // that is gone: assume one, keeping the platform's keys.
+    : (deployment.catalogEntryId ? (entryOfDeployment?.type ?? 'database') : 'custom') === 'database'
+      ? withStoredPlatformOnlyConfig(storedConfiguration, input.configuration)
+    : input.configuration;
+  if (nextConfiguration !== undefined) updateValues.configuration = nextConfiguration;
   // Replaces the whole list. A volumeMount change is a pod-template change,
   // so the redeploy below is what actually applies it.
-  if (input.extra_mounts !== undefined) updateValues.extraMounts = input.extra_mounts;
+  if (input.extra_mounts !== undefined) {
+    if (input.extra_mounts && input.extra_mounts.length > 0 && deployment.catalogEntryId) {
+      const [e] = await db.select({ type: catalogEntries.type }).from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId));
+      refuseExtraMountsOnDatabase(e?.type, input.extra_mounts);
+    }
+    updateValues.extraMounts = input.extra_mounts;
+  }
   // RE-POINT, not move. storagePath is the `subPath` of the tenant-storage
   // volumeMount, so writing it here and redeploying below is the whole change:
   // the pod comes back reading the new folder and the old one keeps its
@@ -946,9 +1066,8 @@ export async function updateDeployment(
   //
   // Reported against an Apache/PHP deployment: PHP_DISPLAY_ERRORS and
   // APACHE_DOCUMENT_ROOT saved, pod restarted, neither took effect.
-  const configurationChanged = input.configuration !== undefined
-    && canonicalJson(input.configuration)
-      !== canonicalJson(parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {});
+  const configurationChanged = nextConfiguration !== undefined
+    && canonicalJson(nextConfiguration) !== canonicalJson(storedConfiguration);
 
   // Replica count is rendered from the row by redeployWithCurrentConfig as
   // well, and had the identical problem — persisted, never applied.
@@ -1132,6 +1251,25 @@ export async function deleteDeployment(
   }
 }
 
+/**
+ * Stopping and redeploying a standalone database instance, for moving its
+ * data (R48, database-data.ts). The redeploy arms the reset init container:
+ * the folder may come from anywhere, and the platform's login must hold on
+ * the start that follows.
+ */
+export function databaseInstanceControl(db: Database, tenantId: string, deploymentId: string, k8s: K8sClients): InstanceControl {
+  return {
+    stop: async () => { await updateDeployment(db, tenantId, deploymentId, { status: 'stopped' }, k8s); },
+    redeploy: async (replicas) => {
+      if (replicas > 0) {
+        await db.update(deployments).set({ status: 'pending', lastError: null }).where(eq(deployments.id, deploymentId));
+      }
+      const fresh = await getDeploymentById(db, tenantId, deploymentId);
+      await redeployWithCurrentConfig(db, fresh as typeof deployments.$inferSelect, k8s, { armPasswordReset: true, replicas });
+    },
+  };
+}
+
 export async function restoreDeployment(
   db: Database,
   tenantId: string,
@@ -1160,7 +1298,10 @@ export async function restoreDeployment(
     .where(and(eq(deployments.id, deploymentId), eq(deployments.status, 'deleted'))));
 
   // Scale K8s resources back up
-  if (k8s) {
+  // R48: an instance whose data is detached comes back stopped — started, it
+  // would initialise a fresh database on an empty folder.
+  const detached = Boolean(deployment.dataDetachedPath);
+  if (k8s && !detached) {
     const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
     const namespace = tenant?.kubernetesNamespace;
 
@@ -1191,7 +1332,7 @@ export async function restoreDeployment(
   }
 
   await db.update(deployments)
-    .set({ status: 'running', deletedAt: null, lastError: null })
+    .set({ status: detached ? 'stopped' : 'running', deletedAt: null, lastError: null })
     .where(eq(deployments.id, deploymentId));
 
   return getDeploymentById(db, tenantId, deploymentId);
@@ -1241,7 +1382,27 @@ export async function hardDeleteDeployment(
         );
       }
 
-      if (deleteData && deployment.storagePath) {
+      // R48: a standalone database's folder leaves the protected folder —
+      // kept in kept-databases/, from there into the recycle bin, or removed.
+      const [ofEntry] = deployment.catalogEntryId
+        ? await db.select({ type: catalogEntries.type }).from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId))
+        : [];
+      // Only a folder in the protected folder (or a detached one) — one not
+      // moved there yet is still the file manager's to remove.
+      const standaloneDatabase = !isCustomDeployment(deployment) && ofEntry?.type === 'database'
+        && (Boolean(deployment.dataDetachedPath) || isUnderDatabaseRoot(deployment.storagePath ?? ''));
+      let dataFolder = deployment.storagePath;
+      if (standaloneDatabase) {
+        try {
+          dataFolder = await releaseDatabaseFolderOnDelete({ db, k8s }, namespace, deployment,
+            deleteData && permanentData === true ? 'remove' : 'keep');
+        } catch (err) {
+          dataFolder = null;
+          console.warn(`[deployments] hard-delete: the data of '${deployment.name}' stayed in the protected folder — the tenant sees it there as a `
+            + `folder without an instance and can move it to kept-databases/: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      if (deleteData && dataFolder && !(standaloneDatabase && permanentData === true)) {
         try {
           const { fileManagerRequest } = await import('../file-manager/service.js');
           const { getFileManagerImage } = await import('../file-manager/image.js');
@@ -1258,7 +1419,7 @@ export async function hardDeleteDeployment(
           await fileManagerRequest(k8s, kubeconfigPath, namespace, getFileManagerImage(), '/rm', {
             method: 'POST',
             body: JSON.stringify({
-              path: `/${deployment.storagePath}`,
+              path: `/${dataFolder}`,
               permanent: permanentData === true,
               actor: actor ?? null,
               origin: 'deployment',
@@ -1410,6 +1571,10 @@ export async function updateDeploymentResources(
   const deployment = await getDeploymentById(db, tenantId, deploymentId);
   refuseDeleted(deployment, 'resize');
   const { parseResourceValue } = await import('../../shared/resource-parser.js');
+  if (input.memory_request && deployment.catalogEntryId) {
+    const [entryOfDeployment] = await db.select().from(catalogEntries).where(eq(catalogEntries.id, deployment.catalogEntryId));
+    await refuseMemoryBelowDatabaseMinimum(entryOfDeployment, input.memory_request);
+  }
 
   // Validate against plan limits
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
@@ -1579,7 +1744,7 @@ export async function updateDeploymentResources(
         configuration: config,
         envVars: { fixed: resolved.fixedEnvVars },
         configurableEnvKeys: resolved.configurableEnvKeys,
-        extraMounts: deployment.extraMounts ?? undefined,
+        extraMounts: renderedExtraMounts(entry.type, deployment.extraMounts),
         // Multi-host mounts, resolved from the flag + the entry's capability.
         // Threaded at EVERY deploy call site: a redeploy that omitted them
         // would rewrite the pod template without the include directory, and
@@ -1877,6 +2042,10 @@ export async function redeployWithCurrentConfig(
   const passwordEnvVar = opts.armPasswordReset
     ? findAdminPasswordEnvVar(Object.keys(config))
     : undefined;
+  // R48: one guard for every path that starts an instance this way (repair,
+  // DR reconcile, credential rotation …): with its data detached, the pod
+  // would initialise a fresh database on an empty folder.
+  if ((opts.replicas ?? deployment.replicaCount ?? 1) > 0) refuseDetachedData(deployment, 'start');
 
   await deployCatalogEntry(k8s, {
     diskLimits: await getTenantDiskLimits(db),
@@ -1896,7 +2065,7 @@ export async function redeployWithCurrentConfig(
     configurableEnvKeys: resolved.configurableEnvKeys,
     // Carried through every redeploy — dropping them here would silently
     // unmount a tenant's folders on the next credential rotation.
-    extraMounts: deployment.extraMounts ?? undefined,
+    extraMounts: renderedExtraMounts(entry.type, deployment.extraMounts),
     // Multi-host mounts — same reason as extraMounts directly above. Dropping
     // them on a rotation would unmount the storage root and the include
     // directory, and every site would fall back to the stock docroot.
@@ -2044,9 +2213,12 @@ export async function getDeploymentCredentials(
 
   const config = parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
 
-  // Build credentials from generated keys only
+  // Build credentials from generated keys only — never the platform's own
+  // database administrator login (platform-only-config.ts).
   const credentials: Record<string, string> = {};
+  const platformOnly = (key: string): boolean => entry.type === 'database' && isPlatformOnlyConfigKey(key);
   for (const key of generatedKeys) {
+    if (platformOnly(key)) continue;
     if (config[key] !== undefined && config[key] !== null) {
       credentials[key] = String(config[key]);
     }
@@ -2054,7 +2226,7 @@ export async function getDeploymentCredentials(
 
   const connectionInfo = buildConnectionInfo(deployment, entry, provides);
 
-  return { credentials, connectionInfo, generatedKeys };
+  return { credentials, connectionInfo, generatedKeys: generatedKeys.filter((k) => !platformOnly(k)) };
 }
 
 /**
@@ -2204,6 +2376,9 @@ export async function listStorageFolders(
       for (const entry of entries) {
         if (entry.type === 'directory') {
           const fullPath = basePath === '' ? entry.name : `${basePath}/${entry.name}`;
+          // R48: the protected folder holds the database instances' data and
+          // cannot be picked for anything.
+          if (isUnderDatabaseRoot(fullPath)) continue;
           // One listing answers both questions: whether the folder is empty,
           // and whether it is worth offering a drill-down into it.
           let isEmpty = true;
