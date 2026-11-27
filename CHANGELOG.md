@@ -49,6 +49,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Fixed
 
+- **Upgrading or restarting a tenant's app no longer gets the whole tenant restarted.** The
+  workload health check re-stages a tenant's volume — every workload on it, its database
+  included, scaled to 0 and back — when an app stays unavailable past an 8-minute grace window. A
+  workload that went down again within an hour of recovering was treated as the old outage
+  carrying on, with the old start time, so the brief unavailability of every upgrade, restart or
+  resize put it past the window at once. On lab DEV a Moodle upgrade was re-staged, database
+  included, 16 seconds after the Upgrade click, and again later. Now:
+  - while Kubernetes reports a rollout progressing (until its progress deadline, ten minutes by
+    default, and 30 minutes at most), a new pod that is not ready yet is not judged, so a first
+    start or an upgrade that migrates for minutes is left alone; a mount failure, a down node, a
+    quota refusal, a crash or a bad image is judged as before, and an outage already open when the
+    rollout started gets a full grace window after it;
+  - a relapse whose pods were all created after the earlier episode cleared is a new outage with
+    its own grace window (the attempt budget still carries over, so a flapping workload still
+    reaches the alert);
+  - a pod that runs but does not pass its readiness check is reported as such and alerted, never
+    re-staged, and so is a container that exited with an error in the last ten minutes, even while
+    it is briefly up between two restarts.
+
 - **A MongoDB restore no longer puts two databases into one.** MongoDB creates a database on its
   first write, so the restore did not create copy targets first, and two databases of one request
   given the same target — a name typed for one that another got by default, or two long names cut

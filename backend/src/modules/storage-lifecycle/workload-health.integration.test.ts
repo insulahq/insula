@@ -17,7 +17,7 @@ import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
-import { FAILOVER_GRACE_MS, FAILOVER_RECENT_MS, GRACE_MS, episodePastGraceSql } from './workload-health.js';
+import { FAILOVER_GRACE_MS, FAILOVER_RECENT_MS, GRACE_MS, episodePastGraceSql, recordDownEpisode } from './workload-health.js';
 
 const url = process.env.WORKLOAD_HEALTH_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
 const migration = (name: string) => readFileSync(fileURLToPath(new URL(`../../db/migrations/${name}`, import.meta.url)), 'utf8');
@@ -126,5 +126,56 @@ describe.skipIf(!url)('workload-health grace gate (real Postgres)', () => {
     await failover(SHORT + 200, 't1', 'pvc-2');
     await episode('once', 'volume_attach', SHORT + 30);
     expect(await due()).toEqual(['once']);
+  });
+
+  // ── a relapse: new pods or the old outage? (recordDownEpisode) ──
+  //
+  // Lab DEV: a Moodle episode cleared at its first start; the upgrade an hour
+  // later rolled the pod and the reopened episode kept its old clock — past
+  // the grace window at once, re-staged with its database 16 s after the click.
+  /** An episode that started `startedSec` ago, was healed once and cleared `clearedSec` ago. */
+  const cleared = (workload: string, startedSec: number, clearedSec: number) => pool.query(
+    `INSERT INTO tenant_workload_health_events
+       (tenant_id, workload, namespace, desired_replicas, reason, first_seen_at, cleared_at, heal_attempts, last_heal_at)
+     VALUES ('t1', $1, 'tenant-acme', 1, 'unknown', now() - make_interval(secs => $2), now() - make_interval(secs => $3), 1,
+             now() - make_interval(secs => $2))`,
+    [workload, startedSec, clearedSec],
+  );
+  const reopen = (workload: string, oldestPodAgoSec: number | null) => recordDownEpisode(db, {
+    tenantId: 't1', workload, namespace: 'tenant-acme', desired: 1, available: 0, reason: 'not_ready', detail: null,
+    oldestLivePodAt: oldestPodAgoSec === null ? null : new Date(Date.now() - oldestPodAgoSec * 1000),
+  });
+  const row = async (workload: string) => (await pool.query(
+    `SELECT EXTRACT(EPOCH FROM now() - first_seen_at)::int AS age, heal_attempts, cleared_at FROM tenant_workload_health_events WHERE workload = $1`,
+    [workload],
+  )).rows[0] as { age: number; heal_attempts: number; cleared_at: Date | null };
+
+  it('a relapse of pods created after the episode cleared starts a new grace window; the heal budget carries over', async () => {
+    await cleared('upgraded', 50 * 60, 30 * 60);
+    expect(await reopen('upgraded', 20)).toBe(true);
+    const r = await row('upgraded');
+    expect(r.age).toBeLessThan(5);
+    expect(r.heal_attempts).toBe(1);
+    expect(r.cleared_at).toBeNull();
+    expect(await due()).toEqual([]);
+  });
+
+  it('a relapse of the same pods carries the old outage on, past the grace window at once', async () => {
+    await cleared('flapping', 50 * 60, 30 * 60);
+    await reopen('flapping', 40 * 60);
+    expect((await row('flapping')).age).toBeGreaterThan(49 * 60);
+    expect(await due()).toEqual(['flapping']);
+  });
+
+  it('pods it could not read leave the old rule in place', async () => {
+    await cleared('unread', 50 * 60, 30 * 60);
+    await reopen('unread', null);
+    expect(await due()).toEqual(['unread']);
+  });
+
+  it('an open episode keeps its clock whatever its pods', async () => {
+    await episode('still-down', 'unknown', LONG + 30);
+    await reopen('still-down', 5);
+    expect(await due()).toEqual(['still-down']);
   });
 });
