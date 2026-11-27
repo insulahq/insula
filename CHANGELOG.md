@@ -12,59 +12,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-### Added
+### BREAKING
 
-- **Every database is backed up on its own, straight into the backup store, and restores on its
-  own: in place, as a copy, or as a test.** A bundle used to dump each database onto the tenant's
-  volume before the files snapshot took it, so a nearly full volume skipped the dump and a large
-  dump could fill the volume of the live database. Now each running database instance gets one
-  Job per bundle that streams every database's dump into the tenant's restic repository, one
-  snapshot per database, logged in with an account made for that run and dropped after it.
-  Nothing is written to the volume. The bundle records each snapshot, and retention, deleting a
-  bundle and disaster recovery handle them like the files and mailbox snapshots. The restore cart
-  in both panels has a **Databases** tab: pick an instance or single databases and restore them
-  **as a copy** next to the original (named by you or `<name>_restored_<time>`), as a **test**
-  into a scratch database that is counted and dropped, or **in place**. A restore runs as the
-  tenant's database administrator, never as root, and a backup from a newer server than the
-  instance runs is refused. Tenants can now restore their own databases. In the restore Job the
-  backup store's credentials and the database client sit in separate containers, so a dump's
-  content never runs next to those credentials. A data export carries each database's dump.
-  PostgreSQL before 14 is not backed up this way (only a superuser could read everything) and is
-  reported until the instance is updated; the catalog ships 18. Bundles from before this restore
-  whole instances in place, as before. See `docs/operations/DATABASE_RECOVERY.md`.
+> **Before upgrading:** tell tenants whose apps or tools log in to a standalone database
+> instance as root (MariaDB, MySQL, PostgreSQL, MongoDB) that this stops working: they use the
+> new `dbadmin` account or a Database Users account instead. The upgrade itself restarts no
+> database, except a MongoDB instance (once, for its new root password), an instance with extra
+> mounts and an instance on a custom or legacy data path (once each).
 
-- **A database whose backups keep failing is now reported, to the operator and to the tenant.**
-  Each nightly bundle dumps every tenant database, but it recorded the outcome only on the bundle
-  itself, and nothing read it again. On production one tenant's seven MariaDB databases failed to
-  dump every night for at least two weeks while every bundle said `completed`, and nobody was
-  told. Now every bundle records, per database, the last attempt and the last good backup: a dump
-  that the bundle's files snapshot kept. A database is overdue when the latest scheduled bundle
-  run that has had time to finish did not back it up: the run counts once its wave has had the
-  last scheduled wave's duration plus an hour (at least two hours), a wave still running is
-  never judged, and a tenant bundled at the end of a long wave is not called overdue in the
-  meantime. Only tenants the wave covers and running database instances are judged: a stopped
-  instance shows "Stopped", a deleted one is not dumped and its rows are removed, and when a
-  tenant leaves the wave (suspended, archived, schedule disabled) its alert ends without a
-  notice. A sweep every 15 minutes announces each overdue database once: one notification to
-  the admins listing every newly overdue database with its tenant, last good backup and the
-  operator diagnosis, and one to each affected tenant listing its own with only the kind of
-  failure (not running, volume full, could not log in, timed out, tool missing, …), never the
-  error text. A database that alerted in the last 12 hours does not alert again until the
-  window has passed. When a database is backed up again, both get a "working again" notice,
-  only for databases that alerted. When the dump step did not run at all, every database is
-  marked failed and keeps its last good backup; a database is dropped from the status only when
-  it is shown to be gone, never because one bundle failed to list it. A tenant keeps at most
-  500 rows (the rest of an instance's databases fold into one row) and names are capped. The
-  status is shown on the admin tenant page (Storage & backups → Database backups), on the admin
-  Tenant Backups page (every overdue database, when there is one), and on the tenant's Backups
-  page, where a bundle in which not every database dumped is also marked. API, cursor-paginated:
-  `GET /api/v1/admin/tenants/:tenantId/database-backups`,
-  `GET /api/v1/admin/database-backups/overdue` and `GET /api/v1/tenant/backups/databases`.
-
-### Changed
-
-- **BREAKING — tenant databases: root belongs to the platform, and tenants get their own
-  administrator account.** The platform managed every catalog database (MariaDB, MySQL,
+- **Tenant databases: root belongs to the platform, and tenants get their own administrator
+  account.** The platform managed every catalog database (MariaDB, MySQL,
   PostgreSQL, MongoDB) as root, with the root password it generated at create time. The
   tenant had the same password: the panel showed it, every deployment read returned it, a
   configuration save could overwrite it, the SQL console ran as root, and "All databases" in
@@ -159,7 +116,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   - that the tenant's routines, triggers, views, aggregates and data keep working;
   - socket logins accepting any supplied password, so the SQL Manager's commands work before
     and after.
-- **BREAKING — tenant databases: their data folders leave the file manager.** A standalone
+
+- **Tenant databases: their data folders leave the file manager.** A standalone
   database instance keeps its data in one protected folder, `database/<engine>/<name>`, which
   the file manager, SFTP, rsync and scp now see as empty and read-only. The file manager could
   read and change a running instance's files as root, so a tenant could take the instance's
@@ -191,6 +149,57 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   A tenant who deliberately mounts its own database's files through a symlink can still reach
   them; the platform's lost-login alert and the daily hardening pass cover that case.
   Recovery steps: `docs/operations/DATABASE_RECOVERY.md` §7.
+
+### Added
+
+- **Every database is backed up on its own, straight into the backup store, and restores on its
+  own: in place, as a copy, or as a test.** A bundle used to dump each database onto the tenant's
+  volume before the files snapshot took it, so a nearly full volume skipped the dump and a large
+  dump could fill the volume of the live database. Now each running database instance gets one
+  Job per bundle that streams every database's dump into the tenant's restic repository, one
+  snapshot per database, logged in with an account made for that run and dropped after it.
+  Nothing is written to the volume. The bundle records each snapshot, and retention, deleting a
+  bundle and disaster recovery handle them like the files and mailbox snapshots. The restore cart
+  in both panels has a **Databases** tab: pick an instance or single databases and restore them
+  **as a copy** next to the original (named by you or `<name>_restored_<time>`), as a **test**
+  into a scratch database that is counted and dropped, or **in place**. A restore runs as the
+  tenant's database administrator, never as root, and a backup from a newer server than the
+  instance runs is refused. Tenants can now restore their own databases. In the restore Job the
+  backup store's credentials and the database client sit in separate containers, so a dump's
+  content never runs next to those credentials. A data export carries each database's dump.
+  PostgreSQL before 14 is not backed up this way (only a superuser could read everything) and is
+  reported until the instance is updated; the catalog ships 18. Bundles from before this restore
+  whole instances in place, as before. See `docs/operations/DATABASE_RECOVERY.md`.
+
+- **A database whose backups keep failing is now reported, to the operator and to the tenant.**
+  Each nightly bundle dumps every tenant database, but it recorded the outcome only on the bundle
+  itself, and nothing read it again. On production one tenant's seven MariaDB databases failed to
+  dump every night for at least two weeks while every bundle said `completed`, and nobody was
+  told. Now every bundle records, per database, the last attempt and the last good backup: a dump
+  that the bundle's files snapshot kept. A database is overdue when the latest scheduled bundle
+  run that has had time to finish did not back it up: the run counts once its wave has had the
+  last scheduled wave's duration plus an hour (at least two hours), a wave still running is
+  never judged, and a tenant bundled at the end of a long wave is not called overdue in the
+  meantime. Only tenants the wave covers and running database instances are judged: a stopped
+  instance shows "Stopped", a deleted one is not dumped and its rows are removed, and when a
+  tenant leaves the wave (suspended, archived, schedule disabled) its alert ends without a
+  notice. A sweep every 15 minutes announces each overdue database once: one notification to
+  the admins listing every newly overdue database with its tenant, last good backup and the
+  operator diagnosis, and one to each affected tenant listing its own with only the kind of
+  failure (not running, volume full, could not log in, timed out, tool missing, …), never the
+  error text. A database that alerted in the last 12 hours does not alert again until the
+  window has passed. When a database is backed up again, both get a "working again" notice,
+  only for databases that alerted. When the dump step did not run at all, every database is
+  marked failed and keeps its last good backup; a database is dropped from the status only when
+  it is shown to be gone, never because one bundle failed to list it. A tenant keeps at most
+  500 rows (the rest of an instance's databases fold into one row) and names are capped. The
+  status is shown on the admin tenant page (Storage & backups → Database backups), on the admin
+  Tenant Backups page (every overdue database, when there is one), and on the tenant's Backups
+  page, where a bundle in which not every database dumped is also marked. API, cursor-paginated:
+  `GET /api/v1/admin/tenants/:tenantId/database-backups`,
+  `GET /api/v1/admin/database-backups/overdue` and `GET /api/v1/tenant/backups/databases`.
+
+### Changed
 
 - **Backups no longer claim the raw database files are a safe fallback.** The bundle summary,
   its remediation text and the database recovery runbook said a database whose dump failed was
