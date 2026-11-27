@@ -119,6 +119,7 @@ const LEASED: ReadonlyArray<{ file: string; job: string; timers?: number }> = [
   { file: 'modules/backup-rclone-shim/scheduler.ts', job: 'backup-rclone-shim' },
   { file: 'modules/backup-source-shim/scheduler.ts', job: 'backup-source-shim-sweep' },
   { file: 'modules/cluster-trusted-proxies/scheduler.ts', job: 'cluster-trusted-proxies' },
+  { file: 'modules/catalog/auto-sync.ts', job: 'catalog-auto-sync' },
   { file: 'modules/crowdsec-db/reconciler.ts', job: 'crowdsec-db-reconciler' },
   { file: 'modules/waf-rule-exclusions/scheduler.ts', job: 'waf-rule-exclusions' },
   // Deletes DR artefacts past their retention; two replicas would race the deletes.

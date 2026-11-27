@@ -109,4 +109,31 @@ describe('catalog badge routes', () => {
 
     expect(res.statusCode).toBe(401);
   });
+
+  it('PATCH /admin/catalog-repos/:id turns auto-sync off', async () => {
+    lastUpdateSet = null;
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/catalog-repos/repo-1',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { auto_sync_enabled: false },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(lastUpdateSet).toEqual({ autoSyncEnabled: false });
+  });
+
+  it('PATCH /admin/catalog-repos/:id refuses a non-boolean auto_sync_enabled', async () => {
+    lastUpdateSet = null;
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/catalog-repos/repo-1',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { auto_sync_enabled: 'yes' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('INVALID_FIELD_VALUE');
+    expect(lastUpdateSet).toBeNull();
+  });
 });

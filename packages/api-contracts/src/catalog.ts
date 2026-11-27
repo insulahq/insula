@@ -11,7 +11,8 @@ export const catalogRepoResponseSchema = z.object({
   name: z.string(),
   url: z.string(),
   branch: z.string(),
-  syncIntervalMinutes: z.number(),
+  /** Synced once a day while on. */
+  autoSyncEnabled: z.boolean(),
   lastSyncedAt: z.string().nullable(),
   status: z.string(),
   lastError: z.string().nullable(),
@@ -24,7 +25,7 @@ export const createCatalogRepoSchema = z.object({
   url: z.string().url().max(500),
   branch: z.string().max(100).default('main'),
   auth_token: z.string().max(500).optional(),
-  sync_interval_minutes: z.number().int().min(5).max(1440).default(60),
+  auto_sync_enabled: z.boolean().default(true),
 });
 
 export const updateCatalogRepoSchema = z.object({
@@ -32,7 +33,7 @@ export const updateCatalogRepoSchema = z.object({
   url: z.string().url().max(500).optional(),
   branch: z.string().max(100).optional(),
   auth_token: z.string().max(500).nullable().optional(),
-  sync_interval_minutes: z.number().int().min(5).max(1440).optional(),
+  auto_sync_enabled: z.boolean().optional(),
 });
 
 // ─── Catalog Entry ───────────────────────────────────────────────────────────

@@ -73,7 +73,16 @@ your own, click **Add Repository** and provide:
 Once added, the repository **syncs** its manifests into the catalog. Each
 repository row shows a status (active / syncing / error), the last sync
 time, and a **sync** button to pull again on demand. Errors surface inline
-on the row. Entries from all repositories merge into one catalog; the
+on the row.
+
+The **Auto-sync** switch on each row syncs the repository once a day: a
+repository whose last good sync is a day old is synced again within the
+hour, and one whose sync failed is tried again every hour until it works.
+It is on for every repository, new or existing; turn it off for a
+repository you want to change only when you press **sync** — for example to
+hold a catalog at what you have tested. New versions a sync brings in show
+up on the **Upgrades** tab; deployments with automatic upgrades on move to
+them by themselves. Entries from all repositories merge into one catalog; the
 **type** filter on the Catalog tab separates runtimes, databases/services,
 and full applications.
 
