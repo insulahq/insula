@@ -201,6 +201,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ### Changed
 
+- **Bulwark webmail 1.21.3, up from 1.21.2.** The mail view is served at `/mail` again: 1.21.2's
+  release shipped the build that puts it under `/en/`, and old `/en/…` links still open. A
+  message's sender verdict is shown only when its Authentication-Results header was written by
+  the platform's own mail server, so mail imported from another server shows none; on lab DEV a
+  message delivered over port 25 carries a matching header, so arriving mail keeps its verdict.
+  Request bodies held at once are capped at 128 MB. The admin "log in as" into webmail passes all
+  26 checks of its integration test. Rolling back to 1.21.2 is safe.
+
+- **Reloader 1.4.25 and Valkey 9.2.0.** Reloader's two fixes concern options the platform does not
+  set; on lab DEV a changed Secret still rolls the workloads that name it. Valkey is not deployed
+  by default; 9.2.0 replicates with 9.1.3 in both directions, and its Sentinel starts with the
+  platform's configuration.
+
 - **Backups no longer claim the raw database files are a safe fallback.** The bundle summary,
   its remediation text and the database recovery runbook said a database whose dump failed was
   still covered by a "crash-consistent" copy of its data files. It is not: the files snapshot
@@ -281,6 +294,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   flatten to the same name no longer overwrite each other's dump.
 
 ### Security
+
+- **The WAF sidecar no longer carries the four CRITICAL nginx CVEs and the Brotli CVE recorded
+  as not reachable last release.** It moves to the ModSecurity CRS image build
+  `4.30.0-nginx-alpine-202611190211`, with nginx 1.30.7 and brotli-libs 1.2.1; the rule set (CRS
+  4.30.0) and libmodsecurity 3.0.17 are unchanged. The build's new options (client certificate
+  checks, a TLS redirect port) are off by default. Both of the platform's exclusion files load,
+  and on lab DEV both replicas started without an error, passed a normal API request and blocked
+  a script and a path-traversal payload with 403.
 
 - **Flux moves to 2.10.1, up from 2.10.0.** Its kustomize-controller (v1.10.2) ships openssh
   10.3_p1-r2, which fixes CVE-2026-123158; the CVE was recorded as not reachable, because the image
