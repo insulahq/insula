@@ -467,6 +467,13 @@ async function prepareTargets(
   const serverVersion = await readServerVersion(x).catch(() => '');
   const existing = new Set((await listDatabases(ctx)).map((d) => d.name));
   const items: PreparedItem[] = [];
+  // Targets this restore has taken. MongoDB makes a database on its first
+  // write, so two requests with one target (an explicit name that is another's
+  // default copy name, two long names cut to the same default) would both pass
+  // `existing` and land in one database. On MongoDB without case: it refuses
+  // names that differ only in case; the SQL engines tell them apart.
+  const claimed = new Set<string>();
+  const claimKey = (name: string): string => (ctx.engine === 'mongodb' ? name.toLowerCase() : name);
   for (const r of args.requests) {
     if (r.serverVersion && serverVersion && dumpIsNewerThanServer(ctx.engine, r.serverVersion, serverVersion)) {
       failed.push({ database: r.source, error: `the backup is from ${r.serverVersion}, newer than this server (${serverVersion}): update the instance, then restore` });
@@ -492,6 +499,11 @@ async function prepareTargets(
       failed.push({ database: r.source, error: `a database named ${target} exists already: choose another name` });
       continue;
     }
+    if (claimed.has(claimKey(target))) {
+      failed.push({ database: r.source, error: `another database in this restore goes to ${target}: choose another name` });
+      continue;
+    }
+    claimed.add(claimKey(target));
     // MongoDB makes a database on its first write, so a target that is not
     // there yet is the restore's own all the same.
     let created = !existing.has(target) && ctx.engine === 'mongodb';
