@@ -13,7 +13,9 @@ vi.mock('../../deployments/db-manager.js', async (orig) => ({
   buildDbContext: mocks.buildDbContext,
   listDatabases: mocks.listDatabases,
 }));
-vi.mock('../../deployments/backup-login.js', () => ({ mintBackupLogin: mocks.mintBackupLogin, dropBackupLogin: mocks.dropBackupLogin }));
+vi.mock('../../deployments/backup-login.js', () => ({
+  BACKUP_LOGIN_MAX_AGE_MS: 7 * 3_600_000, mintBackupLogin: mocks.mintBackupLogin, dropBackupLogin: mocks.dropBackupLogin,
+}));
 vi.mock('../../storage-lifecycle/job-log-tail.js', () => ({ readJobLogTail: mocks.readJobLogTail, tailJobLog: vi.fn(async () => '') }));
 
 import {
@@ -21,6 +23,8 @@ import {
   buildDatabaseBackupScript,
   buildDatabaseSnapshotsSummary,
   databaseArtifactName,
+  DROP_LOGIN_BACKOFF_MS,
+  dropRunLogin,
   dumpFileName,
   hexName,
   parseDatabaseArtifactName,
@@ -200,7 +204,7 @@ describe('snapshotInstanceDatabases', () => {
     mocks.buildDbContext.mockResolvedValue(ctx);
     mocks.listDatabases.mockResolvedValue([{ name: 'shop' }, { name: 'blog' }]);
     mocks.mintBackupLogin.mockResolvedValue({ username: 'platform_bk_1_abcdef', password: 'pw', serverVersion: '10.11.9' });
-    mocks.dropBackupLogin.mockResolvedValue(true);
+    mocks.dropBackupLogin.mockResolvedValue({ dropped: true });
   });
 
   const nonceOf = (): string => {
@@ -237,6 +241,31 @@ describe('snapshotInstanceDatabases', () => {
     expect(mocks.mintBackupLogin).toHaveBeenCalledTimes(1);
     expect(mocks.dropBackupLogin).toHaveBeenCalledTimes(1);
     expect(deleted).toHaveLength(2);
+  });
+
+  it('a login that will not drop is retried, then named in a warning (it can still read the databases)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mocks.dropBackupLogin.mockResolvedValue({ dropped: false, error: 'command terminated: mariadb -uroot -phunter2 ERROR 2013: Lost connection' });
+    const waits: number[] = [];
+    const dropped = await dropRunLogin({} as never, 'platform_bk_1_abcdef', 'ns/maria', async (ms) => { waits.push(ms); });
+    expect(dropped).toBe(false);
+    expect(mocks.dropBackupLogin).toHaveBeenCalledTimes(DROP_LOGIN_BACKOFF_MS.length + 1);
+    expect(waits).toEqual([...DROP_LOGIN_BACKOFF_MS]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = String(warn.mock.calls[0]![0]);
+    expect(line).toContain('platform_bk_1_abcdef on ns/maria could not be dropped');
+    expect(line).toContain('7 h old');
+    expect(line).not.toContain('hunter2');
+    warn.mockRestore();
+  });
+
+  it('a login that drops on a retry is not reported', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mocks.dropBackupLogin.mockResolvedValueOnce({ dropped: false, error: 'busy' }).mockResolvedValueOnce({ dropped: true });
+    expect(await dropRunLogin({} as never, 'platform_bk_1_abcdef', 'ns/maria', async () => {})).toBe(true);
+    expect(mocks.dropBackupLogin).toHaveBeenCalledTimes(2);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('a database that is not running is reported, with no login minted', async () => {

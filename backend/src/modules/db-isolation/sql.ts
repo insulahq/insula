@@ -39,6 +39,38 @@
 export const METRICS_EXPORTER_ROLE = 'cnpg_metrics_exporter';
 
 /**
+ * The first lines of every script that changes a database's or a role's
+ * catalog row on the platform cluster: this converger, crowdsec-db and
+ * roundcube-db. Each runs on every API replica every 5 minutes, and two
+ * GRANTs on one database at once fail with "tuple concurrently updated" —
+ * production logged 29 such failures in two hours across its three replicas.
+ *
+ * A session lock, so it holds across the script's statements and is released
+ * when psql exits; all three connect to the `postgres` database, which scopes
+ * an advisory lock. The timeout (below the callers' 15 s exec limit) bounds
+ * a wait behind a stuck holder: the script fails and the next tick retries.
+ * `\gset` keeps the lock's empty result out of output the converger parses.
+ */
+export const PLATFORM_ACL_LOCK_SQL = [
+  `SET lock_timeout = '10s';`,
+  `SELECT pg_advisory_lock(hashtextextended('platform-cluster/acl', 0)) \\gset`,
+].join('\n');
+
+/**
+ * What psql said went wrong, safe to log from a script that sets a password:
+ * only its ERROR/FATAL lines, with every quoted literal masked (a syntax
+ * error echoes the statement, `PASSWORD '…'` included).
+ */
+export function psqlErrorLines(stderr: string): string {
+  return stderr
+    .split('\n')
+    .filter((l) => /^(psql:[^ ]* )?(ERROR|FATAL):/.test(l.trim()))
+    .map((l) => l.trim().replace(/'(?:[^']|'')*'/g, "'***'"))
+    .join(' | ')
+    .slice(0, 400);
+}
+
+/**
  * CNPG's replication role. A demoted primary rejoins as a replica by first
  * connecting to the NEW primary's `postgres` database as this role (the
  * availability check before pg_rewind; primary_conninfo uses dbname=postgres).

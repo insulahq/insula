@@ -7,7 +7,7 @@
 
 import { eq, and, ilike, sql, desc, asc, lt, gt, or, isNull, notInArray } from 'drizzle-orm';
 import { likePattern } from '../../shared/like-pattern.js';
-import { catalogRepositories, catalogEntries, catalogEntryVersions, clusterTrustedProxyRanges, platformSettings } from '../../db/schema.js';
+import { catalogRepositories, catalogEntries, catalogEntryVersions, platformSettings } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { InternalAccessPolicy } from '../../shared/ssrf-guard.js';
 import { join } from 'node:path';
@@ -531,22 +531,67 @@ async function validateRepoAccess(url: string, branch: string, authToken: string
 
 /** platform_settings key: may a repository URL reach the operator's private networks. */
 export const CATALOG_ALLOW_PRIVATE_SETTING = 'catalog_repos_allow_private_hosts';
-/** k3s's default pod and service networks, refused even when no bootstrap value is recorded. */
-const K3S_DEFAULT_CLUSTER_CIDRS = ['10.42.0.0/16', '10.43.0.0/16'] as const;
+/**
+ * The pod and service networks of k3s and of this platform's bootstrap
+ * (dual-stack: fd42:42::/56, fd42:43::/112), refused even when the cluster's
+ * own cannot be read.
+ */
+const DEFAULT_CLUSTER_CIDRS = ['10.42.0.0/16', '10.43.0.0/16', 'fd42:42::/56', 'fd42:43::/112'] as const;
+
+/**
+ * How long the cluster's networks are reused. Short: the read cannot tell a
+ * cluster on the defaults from one whose ConfigMap could not be read
+ * (resolveTenantNetworkCidrs falls back silently), and a cached fallback
+ * would leave a cluster's own networks off the list.
+ */
+const CLUSTER_CIDRS_TTL_MS = 60_000;
+let clusterCidrsCache: { readonly at: number; readonly cidrs: readonly string[] } | null = null;
+
+/**
+ * The cluster's own pod and service networks, both families, as the tenant
+ * network policies read them (the platform-cluster-cidrs ConfigMap, then the
+ * nodes' pod ranges). Never throws: off-cluster, or when the API cannot be
+ * read, the defaults.
+ */
+export async function clusterNetworkCidrs(
+  read: () => Promise<readonly (string | undefined)[]> = readClusterNetworkCidrs,
+  now: number = Date.now(),
+): Promise<readonly string[]> {
+  if (clusterCidrsCache && now - clusterCidrsCache.at < CLUSTER_CIDRS_TTL_MS) return clusterCidrsCache.cidrs;
+  let found: readonly (string | undefined)[] = [];
+  try {
+    found = await read();
+  } catch {
+    // Not in a cluster (local dev), or its API is unreachable: the defaults.
+  }
+  const cidrs = [...new Set([...DEFAULT_CLUSTER_CIDRS, ...found.filter((c): c is string => Boolean(c))])];
+  clusterCidrsCache = { at: now, cidrs };
+  return cidrs;
+}
+
+/** Forget the cached cluster networks (tests). */
+export function resetClusterNetworkCidrs(): void {
+  clusterCidrsCache = null;
+}
+
+async function readClusterNetworkCidrs(): Promise<readonly (string | undefined)[]> {
+  const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+  const { resolveTenantNetworkCidrs } = await import('../k8s-provisioner/tenant-network-policies.js');
+  const { core } = createK8sClients(process.env.KUBECONFIG_PATH || undefined);
+  const r = await resolveTenantNetworkCidrs(core);
+  return [r.podV4, r.svcV4, r.podV6, r.svcV6, ...(r.extraV6Except ?? [])];
+}
 
 /**
  * What a repository fetch may reach. Default: public addresses only. With the
  * setting on, private ranges too — never loopback, cloud metadata, or the
- * cluster's own pod and service networks (the bootstrap ranges the
- * trusted-proxies reconciler records, and k3s's defaults).
+ * cluster's own pod and service networks (clusterNetworkCidrs).
  */
 export async function catalogFetchPolicy(db: Database): Promise<InternalAccessPolicy> {
   const [row] = await db.select({ value: platformSettings.value }).from(platformSettings)
     .where(eq(platformSettings.key, CATALOG_ALLOW_PRIVATE_SETTING));
   if (row?.value !== 'true') return {};
-  const ranges = await db.select({ cidr: clusterTrustedProxyRanges.cidr }).from(clusterTrustedProxyRanges)
-    .where(eq(clusterTrustedProxyRanges.source, 'bootstrap'));
-  return { allowPrivate: true, deniedCidrs: [...K3S_DEFAULT_CLUSTER_CIDRS, ...ranges.map((r) => r.cidr)] };
+  return { allowPrivate: true, deniedCidrs: [...await clusterNetworkCidrs()] };
 }
 
 export async function getCatalogRepoSettings(db: Database): Promise<{ allowPrivateAddresses: boolean }> {

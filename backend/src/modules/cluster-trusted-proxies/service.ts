@@ -4,15 +4,14 @@
  * Pure DB access; no k8s side effects. The reconciler reads from these
  * helpers and materialises the ConfigMap + Traefik DS patch.
  *
- * Three sources tracked (see migration 0020 + cluster-trusted-proxies
- * api-contract for semantics):
+ * Two sources (see migration 0020 + cluster-trusted-proxies api-contract
+ * for semantics):
  *   - `system`    — synthetic rows surfaced by listAllRanges() but NOT
  *                   stored in DB; they're already baked into the
  *                   static nginx template. UI shows for visibility.
- *   - `bootstrap` — auto-seeded by reconciler from platform_settings
- *                   (k3s pod/svc CIDR detected at bootstrap).
- *                   Idempotent INSERT ON CONFLICT — UI delete forbidden.
  *   - `operator`  — added via admin UI. Full CRUD allowed.
+ * The `bootstrap` rows the reconciler once seeded from the cluster's pod and
+ * service networks were removed by migration 0195 (see reconciler.ts).
  */
 
 import { and, eq, sql } from 'drizzle-orm';
@@ -36,7 +35,7 @@ export const SYSTEM_TRUSTED_PROXIES: ReadonlyArray<{
 export interface CreateRangeInput {
   readonly cidr: string;
   readonly description: string;
-  readonly source: 'bootstrap' | 'operator';
+  readonly source: 'operator';
   readonly createdBy: string | null;
 }
 
@@ -101,26 +100,6 @@ function isUniqueViolation(err: unknown): boolean {
   return false;
 }
 
-/** Idempotent upsert used by the reconciler for bootstrap rows. */
-export async function upsertBootstrapRange(
-  db: Database,
-  cidr: string,
-  description: string,
-): Promise<void> {
-  const normalised = cidr.toLowerCase();
-  // ON CONFLICT DO NOTHING preserves the original row (so an operator
-  // can't accidentally take over a bootstrap row's audit metadata).
-  await db
-    .insert(clusterTrustedProxyRanges)
-    .values({
-      cidr: normalised,
-      description,
-      source: 'bootstrap',
-      createdBy: null,
-    })
-    .onConflictDoNothing();
-}
-
 /** Delete by id — refuses non-operator sources. Throws NOT_DELETABLE. */
 export async function deleteRange(db: Database, id: string): Promise<void> {
   const result = await db
@@ -136,7 +115,7 @@ export async function deleteRange(db: Database, id: string): Promise<void> {
     // Either the id doesn't exist, OR it's a non-operator row. Both
     // surface as the same error to avoid leaking row existence.
     const e = new Error(
-      `NOT_DELETABLE: row ${id} not found or not deletable (bootstrap/system rows are auto-managed)`,
+      `NOT_DELETABLE: row ${id} not found or not deletable (system rows are built in)`,
     );
     (e as Error & { code?: string }).code = 'NOT_DELETABLE';
     throw e;
@@ -145,14 +124,14 @@ export async function deleteRange(db: Database, id: string): Promise<void> {
 
 /**
  * List all ranges (DB rows + synthetic system rows). Sorted by source
- * priority (system first, then bootstrap, then operator) and within
- * each group by CIDR for stable display.
+ * (system first, then operator) and within each group by CIDR for stable
+ * display.
  */
 export interface ListedRange {
   readonly id: string | null;
   readonly cidr: string;
   readonly description: string;
-  readonly source: 'system' | 'bootstrap' | 'operator';
+  readonly source: 'system' | 'operator';
   readonly createdAt: Date | null;
   readonly createdByEmail: string | null;
 }
@@ -167,7 +146,8 @@ export async function listAllRanges(db: Database): Promise<ListedRange[]> {
       createdAt: clusterTrustedProxyRanges.createdAt,
       createdByEmail: sql<string | null>`(SELECT email FROM users WHERE id = ${clusterTrustedProxyRanges.createdBy})`,
     })
-    .from(clusterTrustedProxyRanges);
+    .from(clusterTrustedProxyRanges)
+    .where(eq(clusterTrustedProxyRanges.source, 'operator'));
 
   const synthetic: ListedRange[] = SYSTEM_TRUSTED_PROXIES.map((s) => ({
     id: null,
@@ -182,9 +162,7 @@ export async function listAllRanges(db: Database): Promise<ListedRange[]> {
     id: r.id,
     cidr: r.cidr,
     description: r.description,
-    source: (r.source === 'bootstrap' ? 'bootstrap' : 'operator') as
-      | 'bootstrap'
-      | 'operator',
+    source: 'operator' as const,
     createdAt: r.createdAt,
     createdByEmail: r.createdByEmail,
   }));
@@ -192,8 +170,7 @@ export async function listAllRanges(db: Database): Promise<ListedRange[]> {
   const all = [...synthetic, ...dbRanges];
   const sourceOrder: Record<ListedRange['source'], number> = {
     system: 0,
-    bootstrap: 1,
-    operator: 2,
+    operator: 1,
   };
   all.sort((a, b) => {
     const so = sourceOrder[a.source] - sourceOrder[b.source];
@@ -204,15 +181,17 @@ export async function listAllRanges(db: Database): Promise<ListedRange[]> {
 }
 
 /**
- * Returns just the operator + bootstrap CIDRs that need to be
- * MATERIALISED into the ConfigMap and Traefik DS. System rows are
- * skipped because they're already in the static nginx template
- * baseline and Traefik already trusts 127.0.0.1.
+ * Returns just the operator CIDRs that need to be MATERIALISED into the
+ * ConfigMap and Traefik DS. System rows are skipped because they're
+ * already in the static nginx template baseline and Traefik already
+ * trusts 127.0.0.1. Operator rows only: whatever lands here is believed by
+ * Traefik when it says who the client is.
  */
 export async function listMaterialisedCidrs(db: Database): Promise<string[]> {
   const rows = await db
     .select({ cidr: clusterTrustedProxyRanges.cidr })
     .from(clusterTrustedProxyRanges)
+    .where(eq(clusterTrustedProxyRanges.source, 'operator'))
     .orderBy(clusterTrustedProxyRanges.cidr);
   return rows.map((r) => r.cidr);
 }

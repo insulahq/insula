@@ -6,7 +6,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -14,6 +14,7 @@ import {
   parseSqliteCapture,
   parseSqliteDumpOutput,
   buildSqliteCaptureScript,
+  ON_COPY_SCRIPT,
   SQLITE_DISCOVERY_ENTRY,
   SQLITE_DUMP_DIR,
 } from './sqlite-predump.js';
@@ -134,7 +135,7 @@ describe('buildSqliteCaptureScript', () => {
   it('announces every file before dumping and ends with DONE', () => {
     const script = buildSqliteCaptureScript('bkp-1');
     const found = script.indexOf('say FOUND "$f" ""');
-    const dump = script.indexOf('sqlite3 $RO "$f" ".dump"');
+    const dump = script.indexOf('todump inplace');
     expect(found).toBeGreaterThan(0);
     expect(dump).toBeGreaterThan(found);
     expect(script.trimEnd().endsWith('say DONE "" ""')).toBe(true);
@@ -207,7 +208,8 @@ describe('the generated capture script, run under sh', () => {
     const files = dumps();
     expect(files).toHaveLength(2);
     expect(files.every((f) => /^predump-.+-[0-9a-f]{12}-bkp-t1\.sqlite\.sql$/.test(f))).toBe(true);
-    expect(readFileSync(join(dest(), files.find((f) => f.includes('main.sqlite'))!), 'utf8')).toContain(`-- dump of ${a}`);
+    // Opened in its own directory, by its name there.
+    expect(readFileSync(join(dest(), files.find((f) => f.includes('main.sqlite'))!), 'utf8')).toContain('-- dump of ./main.sqlite');
     // the parser agrees
     const { entry, interrupted } = parseSqliteCapture(lines.join('\n'), { exitCode: 0 });
     expect(entry!.databases.map((d) => d.status)).toEqual(['dumped', 'dumped']);
@@ -272,20 +274,62 @@ describe('the generated capture script, run under sh', () => {
     expect(dumps()).toEqual([]);
   });
 
-  it('opens a rollback-journal database read-only and a WAL database normally', () => {
-    const plain = db('app/plain.db', 1);
-    const wal = db('app/wal.db', 2);
+  it('opens every database read-only, from its own directory, refusing a link', () => {
+    db('app/plain.db', 1);
+    db('app/wal/wal.db', 2);
     const log = join(base, 'argv.log');
-    stub('sqlite3', `#!/bin/sh\necho "$*" >> '${log}'\necho "-- dump"\n`);
+    stub('sqlite3', `#!/bin/sh\necho "$(pwd -P) $*" >> '${log}'\necho "-- dump"\n`);
     run();
     const argv = readFileSync(log, 'utf8').trim().split('\n').sort();
-    expect(argv).toEqual([`-readonly ${plain} .dump`, `${wal} .dump`].sort());
+    expect(argv).toEqual([
+      `${join(root, 'app')} -nofollow -readonly ./plain.db .dump`,
+      `${join(root, 'app/wal')} -nofollow -readonly ./wal.db .dump`,
+    ].sort());
   });
 
-  it('closes the dump directory to everyone but its owner', () => {
+  it('refuses a directory swapped for a link after the walk', () => {
+    const a = db('app/x.db');
+    const elsewhere = join(base, 'elsewhere');
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, 'x.db'), readFileSync(a));
+    // find lists the real directory; by the dump, it is a link elsewhere.
+    stub('find', `#!/bin/sh\nprintf '%s\\n' '${a}'\n`);
+    rmSync(join(root, 'app'), { recursive: true });
+    symlinkSync(elsewhere, join(root, 'app'));
+    const log = join(base, 'argv.log');
+    stub('sqlite3', `#!/bin/sh\necho "$*" >> '${log}'\necho "-- dump"\n`);
+    const { lines } = run();
+    expect(lines.some((l) => l.startsWith(`FAIL|${a}|`))).toBe(true);
+    expect(existsSync(log)).toBe(false);
+  });
+
+  it('sweeps a planted copy folder without following what is in it', () => {
+    db('app/x.db');
+    const elsewhere = join(base, 'elsewhere');
+    mkdirSync(join(elsewhere, 'db'), { recursive: true });
+    writeFileSync(join(elsewhere, 'db', 'keep'), 'not ours');
+    writeFileSync(join(elsewhere, 'db-journal'), 'not ours either');
+    mkdirSync(join(dest(), '.partial-planted.d'), { recursive: true });
+    // A folder link where a copy's file would be, and a link to a file: a recursive delete would follow the first.
+    symlinkSync(join(elsewhere, 'db'), join(dest(), '.partial-planted.d', 'db'));
+    symlinkSync(join(elsewhere, 'db-journal'), join(dest(), '.partial-planted.d', 'db-journal'));
+    run();
+    expect(readFileSync(join(elsewhere, 'db', 'keep'), 'utf8')).toBe('not ours');
+    expect(readFileSync(join(elsewhere, 'db-journal'), 'utf8')).toBe('not ours either');
+  });
+
+  it('writes dumps readable by root alone (the directory is passable, the names predictable)', () => {
     db('app/x.db');
     run();
-    expect(statSync(dest()).mode & 0o777).toBe(0o700);
+    expect(statSync(join(dest(), dumps()[0]!)).mode & 0o777).toBe(0o600);
+  });
+
+  it('closes the dump directory to everyone but its owner, who may only pass through', () => {
+    db('app/x.db');
+    run();
+    // 0711: nobody else lists, creates or removes an entry; the owner of a
+    // file being rolled back reaches the copy folder made for them.
+    expect(statSync(dest()).mode & 0o777).toBe(0o711);
   });
 
   it('takes the first 200 of more SQLite files without mistaking its own cut-off for a killed search', () => {
@@ -297,12 +341,166 @@ describe('the generated capture script, run under sh', () => {
     expect(lines.at(-1)).toBe('DONE||');
   });
 
-  it('skips a database with a hot rollback journal instead of replaying it as root', () => {
-    const a = db('app/x.db');
-    writeFileSync(`${a}-journal`, 'a journal the tenant could have crafted');
-    const { lines } = run();
-    expect(lines).toContain(`DEGRADED|${a}|an unfinished transaction (rollback journal) is pending; dump skipped, raw file still captured`);
-    expect(dumps()).toEqual([]);
+  describe('an unfinished transaction left behind (a hot rollback journal)', () => {
+    /** A journal SQLite would call hot: a non-zero first byte (the real header starts with its magic). */
+    const HOT = Buffer.concat([Buffer.from([0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7]), Buffer.alloc(504, 1)]);
+    const twentyMinutesAgo = (): number => Date.now() / 1000 - 1200;
+    function journal(file: string, body: Buffer, at: number | null = twentyMinutesAgo()): string {
+      writeFileSync(`${file}-journal`, body);
+      if (at !== null) {
+        utimesSync(`${file}-journal`, at, at);
+        utimesSync(file, at, at);
+      }
+      return `${file}-journal`;
+    }
+    /** A sqlite3 that records how it was called and, like the real one, rolls a hot journal back (removing it) unless read-only. */
+    function recordingSqlite(log: string): void {
+      stub('sqlite3', [
+        '#!/bin/sh',
+        'for a; do case "$a" in -*|.dump) ;; *) f=$a ;; esac; done',
+        `echo "$* journal=$( [ -f "$f-journal" ] && echo yes || echo no )" >> '${log}'`,
+        'case " $* " in *" -readonly "*) ;; *) rm -f "$f-journal" ;; esac',
+        'printf -- "-- dump of %s\\n" "$f"',
+      ].join('\n'));
+    }
+
+    it('dumps a copy rolled back there, never replaying the journal in place, and leaves the tenant\'s pair alone', () => {
+      const a = db('app/x.db');
+      const j = journal(a, HOT);
+      const log = join(base, 'argv.log');
+      recordingSqlite(log);
+      const { lines } = run();
+      expect(lines).toContain(`FOUND|${a}|`);
+      expect(lines.some((l) => l.startsWith(`OK|${a}|`))).toBe(true);
+      // Opened read-write (so it rolls back) — the copy, with its journal beside it.
+      expect(readFileSync(log, 'utf8').trim()).toBe('-nofollow ./db .dump journal=yes');
+      // The copy folder is gone; only the dump stays.
+      expect(readdirSync(dest())).toHaveLength(1);
+      expect(dumps()[0]).toMatch(/^predump-/);
+      expect(readFileSync(join(dest(), dumps()[0]!), 'utf8')).toContain('-- dump of ./db');
+      // The tenant's database and journal are as they were.
+      expect(readFileSync(j)).toEqual(HOT);
+      expect(parseSqliteCapture(lines.join('\n'), { exitCode: 0 }).entry!.databases[0]!.status).toBe('dumped');
+    });
+
+    it('treats a journal with a zeroed header as finished (journal_mode=PERSIST) and dumps read-only', () => {
+      const a = db('app/x.db');
+      journal(a, Buffer.alloc(8720), null);
+      const log = join(base, 'argv.log');
+      recordingSqlite(log);
+      const { lines } = run();
+      expect(lines.some((l) => l.startsWith(`OK|${a}|`))).toBe(true);
+      expect(readFileSync(log, 'utf8').trim()).toBe('-nofollow -readonly ./x.db .dump journal=yes');
+    });
+
+    it('waits for the next bundle when the journal changed in the last 10 minutes (a transaction in progress)', () => {
+      const a = db('app/x.db');
+      journal(a, HOT, null);
+      const { lines } = run();
+      expect(lines).toContain(`DEGRADED|${a}|a transaction is in progress (its rollback journal changed in the last 10 minutes); dump skipped, raw file still captured`);
+      expect(dumps()).toEqual([]);
+    });
+
+    it('skips one whose journal names a super-journal (a multi-database transaction)', () => {
+      const a = db('app/x.db');
+      const superRecord = Buffer.concat([Buffer.from('/etc/victim'), Buffer.from([0, 0, 0, 11, 0, 0, 0, 0]), HOT.subarray(0, 8)]);
+      journal(a, Buffer.concat([HOT, superRecord]));
+      const { lines } = run();
+      expect(lines).toContain(`DEGRADED|${a}|an unfinished transaction spanning several databases is pending; dump skipped, raw file still captured`);
+      expect(dumps()).toEqual([]);
+    });
+
+    it('skips one whose journal is a symlink', () => {
+      const a = db('app/x.db');
+      writeFileSync(join(base, 'elsewhere-journal'), HOT);
+      symlinkSync(join(base, 'elsewhere-journal'), `${a}-journal`);
+      const { lines } = run();
+      expect(lines).toContain(`DEGRADED|${a}|its rollback journal is not a regular file; dump skipped, raw file still captured`);
+    });
+
+    it('skips one whose header says WAL (a hot rollback journal there is not SQLite\'s own state)', () => {
+      const a = db('app/x.db', 2);
+      journal(a, HOT);
+      const { lines } = run();
+      expect(lines).toContain(`DEGRADED|${a}|an unfinished transaction is pending on a database not in rollback-journal mode; dump skipped, raw file still captured`);
+    });
+
+    it('a failed dump of the copy leaves neither the copy nor a partial dump behind', () => {
+      const a = db('app/x.db');
+      journal(a, HOT);
+      stub('sqlite3', '#!/bin/sh\necho "BEGIN;"\nexit 1\n');
+      const { lines } = run();
+      expect(lines).toContain(`FAIL|${a}|sqlite .dump failed (locked, corrupt or over 900 s)`);
+      expect(readdirSync(dest())).toEqual([]);
+    });
+
+    it('skips it when the copy would push the volume past 90%', () => {
+      const a = db('app/x.db');
+      journal(a, HOT);
+      // 1 KiB free above the 10% that must stay free: no room for the copy.
+      stub('df', '#!/bin/sh\necho "Filesystem 1024-blocks Used Available Capacity Mounted"\necho "/dev/x 1000000 899999 100001 90% /data"\n');
+      const { lines } = run();
+      expect(lines).toContain(`DEGRADED|${a}|an unfinished transaction is pending and there is no room to roll it back on a copy without filling the volume past 90%; dump skipped, raw file still captured`);
+      expect(readdirSync(dest())).toEqual([]);
+    });
+  });
+
+  describe('the checks made on the copy (ON_COPY_SCRIPT)', () => {
+    const HOTJ = Buffer.concat([Buffer.from([0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7]), Buffer.alloc(504, 1)]);
+    function onCopy(dbMode: 1 | 2, journalBody: Buffer | 'link'): number | null {
+      const dir = join(base, 'copy');
+      rmSync(dir, { recursive: true, force: true });
+      mkdirSync(dir);
+      writeFileSync(join(dir, 'db'), Buffer.concat([header(dbMode), Buffer.from('rest')]));
+      if (journalBody === 'link') symlinkSync(join(base, 'nowhere'), join(dir, 'db-journal'));
+      else writeFileSync(join(dir, 'db-journal'), journalBody);
+      stub('sqlite3', '#!/bin/sh\necho "-- dump"\n');
+      return spawnSync('sh', ['-c', ON_COPY_SCRIPT], { cwd: dir, env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` } }).status;
+    }
+
+    it('dumps a hot journal on a rollback-journal database', () => {
+      expect(onCopy(1, HOTJ)).toBe(0);
+    });
+    it('10: the copied journal is finished after all (committed while it was copied)', () => {
+      expect(onCopy(1, Buffer.alloc(512))).toBe(10);
+    });
+    it('11: the copied journal names a super-journal, whatever the tenant\'s file said when checked', () => {
+      expect(onCopy(1, Buffer.concat([HOTJ, Buffer.from('/etc/victim'), Buffer.from([0, 0, 0, 11, 0, 0, 0, 0]), HOTJ.subarray(0, 8)]))).toBe(11);
+    });
+    it('12: the copy is not a rollback-journal database', () => {
+      expect(onCopy(2, HOTJ)).toBe(12);
+    });
+    it('13: the copied journal is a link', () => {
+      expect(onCopy(1, 'link')).toBe(13);
+    });
+  });
+
+  it('leaves dependency folders and the files Nextcloud users keep to the files snapshot', () => {
+    mkdirSync(join(root, 'nc'));
+    writeFileSync(join(root, 'nc/.ocdata'), '');
+    const kept = [
+      db('nc/owncloud.db'),
+      db('nc/appdata_oc1/mail/AddressBook.sqlite'),
+      db('drupal/sites/default/files/.ht.sqlite'),
+      db('app/storage/app.db'),
+      // A user-like folder outside a Nextcloud data directory is still searched.
+      db('other/bob/files/real.db'),
+    ];
+    for (const rel of [
+      'nc/alice/files/Music/Project/Ableton Project Info/IndexWin.db',
+      'nc/alice/files_trashbin/files/old.db',
+      'nc/alice/files_versions/Music/IndexWin.db',
+      'nc/alice/uploads/chunk.db',
+      'nc/__groupfolders/1/shared.db',
+      'nc/updater-oc1/backups/nextcloud-34/config/x.db',
+      'site/public_html/apps/suspicious_login/vendor/rubix/ml/tests/test.sqlite',
+      'app/node_modules/pkg/fixture.db',
+      'app/.git/x.db',
+      'app/bower_components/x/y.sqlite3',
+    ]) db(rel);
+    const { lines, status } = run();
+    expect(status).toBe(0);
+    expect(lines.filter((l) => l.startsWith('FOUND|')).map((l) => l.split('|')[1]).sort()).toEqual([...kept].sort());
   });
 
   it('says so when the free space cannot be read', () => {
@@ -349,6 +547,6 @@ describe('the generated capture script, run under sh', () => {
     const { lines } = run();
     expect(lines).toContain(`FOUND|${a}|`);
     expect(readdirSync(elsewhere)).toEqual([]);
-    expect(readFileSync(join(dest(), name), 'utf8')).toContain(`-- dump of ${a}`);
+    expect(readFileSync(join(dest(), name), 'utf8')).toContain('-- dump of ./x.db');
   });
 });

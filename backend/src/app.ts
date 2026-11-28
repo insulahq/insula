@@ -349,7 +349,9 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     //     makes find-my-way refuse to match and Fastify returns 404
     //     silently. Bump generously — 1024 is plenty of headroom and
     //     shorter URLs are not affected.
-    maxParamLength: 1024,
+    // Under routerOptions: Fastify 5 deprecates router settings at the top
+    // level (FSTDEP022, printed at every start).
+    routerOptions: { maxParamLength: 1024 },
     // trustProxy: the panel nginx terminates the hop from Traefik and
     // forwards as HTTP to the platform-api pod. Without this,
     // request.protocol returns "http" — which breaks OIDC because the

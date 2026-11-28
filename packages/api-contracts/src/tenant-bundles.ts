@@ -264,8 +264,10 @@ export type BackupComponentInfo = z.infer<typeof backupComponentInfoSchema>;
 //   - 'dumped'   → fresh consistent logical dump captured.
 //   - 'degraded' → dump skipped for an expected reason (dump tool absent in a
 //                  bring-your-own image, PVC too full to write the dump
-//                  safely, engine unsupported for logical dump). The database
-//                  still has no logical backup in this bundle.
+//                  safely, engine unsupported for logical dump, a SQLite
+//                  transaction still being written). The database still has
+//                  no logical backup in this bundle. (A SQLite transaction
+//                  left behind is rolled back on a copy and dumped.)
 //   - 'failed'   → the dump command errored unexpectedly.
 export const backupDatabaseDumpStatusSchema = z.enum(['dumped', 'degraded', 'failed']);
 export type BackupDatabaseDumpStatus = z.infer<typeof backupDatabaseDumpStatusSchema>;

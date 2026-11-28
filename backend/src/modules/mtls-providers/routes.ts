@@ -56,6 +56,7 @@ import { reconcileIngress } from '../domains/k8s-ingress.js';
 import { domains as domainsTable } from '../../db/schema.js';
 import { tenants } from '../../db/schema.js';
 import type { ZodError } from 'zod';
+import { adminHost, type BaseDomainConfig } from '../../config/domains.js';
 
 function zodMessage(err: ZodError): string {
   return err.issues
@@ -69,6 +70,20 @@ function actingUserId(request: FastifyRequest): string | null {
   // `||` (not `??`) so empty-string ids are treated as missing.
   const u = (request as unknown as { user?: { id?: string; sub?: string } }).user;
   return (u?.id || u?.sub) ?? null;
+}
+
+/**
+ * The public origin CRL links are built on: PUBLIC_URL when set, else the
+ * admin panel's host on the platform's base domain — which is what the
+ * development overlay sets PUBLIC_URL to, and what staging and production
+ * never set. Null only when neither is configured.
+ */
+export function crlBaseUrl(cfg: { readonly PUBLIC_URL?: string } & BaseDomainConfig): string | null {
+  if (cfg.PUBLIC_URL) return cfg.PUBLIC_URL;
+  // An empty key (a ConfigMap entry with no value) must not hide the other:
+  // resolveBaseDomain takes the first that is set, even to "".
+  const base = cfg.PLATFORM_BASE_DOMAIN?.trim() || cfg.INGRESS_BASE_DOMAIN?.trim();
+  return base ? `https://${adminHost({ PLATFORM_BASE_DOMAIN: base })}` : null;
 }
 
 export async function mtlsProvidersRoutes(app: FastifyInstance): Promise<void> {
@@ -96,13 +111,13 @@ export async function mtlsProvidersRoutes(app: FastifyInstance): Promise<void> {
   // configuration, NOT request headers — trusting X-Forwarded-Host
   // would let a hostile tenant return an attacker-controlled URL to
   // the next caller of GET /crl, which the UI displays as a copyable
-  // link. Falls back to the request's own scheme+host only when no
-  // PUBLIC_URL is configured (dev/local).
-  const publicBaseUrl =
-    app.config?.PUBLIC_URL
-    ?? process.env.PUBLIC_URL
-    ?? process.env.PUBLIC_BASE_URL
-    ?? null;
+  // link. Falls back to the request's own scheme+host only when
+  // neither PUBLIC_URL nor a base domain is configured (local dev).
+  const publicBaseUrl = crlBaseUrl({
+    PUBLIC_URL: app.config?.PUBLIC_URL ?? process.env.PUBLIC_URL ?? process.env.PUBLIC_BASE_URL,
+    PLATFORM_BASE_DOMAIN: app.config?.PLATFORM_BASE_DOMAIN ?? process.env.PLATFORM_BASE_DOMAIN,
+    INGRESS_BASE_DOMAIN: app.config?.INGRESS_BASE_DOMAIN ?? process.env.INGRESS_BASE_DOMAIN,
+  });
 
   function crlPublicUrl(tenantId: string, providerId: string, request: FastifyRequest): string {
     if (publicBaseUrl) {

@@ -151,17 +151,17 @@ describe('StuckDeprovisionsPanel', () => {
 });
 
 describe('TrustedProxiesCard', () => {
-  it('opens system → bootstrap → operator, then sorts by CIDR both ways', async () => {
+  it('opens system → operator, then sorts by CIDR both ways', async () => {
     const range = (cidr: string, source: TrustedProxyRange['source']): TrustedProxyRange => ({
       id: null, cidr, description: `${source} range`, source, createdAt: null, createdByEmail: null,
     });
     routes.set('/api/v1/admin/cluster-network/trusted-proxies', { data: {
-      ranges: [range('192.0.2.0/24', 'operator'), range('172.16.0.0/12', 'system'), range('10.42.0.0/16', 'bootstrap')],
+      ranges: [range('192.0.2.0/24', 'operator'), range('172.16.0.0/12', 'system'), range('10.42.0.0/16', 'operator')],
       lastReconciledAt: null, lastReconcileError: null, panelPodsRolled: 0, panelPodsTotal: 0,
     } });
     renderWithClient(<TrustedProxiesCard />);
     const table = await screen.findByTestId('trusted-proxies-table');
-    expect(column(table)).toEqual(['172.16.0.0/12', '10.42.0.0/16', '192.0.2.0/24']);
+    expect(column(table)).toEqual(['172.16.0.0/12', '192.0.2.0/24', '10.42.0.0/16']);
 
     fireEvent.click(screen.getByTestId('sort-cidr'));
     expect(column(table)).toEqual(['10.42.0.0/16', '172.16.0.0/12', '192.0.2.0/24']);

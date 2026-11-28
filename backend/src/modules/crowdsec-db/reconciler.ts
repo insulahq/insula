@@ -41,7 +41,7 @@ import { randomBytes } from 'node:crypto';
 import { PassThrough, Writable } from 'node:stream';
 import { rollCrowdsecLapiSafely } from '../security-hardening/crowdsec.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
-import { buildSingleDbIsolationSql } from '../db-isolation/sql.js';
+import { buildSingleDbIsolationSql, PLATFORM_ACL_LOCK_SQL, psqlErrorLines } from '../db-isolation/sql.js';
 
 export const CROWDSEC_NAMESPACE = 'crowdsec';
 export const CROWDSEC_DB_SECRET = 'crowdsec-db-credentials';
@@ -206,6 +206,7 @@ export function psqlSetVar(name: string, value: string): string {
  */
 export function buildCrowdsecDbSql(): string {
   return [
+    PLATFORM_ACL_LOCK_SQL,
     `SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${CROWDSEC_DB_USER}')`,
     `       THEN 'ALTER ROLE ${CROWDSEC_DB_USER} WITH LOGIN PASSWORD ' || quote_literal(:'cspw')`,
     // NOSUPERUSER/NOCREATEDB/NOCREATEROLE are Postgres defaults for an omitted
@@ -503,8 +504,8 @@ export async function reconcileCrowdsecDb(
 
   if (!result.success) {
     // stderr can echo the statement, which contains the quoted password —
-    // never log it verbatim.
-    log.warn('crowdsec-db: psql reported failure while ensuring the role/database');
+    // never log it verbatim; its error lines, literals masked, say why.
+    log.warn({ error: psqlErrorLines(result.stderr) }, 'crowdsec-db: psql reported failure while ensuring the role/database');
     return { skipped: false, applied: false, skipReason: 'psql_error', createdSecret: secret.created };
   }
 

@@ -179,16 +179,39 @@ export async function mintBackupLogin(x: Exec, databases: readonly string[]): Pr
   }
 }
 
-/** Drops the run's login. Never throws: a login left behind is dropped by the hardening pass. */
-export async function dropBackupLogin(x: Exec, username: string): Promise<boolean> {
-  if (!isBackupLoginName(username)) return false;
+export interface DropResult {
+  readonly dropped: boolean;
+  /** Why not, when it was not. */
+  readonly error?: string;
+}
+
+/**
+ * Drops the run's login. Never throws: the caller retries and reports a
+ * failure, and a login left behind is dropped by the hardening pass.
+ */
+export async function dropBackupLogin(x: Exec, username: string): Promise<DropResult> {
+  if (!isBackupLoginName(username)) return { dropped: false, error: 'not a backup login name' };
   switch (x.ctx.engine) {
     case 'mariadb':
     case 'mysql':
-      return (await tryRun(x, mysqlRootScript(x.ctx, `DROP USER IF EXISTS ${mysqlAccount(username, '%')};`))).ok;
+      return dropResult(await tryRun(x, mysqlRootScript(x.ctx, `DROP USER IF EXISTS ${mysqlAccount(username, '%')};`)));
     case 'postgresql':
-      return (await tryRun(x, pgSuperuserScript(x, `DROP ROLE IF EXISTS ${pgIdent(username)};`))).ok;
-    case 'mongodb':
-      return (await tryRun(x, mongoRoot(x.ctx, `db.getSiblingDB("admin").dropUser(${JSON.stringify(username)}); String("ok")`))).ok;
+      return dropResult(await tryRun(x, pgSuperuserScript(x, `DROP ROLE IF EXISTS ${pgIdent(username)};`)));
+    case 'mongodb': {
+      // mongosh reports a refused command on stdout, with no "ERROR" for
+      // tryRun to see: only the closing "ok" says the script got that far.
+      // A login already gone is dropped (dropUser throws UserNotFound), as
+      // IF EXISTS makes it for the SQL engines: a retry after a drop whose
+      // answer was lost must not report a failure.
+      const name = JSON.stringify(username);
+      const r = await tryRun(x, mongoRoot(x.ctx, `const a = db.getSiblingDB("admin"); if (a.getUser(${name})) a.dropUser(${name}); String("ok")`));
+      if (!r.ok) return dropResult(r);
+      const out = mongoResult(r.stdout);
+      return /(^|\*)ok$/.test(out) ? { dropped: true } : { dropped: false, error: out.slice(0, 200) || 'no answer' };
+    }
   }
+}
+
+function dropResult(r: { readonly ok: boolean; readonly error: string }): DropResult {
+  return r.ok ? { dropped: true } : { dropped: false, error: r.error.slice(0, 300) || 'unknown error' };
 }

@@ -110,7 +110,7 @@ describe('reconcileRoundcubeDb', () => {
     expect(mockExecImpl).not.toHaveBeenCalled();
   });
 
-  it('execs psql against the primary pod with -v rcpw=<password>', async () => {
+  it('execs psql against the primary pod, with the password nowhere on its command line', async () => {
     const core = makeCore({ secretPassword: 'super-secret-pw' });
     const log = makeLog();
     const result = await reconcileRoundcubeDb(core as never, fakeKc, log);
@@ -128,10 +128,36 @@ describe('reconcileRoundcubeDb', () => {
     expect(ctr).toBe('postgres');
     expect(argv).toContain('psql');
     expect(argv).toContain('-X');
-    // Password threaded via -v rcpw=<value>, not shell-interpolated.
-    expect(argv).toContain('-v');
-    const vIdx = argv.indexOf('-v');
-    expect(argv[vIdx + 1]).toBe('rcpw=super-secret-pw');
+    expect(argv).toContain('ON_ERROR_STOP=1');
+    // The exec command is serialised into the request's query string, which
+    // the API server's audit log records: the password must not be in it.
+    expect(argv.join(' ')).not.toContain('super-secret-pw');
+  });
+
+  it('sends the password as the first stdin line, then takes the cluster ACL lock', async () => {
+    let capturedStdin = '';
+    mockExecImpl.mockImplementation((
+      _ns: string, _pod: string, _ctr: string, _argv: string[],
+      _stdout: NodeJS.WritableStream, _stderr: NodeJS.WritableStream, stdin: NodeJS.ReadableStream,
+      _tty: boolean, cb: (s: { status: string }) => void,
+    ) => {
+      stdin.on('data', (c: Buffer) => { capturedStdin += c.toString('utf8'); });
+      stdin.on('end', () => setImmediate(() => cb({ status: 'Success' })));
+      return Promise.resolve();
+    });
+    await reconcileRoundcubeDb(makeCore({ secretPassword: "it's\\odd" }) as never, fakeKc, makeLog());
+    const lines = capturedStdin.split('\n');
+    expect(lines[0]).toBe("\\set rcpw 'it\\'s\\\\odd'");
+    expect(lines[1]).toBe("SET lock_timeout = '10s';");
+    expect(lines[2]).toContain('pg_advisory_lock(');
+    // Only on the \set line.
+    expect(lines.slice(1).join('\n')).not.toContain("it's");
+  });
+
+  it('refuses a password psql cannot take on one \\set line, without running psql', async () => {
+    const result = await reconcileRoundcubeDb(makeCore({ secretPassword: 'two\nlines' }) as never, fakeKc, makeLog());
+    expect(result).toEqual({ skipped: true, skipReason: 'password_unrepresentable', applied: false });
+    expect(mockExecImpl).not.toHaveBeenCalled();
   });
 
   it('SQL piped via stdin contains the gexec pattern (no DO block)', async () => {
@@ -165,9 +191,9 @@ describe('reconcileRoundcubeDb', () => {
     expect(capturedStdin).toContain("WHERE rolname = 'roundcube'");
     expect(capturedStdin).toContain("WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'roundcube')");
     expect(capturedStdin).toContain('GRANT ALL PRIVILEGES ON DATABASE roundcube TO roundcube');
-    // The password value itself MUST NOT appear in the SQL stream —
-    // it travels only via the -v CLI arg.
-    expect(capturedStdin).not.toContain('pw-with-no-special-chars');
+    // The password value itself appears only on the \set line, never in
+    // the SQL text.
+    expect(capturedStdin.split('\n').slice(1).join('\n')).not.toContain('pw-with-no-special-chars');
   });
 
   it('reports failure with stderr when psql exits non-zero', async () => {
@@ -183,6 +209,7 @@ describe('reconcileRoundcubeDb', () => {
       cb: (s: { status: string }) => void,
     ) => {
       stderr.write('psql: ERROR: permission denied\n');
+      stderr.write("psql:<stdin>:4: ERROR:  syntax error at or near \"x\"\nLINE 1: ALTER ROLE roundcube WITH LOGIN PASSWORD 'pw' x\n");
       setImmediate(() => cb({ status: 'Failure' }));
       return Promise.resolve();
     });
@@ -191,6 +218,10 @@ describe('reconcileRoundcubeDb', () => {
     const result = await reconcileRoundcubeDb(core as never, fakeKc, log);
     expect(result.applied).toBe(false);
     expect(result.stderr).toContain('permission denied');
+    expect(result.stderr).toContain('syntax error');
+    // The statement psql echoes, with the password in it, is not passed on.
+    expect(result.stderr).not.toContain("'pw'");
+    expect(JSON.stringify((log.warn as unknown as { mock: { calls: unknown[] } }).mock.calls)).not.toContain("'pw'");
     expect(log.warn).toHaveBeenCalled();
   });
 });

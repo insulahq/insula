@@ -41,7 +41,7 @@
  */
 
 import { eq, and, gte, lt, or, isNull, sql } from 'drizzle-orm';
-import { domains, emailAliases, emailDomains, mailboxAliases, mailboxes } from '../../db/schema.js';
+import { domains, emailAliases, emailDomains, mailboxAliases, mailboxes, tenants } from '../../db/schema.js';
 import {
   reportSettingsGet,
   reportSettingsUpdate,
@@ -413,9 +413,11 @@ export async function ensureReportIntake(
       tenantId: emailDomains.tenantId,
       emailDomainId: emailDomains.id,
       domainName: domains.domainName,
+      tenantStatus: tenants.status,
     })
     .from(emailDomains)
     .innerJoin(domains, eq(emailDomains.domainId, domains.id))
+    .innerJoin(tenants, eq(tenants.id, emailDomains.tenantId))
     .where(eq(emailDomains.enabled, 1));
 
   // ── 1a. reap full intake mailboxes ──
@@ -434,6 +436,10 @@ export async function ensureReportIntake(
   // Two triggers, one pass: FULL (the safety net) or DUE (the real schedule).
   // A NULL `last_reaped_at` counts as due, but migration 0127 baselines every
   // existing row to NOW() so a deploy does not reap all of them at once.
+  //
+  // Only an active tenant's: a suspended or archived tenant may not have a
+  // mailbox created (assertTenantActive), so one reaped there would stay
+  // gone until the tenant is reactivated.
   const full = await db
     .select({
       id: mailboxes.id,
@@ -443,7 +449,9 @@ export async function ensureReportIntake(
       lastReapedAt: mailboxes.lastReapedAt,
     })
     .from(mailboxes)
+    .innerJoin(tenants, eq(tenants.id, mailboxes.tenantId))
     .where(and(
+      eq(tenants.status, 'active'),
       eq(mailboxes.platformManaged, true),
       or(
         gte(mailboxes.usedMb, INTAKE_REAP_AT_MB),
@@ -521,6 +529,11 @@ export async function ensureReportIntake(
         }
         continue;
       }
+
+      // A suspended or archived tenant may not have a mailbox created; its
+      // intake is made when it is active again. Not a failure: on production
+      // one suspended tenant's domains logged an error every 5 minutes.
+      if (target.tenantStatus !== 'active') continue;
 
       try {
         const { createMailbox } = await import('../mailboxes/service.js');

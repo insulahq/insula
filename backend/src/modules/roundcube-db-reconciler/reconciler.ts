@@ -42,7 +42,7 @@
 import * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
 import { PassThrough, Writable } from 'node:stream';
-import { buildSingleDbIsolationSql } from '../db-isolation/sql.js';
+import { buildSingleDbIsolationSql, PLATFORM_ACL_LOCK_SQL, psqlErrorLines } from '../db-isolation/sql.js';
 
 export const ROUNDCUBE_SECRET_NAMESPACE = 'mail';
 export const ROUNDCUBE_SECRET_NAME = 'mail-secrets';
@@ -52,7 +52,7 @@ export const CNPG_CLUSTER_NAME = 'system-db';
 
 export interface RoundcubeDbReconcileResult {
   readonly skipped: boolean;
-  readonly skipReason?: 'secret_missing' | 'password_missing' | 'primary_pod_missing';
+  readonly skipReason?: 'secret_missing' | 'password_missing' | 'primary_pod_missing' | 'password_unrepresentable';
   readonly applied: boolean;
   readonly stderr?: string;
 }
@@ -165,15 +165,33 @@ async function execStdin(
 }
 
 /**
+ * psql `\set` line assigning a variable, for a script's stdin. Within single
+ * quotes psql treats a backslash as an escape and nothing else as special
+ * (no `:var` or backquote substitution), so `\` and `'` are escaped; a line
+ * break would end the meta-command and a NUL ends the string, so those are
+ * refused. The password is the operator's to choose, so any other character
+ * must pass through as it did on the command line.
+ */
+export function psqlSetQuoted(name: string, value: string): string {
+  if (/[\0\r\n]/.test(value)) throw new Error(`a value for psql variable ${name} may not hold a line break or NUL`);
+  return `\\set ${name} '${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+}
+
+/**
  * Build the idempotent SQL block. Mirrors `create_roundcube_db()` in
  * bootstrap.sh so behaviour is consistent across the install and
  * runtime convergence paths.
  *
  * Injection-safety strategy: the password is assigned to a psql
- * variable on the CLI via `psql -v rcpw=<value>`. The SQL references
- * it as `:'rcpw'` which psql substitutes with the SQL-literal form
- * (single-quoted, with embedded quotes doubled and backslashes
- * escaped). Same primitive psql clients use everywhere.
+ * variable by the first line of the script, sent over STDIN
+ * (psqlSetQuoted). The SQL references it as `:'rcpw'` which psql
+ * substitutes with the SQL-literal form (single-quoted, with embedded
+ * quotes doubled and backslashes escaped). Same primitive psql clients
+ * use everywhere.
+ *
+ * Not `psql -v rcpw=<value>`: the client serialises the command into the
+ * pod-exec request's query string, which the API server's audit log
+ * records, and it shows in /proc/<pid>/cmdline on the primary.
  *
  * The DO block can't see psql variables (they don't substitute
  * inside `$$...$$`), so we use the `\gexec` trick instead: emit the
@@ -182,8 +200,9 @@ async function execStdin(
  * inside the emitted statement, so the password is double-escaped:
  * once by psql substitution, once by `quote_literal()`.
  */
-function buildSql(): string {
+export function buildSql(): string {
   return [
+    PLATFORM_ACL_LOCK_SQL,
     // `\gexec` runs the SELECT result as a new SQL statement. We
     // pick CREATE or ALTER depending on whether the role already
     // exists. `quote_literal(:'rcpw')` server-side-quotes the value.
@@ -240,10 +259,16 @@ export async function reconcileRoundcubeDb(
     return { skipped: true, skipReason: 'primary_pod_missing', applied: false };
   }
 
-  // Step 3: build the SQL + exec. psql `-v rcpw=value` threads the
-  // password into the script as a psql variable. `quote_literal()`
+  // Step 3: build the SQL + exec. The script's first line sets the
+  // password as a psql variable over stdin. `quote_literal()`
   // server-side handles SQL-string escaping for the password.
-  const sql = buildSql();
+  let sql: string;
+  try {
+    sql = `${psqlSetQuoted('rcpw', password)}\n${buildSql()}`;
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, 'roundcube-db-reconciler: the password cannot be passed to psql');
+    return { skipped: true, skipReason: 'password_unrepresentable', applied: false };
+  }
 
   const exec = new k8s.Exec(kc);
   let result: { stdout: string; stderr: string; success: boolean };
@@ -253,18 +278,19 @@ export async function reconcileRoundcubeDb(
       CNPG_CLUSTER_NAMESPACE,
       podName,
       'postgres',
-      // -X disables .psqlrc; -v assigns the password var; --quiet
-      // silences the per-statement chatter on the wire.
+      // -X disables .psqlrc; --quiet silences the per-statement chatter
+      // on the wire; ON_ERROR_STOP makes a failed statement (the lock's
+      // timeout included) a failed exec instead of a skipped line.
       [
         'psql',
         '-X',
         '--quiet',
+        '-v',
+        'ON_ERROR_STOP=1',
         '-U',
         'postgres',
         '-d',
         'postgres',
-        '-v',
-        `rcpw=${password}`,
       ],
       sql,
     );
@@ -281,18 +307,17 @@ export async function reconcileRoundcubeDb(
   }
 
   if (!result.success) {
-    log.warn(
-      { stderr: result.stderr.slice(0, 500), pod: podName },
-      'roundcube-db-reconciler: psql returned non-zero',
-    );
-    return { skipped: false, applied: false, stderr: result.stderr };
+    // stderr can echo the ALTER ROLE statement, password included.
+    const error = psqlErrorLines(result.stderr);
+    log.warn({ error, pod: podName }, 'roundcube-db-reconciler: psql returned non-zero');
+    return { skipped: false, applied: false, stderr: error };
   }
 
   log.info(
     { pod: podName, stdoutLen: result.stdout.length },
     'roundcube-db-reconciler: converged roundcube role password to Secret',
   );
-  return { skipped: false, applied: true, stderr: result.stderr };
+  return { skipped: false, applied: true, stderr: psqlErrorLines(result.stderr) };
 }
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;

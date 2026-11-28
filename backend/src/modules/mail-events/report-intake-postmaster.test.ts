@@ -41,7 +41,7 @@ import type { Database } from '../../db/index.js';
  * address.
  */
 
-interface DomainRow { tenantId: string; emailDomainId: string; domainName: string }
+interface DomainRow { tenantId: string; emailDomainId: string; domainName: string; tenantStatus: string }
 
 /**
  * A db stub for the THREE queries the reconciler runs. It branches on the
@@ -144,7 +144,7 @@ const created = () =>
   createMailbox.mock.calls.map((c) => (c[3] as { local_part: string }).local_part);
 
 describe('report intake provisions postmaster@, not just the pattern', () => {
-  const ONE = [{ tenantId: 't1', emailDomainId: 'ed1', domainName: 'example.test' }];
+  const ONE = [{ tenantId: 't1', emailDomainId: 'ed1', domainName: 'example.test', tenantStatus: 'active' }];
 
   it('creates a postmaster@ mailbox for an enabled email domain', async () => {
     await ensureReportIntake(db(ONE), logger);
@@ -174,14 +174,29 @@ describe('report intake provisions postmaster@, not just the pattern', () => {
 
   it('covers EVERY enabled domain, not just the first', async () => {
     await ensureReportIntake(db([
-      { tenantId: 't1', emailDomainId: 'ed1', domainName: 'one.example.test' },
-      { tenantId: 't2', emailDomainId: 'ed2', domainName: 'two.example.test' },
+      { tenantId: 't1', emailDomainId: 'ed1', domainName: 'one.example.test', tenantStatus: 'active' },
+      { tenantId: 't2', emailDomainId: 'ed2', domainName: 'two.example.test', tenantStatus: 'active' },
     ]), logger);
     expect(created()).toHaveLength(2);
     // 2 domains x 2 aliases. Was 2 when dmarc@ was the only alias; abuse@
     // joined it (RFC 2142 makes both mandatory). Inverted rather
     // than deleted: dropping back to 2 would mean a domain lost an alias.
     expect(createMailboxAlias).toHaveBeenCalledTimes(4);
+  });
+
+  it('leaves a suspended tenant\'s domain alone instead of failing on it every pass', async () => {
+    // createMailbox refuses a tenant that is not active (assertTenantActive);
+    // on production one suspended tenant's domains logged that refusal as an
+    // error every 5 minutes.
+    const error = vi.fn();
+    const result = await ensureReportIntake(db([
+      { tenantId: 't1', emailDomainId: 'ed1', domainName: 'one.example.test', tenantStatus: 'suspended' },
+      { tenantId: 't2', emailDomainId: 'ed2', domainName: 'two.example.test', tenantStatus: 'active' },
+    ]), { info: vi.fn(), warn: vi.fn(), error } as never);
+    expect(createMailbox).toHaveBeenCalledTimes(1);
+    expect(createMailbox.mock.calls[0]![1]).toBe('t2');
+    expect(error).not.toHaveBeenCalled();
+    expect(result.mailbox).toBe('created');
   });
 
   it('gives every domain an abuse@ alias on the same intake mailbox', async () => {
@@ -298,7 +313,7 @@ describe('report intake provisions postmaster@, not just the pattern', () => {
 });
 
 describe('converging an existing second intake mailbox into an alias', () => {
-  const ONE2 = [{ tenantId: 't1', emailDomainId: 'ed1', domainName: 'example.test' }];
+  const ONE2 = [{ tenantId: 't1', emailDomainId: 'ed1', domainName: 'example.test', tenantStatus: 'active' }];
 
   /** A db fake that answers the dmarc@ lookup as well as the postmaster one. */
   function dbWithLegacyDmarc(legacy: Record<string, unknown> | null) {
@@ -402,7 +417,7 @@ describe('converging an existing second intake mailbox into an alias', () => {
 });
 
 describe('the 30-day reap', () => {
-  const ONE3 = [{ tenantId: 't1', emailDomainId: 'ed1', domainName: 'example.test' }];
+  const ONE3 = [{ tenantId: 't1', emailDomainId: 'ed1', domainName: 'example.test', tenantStatus: 'active' }];
 
   it('empties a mailbox that is DUE by age even though it is empty', async () => {
     // The size trigger fires at 40 MB and in practice never does:

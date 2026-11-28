@@ -2,12 +2,10 @@
  * Trusted upstream-proxy CIDRs card — lives in the new
  * "Trusted Proxies" tab of /nodes-and-storage.
  *
- * Three row types, distinguished by `source`:
+ * Two row types, distinguished by `source`:
  *   - system    — RFC1918 + IPv6 ULA baseline. Shown for visibility,
  *                 always non-deletable. Read-only from the static
  *                 nginx template.
- *   - bootstrap — k3s pod/svc CIDR auto-detected at cluster bootstrap.
- *                 Auto-managed by the reconciler; UI delete disabled.
  *   - operator  — added by super_admin via this UI. Full CRUD.
  *
  * Rollout status: "panelPodsRolled / panelPodsTotal" shows how many
@@ -26,8 +24,8 @@ import {
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useSortable, type SortAccessors } from '@/hooks/use-sortable';
 
-/** System, bootstrap, operator — the server's order (then CIDR), kept by the Source column. */
-const SOURCE_RANK: Record<TrustedProxySource, number> = { system: 0, bootstrap: 1, operator: 2 };
+/** System, then operator — the server's order (then CIDR), kept by the Source column. */
+const SOURCE_RANK: Record<TrustedProxySource, number> = { system: 0, operator: 1 };
 const RANGE_SORT: SortAccessors<TrustedProxyRange> = { source: (r) => SOURCE_RANK[r.source] };
 const NO_RANGES: readonly TrustedProxyRange[] = [];
 const TH_PAD = 'py-2 pr-3';
@@ -288,10 +286,6 @@ function SourceBadge({ source }: { source: TrustedProxySource }) {
     system: {
       label: 'system',
       cls: 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300',
-    },
-    bootstrap: {
-      label: 'bootstrap',
-      cls: 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300',
     },
     operator: {
       label: 'operator',

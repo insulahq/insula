@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { getDb, closeDb } from './index.js';
 import { rbacRoles, regions, hostingPlans, users, catalogRepositories, oidcProviders, systemSettings } from './schema.js';
@@ -151,6 +151,20 @@ console.log('  Seeded hosting plans');
 const adminEmail = process.env.ADMIN_EMAIL ?? 'admin@k8s-platform.test';
 const adminPassword = process.env.ADMIN_PASSWORD;
 if (!adminPassword) {
+  // bootstrap.sh's platform-admin-seed Secret is deleted once the first
+  // administrator changes the password, so on a running platform this is the
+  // normal state: there is an administrator to keep, and the steps below are
+  // first-install ones. They are skipped as they always were here — the
+  // catalog step would re-add an Official Catalog the operator removed — but
+  // without the error and stack trace every API start used to print.
+  const [admin] = await db.select({ id: users.id }).from(users)
+    .where(and(eq(users.roleName, 'super_admin'), eq(users.panel, 'admin'))).limit(1);
+  if (admin) {
+    console.log('  An administrator exists and ADMIN_PASSWORD is not set: first-install steps skipped.');
+    console.log('Seed complete.');
+    await closeDb();
+    process.exit(0);
+  }
   throw new Error('ADMIN_PASSWORD environment variable is required for seeding. Set a strong password.');
 }
 const adminName = process.env.ADMIN_NAME ?? 'Platform Admin';

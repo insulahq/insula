@@ -60,7 +60,7 @@ describe('removePartialSqliteDumps', () => {
     const [, ns, pod, container, cmd] = execInPod.mock.calls[0]!;
     expect([ns, pod, container]).toEqual(['tenant-a', 'file-manager-y', 'file-manager']);
     expect((cmd as string[])[2]).toBe(
-      'if [ ! -L "/data/.backup-sqlite-dumps" ] && cd "/data/.backup-sqlite-dumps" 2>/dev/null && [ "$(pwd -P)" = "/data/.backup-sqlite-dumps" ]; then rm -f ./.partial-*; fi',
+      'if [ ! -L "/data/.backup-sqlite-dumps" ] && cd "/data/.backup-sqlite-dumps" 2>/dev/null && [ "$(pwd -P)" = "/data/.backup-sqlite-dumps" ]; then rm -f ./.partial-* 2>/dev/null; for d in ./.partial-*.d; do [ -d "$d" ] && [ ! -L "$d" ] && ( cd -P "$d" && [ "$(pwd -P)" = "/data/.backup-sqlite-dumps/${d#./}" ] && rm -f db db-journal db-wal db-shm ); rmdir "$d" 2>/dev/null; done; true; fi',
     );
   });
 

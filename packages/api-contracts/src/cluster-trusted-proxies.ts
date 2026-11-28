@@ -15,16 +15,15 @@
  * src-IP-aware features (CrowdSec L4 enforcement guard, audit logs,
  * rate-limiting).
  *
- * Three sources, surfaced in the UI but not all editable:
+ * Two sources, surfaced in the UI but not both editable:
  *   - `system`    — baked into the static nginx template (RFC1918 +
  *                   IPv6 ULA + k3s default pod/svc CIDRs). Shown
  *                   in the UI for visibility; no DB row needed.
- *   - `bootstrap` — k3s cluster CIDRs detected at bootstrap and
- *                   stored in platform_settings. Auto-seeded into
- *                   the DB by the reconciler on every tick. UI
- *                   shows them as "auto-detected", Delete disabled.
  *   - `operator`  — added via the admin UI. Full CRUD by super_admin.
  *                   THIS is the row type for CDN/LB/floating-IP ranges.
+ * The cluster's own pod and service networks are not proxies and are not
+ * listed: Traefik must not believe a pod about the client's address
+ * (backend cluster-trusted-proxies/reconciler.ts; migration 0195).
  */
 
 import { z } from 'zod';
@@ -60,7 +59,7 @@ const cidrOrIpString = z
 
 // ─── Contract shapes ─────────────────────────────────────────────────────────
 
-export const trustedProxySourceSchema = z.enum(['system', 'bootstrap', 'operator']);
+export const trustedProxySourceSchema = z.enum(['system', 'operator']);
 export type TrustedProxySource = z.infer<typeof trustedProxySourceSchema>;
 
 export const trustedProxyRangeSchema = z.object({
@@ -70,7 +69,7 @@ export const trustedProxyRangeSchema = z.object({
   description: z.string(),
   source: trustedProxySourceSchema,
   createdAt: z.string().datetime().nullable(),
-  /** Email of the user who added the row; null for system / bootstrap. */
+  /** Email of the user who added the row; null for system rows. */
   createdByEmail: z.string().nullable(),
 });
 export type TrustedProxyRange = z.infer<typeof trustedProxyRangeSchema>;

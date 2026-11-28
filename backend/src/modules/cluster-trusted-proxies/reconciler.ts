@@ -2,8 +2,18 @@
  * cluster-trusted-proxies reconciler.
  *
  * Inputs:
- *   - DB rows from cluster_trusted_proxy_ranges (operator + bootstrap)
- *   - platform_settings rows for bootstrap CIDRs (auto-seeded each tick)
+ *   - DB rows from cluster_trusted_proxy_ranges: the CIDRs of the proxies an
+ *     operator put in front of the cluster (an L7 load balancer).
+ *
+ * The cluster's own pod and service networks are NOT entered here. They are
+ * not proxies, and everything here reaches Traefik's trustedIPs: a pod CIDR
+ * there lets any pod — a tenant's workload included — set the client
+ * address Traefik believes (X-Forwarded-For), past CrowdSec, the WAF's
+ * trusted IPs and the login rate limit. bootstrap.sh pins Traefik's trust to
+ * loopback because Traefik is the perimeter. The panels already trust every
+ * private range (SYSTEM_TRUSTED_PROXIES in service.ts). Until migration 0195
+ * this reconciler seeded them as `bootstrap` rows wherever it could parse
+ * them (single-stack clusters; a dual-stack value never parsed).
  *
  * Outputs (idempotent):
  *   1. ConfigMap `platform/cluster-trusted-proxies` —
@@ -38,12 +48,9 @@
 import { createHash } from 'node:crypto';
 import * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
-import {
-  createTrustedProxyRangeRequestSchema,
-} from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 import { JSON_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
-import { listMaterialisedCidrs, upsertBootstrapRange } from './service.js';
+import { listMaterialisedCidrs } from './service.js';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -59,14 +66,6 @@ const PANEL_DEPLOYMENTS: ReadonlyArray<{ name: string; namespace: string }> = [
   { name: 'tenant-panel', namespace: 'platform' },
 ];
 const ANNOTATION_KEY = 'insula.host/trusted-proxies-hash';
-/**
- * Bootstrap-CIDR source: ConfigMap `platform/platform-cluster-cidrs`
- * with keys POD_CIDR and SVC_CIDR. Written by bootstrap.sh on cluster
- * init (the values it passed to k3s as --cluster-cidr / --service-cidr).
- * Absent on older clusters / dev — reconciler skips silently.
- */
-const CLUSTER_CIDRS_CM_NAMESPACE = 'platform';
-const CLUSTER_CIDRS_CM_NAME = 'platform-cluster-cidrs';
 
 // ─── Pure helpers (exported for tests) ───────────────────────────────────────
 
@@ -170,16 +169,13 @@ export async function reconcileClusterTrustedProxies(
   clients: ReconcileClients,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
 ): Promise<ReconcileResult> {
-  // Step 1: auto-seed bootstrap CIDRs from platform-cluster-cidrs CM (idempotent).
-  await seedBootstrapCidrs(db, clients.core, log);
-
-  // Step 2: read materialised CIDRs (bootstrap + operator).
+  // Step 1: read the operator's CIDRs.
   const cidrs = await listMaterialisedCidrs(db);
   const snippet = renderNginxSnippet(cidrs);
   const csv = renderTraefikCsv(cidrs);
   const hash = renderHash(csv);
 
-  // Step 3: write ConfigMap.
+  // Step 2: write ConfigMap.
   const configMapChanged = await upsertConfigMap(
     clients.core,
     snippet,
@@ -188,10 +184,10 @@ export async function reconcileClusterTrustedProxies(
     log,
   );
 
-  // Step 4: patch Traefik DS args.
+  // Step 3: patch Traefik DS args.
   const traefikChanged = await patchTraefikDsArgs(clients.apps, csv, log);
 
-  // Step 5: stamp pod-template annotations on admin-panel + tenant-panel.
+  // Step 4: stamp pod-template annotations on admin-panel + tenant-panel.
   let panelsRolled = 0;
   for (const dep of PANEL_DEPLOYMENTS) {
     const rolled = await stampDeploymentAnnotation(
@@ -214,65 +210,6 @@ export async function reconcileClusterTrustedProxies(
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
-
-async function seedBootstrapCidrs(
-  db: Database,
-  core: k8s.CoreV1Api,
-  log: Pick<Logger, 'info' | 'warn'>,
-): Promise<void> {
-  // Read POD_CIDR + SVC_CIDR from the platform-cluster-cidrs ConfigMap
-  // written by bootstrap.sh. Absent on older / dev clusters — skip silently.
-  let data: Record<string, string> | undefined;
-  try {
-    const cm = (await core.readNamespacedConfigMap({
-      name: CLUSTER_CIDRS_CM_NAME,
-      namespace: CLUSTER_CIDRS_CM_NAMESPACE,
-    } as unknown as Parameters<typeof core.readNamespacedConfigMap>[0])) as unknown as {
-      data?: Record<string, string>;
-    };
-    data = cm.data;
-  } catch (err) {
-    const e = err as { code?: unknown; statusCode?: unknown };
-    const is404 = e.code === 404 || e.statusCode === 404;
-    if (!is404) {
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err) },
-        'cluster-trusted-proxies: bootstrap-CIDR ConfigMap read failed (non-fatal)',
-      );
-    }
-    return;
-  }
-  const pairs: ReadonlyArray<readonly [string | undefined, string]> = [
-    [data?.POD_CIDR, 'k3s pod CIDR (auto-detected at bootstrap)'],
-    [data?.SVC_CIDR, 'k3s service CIDR (auto-detected at bootstrap)'],
-  ];
-  for (const [value, desc] of pairs) {
-    if (!value) continue;
-    // Validate the bootstrap value through the same Zod schema operator
-    // inputs go through. Defence in depth: a tampered ConfigMap (any
-    // pod with configmaps:patch in the platform namespace can mutate
-    // it) MUST NOT smuggle arbitrary strings into the trust ConfigMap.
-    const parsed = createTrustedProxyRangeRequestSchema.safeParse({
-      cidr: value,
-      description: desc,
-    });
-    if (!parsed.success) {
-      log.warn(
-        { value, reason: parsed.error.issues.map((i) => i.message).join('; ') },
-        'cluster-trusted-proxies: bootstrap CIDR rejected by Zod (skipping)',
-      );
-      continue;
-    }
-    try {
-      await upsertBootstrapRange(db, parsed.data.cidr, parsed.data.description);
-    } catch (err) {
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err), cidr: value },
-        'cluster-trusted-proxies: bootstrap upsert failed (non-fatal)',
-      );
-    }
-  }
-}
 
 async function upsertConfigMap(
   core: k8s.CoreV1Api,

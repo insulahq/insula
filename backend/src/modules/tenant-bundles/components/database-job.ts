@@ -167,5 +167,11 @@ export async function databaseServiceHost(k8s: K8sClients, ctx: DbManagerContext
 export async function deleteSecret(k8s: K8sClients, namespace: string, name: string): Promise<void> {
   try {
     await k8s.core.deleteNamespacedSecret({ name, namespace });
-  } catch { /* gone already, or taken along with its Job */ }
+  } catch (err) {
+    // Gone already, or taken along with its Job: fine. Anything else leaves
+    // the run's restic or database credentials behind, so it is said.
+    const e = err as { code?: unknown; statusCode?: unknown; message?: unknown };
+    if (e.code === 404 || e.statusCode === 404) return;
+    console.warn(`[databases] the run's Secret ${namespace}/${name} could not be deleted: ${String(e.message ?? err)}`);
+  }
 }

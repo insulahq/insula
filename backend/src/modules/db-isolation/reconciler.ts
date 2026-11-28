@@ -39,6 +39,7 @@ import {
   buildDbIsolationStateSql,
   parseAtRiskRoles,
   parseDbIsolationState,
+  PLATFORM_ACL_LOCK_SQL,
   type AtRiskRole,
   type DbIsolationEntry,
 } from './sql.js';
@@ -212,7 +213,7 @@ export async function reconcileDbIsolation(
     r = await execPsql(
       exec,
       pod,
-      `${buildDbIsolationSql()}\n${buildDbIsolationStateSql()}\n${buildAtRiskRolesSql()}`,
+      `${PLATFORM_ACL_LOCK_SQL}\n${buildDbIsolationSql()}\n${buildDbIsolationStateSql()}\n${buildAtRiskRolesSql()}`,
     );
   } catch (err) {
     log.warn(

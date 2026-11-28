@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildTraefikPatchOps,
   renderHash,
@@ -117,5 +117,46 @@ describe('buildTraefikPatchOps', () => {
     expect(ops[0]?.path).toBe('/spec/template/spec/containers/0/args/1');
     expect(ops[1]?.op).toBe('add');
     expect(ops[1]?.path).toBe('/spec/template/spec/containers/0/args/-');
+  });
+});
+
+describe('reconcileClusterTrustedProxies — the cluster\'s own networks are not proxies', () => {
+  it('trusts loopback and the operator\'s ranges only, never the pod or service CIDR', async () => {
+    const { reconcileClusterTrustedProxies } = await import('./reconciler.js');
+    const configMapsRead: string[] = [];
+    const core = {
+      readNamespacedConfigMap: vi.fn(async (a: { name: string }) => {
+        configMapsRead.push(a.name);
+        // What bootstrap writes on a cluster: before migration 0195 these
+        // reached Traefik's trustedIPs wherever they parsed.
+        if (a.name === 'platform-cluster-cidrs') return { data: { POD_CIDR: '10.42.0.0/16', SVC_CIDR: '10.43.0.0/16' } };
+        return { data: { hash: 'old' } };
+      }),
+      patchNamespacedConfigMap: vi.fn(async () => ({})),
+      createNamespacedConfigMap: vi.fn(async () => ({})),
+    };
+    const traefikArgs = ['--entryPoints.web.forwardedHeaders.trustedIPs=127.0.0.1/32', '--entryPoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32'];
+    const apps = {
+      readNamespacedDaemonSet: vi.fn(async () => ({ spec: { template: { spec: { containers: [{ args: traefikArgs }] } } } })),
+      patchNamespacedDaemonSet: vi.fn(async () => ({})),
+      readNamespacedDeployment: vi.fn(async () => ({ spec: { template: { metadata: { annotations: {} } } } })),
+      patchNamespacedDeployment: vi.fn(async () => ({})),
+    };
+    // The operator's rows, as listMaterialisedCidrs selects them.
+    const chain = { from: () => chain, where: () => chain, orderBy: async () => [{ cidr: '203.0.113.0/24' }] };
+    const db = { select: () => chain, insert: vi.fn() };
+    const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    const res = await reconcileClusterTrustedProxies(db as never, { core, apps } as never, log as never);
+
+    expect(configMapsRead).not.toContain('platform-cluster-cidrs');
+    expect(db.insert).not.toHaveBeenCalled();
+    const ops = (apps.patchNamespacedDaemonSet.mock.calls[0] as unknown as [{ body: Array<{ value: string }> }])[0].body;
+    expect(ops.map((o) => o.value)).toEqual([
+      '--entryPoints.web.forwardedHeaders.trustedIPs=127.0.0.1/32,203.0.113.0/24',
+      '--entryPoints.websecure.forwardedHeaders.trustedIPs=127.0.0.1/32,203.0.113.0/24',
+    ]);
+    expect(res.cidrCount).toBe(1);
+    expect(log.warn).not.toHaveBeenCalled();
   });
 });

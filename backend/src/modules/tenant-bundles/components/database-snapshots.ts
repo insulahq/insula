@@ -26,8 +26,8 @@ import type { BackupDatabaseDumps } from '@insula/api-contracts';
 import type { Database } from '../../../db/index.js';
 import { catalogEntries, deployments } from '../../../db/schema.js';
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
-import { buildDbContext, execInDbPod, listDatabases, ENGINE_CONFIG, type DbManagerContext, type Engine } from '../../deployments/db-manager.js';
-import { dropBackupLogin, mintBackupLogin } from '../../deployments/backup-login.js';
+import { buildDbContext, execInDbPod, listDatabases, redactDbSecrets, ENGINE_CONFIG, type DbManagerContext, type Engine } from '../../deployments/db-manager.js';
+import { BACKUP_LOGIN_MAX_AGE_MS, dropBackupLogin, mintBackupLogin } from '../../deployments/backup-login.js';
 import { pgDbConnInfo, type Exec } from '../../deployments/db-exec.js';
 import {
   CREDS_MOUNT_PATH,
@@ -374,10 +374,39 @@ export async function snapshotInstanceDatabases(args: SnapshotInstanceArgs, inst
     return result({ engine, serverVersion: (login as { serverVersion: string } | null)?.serverVersion ?? null, error: redact((err as Error).message) });
   } finally {
     const minted = login as { username: string } | null;
-    if (minted) await dropBackupLogin(x, minted.username).catch(() => false);
+    if (minted) await dropRunLogin(x, minted.username, `${args.namespace}/${inst.deploymentName}`);
     await deleteSecret(args.k8s, args.namespace, credsSecretName);
     await deleteSecret(args.k8s, args.namespace, loginSecretName);
   }
+}
+
+/** Waits between attempts to drop a run's login: the server that just served the dump may be briefly busy or restarting. */
+export const DROP_LOGIN_BACKOFF_MS: readonly number[] = [2_000, 10_000];
+
+/**
+ * Drops the run's login, retrying, and says so when it could not: the login
+ * can read every database it was minted for until the hardening pass drops it
+ * (once it is BACKUP_LOGIN_MAX_AGE_MS old, at that instance's next daily pass).
+ * Never throws.
+ */
+export async function dropRunLogin(
+  x: Exec,
+  username: string,
+  where: string,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => { setTimeout(r, ms); }),
+): Promise<boolean> {
+  let error = '';
+  for (let attempt = 0; attempt <= DROP_LOGIN_BACKOFF_MS.length; attempt++) {
+    if (attempt > 0) await sleep(DROP_LOGIN_BACKOFF_MS[attempt - 1]!);
+    const r = await dropBackupLogin(x, username).catch((err: unknown) => ({ dropped: false, error: String(err) }));
+    if (r.dropped) return true;
+    error = r.error ?? 'unknown error';
+  }
+  console.warn(
+    `[databases] the backup login ${username} on ${where} could not be dropped after ${DROP_LOGIN_BACKOFF_MS.length + 1} attempts `
+    + `(${redactDbSecrets(error)}); the hardening pass drops it once it is ${BACKUP_LOGIN_MAX_AGE_MS / 3_600_000} h old`,
+  );
+  return false;
 }
 
 /** The tenant's standalone database instances that are meant to be running. */

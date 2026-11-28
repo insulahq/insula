@@ -182,6 +182,19 @@ new top-level component is added (ADR-048 Primitive 3):
    - PostgreSQL: `pg_dump` (already MVCC-consistent, no lock).
    - MongoDB: `mongodump --archive --gzip` → `predump-<db>-<bundleId>.archive.gz`
      (**newly covered** — was silently unsupported before).
+   - SQLite: files found on the tenant volume by extension and header (the
+     first 200), `sqlite3 .dump` through the file manager →
+     `/data/.backup-sqlite-dumps/` (`components/sqlite-predump.ts`). Not
+     searched, so kept as plain files: dependency folders (`node_modules`,
+     `vendor`, `bower_components`, `.git`) and, in a Nextcloud/ownCloud data
+     directory (the one holding `.ocdata`), the users' files, versions, trash
+     and uploads, group folders and the updater's backups. A database with an
+     unfinished transaction left behind (a hot rollback journal untouched for
+     10 minutes) is dumped from a copy of it and its journal, which SQLite
+     rolls back on open. One still being written is skipped (`degraded`)
+     until the next bundle. sqlite3 runs as the file's owner, never as root,
+     and opens the tenant's file read-only (`-nofollow`, from its real
+     folder): nothing is replayed in place.
    - **Free-space guard:** the logical dump is **skipped** (nothing written)
      when the DB pod's data volume is **>= 90% full** or **< 200 MiB free**,
      so a dump can never `ENOSPC` the live database. The floor still covers it.

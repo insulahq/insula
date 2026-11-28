@@ -2,7 +2,7 @@
  * cluster-trusted-proxies periodic reconciler.
  *
  * 5-min tick (`unref()`'d timer) that re-converges:
- *   - DB rows (operator + bootstrap)
+ *   - DB rows (operator ranges)
  *   - ConfigMap `platform/cluster-trusted-proxies`
  *   - Traefik DS args
  *   - admin-panel + tenant-panel pod-template hash annotation

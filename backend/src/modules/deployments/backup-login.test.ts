@@ -137,15 +137,23 @@ describe('mintBackupLogin', () => {
 describe('dropBackupLogin', () => {
   it('drops only a name of its own', async () => {
     const s = fake();
-    expect(await dropBackupLogin({ ctx: ctx('mariadb'), run: s.run }, 'dbadmin')).toBe(false);
+    expect((await dropBackupLogin({ ctx: ctx('mariadb'), run: s.run }, 'dbadmin')).dropped).toBe(false);
     expect(s.calls).toHaveLength(0);
     const name = newBackupLoginName();
-    expect(await dropBackupLogin({ ctx: ctx('mariadb'), run: s.run }, name)).toBe(true);
+    expect(await dropBackupLogin({ ctx: ctx('mariadb'), run: s.run }, name)).toEqual({ dropped: true });
     expect(s.calls[0]!.stdin).toBe(`DROP USER IF EXISTS \`${name}\`@\`%\`;`);
   });
 
-  it('never throws', async () => {
+  it('never throws, and says why', async () => {
     const run: DbCommandRunner = async () => { throw new Error('pod gone'); };
-    expect(await dropBackupLogin({ ctx: ctx('postgresql'), run }, newBackupLoginName())).toBe(false);
+    expect(await dropBackupLogin({ ctx: ctx('postgresql'), run }, newBackupLoginName())).toEqual({ dropped: false, error: expect.stringContaining('pod gone') });
+  });
+
+  it('MongoDB: a refused dropUser is not a drop, though mongosh prints no ERROR', async () => {
+    const s = fake(() => 'MongoServerError: not authorized on admin to execute command\n');
+    expect(await dropBackupLogin({ ctx: ctx('mongodb'), run: s.run }, newBackupLoginName()))
+      .toEqual({ dropped: false, error: expect.stringContaining('not authorized') });
+    const ok = fake(() => 'ok\n');
+    expect(await dropBackupLogin({ ctx: ctx('mongodb'), run: ok.run }, newBackupLoginName())).toEqual({ dropped: true });
   });
 });

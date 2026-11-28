@@ -25,6 +25,84 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   syncing and a long-named repository: nothing scrolls sideways and every button is on the card.
   Sorting by URL, branch and last sync is gone with their columns; the table sorts by name and
   status. While a delete waits for Confirm, Sync steps aside, so the row gets no wider.
+- **Backups no longer treat other people's SQLite files as the tenant's databases.** The nightly
+  bundle searched the whole tenant volume for SQLite files, so on production it dumped, tracked
+  and would have alerted on Composer test fixtures (`vendor/…/tests/test.sqlite`, five copies, three
+  of them in Nextcloud's updater backups) and a Nextcloud user's music-project files. The search
+  now leaves out dependency folders (`node_modules`, `vendor`, `bower_components`, `.git`) and, in
+  a Nextcloud or ownCloud data directory (the one holding `.ocdata`), the users' files, versions,
+  trash and uploads, group folders and the updater's backups. Nextcloud's own database and its
+  apps' data are still dumped, and so is a `files` folder anywhere else (Drupal keeps its database
+  in `sites/default/files/.ht.sqlite`). What is left out stays in the files snapshot as files.
+  Their entries leave the database backup status after the next bundle.
+- **A SQLite database with an unfinished transaction is backed up again.** Since 2026.11.16 a
+  database with a rollback journal was skipped (`degraded`, "an unfinished transaction is
+  pending"), and it would have been skipped every night: on production one was, and the overdue
+  check would have called it "never backed up" to the admins and the tenant the next night. Two
+  cases are now told apart. A journal whose first byte is zero is finished — `journal_mode=PERSIST`
+  leaves one after every commit, and SQLite itself ignores it — and the database is dumped as
+  usual. A transaction left behind (a journal neither it nor its database changed for 10 minutes)
+  is dumped from a copy of the database and its journal, which SQLite rolls back on open, to the
+  last committed state; the tenant's own files are not touched. A transaction still being
+  written, a journal that names another file (a multi-database transaction), a journal that is a
+  link, or no room for the copy still skip it until the next bundle. Checked with the file
+  manager's own sqlite3, as root like the pod, on databases owned by www-data and by root whose
+  writer was killed mid-transaction: all 2,000 committed rows were in each dump, and the tenant's
+  databases and journals were unchanged.
+- **A backup login that could not be dropped is said.** Each database backup run creates a login
+  that can read the databases it backs up, and drops it at the end; a failed drop was ignored, so
+  the login stayed until the daily hardening pass, up to about 31 hours, with nothing logged. The
+  drop is now retried twice (after 2 and 10 seconds) and a failure is logged with the instance,
+  and a MongoDB `dropUser` that was refused no longer counts as dropped. A failed delete of the
+  run's credentials Secret is logged too, unless it was already gone.
+- **A suspended tenant's mail domains no longer fail the DMARC intake every 5 minutes.** The
+  report-intake pass tried to create `postmaster@` on every enabled email domain, and a suspended
+  tenant may not have a mailbox created: production logged that as an error 138 times in two and
+  a half hours. It also emptied full or old intake mailboxes by delete-and-recreate for suspended
+  tenants, whose mailbox then could not be recreated. Both now wait until the tenant is active.
+- **Database ACL convergers no longer collide across API replicas.** The isolation converger,
+  crowdsec-db and roundcube-db each run on every replica every 5 minutes, and two GRANTs on one
+  database at once fail with "tuple concurrently updated" (29 times in two and a half hours on production).
+  They now take one shared lock first, with a 10-second timeout. On Postgres 18, 120 parallel runs
+  failed 102 times without it and none with it. roundcube-db now stops at a failed statement
+  (`ON_ERROR_STOP`) instead of skipping it and reporting success, and crowdsec-db's failure says
+  why.
+- **No more start-up warnings for a normal state.** The seed no longer prints an error and a stack
+  trace on every API start when the bootstrap admin credentials are gone (bootstrap deletes them
+  once the first administrator changes the password); it skips the same first-install steps as
+  before. Fastify's deprecation warning for `maxParamLength` is gone (now under `routerOptions`).
+  mTLS CRL links are built on `https://admin.<base domain>` when `PUBLIC_URL` is not set, as on
+  staging and production, instead of on the request's Host header.
+
+### Security
+
+- **sqlite3 no longer runs as root on the tenant's files.** The SQLite dump runs as each file's
+  owner, read-only, from the file's real folder and refusing a link (`-nofollow`); a transaction
+  left behind is copied and rolled back as the owner too (a root-owned file's copy as `nobody`),
+  and every check that decides is made on the copy. Before, a WAL database was opened
+  read-write in place as root: a tenant who made its journal hot at the right moment had root
+  replay a journal of their making, and SQLite deletes the "super-journal" file such a journal
+  names. A WAL database's `-shm` and `-wal` files, when the dump creates them, now belong to the
+  file's owner, not root, so a non-root app can still open them.
+- **Traefik no longer believes a pod about the client's address.** The trusted-proxies reconciler
+  entered the cluster's pod and service networks as trusted proxies, and every trusted proxy goes
+  into Traefik's `forwardedHeaders.trustedIPs`: where the value parsed (single-stack clusters),
+  any pod — a tenant's workload included — could send `X-Forwarded-For` and be taken for that
+  address by CrowdSec, the WAF's trusted IPs and the login rate limit. bootstrap.sh pins Traefik's
+  trust to loopback because Traefik is the perimeter, and the panels already trust every private
+  range, so the entries gave nothing. On dual-stack clusters (production, lab staging) the value
+  never parsed — it logged a warning every 5 minutes instead — and nothing changes. The
+  reconciler no longer adds them, the upgrade removes the ones it added (Traefik and the panels
+  then restart once with the narrower list), and only ranges an operator added reach Traefik.
+- **The Roundcube database password is no longer on a command line.** roundcube-db passed it to
+  psql as `-v rcpw=<password>`, which the Kubernetes client puts in the exec request's URL — what
+  the API server's audit log records — every 5 minutes on every replica. It now goes over stdin,
+  escaped for psql, as crowdsec-db already did; any password still works.
+- **Catalog repository fetches refuse the cluster's IPv6 networks too.** With **Allow repositories
+  on private networks** on, the cluster's pod and service networks were refused only as far as the
+  trusted-proxies table listed them, which on a dual-stack cluster was nothing beyond the IPv4
+  defaults. They now come from the cluster itself (the same source as the tenant network
+  policies), both families, with the IPv4 and IPv6 defaults as a floor.
 
 ## [2026.11.17] - 2026-11-27
 
