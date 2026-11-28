@@ -18,10 +18,21 @@ import SortableHeader from '@/components/ui/SortableHeader';
 const INPUT_CLASS =
   'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
+/** A row's error, under its URL. Clamped beside the other columns; whole on a phone card, which has no hover title. */
+const ROW_ERROR_CLASS = 'mt-1 break-words text-xs text-red-600 dark:text-red-400 sm:line-clamp-3';
+
+/** The line under a repository's URL; its title has the full time. */
 function formatSyncTime(dateStr: string | null): string {
-  if (!dateStr) return 'Never';
+  if (!dateStr) return 'Never synced';
   const date = new Date(dateStr);
-  return date.toLocaleString();
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  return `Synced ${date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    ...(sameYear ? {} : { year: 'numeric' }),
+    hour: 'numeric',
+    minute: '2-digit',
+  })}`;
 }
 
 function mapRepoStatusToBadge(status: 'active' | 'error' | 'syncing'): 'active' | 'error' | 'pending' {
@@ -309,45 +320,61 @@ export default function CatalogRepoSettings() {
       )}
 
       {!isLoading && !isError && (
+        // The repository column takes the width the others leave (`w-full max-w-0`)
+        // and truncates inside it, so Actions stays on the card. The other cells
+        // don't wrap: beside a `w-full` column they would break at every word.
         <div className="overflow-x-auto">
-          <table className="w-full" data-testid="repos-table">
+          <table className="w-full min-w-[34rem]" data-testid="repos-table">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                <SortableHeader label="URL" sortKey="url" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                <SortableHeader label="Branch" sortKey="branch" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                <SortableHeader label="Last Synced" sortKey="lastSyncedAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} className="hidden md:table-cell" />
-                <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
-                <th className="px-4 py-3" title="When on, the repository is synced once a day">Auto-sync</th>
-                <th className="px-4 py-3 text-right">Actions</th>
+                <SortableHeader label="Repository" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-3" className="whitespace-nowrap" />
+                <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} padding="px-4 py-3" className="whitespace-nowrap" />
+                <th className="whitespace-nowrap px-4 py-3" title="When on, the repository is synced once a day">Auto-sync</th>
+                <th className="whitespace-nowrap px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
               {sortedRepos.map((repo) => (
-                <tr key={repo.id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
-                  <td className="px-4 py-3 text-sm font-medium text-gray-900 dark:text-gray-100">{repo.name}</td>
-                  <td className="px-4 py-3 text-sm font-mono text-gray-600 dark:text-gray-400 max-w-xs truncate">{repo.url}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{repo.branch}</td>
-                  <td className="hidden px-4 py-3 text-sm text-gray-500 dark:text-gray-400 md:table-cell">
-                    {formatSyncTime(repo.lastSyncedAt)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <StatusBadge
-                      status={mapRepoStatusToBadge(repo.status)}
-                      label={repo.status === 'syncing' ? 'Syncing' : undefined}
-                    />
+                <tr key={repo.id} className="align-top transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/50">
+                  <td className="w-full max-w-0 px-4 py-3">
+                    <p className="break-words text-sm font-medium text-gray-900 sm:truncate dark:text-gray-100" title={repo.name}>{repo.name}</p>
+                    <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                      <span className="break-all font-mono sm:truncate" title={repo.url} data-testid={`repo-url-${repo.id}`}>{repo.url}</span>
+                      <span className="inline-flex min-w-0 shrink-0 items-center gap-0.5 sm:max-w-[45%]" title={`Branch ${repo.branch}`}>
+                        <GitBranch size={12} className="shrink-0" aria-hidden="true" />
+                        <span className="break-all sm:truncate">{repo.branch}</span>
+                      </span>
+                    </div>
+                    <p
+                      className="mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400"
+                      title={repo.lastSyncedAt ? `Last synced ${new Date(repo.lastSyncedAt).toLocaleString()}` : undefined}
+                      data-testid={`repo-synced-${repo.id}`}
+                    >
+                      {formatSyncTime(repo.lastSyncedAt)}
+                    </p>
                     {repo.status === 'error' && repo.lastError && (
-                      <p className="mt-1 max-w-xs truncate text-xs text-red-500 dark:text-red-400" title={repo.lastError}>
+                      <p className={ROW_ERROR_CLASS} title={repo.lastError} data-testid={`repo-error-${repo.id}`}>
                         {repo.lastError}
                       </p>
                     )}
                     {syncError?.id === repo.id && (
-                      <p className="mt-1 max-w-xs truncate text-xs text-red-500 dark:text-red-400" data-testid={`sync-error-${repo.id}`} title={syncError.message}>
+                      <p className={ROW_ERROR_CLASS} data-testid={`sync-error-${repo.id}`} title={syncError.message}>
                         {syncError.message}
                       </p>
                     )}
+                    {autoSyncError?.id === repo.id && (
+                      <p className={ROW_ERROR_CLASS} data-testid={`auto-sync-error-${repo.id}`} title={autoSyncError.message}>
+                        {autoSyncError.message}
+                      </p>
+                    )}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="whitespace-nowrap px-4 py-3">
+                    <StatusBadge
+                      status={mapRepoStatusToBadge(repo.status)}
+                      label={repo.status === 'syncing' ? 'Syncing' : undefined}
+                    />
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3">
                     <button
                       type="button"
                       role="switch"
@@ -369,28 +396,26 @@ export default function CatalogRepoSettings() {
                       />
                     </button>
                     <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{repo.autoSyncEnabled ? 'Daily' : 'Off'}</p>
-                    {autoSyncError?.id === repo.id && (
-                      <p className="mt-1 max-w-xs truncate text-xs text-red-500 dark:text-red-400" data-testid={`auto-sync-error-${repo.id}`} title={autoSyncError.message}>
-                        {autoSyncError.message}
-                      </p>
-                    )}
                   </td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="whitespace-nowrap px-4 py-3 text-right">
                     <div className="inline-flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleSync(repo.id)}
-                        disabled={syncingId === repo.id || repo.status === 'syncing'}
-                        className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
-                        title="Sync repository"
-                        data-testid={`sync-repo-${repo.id}`}
-                      >
-                        <RefreshCw
-                          size={12}
-                          className={syncingId === repo.id ? 'animate-spin' : ''}
-                        />
-                        Sync
-                      </button>
+                      {/* Confirm and Cancel take Sync's place, so the column keeps its width. */}
+                      {deleteConfirmId !== repo.id && (
+                        <button
+                          type="button"
+                          onClick={() => handleSync(repo.id)}
+                          disabled={syncingId === repo.id || repo.status === 'syncing'}
+                          className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
+                          title="Sync repository"
+                          data-testid={`sync-repo-${repo.id}`}
+                        >
+                          <RefreshCw
+                            size={12}
+                            className={syncingId === repo.id ? 'animate-spin' : ''}
+                          />
+                          Sync
+                        </button>
+                      )}
                       {deleteConfirmId === repo.id ? (
                         <div className="inline-flex items-center gap-1">
                           <button
@@ -430,7 +455,7 @@ export default function CatalogRepoSettings() {
               ))}
               {repos.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                  <td colSpan={4} className="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
                     No catalog repositories configured. Add one to get started.
                   </td>
                 </tr>

@@ -12,6 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+
+- **Applications → Repositories: Sync and Delete stay on the card.** The table had seven columns
+  and needed more width than the card has below about 1366 px, so the buttons sat past its right
+  edge, reachable only by scrolling the table sideways; a repository's error made the Status column
+  320 px wide and pushed them off at up to 1600 px. The table now has four columns: **Repository**
+  (name, URL, branch, last sync and any error, one under the other), **Status**, **Auto-sync** and
+  **Actions**. The repository column takes the width that is left and shortens a long URL with an
+  ellipsis (hover shows it whole). An error shows up to three lines (hover shows the rest), and in full
+  on a phone. Measured in a browser from 640 to 1920 px wide, light and dark, with a failed, a
+  syncing and a long-named repository: nothing scrolls sideways and every button is on the card.
+  Sorting by URL, branch and last sync is gone with their columns; the table sorts by name and
+  status. While a delete waits for Confirm, Sync steps aside, so the row gets no wider.
+
 ## [2026.11.17] - 2026-11-27
 
 > **Measured on lab staging** (three servers, 2026.11.16 → 2026.11.17-rc.1, applied from the

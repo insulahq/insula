@@ -57,7 +57,10 @@ describe('CatalogRepoSettings — auto-sync', () => {
     setAutoSync.mockRejectedValue(new Error('Repository not found'));
     render(<CatalogRepoSettings />);
     fireEvent.click(screen.getByTestId('auto-sync-repo-a'));
-    expect(await screen.findByTestId('auto-sync-error-a')).toHaveTextContent('Repository not found');
+    const error = await screen.findByTestId('auto-sync-error-a');
+    expect(error).toHaveTextContent('Repository not found');
+    // Under the repository's URL, not in the narrow Auto-sync column.
+    expect(screen.getByTestId('repo-url-a').closest('td')).toContainElement(error);
   });
 
   it('a super admin switches private-network repositories on', () => {
